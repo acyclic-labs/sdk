@@ -837,19 +837,11 @@ impl<'a, T> ProjectionIndex<'a, T> {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeProjectionSource<T> {
-    value: T,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 enum ProjectionAttachments<'a> {
-    #[cfg_attr(not(feature = "filesystem"), allow(dead_code,
-        reason = "the original optional preparation IO borrows inline attachments only with filesystem"))]
     Borrowed(&'a [Attachment]),
     Owned(Vec<Attachment>),
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(NativeProjectionSource<Vec<Attachment>>),
+    Native(Vec<Attachment>, acyclic_fs::NativeAllocation),
 }
 
 impl ProjectionAttachments<'_> {
@@ -858,7 +850,7 @@ impl ProjectionAttachments<'_> {
             Self::Borrowed(items) => items,
             Self::Owned(items) => items,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(source) => &source.value,
+            Self::Native(items, _) => items,
         }
     }
 }
@@ -894,9 +886,9 @@ impl<'a> ProjectionAttachments<'a> {
                 _retired: None,
             }),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(source) => {
-                // Bind custody first so an early return drops physical data first.
-                let NativeProjectionSource { mut custody, value: items } = source;
+            Self::Native(value, guard) => {
+                let mut custody = guard;
+                let items = value;
                 let same_ledger = io.and_then(crate::executor::PreparationIo::original_native_work)
                     .is_some_and(|work| work.shares_ledger(custody.work()));
                 if same_ledger {
@@ -950,65 +942,45 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
     message: &'a ConversationMessage, resolver: &'a R, maximum_attachments: usize,
     io: Option<&'a crate::executor::PreparationIo>,
 ) -> Result<ProjectionAttachments<'a>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        io.check_cancellation()?;
-        let attachments = match &message.attachments {
-            ReferencedAttachments::Inline { items } => ProjectionAttachments::Borrowed(items),
-            ReferencedAttachments::Manifest { manifest, item_count } => {
-                if *item_count as usize > maximum_attachments {
-                    return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
-                }
-                let (items, custody) = resolver.load_manifest_with_native_work(
-                    manifest, *item_count, io.original_native_work().expect("checked native work"),
-                )?.await?;
-                let source = NativeProjectionSource { value: items, custody };
-                if source.value.len() != *item_count as usize {
-                    return Err(projection_invalid(Some(io), "attachment manifest count does not match its declared count"));
-                }
-                ProjectionAttachments::Native(source)
-            }
-        };
-        if attachments.as_slice().len() > maximum_attachments {
-            return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
-        }
-        return Ok(attachments);
-    }
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.check_cancellation()?;
-        if let ReferencedAttachments::Inline { items } = &message.attachments {
-            if items.len() > maximum_attachments {
-                return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
-            }
-            return Ok(ProjectionAttachments::Borrowed(items));
-        } else if let ReferencedAttachments::Manifest { item_count, .. } = &message.attachments {
+    if let Some(io) = io { io.check_cancellation()?; }
+    let attachments = match &message.attachments {
+        ReferencedAttachments::Inline { items } => ProjectionAttachments::Borrowed(items),
+        ReferencedAttachments::Manifest { manifest, item_count } => {
             if *item_count as usize > maximum_attachments {
-                return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
+                return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
             }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let native = io.and_then(crate::executor::PreparationIo::original_native_work);
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let loaded = if let Some(work) = native {
+                let (value, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
+                ProjectionAttachments::Native(value, custody)
+            } else {
+                ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?)
+            };
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let loaded = ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?);
+            if loaded.as_slice().len() != *item_count as usize {
+                return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
+            }
+            loaded
         }
+    };
+    if attachments.as_slice().len() > maximum_attachments {
+        return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
     }
-    let _ = io;
-    Ok(ProjectionAttachments::Owned(resolve_attachments(message, resolver, maximum_attachments).await?))
+    Ok(attachments)
 }
 
 async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ProjectedToolInvocation> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let parsed = read_native_projection_value(resolver, file, maximum_bytes, io).await?;
-        return convert_native_projection_value(parsed, maximum_bytes, io);
-    }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let parsed = read_owned_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = parsed.into_parts();
-        let output = convert_owned_projection_source::<ProjectedToolInvocation>(
-            OwnedProjectionSource { value, custody }, maximum_bytes, io, true,
-        )?;
-        let OwnedProjectionSource { custody, value } = output;
+        let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
+        let (value, custody) = convert_projection_value(parsed.into_parts(), maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
@@ -1020,31 +992,11 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let parsed = read_native_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = parsed.into_native_parts()?;
-        let intermediate = convert_native_projection_source::<serde_json::Value>(
-            NativeProjectionSource { value, custody }, maximum_bytes, io,
-        )?;
-        let output = convert_native_projection_source::<crate::model::ToolResultContent>(
-            intermediate, maximum_bytes, io,
-        )?;
-        let NativeProjectionSource { custody, value } = output;
-        io.absorb_native_custody(custody)?;
-        return Ok(value);
-    }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let parsed = read_owned_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = parsed.into_parts();
-        let intermediate = convert_owned_projection_source::<serde_json::Value>(
-            OwnedProjectionSource { value, custody }, maximum_bytes, io, true,
-        )?;
-        let output = convert_owned_projection_source::<crate::model::ToolResultContent>(
-            intermediate, maximum_bytes, io, false,
-        )?;
-        let OwnedProjectionSource { custody, value } = output;
+        let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
+        let intermediate = convert_projection_value::<serde_json::Value>(parsed.into_parts(), maximum_bytes, io)?;
+        let (value, custody) = convert_projection_value(intermediate, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
@@ -1143,27 +1095,17 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
         .into_iter().try_fold(0_u64, |bytes, next| bytes.checked_add(next).ok_or_else(overflow))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn convert_native_projection_value<T: NativeProjectionArtifact>(
-    parsed: crate::filesystem::ReservedDecoded<'_, serde_json::Value>, maximum_bytes: u64,
-    io: &crate::executor::PreparationIo,
-) -> Result<T> {
-    let (value, custody) = parsed.into_native_parts()?;
-    let output = convert_native_projection_source::<T>(
-        NativeProjectionSource { value, custody }, maximum_bytes, io,
-    )?;
-    let NativeProjectionSource { custody, value } = output;
-    io.absorb_native_custody(custody)?;
-    Ok(value)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn convert_native_projection_source<T: NativeProjectionArtifact>(
-    mut source: NativeProjectionSource<serde_json::Value>, maximum_bytes: u64,
-    io: &crate::executor::PreparationIo,
-) -> Result<NativeProjectionSource<T>> {
+#[cfg(feature = "filesystem")]
+fn convert_projection_value<'a, T: NativeProjectionArtifact>(
+    source: (serde_json::Value, crate::filesystem::DecodeReservation<'a>), maximum_bytes: u64,
+    io: &'a crate::executor::PreparationIo,
+) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
+    let mut reservation = Some(source.1);
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut native_custody = None;
+    let input = source.0;
     let shape = crate::contract::json_owned_value_shape_bounded(
-        &source.value,
+        &input,
         crate::contract::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined,
             maximum_depth: 128 },
         T::value_schema(),
@@ -1172,77 +1114,50 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
             _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
         },
     )?;
-    let work = io.original_native_work().expect("native projection converter");
-    // Admit only new conversion payload/diagnostics before allocating.
-    let mut additional = work.retain_owned(projection_conversion_allowance::<T>(shape, io)?)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    if let Err(cause) = source.custody.absorb(&mut additional) {
-        let NativeProjectionSource { value, custody } = source;
-        drop(value);
-        return Err(Error::NativeWork { cause, custody: Some(custody) });
-    }
-    let value: T = match serde_json::from_value(source.value) {
-        Ok(value) => value,
-        Err(error) => return Err(Error::NativeDecode {
-            code: crate::wire::ErrorCode::Invalid, source: error, custody: Some(source.custody),
-        }),
-    };
-    let mut output = NativeProjectionSource { value, custody: source.custody };
-    let retained = output.value.heap_owned_bytes(io)?;
-    if let Err(cause) = output.custody.substitute(retained) {
-        let NativeProjectionSource { value, custody } = output;
-        drop(value);
-        return Err(Error::NativeWork { cause, custody: Some(custody) });
-    }
-    Ok(output)
-}
-
-#[cfg(feature = "filesystem")]
-struct OwnedProjectionSource<'a, T> {
-    value: T,
-    custody: crate::filesystem::DecodeReservation<'a>,
-}
-
-#[cfg(feature = "filesystem")]
-fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
-    source: OwnedProjectionSource<'a, serde_json::Value>, maximum_bytes: u64,
-    io: &'a crate::executor::PreparationIo, artifact_error_prefix: bool,
-) -> Result<OwnedProjectionSource<'a, T>> {
-    let shape = crate::contract::json_owned_value_shape_bounded(
-        &source.value,
-        crate::contract::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined,
-            maximum_depth: 128 },
-        T::value_schema(),
-        &mut |next| match next {
-            crate::contract::JsonCodecCharge::Inspect { items } => projection_step(Some(io), items),
-            _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
-        },
-    )?;
-    let additional = io.reserve_decode(projection_conversion_allowance::<T>(shape, io)?)?;
-    let total = source.custody.bytes().checked_add(additional.bytes())
+    let mut additional = Some(io.reserve_decode(projection_conversion_allowance::<T>(shape, io)?)?);
+    let total = reservation.as_ref().expect("source reservation").bytes()
+        .checked_add(additional.as_ref().expect("conversion reservation").bytes())
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion allowance overflows"))?;
-    let value: T = match serde_json::from_value(source.value) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.uses_native_work() {
+        reservation.take().expect("source reservation").into_retained();
+        additional.take().expect("conversion reservation").into_retained();
+        native_custody = Some(io.take_native_custody(total)?);
+    }
+    let value: T = match serde_json::from_value(input) {
         Ok(value) => value,
         Err(error) => {
-            let message = if artifact_error_prefix { format!("tool artifact is invalid: {error}") }
-                else { error.to_string() };
-            additional.into_retained();
+            #[cfg(not(target_arch = "wasm32"))]
+            if native_custody.is_some() {
+                return Err(Error::NativeDecode {
+                    code: crate::wire::ErrorCode::Invalid, source: error, custody: native_custody,
+                });
+            }
+            let message = error.to_string();
+            additional.take().expect("ordinary conversion reservation").into_retained();
             return Err(Error::Invalid(message));
         }
     };
     let retained = value.heap_owned_bytes(io)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(mut custody) = native_custody.take() {
+        if let Err(cause) = custody.substitute(retained) {
+            drop(value);
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        io.absorb_native_custody(custody)?;
+        return Ok((value, io.guard_owned(retained)?));
+    }
     let released = total.checked_sub(retained)
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion exceeds admission"))?;
-    // Transfer the exact two paid scopes, never snapshot shared IO ownership.
-    source.custody.into_retained();
-    additional.into_retained();
+    reservation.take().expect("ordinary source reservation").into_retained();
+    additional.take().expect("ordinary conversion reservation").into_retained();
     io.release(released)?;
-    let custody = io.guard_owned(retained)?;
-    Ok(OwnedProjectionSource { value, custody })
+    Ok((value, io.guard_owned(retained)?))
 }
 
 #[cfg(feature = "filesystem")]
-async fn read_owned_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
+async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
 ) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
@@ -1253,40 +1168,21 @@ async fn read_owned_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
     let _source_hold;
+    #[cfg(not(target_arch = "wasm32"))]
+    let bytes = if let Some(work) = io.original_native_work() {
+        resolver.read_with_native_work(file, maximum_bytes, work)?.await?
+    } else { resolver.read(file).await? };
+    #[cfg(target_arch = "wasm32")]
     let bytes = resolver.read(file).await?;
-    _source_hold = bytes.retained_capacity()
-        .map(|capacity| io.reserve_decode(capacity as u64)).transpose()?;
+    _source_hold = if io.uses_native_work() { None } else {
+        bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
+    };
     if bytes.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
-    let mut history = io.history_io();
-    file.descriptor().verify_with_work(&bytes, &mut Some(&mut history))?;
+    file.descriptor().verify_with_io(&bytes, Some(io))?;
     let parsed = io.decode_preparation_with_code::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
-    )?;
-    validate_model_json_numbers(&parsed.value, Some(io))?;
-    Ok(parsed)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-async fn read_native_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
-    resolver: &R, file: &FileRef, maximum_bytes: u64,
-    io: &'io crate::executor::PreparationIo,
-) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
-    io.check_cancellation()?;
-    if file.descriptor().media_type() != "application/json"
-        || file.descriptor().byte_length() > maximum_bytes
-    {
-        return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
-    }
-    let work = io.original_native_work().expect("native projection source");
-    let source = resolver.read_with_native_work(file, maximum_bytes, work)?.await?;
-    if source.len() as u64 > maximum_bytes {
-        return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
-    }
-    file.descriptor().verify_with_native_work(source.as_ref(), work)?;
-    let parsed = io.decode_preparation_with_code::<serde_json::Value>(
-        source.as_ref(), crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers(&parsed.value, Some(io))?;
     Ok(parsed)
@@ -1340,39 +1236,6 @@ fn validate_model_json_numbers(
         }
         _ => Ok(()),
     }
-}
-
-async fn resolve_attachments<R: ContentResidencyVerifier + ?Sized>(
-    message: &ConversationMessage,
-    resolver: &R,
-    maximum_attachments: usize,
-) -> Result<Vec<Attachment>> {
-    let attachments = match &message.attachments {
-        ReferencedAttachments::Inline { items } => items.clone(),
-        ReferencedAttachments::Manifest {
-            manifest,
-            item_count,
-        } => {
-            if *item_count as usize > maximum_attachments {
-                return Err(Error::Invalid(
-                    "selected message exceeds attachment projection limit".into(),
-                ));
-            }
-            let items = resolver.load_manifest(manifest, *item_count).await?;
-            if items.len() != *item_count as usize {
-                return Err(Error::Invalid(
-                    "attachment manifest count does not match its declared count".into(),
-                ));
-            }
-            items
-        }
-    };
-    if attachments.len() > maximum_attachments {
-        return Err(Error::Invalid(
-            "selected message exceeds attachment projection limit".into(),
-        ));
-    }
-    Ok(attachments)
 }
 
 #[cfg(test)]
