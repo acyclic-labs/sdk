@@ -142,9 +142,9 @@ pub(super) fn sync_directory(directory: &Dir) -> io::Result<()> {
 fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
     rustix::fs::renameat_with(
         &source.parent,
-        &source.name,
+        source.name,
         &destination.parent,
-        &destination.name,
+        destination.name,
         rustix::fs::RenameFlags::NOREPLACE,
     ).map_err(Into::into)
 }
@@ -175,15 +175,15 @@ fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
     options.access_mode((DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE).0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
-    let source_file = source.parent.open_with(&source.name, &options)?.into_std();
+    let source_file = source.parent.open_with(source.name, &options)?.into_std();
     if let Some(pinned) = &source.pinned
         && crate::NativeRootIdentity::from_file(pinned)? != crate::NativeRootIdentity::from_file(&source_file)?
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "rename source binding changed"));
     }
-    let name = destination.name.encode_wide().collect::<Vec<_>>();
+    let name_units = destination.name.encode_wide().count();
     let overflow = || io::Error::other("rename information overflow");
-    let name_bytes = name.len().checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
+    let name_bytes = name_units.checked_mul(size_of::<u16>()).ok_or_else(overflow)?;
     let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
     let total = name_offset.checked_add(name_bytes).ok_or_else(overflow)?.max(size_of::<FILE_RENAME_INFORMATION>());
     let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
@@ -193,7 +193,10 @@ fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
         (*information).Anonymous.ReplaceIfExists = false;
         (*information).RootDirectory = HANDLE(destination.parent.as_handle().as_raw_handle());
         (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
-        std::ptr::copy_nonoverlapping(name.as_ptr(), information.cast::<u8>().add(name_offset).cast::<u16>(), name.len());
+        let name_storage = information.cast::<u8>().add(name_offset).cast::<u16>();
+        for (index, unit) in destination.name.encode_wide().enumerate() {
+            name_storage.add(index).write(unit);
+        }
     }
     let mut status_block = IO_STATUS_BLOCK::default();
     // SAFETY: the source and destination handles, information, and status outlive the call.
