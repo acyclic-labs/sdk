@@ -2,7 +2,7 @@
 use super::super::response;
 use super::*;
 use crate::LocalObjectsLimits;
-use crate::body::{LocalBodyLocation, LocalBodyReference};
+use crate::body::LocalBodyLocation;
 use crate::physical::native_durability;
 use fs2::FileExt;
 use std::collections::BTreeSet;

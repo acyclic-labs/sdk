@@ -354,7 +354,7 @@ impl NativeBatchObjects for LocalObjects {
             core.get_batch(requests).await
         }))
         .await
-        .unwrap_or_else(|_| vec![Err(wire::ErrorCode::Unavailable.into()); count])
+        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
     }
 
     fn get_batch_native(
