@@ -400,7 +400,7 @@ fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
         let hex_custody = work.claim(hex_length).map_err(native_error)?;
         work.charge(WorkCounters { bytes_copied: hex_length, allocation_operations: u64::from(hex_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
-        cancellation.check().map_err(storage)?;
+        cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         Ok((hex::encode(&encoded), hex_custody))
     })();
     drop(encoded);
@@ -412,12 +412,12 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     if value.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES || value.len() % 2 != 0 {
         return Err(invalid("cursor exceeds bounded transport"));
     }
-    cancellation.check().map_err(storage)?;
+    cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
     let length = value.len() as u64 / 2;
     let bytes_custody = work.claim(length).map_err(native_error)?;
     work.charge(WorkCounters { bytes_copied: length, allocation_operations: u64::from(length != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
-    let bytes = hex::decode(value).map_err(storage)?;
+    let bytes = hex::decode(value).map_err(|_| invalid("selected cursor is not canonical hexadecimal"))?;
     let result = crate::pi_root_provider::guarded_pi_decode(&bytes,
         (crate::MAXIMUM_CONTROL_MESSAGE_BYTES / 2) as u64,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
@@ -432,7 +432,6 @@ fn invalid(reason: &'static str) -> Error {
 fn denied(reason: &'static str) -> Error {
     Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason }
 }
-fn storage(error: impl std::fmt::Display) -> Error { Error::Storage(error.to_string()) }
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
 }
@@ -515,6 +514,8 @@ impl PiSelectedHost<'_> {
     if writeback && native_context.is_none() {
         return Err(denied("original-root writeback requires the original native command context"));
     }
+    let caller_native = native_context
+        .ok_or_else(|| denied("selected import requires its original issued native command context"))?;
     if input.import_operation.is_some() {
         return Err(invalid("writeback imports under the same original SDK operation; external import keys are not accepted"));
     }
@@ -543,8 +544,8 @@ impl PiSelectedHost<'_> {
     let destination_live = if destination != self.protected.policy().root_task {
         Some(self.native.live_source(destination, work).await?.ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?)
     } else { None };
-    let destination_context = if destination == input.caller { context } else {
-        destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native context"))?.context.context()
+    let destination_native = if destination == input.caller { caller_native } else {
+        &destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native context"))?.context
     };
     let destination_owner = if destination == input.caller { owner } else {
         &destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native owner"))?.owner
@@ -558,6 +559,20 @@ impl PiSelectedHost<'_> {
     let mount = if destination == self.protected.policy().root_task { None } else {
         Some(self.native.project_mount(destination, volume).ok_or_else(|| denied("destination child has no actual live project mount"))?)
     };
+    let publication_work = if mount.is_some() {
+        self.native.project_work(destination, volume)
+            .ok_or_else(|| denied("destination lost its original project-volume work"))?
+    } else { work.clone() };
+    if !publication_work.shares_ledger(work) {
+        return Err(denied("selected publication crosses its original caller work ledger"));
+    }
+    let source_write_guard = if mount.is_some() {
+        let live = destination_live.as_ref()
+            .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
+        let guard = live.context.volume_callback_guard_with_native_work(
+            &live.owner, &live.original_work).await?;
+        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?)
+    } else { None };
     let publication = if let Some(view) = self.native.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?
     } else if destination == self.protected.policy().root_task {
@@ -609,7 +624,7 @@ impl PiSelectedHost<'_> {
     owner.native_view_owner().verify_with_native_work(work).await?;
     destination_owner.native_view_owner().verify_with_native_work(work).await?;
     let completed = if let Some(mount) = &mount {
-        let result = mount.selected_import_snapshot_with_work(fs_operation, &work.native_mount_work(), cancellation).await;
+        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work.native_mount_work(), cancellation).await;
         if let Err(acyclic_fs::NativeMountError::Source(error)) = &result {
             if matches!(error.semantic_error(), acyclic_fs::MountSourceError::OriginalSnapshotUnavailable
                 | acyclic_fs::MountSourceError::Indeterminate) {
@@ -629,11 +644,11 @@ impl PiSelectedHost<'_> {
     };
     let imported = if let Some(imported) = completed { imported } else {
         if reconcile || resuming_import { return Ok(TaskCommandProgress::Pending); }
-        let result = consume_root(work, import_native_project(selected, context, owner, destination_context, destination_owner,
-            &workspace, mount.as_deref(), volume,
+        let result = consume_root(work, import_native_project(selected, caller_native, owner, destination_native, destination_owner,
+            &workspace, mount.as_deref(), source_write_guard, volume,
             intent.destination_snapshot, &verifier.0, scope, intent.paths, import_operation, publication,
             acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, self.protected.policy().limits.file_bytes,
-            cancellation, work).await);
+            cancellation, &publication_work).await);
         if let Err(Error::NativeSource { source, .. }) = &result {
             if matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) {
                 return Ok(TaskCommandProgress::Pending);
@@ -694,15 +709,31 @@ impl PiSelectedHost<'_> {
         return Err(denied("writeback baseline is not the actual ORIGINAL Root snapshot"));
     }
     let fs_operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
-    let operation_directory = crate::root_materialization_directory(&retained.path, fs_operation).map_err(Error::Invalid)?;
-    let root = PiOriginalWritebackRoot { task: root_task, volume: volume.clone(), workspace: original.workspace_id,
-        identity, path: retained.path.clone(), operation_directory };
-    let options = acyclic_fs::MaterializeOptions::native(&root.operation_directory);
+    let operation_directory = crate::util::root_materialization_directory_with_native_work(&retained.path, fs_operation, work)?;
+    let root_volume = volume.clone_with_native_work(work)?;
+    let root_path = work.copy_path(&retained.path).map_err(native_error)?;
+    let root = PiOriginalWritebackRoot { task: root_task, volume: root_volume.0, workspace: original.workspace_id,
+        identity, path: root_path.0, operation_directory: operation_directory.0,
+        _custody: [root_volume.1, root_path.1, operation_directory.1] };
+    let options_path = work.copy_path(&root.operation_directory).map_err(native_error)?;
+    let options_custody = (acyclic_fs::MaterializeOptions::native(options_path.0), options_path.1);
+    let options = &options_custody.0;
     let candidate = actual.workspace.workspace().generation_with_native_work(imported.authored_generation,
         work, cancellation).await.map_err(native_workspace_error)?;
-    let generations = consume_root(work, build_writeback_generations(&root, context, owner, verifier, scope, &self.protected,
+    let root_input = self.admission_input(root_task, work).await?;
+    let PiTaskExecution::Host { root: root_intent, .. } = root_input.0.execution else {
+        return Err(denied("writeback replaced its original Root admission with a child"));
+    };
+    let original_request = crate::pi_root_inputs::PiRootRequest {
+        binding: root_input.0.binding, root: root_intent,
+    };
+    let publication_guard = crate::pi_inspection::PiWritebackPublicationGuard::new(
+        Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
+        self.stream.clone(), Arc::clone(native_context), Arc::clone(owner),
+        (original_request, root_input.1), key, root.identity, work).await?;
+    let generations = consume_root(work, build_writeback_generations(&root, native_context, owner, verifier, scope, &self.protected,
         &self.filesystem, actual, original, &candidate, &input.paths, operation, publication,
-        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, cancellation, work).await)?;
+        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, cancellation, work, publication_guard).await)?;
     if reconcile {
         let store = self.resources.store.materialization_with_work(work.clone());
         let journal = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation).await
@@ -816,23 +847,35 @@ pub(crate) async fn read_imported_selected_files(
     let cancellation = work.cancellation();
     let generation = root.workspace.workspace().generation_with_native_work(
         descriptor.imported, work, cancellation).await.map_err(native_workspace_error)?;
-    let mut paths = std::collections::BTreeSet::new();
-    for path in &descriptor.command.paths { paths.insert(path.as_str()); }
+    let path_capacity = descriptor.command.paths.len().checked_add(
+        descriptor.journal.plan.edits.len().checked_mul(2)
+            .ok_or_else(|| invalid("selected evidence path count overflow"))?)
+        .ok_or_else(|| invalid("selected evidence path count overflow"))?;
+    let path_slots = path_capacity.checked_mul(std::mem::size_of::<&str>())
+        .ok_or_else(|| invalid("selected evidence path allocation overflow"))?;
+    let path_custody = work.claim(path_slots as u64).map_err(native_error)?;
+    work.charge(WorkCounters { allocation_operations: u64::from(path_capacity != 0),
+        items_examined: (descriptor.command.paths.len() + descriptor.journal.plan.edits.len()) as u64,
+        ..WorkCounters::default() }).map_err(native_error)?;
+    let mut paths = (Vec::<&str>::with_capacity(path_capacity), path_custody);
+    paths.0.extend(descriptor.command.paths.iter().map(String::as_str));
     for edit in &descriptor.journal.plan.edits {
         match edit {
             acyclic_fs::MaterializationEdit::Install { path, .. }
             | acyclic_fs::MaterializationEdit::Remove { path }
-            | acyclic_fs::MaterializationEdit::SetMetadata { path, .. } => { paths.insert(path.as_str()); }
+            | acyclic_fs::MaterializationEdit::SetMetadata { path, .. } => paths.0.push(path),
             acyclic_fs::MaterializationEdit::Rename { from, to } => {
-                paths.insert(from.as_str()); paths.insert(to.as_str());
+                paths.0.push(from); paths.0.push(to);
             }
             _ => return Err(denied("prepared evidence contains an unsupported selected edit")),
         }
     }
+    paths.0.sort_unstable();
+    paths.0.dedup();
     let maximum = evidence.map_or(262_144, |request| request.maximum_bytes);
     if maximum == 0 || maximum > 262_144 { return Err(invalid("file evidence exceeds its bounded range limit")); }
     if let Some(request) = evidence {
-        if !paths.contains(request.path.as_str()) { return Err(denied("file evidence names an unprepared path")); }
+        if paths.0.binary_search(&request.path.as_str()).is_err() { return Err(denied("file evidence names an unprepared path")); }
         if let Some(cursor) = &request.cursor {
             if cursor.operation != descriptor.command.sdk_operation || cursor.root != key
                 || cursor.generation != descriptor.imported || cursor.path != request.path {
@@ -840,17 +883,25 @@ pub(crate) async fn read_imported_selected_files(
             }
         }
     }
-    let mut payload = (BTreeMap::<String, Option<String>>::new(), None, Vec::new());
-    let (files, cursor, allocations) = &mut payload;
+    let capacity = paths.0.len();
+    let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>()
+        + std::mem::size_of::<acyclic_fs::NativeAllocation>())
+        .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
+    let payload_custody = work.claim(slots as u64).map_err(native_error)?;
+    work.charge(WorkCounters { allocation_operations: if capacity == 0 { 0 } else { 2 },
+        ..WorkCounters::default() }).map_err(native_error)?;
+    let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None,
+        Vec::with_capacity(capacity), payload_custody);
+    let (files, cursor, allocations, _) = &mut payload;
     let mut remaining = u64::from(maximum);
     let start = evidence.map(|request| request.path.as_str());
-    for path in paths {
+    for &path in &paths.0 {
         if start.is_some_and(|start| path < start) { continue; }
         acyclic_harness::conversation::validate_content_path(path)?;
         let selected = descriptor.command.paths.iter().any(|prefix| path == prefix
             || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')));
         if !selected { return Err(denied("candidate evidence edit escaped the explicitly selected paths")); }
-        cancellation.check().map_err(storage)?;
+        cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let _current_read_grant = ContentGrant::verify_with_native_work(
             &verifier.0, scope, volume, VolumeOperation::Read, work)?;
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
@@ -858,10 +909,7 @@ pub(crate) async fn read_imported_selected_files(
             Ok(stat) => stat,
             Err((acyclic_fs::WorkspaceError::NotFound, custody)) => {
                 drop(custody);
-                allocations.push(work.claim(path.len() as u64).map_err(native_error)?);
-                work.charge(WorkCounters { bytes_copied: path.len() as u64,
-                    allocation_operations: u64::from(!path.is_empty()), ..WorkCounters::default() }).map_err(native_error)?;
-                files.insert(path.into(), None); continue;
+                files.push((path, None)); continue;
             }
             Err(failure) => return Err(native_workspace_error(failure)),
         };
@@ -871,8 +919,8 @@ pub(crate) async fn read_imported_selected_files(
         let length = stat.logical_bytes.ok_or_else(|| denied("regular candidate evidence lacks an authenticated length"))?;
         if offset > length { return Err(invalid("file evidence cursor exceeds its immutable file")); }
         if remaining == 0 && offset < length {
-            *cursor = Some(crate::pi_operator::PiOperatorFileCursor { operation: descriptor.command.sdk_operation.clone(),
-                root: key.into(), generation: descriptor.imported, path: path.into(), offset });
+            *cursor = Some(PiOperatorFileCursorRef { operation: &descriptor.command.sdk_operation,
+                root: key, generation: descriptor.imported, path, offset });
             break;
         }
         let count = (length - offset).min(remaining);
@@ -881,16 +929,16 @@ pub(crate) async fn read_imported_selected_files(
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;
-        allocations.push(work.claim(encoded_length + path.len() as u64).map_err(native_error)?);
-        work.charge(WorkCounters { bytes_copied: encoded_length + path.len() as u64,
-            allocation_operations: u64::from(encoded_length != 0) + u64::from(!path.is_empty()),
+        allocations.push(work.claim(encoded_length).map_err(native_error)?);
+        work.charge(WorkCounters { bytes_encoded: encoded_length,
+            allocation_operations: u64::from(encoded_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
-        files.insert(path.into(), Some(base64::engine::general_purpose::STANDARD.encode(&bytes)));
+        files.push((path, Some(base64::engine::general_purpose::STANDARD.encode(&bytes))));
         drop(bytes);
         remaining -= count;
         if offset + count < length {
-            *cursor = Some(crate::pi_operator::PiOperatorFileCursor { operation: descriptor.command.sdk_operation.clone(),
-                root: key.into(), generation: descriptor.imported, path: path.into(), offset: offset + count });
+            *cursor = Some(PiOperatorFileCursorRef { operation: &descriptor.command.sdk_operation,
+                root: key, generation: descriptor.imported, path, offset: offset + count });
             break;
         }
     }
@@ -967,10 +1015,28 @@ struct PiWritebackResponse<'a> {
     receipt: Option<&'a acyclic_fs::MaterializationJournal>,
 }
 #[derive(Serialize)]
+struct PiOperatorFileCursorRef<'a> {
+    operation: &'a str,
+    root: &'a str,
+    generation: acyclic_fs::GenerationId,
+    path: &'a str,
+    offset: u64,
+}
+
+#[derive(Serialize)]
 struct PiFileEvidenceProjection<'a> {
-    files: &'a BTreeMap<String, Option<String>>,
-    cursor: Option<&'a crate::pi_operator::PiOperatorFileCursor>,
+    #[serde(serialize_with = "serialize_evidence_files")]
+    files: &'a [(&'a str, Option<String>)],
+    cursor: Option<&'a PiOperatorFileCursorRef<'a>>,
     complete: bool,
+}
+fn serialize_evidence_files<S: serde::Serializer>(
+    files: &&[(&str, Option<String>)], serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap as _;
+    let mut entries = serializer.serialize_map(Some(files.len()))?;
+    for (path, value) in *files { entries.serialize_entry(path, value)?; }
+    entries.end()
 }
 fn ready<T: Serialize>(value: &T, work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
     let (value, custody) = crate::pi_root_provider::guarded_pi_value(value,

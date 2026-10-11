@@ -305,7 +305,7 @@ fn receipt_error(error: NativeReceiptError) -> Error {
         NativeReceiptError::Native(error) => native_error(error),
         NativeReceiptError::Backend(error) => Error::Storage(error.to_string()),
         NativeReceiptError::Decode { source, custody: _custody } => Error::Storage(source.to_string()),
-        NativeReceiptError::Codec { source, custody: _custody } => source,
+        NativeReceiptError::Codec { code, source, custody } => Error::NativeCodec { code, source, custody },
         NativeReceiptError::Record(message) => invalid(message),
     }
 }

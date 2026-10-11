@@ -92,7 +92,9 @@ read is not absence. An optional confirmation flag grants no authority.
 Original-root writeback uses the original frozen
 selected baseline, retained native root identity, an ordinary operator ticket for
 the exact prepared-plan digest, and the production materializer's concurrent-
-update checks. Operator file evidence reads bounded ranges of the immutable
+update checks. Selected baseline/candidate publication retains the issued native
+context, original owner and guarded creator evidence throughout detached SDK work.
+Operator file evidence reads bounded ranges of the immutable
 imported Root generation, never a disposed child mount. A content import is not
 root writeback or evidence of native qualification.
 
