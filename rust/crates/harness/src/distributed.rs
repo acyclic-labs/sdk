@@ -1,6 +1,8 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
 use crate::contract::capability;
+use crate::store::{history::HistoryIo, operations};
+use crate::wire_codec::CodecQuota;
 use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -23,8 +25,6 @@ use acyclic_stream::{
 use acyclic_stream::OwnedBytes;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Original SDK disposition and its producer-funded diagnostic custody.
@@ -47,18 +47,18 @@ impl SdkCallError {
     pub(crate) fn source(&self) -> &StreamError { &self.source }
 
     pub(crate) fn into_error(
-        self, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+        self, work: &Option<&mut dyn HistoryIo>,
     ) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.custody.is_some()
-            || work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+            || work.as_deref().is_some_and(operations::original_native_decode_mode)
         {
             let code = if self.source == StreamError::IdempotencyMismatch {
                 wire::ErrorCode::Conflict
             } else { wire::ErrorCode::Storage };
             return Error::NativeStream { code, source: self.source, custody: self.custody };
         }
-        crate::store::operations::stream_error_with_work(self.source, work)
+        operations::stream_error_with_work(self.source, work)
     }
 }
 
@@ -81,7 +81,6 @@ const READ_PAGE_SIZE: u32 = 1_024;
 
 type RetainedIntent = ([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId);
 
-
 /// Rebuildable location only; the event and all semantic facts remain in the coordinator journal.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,35 +91,28 @@ struct IntentLocation {
     commit_id: [u8; 32],
 }
 
-fn intent_location_path(key: &str) -> String {
-    format!(
-        "harness/v3/coordinator/intent-locations/{}",
-        blake3::hash(key.as_bytes()).to_hex()
-    )
+fn intent_location_path(key: &str, work: &mut Option<&mut dyn HistoryIo>) -> Result<String> {
+    if let Some(work) = work.as_deref_mut() { work.hashed_bytes(key.len() as u64)?; }
+    let digest = blake3::hash(key.as_bytes()).to_hex();
+    formatted_text_with_work("harness/v3/coordinator/intent-locations/".len() + digest.len(),
+        format_args!("harness/v3/coordinator/intent-locations/{digest}"), work)
 }
 
 fn intent_location_stream_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<crate::store::operations::ObservedStream<P>> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-    if let Some(work) = custody.work().as_deref_mut() { work.hashed_bytes(key.len() as u64)?; }
-    let digest = blake3::hash(key.as_bytes()).to_hex();
-    let text = formatted_text_with_work(
-        "harness/v3/coordinator/intent-locations/".len() + digest.len(),
-        format_args!("harness/v3/coordinator/intent-locations/{digest}"), custody.work(),
-    )?;
+    client: &StreamClient<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<operations::ObservedStream<P>> {
+    let mut custody = CodecQuota::new(work, 0)?;
+    let text = intent_location_path(key, custody.work())?;
     let capacity = text.capacity() as u64;
     if custody.work().is_some() { custody.adopt(capacity)?; }
     let portable = custody.work().is_some()
-        && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode);
+        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode);
     if portable {
         let work = custody.work().as_deref_mut().expect("portable observer");
         work.admit_allocation(text.len() as u64)?;
         work.copy_bytes(text.len() as u64)?;
     }
-    let stream = crate::store::operations::stream_text_with_work(client, &text, custody.work())?;
+    let stream = operations::stream_text_with_work(client, &text, custody.work())?;
     drop(text);
     if custody.work().is_some() { custody.relinquish(capacity)?; }
     if portable {
@@ -223,28 +215,6 @@ pub struct WorkLease {
     pub checkpoint: Option<crate::resources::CheckpointRef>,
     /// Coordinator-observed revision associated with this reservation.
     pub operation_revision: u64,
-}
-
-impl WorkLease {
-    pub(crate) fn clone_with_work(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if work.is_none() { return Ok(self.clone()); }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let operation = self.operation.clone_with_work(custody.work())?;
-        custody.adopt(operation.logical_owned_bytes()?)?;
-        let reservation = self.reservation.clone_with_work(custody.work())?;
-        custody.adopt(reservation.logical_owned_bytes()?)?;
-        let checkpoint = self.checkpoint.as_ref()
-            .map(|checkpoint| checkpoint.clone_with_work(custody.work())).transpose()?;
-        if let Some(checkpoint) = &checkpoint { custody.adopt(checkpoint.logical_owned_bytes()?)?; }
-        let lease = Self {
-            operation, reservation, checkpoint, operation_revision: self.operation_revision,
-        };
-        custody.transfer();
-        Ok(lease)
-    }
 }
 
 /// Owner-scoped pull result.
@@ -385,19 +355,17 @@ pub async fn read_coordinator_event_page_with_native_work<P: StreamProvider>(
 }
 
 async fn read_coordinator_event_page_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    after_revision: u64,
-    limit: u32,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    client: &StreamClient<P>, after_revision: u64, limit: u32,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<CommittedSchedulerEvent>> {
     if limit == 0 {
         return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
             "coordinator page limit is out of bounds"));
     }
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let stream = coordinator_source_stream_with_work(client, custody.work())?;
     let path_bytes = if custody.work().is_some()
-        && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
     { COORDINATOR_PATH.len() as u64 } else { 0 };
     custody.adopt(path_bytes)?;
     let page = read_records_with_work(
@@ -437,7 +405,7 @@ async fn read_coordinator_event_page_with_work<P: StreamProvider>(
         });
         expected = revision;
         let raw_bytes = if custody.work().is_some()
-            && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+            && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
         { record.value.len() as u64 } else { 0 };
         drop(record);
         custody.relinquish(raw_bytes)?;
@@ -463,13 +431,9 @@ pub async fn observe_declaration<P: StreamProvider>(
 }
 
 pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    owner: &Authority,
-    scope: &Scope,
-    verifier: &AuthorityVerifier,
-    operation_id: OperationId,
-    declaration_key: &IdempotencyKey,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    client: &StreamClient<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    operation_id: OperationId, declaration_key: &IdempotencyKey,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<OperationSpec>> {
     verifier.verify_audience_with_work(owner, work)?;
     verifier.verify_scope_for_with_work(owner, scope, work)?;
@@ -478,7 +442,7 @@ pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
             "declaration observation requires operation:observe"));
     }
     let authorization = work.is_some().then_some((owner, scope, verifier));
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let Some((_, event, ..)) = read_indexed_intent_with_work(
         client, declaration_key.as_str(), None, authorization, custody.work(),
     ).await?
@@ -502,10 +466,8 @@ pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
 }
 
 fn authenticate_reservation_observation(
-    owner: &Authority,
-    scope: &Scope,
-    verifier: &AuthorityVerifier,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     verifier.verify_audience_with_work(owner, work)?;
     verifier.verify_scope_for_with_work(owner, scope, work)?;
@@ -519,19 +481,14 @@ fn authenticate_reservation_observation(
 #[cfg(feature = "filesystem")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    owner: &Authority,
-    scope: &Scope,
-    verifier: &AuthorityVerifier,
-    operation: OperationId,
-    candidate: &LeaseFence,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    client: &StreamClient<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    operation: OperationId, candidate: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(OperationSpec, LeaseFence)> {
     if work.is_none() {
         return Err(Error::Unsupported("historical reservation needs a finite original observer".into()));
     }
     authenticate_reservation_observation(owner, scope, verifier, work)?;
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let key = formatted_text_with_work(
         "task-admission:".len() + 36, format_args!("task-admission:{operation}"), custody.work(),
     )?;
@@ -560,18 +517,10 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
     authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
     let stream = coordinator_source_stream_with_work(client, custody.work())?;
     let path_bytes = if custody.work().as_deref()
-        .is_some_and(crate::store::operations::original_native_decode_mode)
+        .is_some_and(operations::original_native_decode_mode)
     { 0 } else { COORDINATOR_PATH.len() as u64 };
     custody.adopt(path_bytes)?;
-    let tail = if custody.work().as_deref()
-        .is_some_and(crate::store::operations::original_native_decode_mode)
-    {
-        crate::store::operations::tail_with_work(client, stream.stream.path(), custody.work()).await?
-    } else {
-        if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-        stream.stream.tail().await
-            .map_err(|error| crate::store::operations::stream_error_with_work(error, custody.work()))?
-    };
+    let tail = operations::tail_with_work(client, stream.stream.path(), custody.work()).await?;
     if tail < declaration_revision {
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
             "declaration lies beyond coordinator source"));
@@ -599,15 +548,15 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
                 return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
                     "historical coordinator prefix has a cursor gap"));
             }
-            expected = expected.checked_add(1).ok_or_else(|| crate::store::operations::stream_error_with_work(
+            expected = expected.checked_add(1).ok_or_else(|| operations::stream_error_with_work(
                 StreamError::LimitExceeded, custody.work(),
             ))?;
         }
         for record in records {
             let raw_bytes = if custody.work().as_deref()
-                .is_some_and(crate::store::operations::original_native_decode_mode)
+                .is_some_and(operations::original_native_decode_mode)
             { 0 } else { record.value.len() as u64 };
-            let mut event_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+            let mut event_custody = CodecQuota::new(custody.work(), 0)?;
             let (revision, identity, key, _, time, event) = decode_with_work(&record.value, event_custody.work())?;
             let owned = event.logical_owned_bytes()?;
             event_custody.adopt(owned)?;
@@ -670,14 +619,11 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
 }
 
 async fn read_records_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    stream: &Stream<P>,
-    from: u64,
-    maximum: u32,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Option<Vec<crate::store::operations::ObservedRecord>>> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let mut source = match crate::store::operations::read_records_with_work(
+    client: &StreamClient<P>, stream: &Stream<P>, from: u64, maximum: u32,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Option<Vec<operations::ObservedRecord>>> {
+    let mut custody = CodecQuota::new(work, 0)?;
+    let mut source = match operations::read_records_with_work(
         client, stream, from, maximum, custody.work(),
     ).await? {
         Ok(source) => source,
@@ -692,14 +638,14 @@ async fn read_records_with_work<P: StreamProvider>(
             break;
         };
         if custody.work().is_some()
-            && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+            && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
         {
             custody.adopt(record.value.len() as u64)?;
         }
         if records.len() >= maximum as usize
             || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
         {
-            return Err(crate::store::operations::stream_error_with_work(
+            return Err(operations::stream_error_with_work(
                 StreamError::LimitExceeded, custody.work(),
             ));
         }
@@ -707,7 +653,7 @@ async fn read_records_with_work<P: StreamProvider>(
         if let Some(work) = custody.work().as_deref_mut() {
             work.reserve_records(&mut records, maximum as usize)?;
             custody.adopt(((records.capacity() - old_capacity)
-                * std::mem::size_of::<crate::store::operations::ObservedRecord>()) as u64)?;
+                * std::mem::size_of::<operations::ObservedRecord>()) as u64)?;
         }
         records.push(record);
     }
@@ -716,13 +662,12 @@ async fn read_records_with_work<P: StreamProvider>(
 }
 
 fn received_page_bytes(
-    records: &Vec<crate::store::operations::ObservedRecord>,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    records: &Vec<operations::ObservedRecord>, work: &Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
-    let slots = records.capacity().checked_mul(std::mem::size_of::<crate::store::operations::ObservedRecord>())
+    let slots = records.capacity().checked_mul(std::mem::size_of::<operations::ObservedRecord>())
         .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Storage,
             "coordinator record custody overflows"))? as u64;
-    if work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+    if work.as_deref().is_some_and(operations::original_native_decode_mode) {
         return Ok(slots);
     }
     records.iter().try_fold(slots, |bytes, record| {
@@ -733,13 +678,11 @@ fn received_page_bytes(
 }
 
 fn coordinator_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: wire::ErrorCode,
-    reason: &'static str,
+    work: &Option<&mut dyn HistoryIo>, code: wire::ErrorCode, reason: &'static str,
     ordinary: impl FnOnce() -> Error,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+    if work.as_deref().is_some_and(operations::original_native_decode_mode) {
         return Error::NativeBoundary { code, reason };
     }
     let _ = (work, code, reason);
@@ -747,9 +690,7 @@ fn coordinator_error(
 }
 
 fn coordinator_boundary(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: wire::ErrorCode,
-    reason: &'static str,
+    work: &Option<&mut dyn HistoryIo>, code: wire::ErrorCode, reason: &'static str,
 ) -> Error {
     coordinator_error(work, code, reason, || match code {
         wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
@@ -761,38 +702,27 @@ fn coordinator_boundary(
     })
 }
 
-async fn read_intent_location<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: &str,
-) -> Result<Option<IntentLocation>> {
-    read_intent_location_with_work(client, key, &mut None).await
-}
-
-
 fn coordinator_source_stream_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<crate::store::operations::ObservedStream<P>> {
+    client: &StreamClient<P>, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<operations::ObservedStream<P>> {
     let portable = work.is_some()
-        && !work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode);
+        && !work.as_deref().is_some_and(operations::original_native_decode_mode);
     if portable {
         let work = work.as_deref_mut().expect("portable observer");
         work.admit_allocation(COORDINATOR_PATH.len() as u64)?;
         work.copy_bytes(COORDINATOR_PATH.len() as u64)?;
     }
-    let stream = crate::store::operations::stream_text_with_work(client, COORDINATOR_PATH, work)?;
+    let stream = operations::stream_text_with_work(client, COORDINATOR_PATH, work)?;
     if portable {
         work.as_deref_mut().expect("portable observer").retain_owned(COORDINATOR_PATH.len() as u64)?;
     }
     Ok(stream)
 }
 
-async fn read_intent_location_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+async fn read_intent_location<P: StreamProvider>(
+    client: &StreamClient<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<IntentLocation>> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let owned_key = text_with_work(key, custody.work())?;
     let key_capacity = owned_key.capacity() as u64;
     let validation = checked_idempotency_key(owned_key, custody.work()).map(|_| ());
@@ -800,7 +730,7 @@ async fn read_intent_location_with_work<P: StreamProvider>(
     validation?;
     let stream = intent_location_stream_with_work(client, key, custody.work())?;
     let path_bytes = if custody.work().is_some()
-        && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
     { stream.stream.path().as_str().len() as u64 } else { 0 };
     custody.adopt(path_bytes)?;
     let Some(records) = read_records_with_work(client, &stream.stream, 0, 2, custody.work()).await? else {
@@ -837,17 +767,15 @@ async fn read_intent_location_with_work<P: StreamProvider>(
 }
 
 async fn read_indexed_intent_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: &str,
-    maximum_revision: Option<u64>,
+    client: &StreamClient<P>, key: &str, maximum_revision: Option<u64>,
     authorization: Option<(&Authority, &Scope, &AuthorityVerifier)>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<RetainedIntent>> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     if let Some((owner, scope, verifier)) = authorization {
         authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
     }
-    let Some(location) = read_intent_location_with_work(client, key, custody.work()).await? else {
+    let Some(location) = read_intent_location(client, key, custody.work()).await? else {
         return Ok(None);
     };
     let location_bytes = if custody.work().is_some() { location.key.capacity() as u64 } else { 0 };
@@ -855,7 +783,7 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
     if maximum_revision.is_some_and(|maximum| location.revision > maximum) { return Ok(None); }
     let source = coordinator_source_stream_with_work(client, custody.work())?;
     let path_bytes = if custody.work().is_some()
-        && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
     { source.stream.path().as_str().len() as u64 } else { 0 };
     custody.adopt(path_bytes)?;
     if let Some((owner, scope, verifier)) = authorization {
@@ -864,7 +792,7 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
     let Some(records) = read_records_with_work(
         client, &source.stream, location.revision - 1, 1, custody.work(),
     ).await? else {
-        return Err(crate::store::operations::stream_error_with_work(StreamError::NotFound, custody.work()));
+        return Err(operations::stream_error_with_work(StreamError::NotFound, custody.work()));
     };
     let raw_bytes = if custody.work().is_some() { received_page_bytes(&records, custody.work())? } else { 0 };
     custody.adopt(raw_bytes)?;
@@ -935,14 +863,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn journal_condition(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        fence: &LeaseFence,
-        write: JournalWrite,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, fence: &LeaseFence, write: JournalWrite,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
         self.refresh_with_work(work).await?;
         let operation = self.observe_operation_ref_with_work(
@@ -989,12 +912,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) async fn refresh_with_work(
-        &mut self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let mut next = self.revision;
         loop {
-            let mut page_custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut page_custody = CodecQuota::new(work, 0)?;
             let page = read_records_with_work(&self.client, &self.stream, next, READ_PAGE_SIZE, page_custody.work())
                 .await?.unwrap_or_default();
             if page_custody.work().is_some() {
@@ -1004,20 +926,20 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if page.is_empty() { break; }
             for record in &page {
                 if record.sequence != next {
-                    return Err(crate::store::operations::stream_error_with_work(
+                    return Err(operations::stream_error_with_work(
                         StreamError::Unavailable, page_custody.work(),
                     ));
                 }
-                next = next.checked_add(1).ok_or_else(|| crate::store::operations::stream_error_with_work(
+                next = next.checked_add(1).ok_or_else(|| operations::stream_error_with_work(
                     StreamError::LimitExceeded, page_custody.work(),
                 ))?;
             }
             let page_slots = (page.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64;
             for record in page {
                 let raw_bytes = if page_custody.work().as_deref()
-                    .is_some_and(crate::store::operations::original_native_decode_mode)
+                    .is_some_and(operations::original_native_decode_mode)
                 { 0 } else { record.value.len() as u64 };
-                let mut event_custody = crate::wire_codec::CodecQuota::new(page_custody.work(), 0)?;
+                let mut event_custody = CodecQuota::new(page_custody.work(), 0)?;
                 if let Some(work) = event_custody.work().as_deref_mut() { work.check_cancellation()?; }
                 let (revision, operation_id, key, digest, committed_at_ms, event) =
                     decode_with_work(&record.value, event_custody.work())?;
@@ -1060,18 +982,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok(())
     }
 
-    #[cfg(test)]
-    async fn read_intent_location(&self, key: &str) -> Result<Option<IntentLocation>> {
-        read_intent_location(&self.client, key).await
-    }
-
     async fn ensure_intent_location_with_work(
-        &self,
-        location: &IntentLocation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, location: &IntentLocation, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        if let Some(existing) = read_intent_location_with_work(
+        let mut custody = CodecQuota::new(work, 0)?;
+        if let Some(existing) = read_intent_location(
             &self.client, &location.key, custody.work(),
         ).await? {
             if custody.work().is_some() { custody.adopt(existing.key.capacity() as u64)?; }
@@ -1084,7 +999,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             location, acyclic_stream::MAX_RECORD_BYTES as u64, custody.work(),
         )?;
         let byte_length = bytes.len() as u64;
-        let (bytes, byte_capacity) = crate::store::operations::owned_bytes_from_retained_vec(
+        let (bytes, byte_capacity) = operations::owned_bytes_from_retained_vec(
             bytes, custody.work(),
         )?;
         custody.adopt(byte_capacity)?;
@@ -1105,7 +1020,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         custody.relinquish(physical_capacity)?;
         let destination = intent_location_stream_with_work(&self.client, &location.key, custody.work())?;
         let path_bytes = if custody.work().is_some()
-            && !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+            && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
         { destination.stream.path().as_str().len() as u64 } else { 0 };
         custody.adopt(path_bytes)?;
         let mut records = Vec::new();
@@ -1118,7 +1033,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if custody.work().is_some() {
             let retired = custody.relinquish(records_capacity + byte_capacity + key_bytes);
             if outcome.is_ok()
-                || !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+                || !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
             { retired?; }
         }
         drop(destination);
@@ -1141,11 +1056,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn confirm_intent_location_with_work(
-        &self, location: &IntentLocation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, location: &IntentLocation, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let existing = read_intent_location_with_work(&self.client, &location.key, custody.work()).await?;
+        let mut custody = CodecQuota::new(work, 0)?;
+        let existing = read_intent_location(&self.client, &location.key, custody.work()).await?;
         if let Some(existing) = &existing
             && custody.work().is_some()
         { custody.adopt(existing.key.capacity() as u64)?; }
@@ -1158,23 +1072,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
     }
 
-
     async fn retained_intent_with_work(
-        &self,
-        key: &str,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, key: &str, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<RetainedIntent>> {
         read_indexed_intent_with_work(&self.client, key, Some(self.revision), None, work).await
     }
 
     async fn intent_matches_with_work(
-        &self,
-        key: &str,
-        event: &SchedulerEvent,
-        digest: &[u8; 32],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, key: &str, event: &SchedulerEvent, digest: &[u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<bool>> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let Some(intent) = self.retained_intent_with_work(key, custody.work()).await? else {
             return Ok(None);
         };
@@ -1190,9 +1098,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn verify_content_with_work(
-        &self,
-        reference: &FileRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, reference: &FileRef, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         match work.as_deref_mut() {
             Some(work) => crate::store::history::verify_content_with_work(
@@ -1202,9 +1108,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn verify_published_result_with_work(
-        &self,
-        event: &SchedulerEvent,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, event: &SchedulerEvent, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if let SchedulerEvent::WorkflowResumed { input, .. } = event {
             return self.verify_content_with_work(input, work).await;
@@ -1226,7 +1130,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let crate::Outcome::Succeeded(reference) = outcome else {
             return Ok(());
         };
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let (value, value_bytes) = self.load_json_with_work(reference, custody.work()).await?;
         custody.adopt(value_bytes)?;
         if let SchedulerEvent::Orchestrated { operation_id, reducer: None, .. } = event {
@@ -1291,12 +1195,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) fn observe_operation_ref_with_work<'a>(
-        &'a self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &'a self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&'a OperationState> {
         self.authorize_operation_with_work(
             owner, scope, verifier, operation_id, capability::OPERATION_OBSERVE, work,
@@ -1318,19 +1218,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Returns the page with the exact deep custody produced by its field copies.
     pub(crate) async fn observe_children_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        parent: OperationId,
-        request: ChildOperationPageRequest<'_>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        parent: OperationId, request: ChildOperationPageRequest<'_>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ChildOperationPage, u64)> {
         validate_child_page_request(parent, request.after_slot, request.maximum)?;
         Self::authorize_operation_scope_with_work(
             owner, scope, verifier, capability::OPERATION_OBSERVE, work,
         )?;
-        if work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+        if work.as_deref().is_some_and(operations::original_native_decode_mode)
             && self.scheduler.operation(parent).is_some()
         {
             self.observe_operation_ref_with_work(owner, scope, verifier, parent, work)?;
@@ -1344,7 +1240,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
                 "child hierarchy revision changed"));
         }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let mut entries = crate::core::reserve_copy_vector::<ChildOperationLink>(
             request.maximum, &mut custody,
         )?;
@@ -1433,14 +1329,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn cancel_operation_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        recursive: bool,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, idempotency_key: IdempotencyKey, recursive: bool,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(CoordinatorApply, OperationState)> {
         Self::authorize_operation_scope_with_work(
             owner, scope, verifier, capability::OPERATION_CANCEL, work,
@@ -1486,15 +1377,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn cancel_child_operation_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        parent: OperationId,
-        fence: &LeaseFence,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, idempotency_key: IdempotencyKey, parent: OperationId,
+        fence: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<OperationState> {
         Self::authorize_operation_scope_with_work(
             owner, scope, verifier, capability::OPERATION_CANCEL, work,
@@ -1520,24 +1405,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn authorize_operation_with_work<'a>(
-        &'a self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        capability: &str,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &'a self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, capability: &str, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&'a OperationState> {
         Self::authorize_operation_scope_with_work(owner, scope, verifier, capability, work)?;
         self.authorize_operation_owner_with_work(owner, verifier, operation_id, work)
     }
 
     pub(crate) fn authorize_operation_scope_with_work(
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        capability: &str,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, capability: &str,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         verifier.verify_audience_with_work(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
@@ -1551,11 +1428,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn authorize_operation_owner_with_work<'a>(
-        &'a self,
-        owner: &Authority,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &'a self, owner: &Authority, verifier: &AuthorityVerifier, operation_id: OperationId,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&'a OperationState> {
         let operation = self
             .scheduler
@@ -1582,11 +1456,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) async fn apply_with_work(
-        &mut self,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        event: SchedulerEvent,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, operation_id: OperationId, idempotency_key: IdempotencyKey,
+        event: SchedulerEvent, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         if matches!(&event, SchedulerEvent::Declared { .. }) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -1610,13 +1481,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) async fn apply_if_execution_quiescent(
-        &mut self,
-        key: IdempotencyKey,
-        event: SchedulerEvent,
-        execution: OperationId,
-        expected_tail: u64,
-        workflow_guard: Option<(&str, u64)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, key: IdempotencyKey, event: SchedulerEvent, execution: OperationId,
+        expected_tail: u64, workflow_guard: Option<(&str, u64)>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         let verified_revision = work.is_some().then_some(self.revision);
         if !matches!(&event, SchedulerEvent::WorkflowSuspended { .. } | SchedulerEvent::LeaseReleased { .. }) {
@@ -1633,7 +1500,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         ).await
     }
 
-    /// Authenticates the exact owner before filling one durable resume slot.
+    /// Fills a durable resume slot, optionally guarded by its selected command.
     #[allow(clippy::too_many_arguments)]
     pub async fn resume_workflow(
         &mut self,
@@ -1644,82 +1511,18 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         workflow_revision: u64,
         input: FileRef,
         idempotency_key: IdempotencyKey,
+        waiting_command: Option<OperationId>,
     ) -> Result<CoordinatorApply> {
-        self.resume_workflow_with_work(
-            owner, scope, verifier, operation_id, workflow_revision, input,
-            idempotency_key, &mut None,
-        ).await
+        self.resume_workflow_with_work(owner, scope, verifier, operation_id, workflow_revision,
+            input, idempotency_key, waiting_command, &mut None).await
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn resume_workflow_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        workflow_revision: u64,
-        input: FileRef,
-        idempotency_key: IdempotencyKey,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<CoordinatorApply> {
-        self.resume_workflow_guarded_with_work(
-            owner, scope, verifier, operation_id, workflow_revision, input,
-            idempotency_key, None, work,
-        ).await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(any(feature = "filesystem", test))]
-    pub(crate) async fn resume_command(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        workflow_revision: u64,
-        input: FileRef,
-        idempotency_key: IdempotencyKey,
-        waiting_command: OperationId,
-    ) -> Result<CoordinatorApply> {
-        self.resume_command_with_work(
-            owner, scope, verifier, operation_id, workflow_revision, input,
-            idempotency_key, waiting_command, &mut None,
-        ).await
-    }
-
-    #[cfg(any(feature = "filesystem", test))]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn resume_command_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        workflow_revision: u64,
-        input: FileRef,
-        idempotency_key: IdempotencyKey,
-        waiting_command: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<CoordinatorApply> {
-        self.resume_workflow_guarded_with_work(
-            owner, scope, verifier, operation_id, workflow_revision, input,
-            idempotency_key, Some(waiting_command), work,
-        ).await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn resume_workflow_guarded_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        operation_id: OperationId,
-        workflow_revision: u64,
-        input: FileRef,
-        idempotency_key: IdempotencyKey,
-        waiting_command: Option<OperationId>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        operation_id: OperationId, workflow_revision: u64, input: FileRef,
+        idempotency_key: IdempotencyKey, waiting_command: Option<OperationId>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         verifier.verify_audience_with_work(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
@@ -1762,14 +1565,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn declare_operation_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        spec: OperationSpec,
-        idempotency_key: IdempotencyKey,
-        parent_fence: Option<LeaseFence>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        spec: OperationSpec, idempotency_key: IdempotencyKey, parent_fence: Option<LeaseFence>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         if parent_fence.is_some() && spec.parent.is_none() {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
@@ -1823,23 +1621,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             owner, scope, verifier, spec, limits, idempotency_key, &mut None,
         ).await
     }
-
-    #[allow(
-        clippy::too_many_lines,
-        clippy::too_many_arguments,
-        reason = "original authenticated atomic two-event publication and its observer"
-    )]
+    #[allow(clippy::too_many_lines,         clippy::too_many_arguments)]
     pub(crate) async fn declare_session_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        spec: OperationSpec,
-        limits: crate::scheduler::SessionLimits,
-        idempotency_key: IdempotencyKey,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        spec: OperationSpec, limits: crate::scheduler::SessionLimits,
+        idempotency_key: IdempotencyKey, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         verifier.verify_audience_with_work(owner, custody.work())?;
         verifier.verify_with_work(scope, custody.work())?;
         if !scope.capabilities().contains("operation:declare") || spec.owner.authority() != owner {
@@ -1899,7 +1687,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         } else {
             None
         };
-        let mut request = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+        let mut request = CodecQuota::new(custody.work(), 0)?;
         let mut records = Vec::new();
         let mut vectors = 0;
         reserve_prepared_vector(&mut records, 2, &mut request, &mut vectors)?;
@@ -1921,7 +1709,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 event, acyclic_stream::MAX_RECORD_BYTES as u64, request.work(),
             )?;
             let canonical_held = if request.work().is_some() { canonical.capacity() as u64 } else { 0 };
-            let mut canonical_custody = crate::wire_codec::CodecQuota::from_retained(
+            let mut canonical_custody = CodecQuota::from_retained(
                 request.work(), canonical_held,
             );
             if let Some(work) = canonical_custody.work().as_deref_mut() {
@@ -1929,11 +1717,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             let digest = *blake3::hash(&canonical).as_bytes();
             canonical_custody.transfer();
-            let encoded = encode_with_work(
+            let encoded = encode(
                 revision, operation_id, key, digest, canonical, committed_at_ms, canonical_custody.work(),
             )?;
             drop(canonical_custody);
-            let (encoded, encoded_held) = crate::store::operations::owned_bytes_from_retained_vec(
+            let (encoded, encoded_held) = operations::owned_bytes_from_retained_vec(
                 encoded, request.work(),
             )?;
             request.adopt(encoded_held)?;
@@ -1946,7 +1734,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let (stream_key, key_held) = stream_key_with_work(idempotency_key.as_str(), request.work())?;
         let retained_request = request.retained();
         request.transfer();
-        let mut key_custody = crate::wire_codec::CodecQuota::from_retained(request.work(), key_held);
+        let mut key_custody = CodecQuota::from_retained(request.work(), key_held);
         let appended = append_records_keyed_with_work(
             (&self.stream, &self.client), records, retained_request, Some(self.revision),
             stream_key, operation_id, "session retry", key_custody.work(),
@@ -1970,15 +1758,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn session_intent_with_work(
-        &mut self,
-        keys: &[String; 2],
-        events: &[SchedulerEvent; 2],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, keys: &[String; 2], events: &[SchedulerEvent; 2],
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         let mut retained = 0;
         let mut previous: Option<(u64, acyclic_stream::CommitId)> = None;
         for (key, event) in keys.iter().zip(events) {
-            let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut custody = CodecQuota::new(work, 0)?;
             if let Some(intent) = self.retained_intent_with_work(key, custody.work()).await? {
                 if custody.work().is_some() {
                     custody.adopt(intent.1.logical_owned_bytes()?)?;
@@ -2016,12 +1802,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn finish_session_append_with_work(
-        &mut self,
-        outcome: AppendOutcome,
-        keys: &[String; 2],
-        events: &[SchedulerEvent; 2],
-        expected_start: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, outcome: AppendOutcome, keys: &[String; 2], events: &[SchedulerEvent; 2],
+        expected_start: u64, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         let (result, receipt) = match outcome {
             AppendOutcome::Committed(receipt) => {
@@ -2043,7 +1825,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
                 "session append conflicted without its complete intent"));
         }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         if let Some((envelope, start)) = receipt {
             let intent = self.retained_intent_with_work(&keys[0], custody.work()).await?;
             if custody.work().is_some()
@@ -2063,8 +1845,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn replay_intent_with_work(
-        &self, event: &SchedulerEvent,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, event: &SchedulerEvent, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         if let SchedulerEvent::ModelDispatchClaimed {
             operation_id,
@@ -2083,16 +1864,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn apply_internal(
-        &mut self,
-        operation_id: OperationId,
-        idempotency_key: IdempotencyKey,
-        event: SchedulerEvent,
-        parent_fence: Option<&LeaseFence>,
-        waiting_command: Option<OperationId>,
-        idle_execution: Option<(OperationId, u64)>,
-        workflow_guard: Option<(&str, u64)>,
-        verified_revision: Option<u64>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, operation_id: OperationId, idempotency_key: IdempotencyKey,
+        event: SchedulerEvent, parent_fence: Option<&LeaseFence>,
+        waiting_command: Option<OperationId>, idle_execution: Option<(OperationId, u64)>,
+        workflow_guard: Option<(&str, u64)>, verified_revision: Option<u64>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         self.refresh_with_work(work).await?;
         if verified_revision.is_some_and(|revision| revision != self.revision) {
@@ -2136,10 +1912,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             let revision = next_revision(self.revision)?;
             let committed_at_ms = self.next_committed_at_ms_with_work(work)?;
             canonical_held = 0; // the original envelope producer acquires input custody
-            let bytes = encode_with_work(
+            let bytes = encode(
                 revision, operation_id, key, digest, canonical, committed_at_ms, work,
             )?;
-            let (record, retained) = crate::store::operations::owned_bytes_from_retained_vec(bytes, work)?;
+            let (record, retained) = operations::owned_bytes_from_retained_vec(bytes, work)?;
             bytes_held = retained;
             let (stream_key, retained) = physical_key_with_work(
                 key, self.revision, parent_fence.is_some(), waiting_command.is_some(), idle_execution, work,
@@ -2185,11 +1961,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn require_command_wait_with_work(
-        &self,
-        event: &SchedulerEvent,
-        waiting: Option<OperationId>,
-        replaying: bool,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, event: &SchedulerEvent, waiting: Option<OperationId>, replaying: bool,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let Some(waiting) = waiting else {
             return Ok(());
@@ -2223,10 +1996,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn require_parent_owner_with_work(
-        &self,
-        event: &SchedulerEvent,
-        fence: Option<&LeaseFence>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, event: &SchedulerEvent, fence: Option<&LeaseFence>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let Some(fence) = fence else {
             return Ok(());
@@ -2251,15 +2022,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)
     }
 
-
     async fn finish_append_with_work(
-        &mut self,
-        outcome: AppendOutcome,
-        event: &SchedulerEvent,
-        key: &str,
-        digest: &[u8; 32],
-        revision: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, outcome: AppendOutcome, event: &SchedulerEvent, key: &str, digest: &[u8; 32],
+        revision: u64, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
         match outcome {
             AppendOutcome::Committed(receipt) => {
@@ -2293,7 +2058,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn next_committed_at_ms_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<u64> {
         let after_previous = self
             .last_committed_at_ms
@@ -2311,54 +2076,21 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
     }
 
-    /// Pulls only operations belonging to the verified owner.
+    /// Pulls a ready operation belonging to the owner, optionally selecting its exact identity.
     pub async fn pull_owned(
         &mut self,
         owner: &Authority,
         scope: &Scope,
         verifier: &AuthorityVerifier,
         worker: &Worker,
-    ) -> Result<WorkPull> {
-        self.pull_owned_target_with_work(owner, scope, verifier, worker, None, &mut None)
-            .await
-    }
-
-    /// Claims only the exact original operation through the existing scheduler.
-    pub async fn pull_owned_operation(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        worker: &Worker,
-        operation_id: OperationId,
-    ) -> Result<WorkPull> {
-        self.pull_owned_operation_with_work(
-            owner, scope, verifier, worker, operation_id, &mut None,
-        ).await
-    }
-
-    pub(crate) async fn pull_owned_operation_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        worker: &Worker,
-        operation_id: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<WorkPull> {
-        self.pull_owned_target_with_work(
-            owner, scope, verifier, worker, Some(operation_id), work,
-        ).await
-    }
-
-    async fn pull_owned_target_with_work(
-        &mut self,
-        owner: &Authority,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        worker: &Worker,
         operation_id: Option<OperationId>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<WorkPull> {
+        self.pull_owned_with_work(owner, scope, verifier, worker, operation_id, &mut None).await
+    }
+
+    pub(crate) async fn pull_owned_with_work(
+        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, worker: &Worker,
+        operation_id: Option<OperationId>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
         verifier.verify_audience_with_work(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
@@ -2372,10 +2104,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn verify_pull_owner_with_work(
-        &self,
-        authorization: Option<(&Authority, &AuthorityVerifier)>,
-        operation_id: OperationId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, authorization: Option<(&Authority, &AuthorityVerifier)>, operation_id: OperationId,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if let Some((owner, verifier)) = authorization {
             self.scheduler
@@ -2389,11 +2119,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn pull_for_with_work(
-        &mut self,
-        worker: &Worker,
-        authorization: Option<(&Authority, &AuthorityVerifier)>,
-        target: Option<OperationId>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, worker: &Worker, authorization: Option<(&Authority, &AuthorityVerifier)>,
+        target: Option<OperationId>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
         let owner = authorization.map(|(owner, _)| owner);
         self.refresh_with_work(work).await?;
@@ -2421,7 +2148,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         };
         if let Some(operation_id) = blocked {
             self.verify_pull_owner_with_work(authorization, operation_id, work)?;
-            let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut custody = CodecQuota::new(work, 0)?;
             let key = formatted_text_with_work(
                 "dependency-rejected:".len() + 36,
                 format_args!("dependency-rejected:{operation_id}"), custody.work(),
@@ -2435,7 +2162,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ).await?;
             return Ok(WorkPull::Idle);
         }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let available = self.scheduler.available_for_with_work(
             &worker.id, &worker.available, custody.work(),
         )?;
@@ -2491,7 +2218,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             operation_revision,
         };
         let appended = {
-            let mut attempt = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+            let mut attempt = CodecQuota::new(custody.work(), 0)?;
             let reservation = lease.reservation.clone_with_work(attempt.work())?;
             if attempt.work().is_some() { attempt.adopt(reservation.logical_owned_bytes()?)?; }
             let key = formatted_text_with_work(
@@ -2527,12 +2254,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) async fn release_lease_with_work(
-        &mut self,
-        lease: &WorkLease,
-        idempotency_key: IdempotencyKey,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &mut self, lease: &WorkLease, idempotency_key: IdempotencyKey,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<CoordinatorApply> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let reservation_id = text_with_work(&lease.reservation.id, custody.work())?;
         if custody.work().is_some() { custody.adopt(reservation_id.capacity() as u64)?; }
         let placement = text_with_work(&lease.reservation.placement, custody.work())?;
@@ -2662,16 +2387,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn load_json_with_work(
-        &self,
-        reference: &FileRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, reference: &FileRef, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(serde_json::Value, u64)> {
         reference.validate_with_work(work)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
                 "scheduler result must be a JSON file"));
         }
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let (bytes, raw_bytes) = match custody.work().as_deref_mut() {
             Some(work) => crate::store::history::read_content_with_work(
                 work, self.content_verifier.as_ref(), reference).await?,
@@ -2700,12 +2423,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn assemble_values_with_work(
-        &self,
-        assembly: AssemblyKind,
-        values: &[(String, FileRef)],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self, assembly: AssemblyKind, values: &[(String, FileRef)],
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(serde_json::Value, u64)> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut custody = CodecQuota::new(work, 0)?;
         let mut assembled = if custody.work().is_some() {
             Vec::new()
         } else { Vec::with_capacity(values.len()) };
@@ -2792,22 +2513,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
 }
 
-fn encode(
-    revision: u64,
-    operation_id: OperationId,
-    key: &str,
-    digest: [u8; 32],
-    canonical: Vec<u8>,
-    committed_at_ms: u64,
-) -> Result<Vec<u8>> {
-    encode_with_work(revision, operation_id, key, digest, canonical, committed_at_ms, &mut None)
-}
-
 fn checked_idempotency_key(
-    value: String,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    value: String, work: &Option<&mut dyn HistoryIo>,
 ) -> Result<IdempotencyKey> {
-    if work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+    if work.as_deref().is_some_and(operations::original_native_decode_mode) {
         if value.is_empty() || value.chars().any(char::is_control) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid, "idempotency key is invalid"));
         }
@@ -2817,8 +2526,7 @@ fn checked_idempotency_key(
 }
 
 fn text_with_work(
-    value: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    value: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<String> {
     match work.as_deref_mut() {
         Some(work) => work.clone_text(value),
@@ -2827,9 +2535,7 @@ fn text_with_work(
 }
 
 fn formatted_text_with_work(
-    length: usize,
-    arguments: std::fmt::Arguments<'_>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    length: usize, arguments: std::fmt::Arguments<'_>, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<String> {
     use std::fmt::Write as _;
     let mut text = String::new();
@@ -2853,17 +2559,12 @@ fn formatted_text_with_work(
     Ok(text)
 }
 
-fn encode_with_work(
-    revision: u64,
-    operation_id: OperationId,
-    key: &str,
-    digest: [u8; 32],
-    canonical: Vec<u8>,
-    committed_at_ms: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+fn encode(
+    revision: u64, operation_id: OperationId, key: &str, digest: [u8; 32], canonical: Vec<u8>,
+    committed_at_ms: u64, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let incoming_held = if work.is_some() { canonical.capacity() as u64 } else { 0 };
-    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, incoming_held);
+    let mut custody = CodecQuota::from_retained(work, incoming_held);
     let version = text_with_work(COORDINATOR_WIRE_VERSION, custody.work())?;
     if custody.work().is_some() { custody.adopt(version.capacity() as u64)?; }
     if let Some(work) = custody.work().as_deref_mut() {
@@ -2913,7 +2614,6 @@ fn encode_with_work(
     custody.transfer();
     Ok(bytes)
 }
-
 
 fn scheduler_json_owned_bytes(input_bytes: u64, items: u64, native: bool) -> Result<u64> {
     let multiply = |value:u64, factor:u64| value.checked_mul(factor)
@@ -2982,7 +2682,6 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64, native: bool) -> Res
     Ok(maximum_owned_bytes)
 }
 
-
 fn scheduler_json_admission_error(native: bool, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if native { return Error::NativeBoundary { code: wire::ErrorCode::Invalid, reason }; }
@@ -2991,10 +2690,8 @@ fn scheduler_json_admission_error(native: bool, reason: &'static str) -> Error {
 }
 
 fn decode_json<T: serde::de::DeserializeOwned>(
-    input: &[u8],
-    schema: crate::contract::JsonValueSchema,
-    owned: impl FnOnce(&T) -> Result<u64>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    input: &[u8], schema: crate::contract::JsonValueSchema, owned: impl FnOnce(&T) -> Result<u64>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(T, u64)> {
     use crate::contract::{JsonCodecCharge, JsonValueSchema};
     let result_value = matches!(schema, JsonValueSchema::Root);
@@ -3006,7 +2703,7 @@ fn decode_json<T: serde::de::DeserializeOwned>(
         return crate::contract::json_from_slice(input).map(|value| (value, 0))
             .map_err(|source| invalid(source.to_string()));
     }
-    let native = work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode);
+    let native = work.as_deref().is_some_and(operations::original_native_decode_mode);
     let diagnostic = match schema {
         JsonValueSchema::None => crate::contract::audited_serde_diagnostic_bytes(input.len() as u64,
             concat!("IntentLocation key revision event_digest commit_id unknown field duplicate field ",
@@ -3029,7 +2726,7 @@ fn decode_json<T: serde::de::DeserializeOwned>(
     let mut items = 0u64;
     let observer = work.as_deref_mut().expect("JSON observer");
     observer.check_cancellation()?;
-    let decoded = crate::store::operations::decode_preclaimed_json_with_mode::<T, _>(
+    let decoded = operations::decode_preclaimed_json_with_mode::<T, _>(
         input, crate::contract::JsonBounds {
             maximum_bytes: bound, maximum_items: bound + 1, maximum_depth: 256,
         }, maximum, code, native, schema, &mut |charge| {
@@ -3067,8 +2764,8 @@ fn decode_json<T: serde::de::DeserializeOwned>(
             charged
         },
     );
-    let decoded = crate::store::operations::retain_original_decode_error(decoded, &mut reservation, observer);
-    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, reservation);
+    let decoded = operations::retain_original_decode_error(decoded, &mut reservation, observer);
+    let mut custody = CodecQuota::from_retained(work, reservation);
     let value = decoded.map_err(|error| match error {
         Error::Invalid(message) if !observed_failure => invalid(message),
         error => error,
@@ -3083,9 +2780,7 @@ fn decode_json<T: serde::de::DeserializeOwned>(
 }
 
 fn scheduler_envelope_admission(
-    mut input: &[u8],
-    protocol: bool,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    mut input: &[u8], protocol: bool, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(u64, u64)> {
     use prost::encoding::{DecodeContext, WireType, decode_key, decode_varint, skip_field};
     let mut payload = 0u64;
@@ -3129,8 +2824,7 @@ fn scheduler_envelope_admission(
 }
 
 fn decode_with_work(
-    bytes: &[u8],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    bytes: &[u8], work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
     let diagnostic = if work.is_some() {
         crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, concat!(
@@ -3140,7 +2834,7 @@ fn decode_with_work(
             "invalid tag value unexpected end group tag recursion limit reached invalid string value ",
         ).len() as u64)?
     } else { 0 };
-    let mut custody = crate::wire_codec::CodecQuota::new(work, diagnostic)?;
+    let mut custody = CodecQuota::new(work, diagnostic)?;
     let mut admitted = diagnostic;
     if custody.work().is_some() {
         let (payload, buffers) = scheduler_envelope_admission(bytes, false, custody.work())?;
@@ -3174,7 +2868,7 @@ fn decode_with_work(
     if let Some(work) = custody.work().as_deref_mut() {
         work.hashed_bytes(COORDINATOR_WIRE_CONTRACT.len() as u64)?;
     }
-    if custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+    if custody.work().as_deref().is_some_and(operations::original_native_decode_mode) {
         let protocol = envelope.protocol.as_ref().ok_or_else(|| coordinator_boundary(
             custody.work(), wire::ErrorCode::Storage, "scheduler protocol identity is absent",
         ))?;
@@ -3202,7 +2896,7 @@ fn decode_with_work(
     let committed_at_ms = envelope.committed_at_ms.filter(|time| *time > 0)
         .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
             "coordinator event lacks commit time"))?;
-    let operation_id = if custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+    let operation_id = if custody.work().as_deref().is_some_and(operations::original_native_decode_mode) {
         let parsed = uuid::Uuid::parse_str(&envelope.operation_id).map_err(|_| coordinator_boundary(
             custody.work(), wire::ErrorCode::Invalid, "scheduler operation id is not a UUID",
         ))?;
@@ -3227,30 +2921,12 @@ fn coordinator_retry_conflict(error: &Error) -> bool {
     false
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn current_time_millis_with_work(
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| coordinator_boundary(work, wire::ErrorCode::Invalid, "coordinator clock predates Unix epoch"))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| coordinator_boundary(work, wire::ErrorCode::Invalid, "coordinator clock exceeds supported range"))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn current_time_millis_with_work(
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<u64> {
+fn current_time_millis_with_work(work: &mut Option<&mut dyn HistoryIo>) -> Result<u64> {
     use acyclic_stream::UnixMillisClock as _;
     let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
     if now == 0 || now == u64::MAX {
-        return Err(coordinator_boundary(
-            work,
-            wire::ErrorCode::Invalid,
-            "coordinator clock exceeds supported range",
-        ));
+        return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
+            "coordinator clock exceeds supported range"));
     }
     Ok(now)
 }
@@ -3263,15 +2939,11 @@ fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
 }
 
 pub(crate) async fn append_keyed<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>),
-    record: OwnedBytes,
-    if_tail: Option<u64>,
-    key: StreamIdempotencyKey,
-    operation_id: OperationId,
-    identity: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    (stream, client): (&Stream<P>, &StreamClient<P>), record: OwnedBytes, if_tail: Option<u64>,
+    key: StreamIdempotencyKey, operation_id: OperationId, identity: &str,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let mut records = Vec::new();
     let mut vectors = 0;
     reserve_prepared_vector(&mut records, 1, &mut custody, &mut vectors)?;
@@ -3290,7 +2962,7 @@ pub(crate) async fn append_keyed<P: StreamProvider>(
 async fn append_once_with_work<P: StreamProvider>(
     (stream, client): (&Stream<P>, &StreamClient<P>),
     records: Vec<OwnedBytes>, if_tail: Option<u64>, key: StreamIdempotencyKey,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<AppendOutcome, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref()
@@ -3311,16 +2983,11 @@ async fn append_once_with_work<P: StreamProvider>(
 
 #[allow(clippy::too_many_arguments)]
 async fn append_records_keyed_with_work<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>),
-    records: Vec<OwnedBytes>,
-    retained_request: u64,
-    if_tail: Option<u64>,
-    key: StreamIdempotencyKey,
-    operation_id: OperationId,
-    identity: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    (stream, client): (&Stream<P>, &StreamClient<P>), records: Vec<OwnedBytes>,
+    retained_request: u64, if_tail: Option<u64>, key: StreamIdempotencyKey,
+    operation_id: OperationId, identity: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<AppendOutcome, SdkCallError>> {
-    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained_request);
+    let mut custody = CodecQuota::from_retained(work, retained_request);
     let count = records.len() as u64;
     let byte_length = records.iter().try_fold(0u64, |total, record| {
         total.checked_add(record.len() as u64).ok_or_else(|| {
@@ -3337,7 +3004,7 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
     if custody.work().is_some() {
         let retired = custody.relinquish(retained_request);
         if appended.is_ok()
-            || !custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+            || !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
         { retired?; }
     }
     match appended {
@@ -3353,7 +3020,7 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
             Ok(Ok(outcome))
         }
         Err(error) if *error.source() == StreamError::Unavailable => {
-            let mut received = crate::wire_codec::CodecQuota::from_retained(custody.work(), 0);
+            let mut received = CodecQuota::from_retained(custody.work(), 0);
             match inspect_idempotency_once(client, key, 0, received.work(), None, None).await? {
                 Ok(Some((observation, retained))) => {
                     received.adopt(retained)?;
@@ -3364,7 +3031,7 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
                         }
                         _ => {
                             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                            if received.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+                            if received.work().as_deref().is_some_and(operations::original_native_decode_mode) {
                                 return Err(Error::NativeBoundary {
                                     code: wire::ErrorCode::Conflict,
                                     reason: "append recovery identity has another operation kind",
@@ -3382,13 +3049,11 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
 }
 
 fn append_error_with_work(
-    error: SdkCallError,
-    identity: &str,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    error: SdkCallError, identity: &str, _work: &Option<&mut dyn HistoryIo>,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
-        return error.into_error(work);
+    if _work.as_deref().is_some_and(operations::original_native_decode_mode) {
+        return error.into_error(_work);
     }
     if *error.source() == StreamError::IdempotencyMismatch {
         Error::Conflict(format!("{identity} was reused"))
@@ -3398,10 +3063,9 @@ fn append_error_with_work(
 }
 
 pub(crate) fn execution_path(
-    operation: OperationId,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    operation: OperationId, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<acyclic_stream::StreamPath> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let text = formatted_text_with_work(
         "harness/v2/execution/".len() + 36,
         format_args!("harness/v2/execution/{operation}"), custody.work(),
@@ -3427,7 +3091,7 @@ pub(crate) enum CommitPhase {
 /// The original SDK request and its producer-owned logical custody.
 pub(crate) struct PreparedCommitRequest<'a, 'b> {
     request: acyclic_stream::CommitRequest,
-    custody: crate::wire_codec::CodecQuota<'a, 'b>,
+    custody: CodecQuota<'a, 'b>,
     vectors: u64,
     phase: CommitPhase,
 }
@@ -3462,8 +3126,7 @@ impl PreparedMaterializationCommit {
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
         proof: crate::durable_host::AcceptedMaterializationOwnerProof<'_>,
         reservation: acyclic_fs::NativeWorkReservation,
-        original: &acyclic_fs::NativeMaterializationWork,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        original: &acyclic_fs::NativeMaterializationWork, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
         use std::mem::size_of;
@@ -3575,7 +3238,7 @@ impl PreparedMaterializationCommit {
         mut self,
         client: &StreamClient<P>,
     ) -> Result<Self> {
-        use crate::store::history::HistoryIo;
+        use HistoryIo;
         if self.sdk.is_some() {
             return Err(self.into_error(Error::NativeBoundary {
                 code: wire::ErrorCode::Invalid,
@@ -3644,7 +3307,7 @@ impl PreparedMaterializationCommit {
         Ok(self)
     }
 
-    /// Reads only the actual original journal prefix when the already-funded completion future is polled after the physical action.
+    /// Returns the funded completion work.
     pub(crate) fn completion_work(&self) -> Result<acyclic_fs::WorkCounters> {
         self.observer.completion_work()
     }
@@ -3655,7 +3318,7 @@ impl PreparedMaterializationCommit {
         counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
-        use crate::store::history::HistoryIo;
+        use HistoryIo;
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
         if self.sdk.is_none() || self.sdk_recovery.is_none() {
             return Err(self.into_error(Error::NativeBoundary {
@@ -3704,7 +3367,7 @@ impl PreparedMaterializationCommit {
             let mut optional = Some(&mut self.observer as &mut dyn HistoryIo);
             let prepared = PreparedCommitRequest {
                 request,
-                custody: crate::wire_codec::CodecQuota::from_retained(&mut optional, self.vectors),
+                custody: CodecQuota::from_retained(&mut optional, self.vectors),
                 vectors: self.vectors,
                 phase: CommitPhase::NotCalled,
             };
@@ -3761,9 +3424,7 @@ impl PreparedMaterializationCommit {
 }
 
 fn retain_received_owned(
-    bytes: u64,
-    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    failure: &mut Option<Error>,
+    bytes: u64, custody: &mut CodecQuota<'_, '_>, failure: &mut Option<Error>,
 ) -> Result<()> {
     let Some(work) = custody.work().as_deref_mut() else { return Ok(()); };
     match work.retain_owned(bytes) {
@@ -3774,10 +3435,8 @@ fn retain_received_owned(
 }
 
 fn observe_commit_with_work(
-    outcome: &acyclic_stream::CommitOutcome,
-    direct_acknowledgment: bool,
-    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    failure: &mut Option<Error>,
+    outcome: &acyclic_stream::CommitOutcome, direct_acknowledgment: bool,
+    custody: &mut CodecQuota<'_, '_>, failure: &mut Option<Error>,
 ) -> Result<()> {
     use acyclic_stream::{CommitConflict, CommitOutcome, CommittedMutation};
     if custody.work().is_none() { return Ok(()); }
@@ -3828,8 +3487,7 @@ fn observe_commit_with_work(
 }
 
 fn observe_recovery_with_work(
-    observation: &acyclic_stream::IdempotencyObservation,
-    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    observation: &acyclic_stream::IdempotencyObservation, custody: &mut CodecQuota<'_, '_>,
     failure: &mut Option<Error>,
 ) -> Result<()> {
     retain_received_owned(observation.idempotency_key.as_bytes().len() as u64, custody, failure)?;
@@ -3846,9 +3504,8 @@ fn observe_recovery_with_work(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn observe_native_commit(
-    outcome: &acyclic_stream::CommitOutcome,
-    direct_acknowledgment: bool,
-    observer: &mut dyn crate::store::history::HistoryIo,
+    outcome: &acyclic_stream::CommitOutcome, direct_acknowledgment: bool,
+    observer: &mut dyn HistoryIo,
 ) -> Result<()> {
     let mut failure = None;
     if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
@@ -3875,26 +3532,9 @@ fn observe_native_commit(
     }
 }
 
-pub(crate) async fn inspect_idempotency_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: StreamIdempotencyKey,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Option<(acyclic_stream::IdempotencyObservation, u64)>> {
-    let retained_key = if work.is_some()
-        && !work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
-    { key.as_bytes().len() as u64 } else { 0 };
-    match inspect_idempotency_once(client, key, retained_key, work, None, None).await? {
-        Ok(observation) => Ok(observation),
-        Err(source) => Err(source.into_error(work)),
-    }
-}
-
 pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: StreamIdempotencyKey,
-    retained_key: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    phase: Option<&mut CommitPhase>,
+    client: &StreamClient<P>, key: StreamIdempotencyKey, retained_key: u64,
+    work: &mut Option<&mut dyn HistoryIo>, phase: Option<&mut CommitPhase>,
     recovery: Option<PreparedNativeRecovery>,
 ) -> Result<std::result::Result<Option<(acyclic_stream::IdempotencyObservation, u64)>, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -3904,7 +3544,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = recovery;
-    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained_key);
+    let mut custody = CodecQuota::from_retained(work, retained_key);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = custody.work().as_deref()
         .and_then(|observer| observer.original_native_work()).cloned()
@@ -3980,10 +3620,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
 }
 
 fn reserve_prepared_vector<T>(
-    values: &mut Vec<T>,
-    capacity: usize,
-    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    vectors: &mut u64,
+    values: &mut Vec<T>, capacity: usize, custody: &mut CodecQuota<'_, '_>, vectors: &mut u64,
 ) -> Result<()> {
     if capacity <= values.capacity() { return Ok(()); }
     let old = values.capacity();
@@ -4016,15 +3653,14 @@ fn reserve_prepared_vector<T>(
 impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
 
     pub(crate) fn new(
-        key: StreamIdempotencyKey,
-        retained_key_bytes: u64,
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+        key: StreamIdempotencyKey, retained_key_bytes: u64,
+        work: &'a mut Option<&'b mut dyn HistoryIo>,
     ) -> Self {
         Self {
             request: acyclic_stream::CommitRequest {
                 conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
             },
-            custody: crate::wire_codec::CodecQuota::from_retained(work, retained_key_bytes),
+            custody: CodecQuota::from_retained(work, retained_key_bytes),
             vectors: 0,
             phase: CommitPhase::NotCalled,
         }
@@ -4033,19 +3669,18 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
     pub(crate) fn commit_phase(&self) -> CommitPhase { self.phase }
 
     pub(crate) fn new_with_digest(
-        digest: [u8; 32],
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+        digest: [u8; 32], work: &'a mut Option<&'b mut dyn HistoryIo>,
     ) -> Result<Self> {
         let (bytes, retained) = digest_bytes_with_work(&digest, work)?;
-        let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained);
+        let mut custody = CodecQuota::from_retained(work, retained);
         let key = StreamIdempotencyKey::new(bytes)
-            .map_err(|source| crate::store::operations::stream_error_with_work(source, custody.work()))?;
+            .map_err(|source| operations::stream_error_with_work(source, custody.work()))?;
         custody.transfer();
         drop(custody);
         Ok(Self::new(key, retained, work))
     }
 
-    pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn crate::store::history::HistoryIo> {
+    pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> {
         self.custody.work()
     }
 
@@ -4102,7 +3737,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             )?;
             if let Some(work) = self.work().as_deref_mut() {
                 work.admit_acknowledgment(bytes, count)?;
-                if !crate::store::operations::original_native_decode_mode(work) { work.begin_write()?; }
+                if !operations::original_native_decode_mode(work) { work.begin_write()?; }
             }
         }
         let key = self.request.idempotency_key.clone();
@@ -4147,7 +3782,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
                 drop(output);
                 return Err(error);
             }
-            let mut received = crate::wire_codec::CodecQuota::from_retained(self.work(), 0);
+            let mut received = CodecQuota::from_retained(self.work(), 0);
             let (outcome, retained) = crate::store::history::adopt_native_sdk_output(
                 &original, output, received.work(),
             )?;
@@ -4171,7 +3806,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         };
         if self.work().is_some() { self.custody.relinquish(self.vectors)?; }
         self.vectors = 0;
-        let mut received = crate::wire_codec::CodecQuota::from_retained(self.custody.work(), 0);
+        let mut received = CodecQuota::from_retained(self.custody.work(), 0);
         match committed {
             Err(source) => Ok(Err(SdkCallError::ordinary(source))),
             Ok(outcome) => {
@@ -4194,7 +3829,7 @@ pub(crate) async fn commit_keyed<P: StreamProvider>(
 ) -> Result<acyclic_stream::CommitOutcome> {
     let mut work = None;
     let prepared = PreparedCommitRequest {
-        request, custody: crate::wire_codec::CodecQuota::new(&mut work, 0)?, vectors: 0,
+        request, custody: CodecQuota::new(&mut work, 0)?, vectors: 0,
         phase: CommitPhase::NotCalled,
     };
     commit_prepared(client, prepared, operation, None, None, None).await.map(|(outcome, _)| outcome)
@@ -4213,7 +3848,7 @@ pub(crate) async fn commit_prepared<P: StreamProvider>(
     let committed = prepared.commit_once(client, dispatch).await;
     if let Some(phase) = phase.as_deref_mut() { *phase = prepared.commit_phase(); }
     let committed = committed?;
-    let mut received = crate::wire_codec::CodecQuota::from_retained(prepared.work(), 0);
+    let mut received = CodecQuota::from_retained(prepared.work(), 0);
     let outcome = match committed {
         Ok((outcome, retained)) => {
             received.adopt(retained)?;
@@ -4226,7 +3861,7 @@ pub(crate) async fn commit_prepared<P: StreamProvider>(
                 Ok(Some((observation, retained))) => {
                     received.adopt(retained)?;
                     let metadata = if received.work().is_some()
-                        && !received.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+                        && !received.work().as_deref().is_some_and(operations::original_native_decode_mode)
                     { observation.idempotency_key.as_bytes().len() as u64 } else { 0 };
                     let acyclic_stream::IdempotencyObservation { idempotency_key, outcome, .. } = observation;
                     drop(idempotency_key);
@@ -4249,50 +3884,42 @@ pub(crate) async fn commit_prepared<P: StreamProvider>(
 }
 
 fn path_with_work(
-    value: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    value: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<acyclic_stream::StreamPath> {
     if let Some(work) = work.as_deref_mut() {
         work.admit_allocation(value.len() as u64)?;
         work.copy_bytes(value.len() as u64)?;
     }
     let path = acyclic_stream::StreamPath::new(value)
-        .map_err(|error| crate::store::operations::stream_error_with_work(error, work))?;
+        .map_err(|error| operations::stream_error_with_work(error, work))?;
     if let Some(work) = work.as_deref_mut() { work.retain_owned(value.len() as u64)?; }
     Ok(path)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn append_if_execution_idle_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    stream: &Stream<P>,
-    record: OwnedBytes,
-    tail: u64,
-    key: StreamIdempotencyKey,
-    operation: OperationId,
-    execution: OperationId,
-    expected_tail: u64,
-    workflow_guard: Option<(&str, u64)>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    client: &StreamClient<P>, stream: &Stream<P>, record: OwnedBytes, tail: u64,
+    key: StreamIdempotencyKey, operation: OperationId, execution: OperationId, expected_tail: u64,
+    workflow_guard: Option<(&str, u64)>, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
     use acyclic_stream::{CommitCondition, CommitOutcome, CommittedMutation};
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let path = execution_path(execution, custody.work())?;
     if custody.work().is_some() { custody.adopt(path.as_str().len() as u64)?; }
     let bounds = if custody.work().as_deref()
-        .is_some_and(crate::store::operations::original_native_decode_mode)
+        .is_some_and(operations::original_native_decode_mode)
     {
-        crate::store::operations::bounds_with_work(client, &path, custody.work()).await?
+        operations::bounds_with_work(client, &path, custody.work()).await?
     } else {
-        let mut source_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+        let mut source_custody = CodecQuota::new(custody.work(), 0)?;
         let portable = source_custody.work().as_deref().is_some_and(|work|
-            !crate::store::operations::original_native_decode_mode(work));
+            !operations::original_native_decode_mode(work));
         if portable {
             let work = source_custody.work().as_deref_mut().expect("portable observer");
             work.admit_allocation(path.as_str().len() as u64)?;
             work.copy_bytes(path.as_str().len() as u64)?;
         }
-        let source = crate::store::operations::stream_with_work(client, &path, source_custody.work())?;
+        let source = operations::stream_with_work(client, &path, source_custody.work())?;
         if portable {
             source_custody.work().as_deref_mut().expect("portable observer")
                 .retain_owned(path.as_str().len() as u64)?;
@@ -4361,12 +3988,8 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
     receipt
 }
 fn physical_key_with_work(
-    key: &str,
-    revision: u64,
-    parent: bool,
-    waiting: bool,
-    idle_execution: Option<(OperationId, u64)>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    key: &str, revision: u64, parent: bool, waiting: bool,
+    idle_execution: Option<(OperationId, u64)>, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamIdempotencyKey, u64)> {
     let digits = |value: u64| value.checked_ilog10().map_or(1, |digits| digits as usize + 1);
     let physical = if parent {
@@ -4390,8 +4013,7 @@ fn physical_key_with_work(
 }
 
 fn stream_key_with_work(
-    key: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    key: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamIdempotencyKey, u64)> {
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + key.len()) as u64)?;
@@ -4400,11 +4022,11 @@ fn stream_key_with_work(
     hasher.update(b"acyclic-harness-coordinator-v3");
     hasher.update(key.as_bytes());
     let (bytes, retained) = digest_bytes_with_work(hasher.finalize().as_bytes(), work)?;
-    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained);
+    let mut custody = CodecQuota::from_retained(work, retained);
     let key = StreamIdempotencyKey::new(bytes)
         .map_err(|source| {
-            if custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
-                crate::store::operations::stream_error_with_work(source, custody.work())
+            if custody.work().as_deref().is_some_and(operations::original_native_decode_mode) {
+                operations::stream_error_with_work(source, custody.work())
             } else { Error::Invalid(source.to_string()) }
         })?;
     custody.transfer();
@@ -4412,10 +4034,9 @@ fn stream_key_with_work(
 }
 
 fn digest_bytes_with_work(
-    digest: &[u8; 32],
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    digest: &[u8; 32], work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(OwnedBytes, u64)> {
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut custody = CodecQuota::new(work, 0)?;
     let mut bytes = Vec::new();
     if let Some(observer) = custody.work().as_deref_mut() {
         observer.reserve_bytes(&mut bytes, digest.len())?;
@@ -4426,7 +4047,7 @@ fn digest_bytes_with_work(
     }
     bytes.extend_from_slice(digest);
     custody.transfer();
-    crate::store::operations::owned_bytes_from_retained_vec(bytes, custody.work())
+    operations::owned_bytes_from_retained_vec(bytes, custody.work())
 }
 
 #[cfg(test)]
@@ -4500,10 +4121,7 @@ mod tests {
         let client = StreamClient::new(provider.clone());
         let mut coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
             .await.expect("original empty coordinator");
-        let raw = OwnedBytes::from(encode(
-            1, OperationId::from_bytes([16; 16]), "native-invalid-schema",
-            *blake3::hash(b"{}").as_bytes(), b"{}".to_vec(), 1,
-        ).expect("original envelope producer"));
+        let raw = OwnedBytes::from(encode(1, OperationId::from_bytes([16; 16]), "native-invalid-schema", *blake3::hash(b"{}").as_bytes(), b"{}".to_vec(), 1, &mut None).expect("original envelope producer"));
         let raw_length = raw.len() as u64;
         coordinator.stream.append_batch(vec![raw], Some(0), None)
             .await.expect("original physical envelope");
@@ -4557,7 +4175,7 @@ mod tests {
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .expect("original operation ledger");
             let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-            let mut work = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+            let mut work = Some(&mut io as &mut dyn HistoryIo);
             let (key, retained) = stream_key_with_work("native-phase-key", &mut work).expect("original key");
             let mut prepared = PreparedCommitRequest::new(key, retained, &mut work);
             prepared.push_condition(acyclic_stream::CommitCondition::Tail {
@@ -4578,7 +4196,7 @@ mod tests {
             if denied == "none" {
                 let (outcome, bytes) = result.expect("original immutable observation proves commit");
                 assert!(matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_)));
-                let quota = crate::wire_codec::CodecQuota::from_retained(&mut work, bytes);
+                let quota = CodecQuota::from_retained(&mut work, bytes);
                 drop(outcome);
                 drop(quota);
             } else {
@@ -4695,8 +4313,7 @@ mod tests {
             )
             .await?;
         }
-        let location = coordinator
-            .read_intent_location(key.as_str())
+        let location = read_intent_location(&coordinator.client, key.as_str(), &mut None)
             .await?
             .ok_or_else(|| Error::NotFound("point location".into()))?;
         drop(coordinator);
@@ -4764,7 +4381,7 @@ mod tests {
         ));
         provider.forbid_writes.store(false, Ordering::SeqCst);
         client
-            .stream(intent_location_path(key.as_str()))?
+            .stream(intent_location_path(key.as_str(), &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
@@ -4812,20 +4429,13 @@ mod tests {
             .enumerate()
         {
             let canonical = crate::contract::canonical_json_bytes(event)?;
-            records.push(OwnedBytes::from(encode(
-                offset as u64 + 1,
-                root,
-                intent_key,
-                *blake3::hash(&canonical).as_bytes(),
-                canonical,
-                offset as u64 + 10,
-            )?));
+            records.push(OwnedBytes::from(encode(offset as u64 + 1, root, intent_key, *blake3::hash(&canonical).as_bytes(), canonical, offset as u64 + 10, &mut None)?));
         }
         let source = client.stream(COORDINATOR_PATH)?;
         source
             .append_batch(records, Some(0), Some(stream_key_with_work(key, &mut None).map(|(key, _)| key)?))
             .await?;
-        assert!(client.bounds(&intent_location_path(key)).await.is_err());
+        assert!(client.bounds(&intent_location_path(key, &mut None)?).await.is_err());
         let (first, second) = tokio::join!(
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)),
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
@@ -4833,7 +4443,7 @@ mod tests {
         let mut coordinator = first?;
         let second = second?;
         assert_eq!(coordinator.scheduler(), second.scheduler());
-        assert_eq!(client.bounds(&intent_location_path(key)).await?.tail, 1);
+        assert_eq!(client.bounds(&intent_location_path(key, &mut None)?).await?.tail, 1);
         for identity in 2..=81u8 {
             declare(
                 &mut coordinator,
@@ -4903,14 +4513,7 @@ mod tests {
         let canonical = crate::contract::canonical_json_bytes(&events[1])?;
         source
             .append_batch(
-                vec![OwnedBytes::from(encode(
-                    83,
-                    root,
-                    &config_key,
-                    *blake3::hash(&canonical).as_bytes(),
-                    canonical,
-                    reopened.last_committed_at_ms + 1,
-                )?)],
+                vec![OwnedBytes::from(encode(83, root, &config_key, *blake3::hash(&canonical).as_bytes(), canonical, reopened.last_committed_at_ms + 1, &mut None)?)],
                 Some(82),
                 None,
             )
@@ -4935,7 +4538,7 @@ mod tests {
             commit_id: [2; 32],
         };
         client
-            .stream(intent_location_path(&location.key))?
+            .stream(intent_location_path(&location.key, &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
@@ -4948,12 +4551,11 @@ mod tests {
             coordinator.retained_intent_with_work(&location.key, &mut None).await,
             Err(Error::Storage(_))
         ));
-        let valid = coordinator
-            .read_intent_location("projection-source")
+        let valid = read_intent_location(&coordinator.client, "projection-source", &mut None)
             .await?
             .ok_or_else(|| Error::NotFound("valid intent location".into()))?;
         client
-            .stream(intent_location_path(&valid.key))?
+            .stream(intent_location_path(&valid.key, &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(&valid)?)],
                 Some(1),
@@ -5411,16 +5013,7 @@ mod tests {
             let input = state_ref()?;
             assert!(
                 first
-                    .resume_command(
-                        &owner,
-                        &signed,
-                        &verifier,
-                        task,
-                        1,
-                        input.clone(),
-                        IdempotencyKey::new("wrong-selected-wake")?,
-                        OperationId::from_bytes([53; 16])
-                    )
+                    .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("wrong-selected-wake")?, Some(OperationId::from_bytes([53; 16])))
                     .await
                     .is_err()
             );
@@ -5450,16 +5043,7 @@ mod tests {
                 result
             };
             let (attempt, disturbance) = tokio::join!(
-                first.resume_command(
-                    &owner,
-                    &signed,
-                    &verifier,
-                    task,
-                    1,
-                    input.clone(),
-                    IdempotencyKey::new("selected-wake")?,
-                    selected
-                ),
+                first.resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected)),
                 disturbance
             );
             disturbance?;
@@ -5473,16 +5057,7 @@ mod tests {
                     .store(hidden, std::sync::atomic::Ordering::SeqCst);
             }
             let retry = first
-                .resume_command(
-                    &owner,
-                    &signed,
-                    &verifier,
-                    task,
-                    1,
-                    input.clone(),
-                    IdempotencyKey::new("selected-wake")?,
-                    selected,
-                )
+                .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected))
                 .await;
             if cancel {
                 assert!(retry.is_err());
@@ -5502,16 +5077,7 @@ mod tests {
                     assert!(operation.reservation.is_none());
                     assert_eq!(
                         first
-                            .resume_command(
-                                &owner,
-                                &signed,
-                                &verifier,
-                                task,
-                                1,
-                                input.clone(),
-                                IdempotencyKey::new("selected-wake")?,
-                                selected
-                            )
+                            .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected))
                             .await?,
                         CoordinatorApply::Replayed
                     );
@@ -5519,32 +5085,14 @@ mod tests {
                     assert_eq!(retry?, CoordinatorApply::Applied);
                     assert_eq!(
                         first
-                            .resume_command(
-                                &owner,
-                                &signed,
-                                &verifier,
-                                task,
-                                1,
-                                input.clone(),
-                                IdempotencyKey::new("selected-wake")?,
-                                selected
-                            )
+                            .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected))
                             .await?,
                         CoordinatorApply::Replayed
                     );
                 }
                 assert!(
                     first
-                        .resume_command(
-                            &owner,
-                            &signed,
-                            &verifier,
-                            task,
-                            1,
-                            input.clone(),
-                            IdempotencyKey::new("another-wake")?,
-                            selected
-                        )
+                        .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("another-wake")?, Some(selected))
                         .await
                         .is_err()
                 );
@@ -5579,31 +5127,13 @@ mod tests {
                     .await?;
                 assert!(
                     first
-                        .resume_command(
-                            &owner,
-                            &signed,
-                            &verifier,
-                            task,
-                            1,
-                            input.clone(),
-                            IdempotencyKey::new("selected-wake")?,
-                            selected
-                        )
+                        .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected))
                         .await
                         .is_err()
                 );
                 assert_eq!(
                     first
-                        .resume_command(
-                            &owner,
-                            &signed,
-                            &verifier,
-                            task,
-                            1,
-                            input.clone(),
-                            IdempotencyKey::new("second-selected-wake")?,
-                            next
-                        )
+                        .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("second-selected-wake")?, Some(next))
                         .await?,
                     CoordinatorApply::Applied
                 );
@@ -5619,16 +5149,7 @@ mod tests {
                     .await?;
                 assert!(
                     first
-                        .resume_command(
-                            &owner,
-                            &signed,
-                            &verifier,
-                            task,
-                            1,
-                            input,
-                            IdempotencyKey::new("second-selected-wake")?,
-                            next
-                        )
+                        .resume_workflow(&owner, &signed, &verifier, task, 1, input, IdempotencyKey::new("second-selected-wake")?, Some(next))
                         .await
                         .is_err()
                 );
@@ -5747,19 +5268,13 @@ mod tests {
         let revision = reopened.revision();
         assert!(matches!(
             reopened
-                .pull_owned_operation(
-                    &owner,
-                    &replacement,
-                    &replaced.verifier(),
-                    &worker,
-                    operation_id
-                )
+                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, Some(operation_id))
                 .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker)
+                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -5790,7 +5305,7 @@ mod tests {
         );
         assert!(matches!(
             reopened
-                .pull_owned_operation(&owner, &renewed, &issuer.verifier(), &worker, operation_id)
+                .pull_owned(&owner, &renewed, &issuer.verifier(), &worker, Some(operation_id))
                 .await?,
             WorkPull::Claimed(_)
         ));
@@ -6074,7 +5589,7 @@ mod tests {
                 &mut Some(&mut io),
             ).await?;
             assert_eq!(page, first);
-            let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
+            let custody = HistoryIo::take_native_custody(&mut io, retained)?;
             drop(io);
             assert_eq!(custody.bytes(), retained);
             assert_eq!(native.live_allocation_bytes(), baseline + retained);
@@ -6269,12 +5784,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear end-to-end scenario asserting atomic, durable, exactly-once \
-                  recursive cancellation; splitting it into helpers would scatter one coherent \
-                  story across multiple functions without making any step clearer"
-    )]
+    #[allow(clippy::too_many_lines)]
     async fn authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable() -> Result<()>
     {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
@@ -6675,7 +6185,7 @@ mod tests {
             labels: BTreeMap::new(),
         };
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
             .await?
         else {
             return Err(Error::NotFound("owned pull".into()));
@@ -6689,7 +6199,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
                 .await?,
             WorkPull::Idle
         ));
@@ -6732,7 +6242,7 @@ mod tests {
         declare(&mut coordinator, other, "foreign-blocked").await?;
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None)
                 .await?,
             WorkPull::Idle
         ));
@@ -6746,7 +6256,7 @@ mod tests {
         let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &denied, &issuer.verifier(), &worker)
+                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -6780,7 +6290,7 @@ mod tests {
         };
         let first_before = coordinator.scheduler().operation(first).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, target)
+            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target))
             .await?
         else {
             return Err(Error::NotFound("target admission".into()));
@@ -6793,32 +6303,26 @@ mod tests {
         let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
         assert!(matches!(
             coordinator
-                .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, target)
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target))
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, first)
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(first))
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned_operation(
-                    &owner,
-                    &scope,
-                    &issuer.verifier(),
-                    &worker,
-                    OperationId::from_bytes([63; 16])
-                )
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(OperationId::from_bytes([63; 16])))
                 .await,
             Err(Error::NotFound(_))
         ));
         let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
         assert!(matches!(
             coordinator
-                .pull_owned_operation(&owner, &denied, &issuer.verifier(), &worker, first)
+                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, Some(first))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -6856,7 +6360,7 @@ mod tests {
         declare(&mut coordinator, spec(ready, 1)?, "target-ready").await?;
         let blocked_before = coordinator.scheduler().operation(blocked).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, ready)
+            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(ready))
             .await?
         else {
             return Err(Error::NotFound("ready target behind blocked task".into()));
@@ -6872,7 +6376,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, blocked)
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(blocked))
                 .await?,
             WorkPull::Idle
         ));
@@ -6944,7 +6448,7 @@ mod tests {
             };
             assert!(matches!(
                 coordinator
-                    .pull_owned_operation(&owner, &scope, &issuer.verifier(), &worker, operation)
+                    .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(operation))
                     .await?,
                 WorkPull::Idle
             ));
@@ -7008,7 +6512,7 @@ mod tests {
                     .store(if fault == 2 { 4 } else { 1 }, Ordering::SeqCst);
             }
             let WorkPull::Unresolved { lease, error } = coordinator
-                .pull_owned_target_with_work(
+                .pull_owned_with_work(
                     &owner,
                     &scope,
                     &issuer.verifier(),
@@ -7042,7 +6546,7 @@ mod tests {
                     .is_err()
                 );
                 let WorkPull::Claimed(retried) = reopened
-                    .pull_owned_target_with_work(
+                    .pull_owned_with_work(
                         &owner,
                         &scope,
                         &issuer.verifier(),
@@ -7061,7 +6565,7 @@ mod tests {
             let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
             assert!(matches!(
                 reopened
-                    .pull_owned_target_with_work(
+                    .pull_owned_with_work(
                         &owner,
                         &scope,
                         &issuer.verifier(),
@@ -7326,7 +6830,7 @@ mod tests {
             assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, 1);
             assert_eq!(
                 client
-                    .bounds(&intent_location_path("projection-fault"))
+                    .bounds(&intent_location_path("projection-fault", &mut None)?)
                     .await?
                     .tail,
                 1

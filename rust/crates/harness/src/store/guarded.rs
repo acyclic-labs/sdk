@@ -268,7 +268,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, work)?;
-        let observation = crate::distributed::inspect_idempotency_with_work(&self.client, key, work).await?;
+        let retained_key = if work.is_some()
+            && !work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
+        { key.as_bytes().len() as u64 } else { 0 };
+        let observation = crate::distributed::inspect_idempotency_once(
+            &self.client, key, retained_key, work, None, None,
+        ).await?.map_err(|error| error.into_error(work))?;
         let Some((observation, quota)) = observation else { return Ok(None); };
         let mut retained = crate::wire_codec::CodecQuota::from_retained(work, quota);
         let observation = observation;

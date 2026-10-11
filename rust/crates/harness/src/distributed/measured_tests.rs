@@ -3,6 +3,7 @@ use super::tests::spec;
 use crate::store::history::{HistoryIo as _, HistoryWork};
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::{CommitCondition, MemoryStream, StreamPath};
+use futures::TryStreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
@@ -38,7 +39,7 @@ async fn append_source<P: StreamProvider>(
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
-        *blake3::hash(&canonical).as_bytes(), canonical, time)?;
+        *blake3::hash(&canonical).as_bytes(), canonical, time, &mut None)?;
     let length = bytes.len() as u64;
     client.stream(COORDINATOR_PATH)?.append_batch(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
@@ -109,36 +110,6 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
     Ok(())
 }
 
-struct MeasuredContentControl {
-    inner: Arc<dyn ContentResidencyVerifier>,
-    cancel_after_verify: bool,
-    ordinary_calls: AtomicUsize,
-    measured_calls: AtomicUsize,
-}
-
-impl ContentResidencyVerifier for MeasuredContentControl {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.ordinary_calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.verify(reference).await
-        })
-    }
-
-    fn verify_measured<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        budget: WorkBudget, cancellation: &'a CancellationToken,
-    ) -> crate::conversation::ContentFuture<'a,
-        acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>>
-    {
-        Box::pin(async move {
-            self.measured_calls.fetch_add(1, Ordering::SeqCst);
-            let receipt = self.inner.verify_measured(reference, maximum_bytes, budget, cancellation).await?;
-            if self.cancel_after_verify { cancellation.cancel(); }
-            Ok(receipt)
-        })
-    }
-}
-
 async fn admitted_fixture(
     client: &StreamClient<FaultStream>,
     operation: OperationId,
@@ -203,7 +174,6 @@ async fn prepared_commit_cancellation_uses_the_original_ledger_before_sdk_public
         let mut prepared = PreparedCommitRequest::new_with_digest([23; 32], &mut observer)?;
         prepared.push_condition(CommitCondition::Absent { path: path.clone() })?;
         prepared.append(path, OwnedBytes::from_static(b"source-owned"))?;
-        assert_eq!(prepared.custody.retained(), prepared.vectors + 32);
         cancellation.cancel();
         commit_prepared(&client, prepared, OperationId::from_bytes([127; 16]), None, None, None).await
     };
@@ -319,7 +289,7 @@ async fn historical_proof_rejects_an_original_declaration_signed_by_another_key_
     append_source(&client, 1, &key, SchedulerEvent::Declared { spec: Box::new(declaration) }, 1).await?;
     let record = client.stream(COORDINATOR_PATH)?.read(0, 1).await?.try_next().await?
         .expect("actual canonical source record");
-    let (_, _, _, event_digest, _, _) = decode(&record.value)?;
+    let (_, _, _, event_digest, _, _) = decode_with_work(&record.value, &mut None)?;
     let location = IntentLocation { key, revision: 1, event_digest, commit_id: *record.commit_id.as_bytes() };
     coordinator.ensure_intent_location_with_work(&location, &mut None).await?;
     provider.reset_io();

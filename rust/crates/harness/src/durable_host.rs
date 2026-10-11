@@ -2708,7 +2708,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker)
+            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, None)
             .await
     }
 
@@ -2844,9 +2844,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, worker: &crate::distributed::Worker, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::distributed::WorkPull> {
-        self.coordinator.lock().await.pull_owned_operation_with_work(
-            &self.owner, &self.owner_scope, &self.verifier, worker, operation_id, work,
-        ).await
+        self.coordinator.lock().await.pull_owned_with_work(&self.owner, &self.owner_scope, &self.verifier, worker, Some(operation_id), work).await
     }
 
     /// Recovers the coordinator's original reservation after a lost pull response.
@@ -3589,17 +3587,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_command_with_work(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation,
-                revision,
-                input,
-                IdempotencyKey::new(key)?,
-                waiting,
-                work,
-            )
+            .resume_workflow_with_work(&self.owner, &self.owner_scope, &self.verifier, operation, revision, input, IdempotencyKey::new(key)?, Some(waiting), work)
             .await?;
         Ok(())
     }
@@ -3650,16 +3638,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_workflow_with_work(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                revision,
-                input,
-                key,
-                work,
-            )
+            .resume_workflow_with_work(&self.owner, &self.owner_scope, &self.verifier, operation_id, revision, input, key, None, work)
             .await?;
         Ok(())
     }
