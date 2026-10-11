@@ -18,7 +18,7 @@ use crate::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     model::{ModelContent, ModelEvent},
-    projection::{SelectedModelContext, select_model_context_at_revision},
+    projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
 };
@@ -1943,8 +1943,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 let before = io.map(PreparationIo::owned_bytes).transpose()?;
                 let _prepared_hold;
                 let prepared = match io {
-                    Some(io) => crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io)?,
-                    None => crate::model::PreparedModelRequest::decode(&bytes, limits)?,
+                    Some(io) => crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io))?,
+                    None => crate::model::PreparedModelRequest::decode(&bytes, limits, None)?,
                 };
                 _prepared_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -2667,19 +2667,27 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                             let original = io.original_native_work().ok_or_else(||
                                 super::interaction_host::interaction_boundary(Some(io),
                                     crate::wire::ErrorCode::Invalid, "selected IO has no original native work"))?;
-                            let (items, custody) = crate::projection::AttachmentListResolver::resolve_with_native_work(
+                            let (items, custody) = crate::conversation::ContentResidencyVerifier::load_manifest_with_native_work(
                                 &resolver, manifest, *item_count, original)?.await?;
                             drop(items);
                             drop(custody);
                         }
-                        _ => { crate::projection::AttachmentListResolver::resolve(&resolver, manifest, *item_count).await?; }
+                        _ => { crate::conversation::ContentResidencyVerifier::load_manifest(&resolver, manifest, *item_count).await?; }
                     }
                 }
                 crate::conversation::ReferencedAttachments::Manifest { .. } => {}
             }
         }
-        let projected = crate::projection::select_model_context_at_revision_with_io(
-            &historical, committed, &resolver, messages, attachments, render_bytes, attachments, io,
+        let projected = crate::projection::select_model_context(
+            &historical,
+            committed.conversation_revision,
+            committed,
+            &resolver,
+            messages,
+            attachments,
+            render_bytes,
+            attachments,
+            io,
         ).await?;
         _query_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
@@ -2798,10 +2806,14 @@ struct JournalSelectedResolver<'a, P, A, O> {
     maximum_attachments: usize,
 }
 
-impl<P, A, O> crate::projection::AttachmentListResolver for JournalSelectedResolver<'_, P, A, O>
+impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
-    fn resolve<'a>(
+    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    }
+
+    fn load_manifest<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
     ) -> BoxFuture<'a, Result<Vec<crate::conversation::Attachment>>> {
         Box::pin(async move {
@@ -2820,7 +2832,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.journal.authorize_selected_file_with_io(file, None)?;
             self.inner.read(file).await
@@ -2828,7 +2840,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn resolve_with_native_work<'a>(
+    fn load_manifest_with_native_work<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::conversation::Attachment>, acyclic_fs::NativeAllocation)>> {
@@ -3076,13 +3088,29 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let resolver = JournalSelectedResolver {
                 journal, inner: verifier, maximum_attachments: limits.attachments,
             };
-            crate::projection::select_model_context_at_revision_with_io(
-                &history, selection, &resolver, limits.context_messages, limits.attachments,
-                limits.render_bytes, limits.attachments, Some(io)).await?
+            crate::projection::select_model_context(
+            &history,
+            selection.conversation_revision,
+            selection,
+            &resolver,
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+            Some(io),
+        ).await?
         }
-        None => select_model_context_at_revision(
-            &history, selection, verifier, limits.context_messages, limits.attachments,
-            limits.render_bytes, limits.attachments).await?,
+        None => select_model_context(
+            &history,
+            selection.conversation_revision,
+            selection,
+            verifier,
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+            None,
+        ).await?,
     };
     let input = crate::model::model_content_clone_with_io(&selected.messages.last()
         .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
@@ -3626,14 +3654,16 @@ mod tests {
             content: &dyn ContentResidencyVerifier,
             limits: Limits,
         ) -> Result<crate::context::Context> {
-            let selected = select_model_context_at_revision(
+            let selected = select_model_context(
                 history,
+                selection.conversation_revision,
                 selection,
                 content,
                 limits.context_messages,
                 limits.attachments,
                 limits.render_bytes,
                 limits.attachments,
+                None,
             )
             .await?;
             let input = selected
@@ -3658,14 +3688,16 @@ mod tests {
             .ok_or_else(|| Error::NotFound("cold history".into()))?;
         let omitted_source = source(history, omitted.clone(), content.as_ref(), limits).await?;
         let complete_source = source(history, complete.clone(), content.as_ref(), limits).await?;
-        let selected = select_model_context_at_revision(
+        let selected = select_model_context(
             history,
+            complete.conversation_revision,
             complete.clone(),
             content.as_ref(),
             limits.context_messages,
             limits.attachments,
             limits.render_bytes,
             limits.attachments,
+            None,
         )
         .await?;
         let placeholder = references

@@ -12,7 +12,7 @@ use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, ConversationState, FileDescriptor, FileRef,
         Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
@@ -27,7 +27,7 @@ use crate::{
     merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
-        AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
+        SelectedModelContext, select_model_context,
         validate_model_context_selection_at_revision,
     },
     resources::{ProviderRef, ResourceRef},
@@ -894,8 +894,12 @@ impl WasmProjectionResolver {
     }
 }
 
-impl AttachmentListResolver for WasmProjectionResolver {
-    fn resolve<'a>(
+impl ContentResidencyVerifier for WasmProjectionResolver {
+    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    }
+
+    fn load_manifest<'a>(
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
@@ -1836,14 +1840,16 @@ pub async fn select_model_context_wasm(
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = WasmProjectionResolver::from_js(files)?;
     let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
-    let selected = select_model_context_at_revision(
+    let selected = select_model_context(
         &conversation,
+        selection.conversation_revision,
         selection.clone(),
         &resolver,
         maximum_messages as usize,
         maximum_attachments as usize,
         maximum_render_bytes,
         maximum_projected_attachments as usize,
+        None,
     )
     .await
     .map_err(js_error)?;
@@ -2127,7 +2133,7 @@ impl WasmReducer {
         let prefix: FileRef = from_js(prefix)?;
         let input: WasmModelRequestInput = from_js(request)?;
         let prepared =
-            crate::model::PreparedModelRequest::inherit(input.into(), &prefix, &reader, limits)
+            crate::model::PreparedModelRequest::inherit(input.into(), &prefix, &reader, limits, None)
                 .await
                 .map_err(js_error)?;
         Ok(prepared.bytes().to_vec())
@@ -2689,7 +2695,7 @@ pub fn encode_model_prefix(
     limits: JsValue,
 ) -> Result<js_sys::Uint8Array, JsValue> {
     let limits: Limits = from_js(limits)?;
-    let prepare = |bytes: &[u8]| crate::model::PreparedModelRequest::decode(bytes, limits);
+    let prepare = |bytes: &[u8]| crate::model::PreparedModelRequest::decode(bytes, limits, None);
     let request = prepare(&request).map_err(js_error)?;
     let parent: Option<FileRef> = from_js(parent)?;
     let parent_request = parent_request
@@ -2718,7 +2724,7 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
     let input: WasmModelRequestInput = from_js(request)?;
     let request = input.into();
     let prepared =
-        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
     Ok(prepared.bytes().to_vec())
 }
 
@@ -2755,7 +2761,7 @@ pub fn validate_model_token_count(
 ) -> Result<u64, JsValue> {
     let request: crate::model::ModelRequest = from_js(request)?;
     let prepared =
-        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
+        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
     let count: crate::context::ModelTokenCount = from_js(count)?;
     count.validate(&prepared).map_err(js_error)
 }

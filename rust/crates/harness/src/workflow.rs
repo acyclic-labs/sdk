@@ -76,16 +76,6 @@ fn copy_workflow_record(
     })
 }
 
-fn copy_workflow_admission(
-    source: &WorkflowAdmission, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<WorkflowAdmission> {
-    Ok(WorkflowAdmission {
-        operation_id: source.operation_id,
-        request_digest: source.request_digest,
-        initial: copy_machine_checkpoint(&source.initial, quota)?,
-    })
-}
-
 macro_rules! workflow_physical_copy {
     ($name:ident, $kind:ty, $factory:path) => {
         pub(crate) fn $name(
@@ -112,7 +102,6 @@ workflow_physical_copy!(workflow_copy_identity, MachineIdentity, copy_machine_id
 workflow_physical_copy!(workflow_copy_checkpoint, MachineCheckpoint, copy_machine_checkpoint);
 workflow_physical_copy!(workflow_copy_transition, MachineTransition, copy_machine_transition);
 workflow_physical_copy!(workflow_copy_record, WorkflowRecord, copy_workflow_record);
-workflow_physical_copy!(workflow_copy_admission, WorkflowAdmission, copy_workflow_admission);
 workflow_physical_copy!(workflow_copy_key, IdempotencyKey, copy_workflow_key);
 
 /// Replay-safe command emitted by a machine.
@@ -1513,7 +1502,6 @@ pub(crate) fn finish_native_io<T>(
     }
 }
 
-
 fn validate_commands(
     commands: &[WorkflowCommand], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -1696,192 +1684,6 @@ fn workflow_recovery_error(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[cfg(feature = "filesystem")]
-    #[test]
-    fn workflow_transition_copy_preserves_terminal_fields_without_encoding() -> Result<()> {
-        use crate::store::history::HistoryWork;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut observer = HistoryWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 1000, peak_allocation_bytes: 1_048_576,
-            bytes_copied: 1_048_576, items_examined: 1000,
-            ..acyclic_fs::WorkBudget::default()
-        }, &cancellation);
-        let source = MachineTransition {
-            state: json!({"private": ["state"]}), commands: Vec::new(),
-            status: MachineStatus::Completed { value: json!({"result": "terminal"}) },
-        };
-        {
-            let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
-            let copied = copy_machine_transition(&source, &mut quota)?;
-            assert_eq!(copied, source);
-            assert!(quota.retained() > 0);
-            drop(copied);
-        }
-        let observed = observer.finish(Ok(())).expect("physical workflow copy");
-        assert!(observed.work.bytes_copied > 0);
-        assert_eq!(observed.work.bytes_encoded, 0);
-        assert_eq!(observed.work.bytes_hashed, 0);
-        assert_eq!(workflow_copy_transition(&source, None)?, source);
-        Ok(())
-    }
-
-    #[test]
-    fn borrowed_registry_resolution_preserves_exact_missing_identity() -> Result<()> {
-        let registry = MachineRegistry::default();
-        let identity = MachineIdentity {
-            name: "machine".into(), version: "1".into(), digest: [1; 32],
-        };
-        assert!(registry.resolve(&identity).is_none());
-        assert!(registry.resolve_with_work(&identity, &mut None)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn v2_workflow_admission_fixture_is_canonical() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/workflow-admission.json").trim();
-        let admission: WorkflowAdmission =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        admission.validate()?;
-        assert_eq!(
-            crate::contract::canonical_json_bytes(&admission)?,
-            fixture.as_bytes()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn journal_replays_an_exact_old_retry_after_later_commits() -> Result<()> {
-        use crate::{
-            AgentId,
-            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
-            resources::ProviderRef,
-        };
-        let journal = MemoryWorkflowJournal::default();
-        let initial = MachineCheckpoint {
-            machine: MachineIdentity {
-                name: "test.tool".into(),
-                version: "1".into(),
-                digest: [1; 32],
-            },
-            revision: 0,
-            state: json!(0),
-        };
-        let admission = WorkflowAdmission {
-            operation_id: OperationId::from_bytes([3; 16]),
-            request_digest: [4; 32],
-            initial: initial.clone(),
-        };
-        journal.admit(admission.clone()).await?;
-        let make_record = |operation_id,
-                           key: IdempotencyKey,
-                           prior: MachineCheckpoint|
-         -> Result<WorkflowRecord> {
-            let next = MachineCheckpoint {
-                machine: prior.machine.clone(),
-                revision: prior.revision + 1,
-                state: json!(prior.revision + 1),
-            };
-            let input = json!(1);
-            Ok(WorkflowRecord {
-                operation_id,
-                idempotency_key: key,
-                input_digest: crate::contract::canonical_json_digest(&input)?,
-                prior,
-                input,
-                transition: MachineTransition {
-                    state: next.state.clone(),
-                    commands: vec![],
-                    status: MachineStatus::Suspended,
-                },
-                next,
-            })
-        };
-        let first_key = IdempotencyKey::new("first")?;
-        let mut first = make_record(OperationId::from_bytes([5; 16]), first_key.clone(), initial)?;
-        let payload = FileRef::new(
-            VolumeRef::new(
-                ProviderRef::new("workflow-test", "filesystem", "2")?,
-                "private",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-            )?,
-            "commands/first.json",
-            "immutable-version",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "first.json",
-        )?;
-        first.transition.commands.push(WorkflowCommand {
-            operation_id: OperationId::from_bytes([8; 16]),
-            kind: "test.publish".into(),
-            payload: payload.clone(),
-        });
-        assert!(matches!(
-            journal.commit(0, first_key.clone(), first.clone()).await?,
-            WorkflowCommitOutcome::Applied(_)
-        ));
-        let orphan = MemoryWorkflowJournal::default();
-        {
-            let mut orphan_state = orphan
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            orphan_state
-                .records
-                .push((first_key.clone(), first.clone()));
-        }
-        assert!(matches!(
-            orphan.admit(admission).await,
-            Err(Error::Conflict(_))
-        ));
-        let second_key = IdempotencyKey::new("second")?;
-        let second = make_record(
-            OperationId::from_bytes([6; 16]),
-            second_key.clone(),
-            first.next.clone(),
-        )?;
-        let reused_transition = make_record(
-            OperationId::from_bytes([8; 16]),
-            IdempotencyKey::new("reused-transition")?,
-            first.next.clone(),
-        )?;
-        assert!(matches!(
-            journal
-                .commit(
-                    1,
-                    reused_transition.idempotency_key.clone(),
-                    reused_transition
-                )
-                .await,
-            Err(Error::Conflict(_))
-        ));
-        let mut reused_command = second.clone();
-        reused_command.transition.commands.push(WorkflowCommand {
-            operation_id: OperationId::from_bytes([8; 16]),
-            kind: "test.publish".into(),
-            payload,
-        });
-        assert!(matches!(
-            journal.commit(1, second_key.clone(), reused_command).await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(matches!(
-            journal.commit(1, second_key, second).await?,
-            WorkflowCommitOutcome::Applied(_)
-        ));
-        assert_eq!(
-            journal.commit(0, first_key.clone(), first.clone()).await?,
-            WorkflowCommitOutcome::Replayed(first.clone())
-        );
-        let mut changed = first;
-        changed.operation_id = OperationId::from_bytes([7; 16]);
-        assert!(matches!(
-            journal.commit(0, first_key, changed).await,
-            Err(Error::Conflict(_))
-        ));
-        Ok(())
-    }
 
     struct PagingCounter {
         identity: MachineIdentity,

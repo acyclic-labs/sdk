@@ -5953,6 +5953,7 @@ mod tests {
                 max_output_tokens: Some(32),
             },
             Limits::default(),
+            None,
         )?;
         let model_digest = prepared_request.manifest().request_digest;
         let request = journal

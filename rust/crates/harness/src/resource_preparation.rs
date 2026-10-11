@@ -747,11 +747,7 @@ impl CreatedResourceAccess {
     pub(crate) const fn current_default_origin(&self) -> Option<OperationId> {
         self.current_default_origin
     }
-    pub(crate) fn current_content(&self) -> Result<Option<&CreatedContentBinding>> {
-        self.current_content_with_work(&mut None)
-    }
-
-    pub(crate) fn current_content_with_work(
+    pub(crate) fn current_content(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<&CreatedContentBinding>> {

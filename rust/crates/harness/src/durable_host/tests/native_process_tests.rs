@@ -73,7 +73,7 @@ async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Resu
                                 && same_placement
                                 && (!cancelled || settlement);
                             assert_eq!(
-                                require_execution_owner(&state, &fence, settlement).is_ok(),
+                                require_execution_owner(&state, &fence, settlement, &mut None).is_ok(),
                                 expected,
                                 "{phase:?}, cancelled={cancelled}, settlement={settlement}, reserved={reserved}, same_id={same_id}, same_placement={same_placement}"
                             );
