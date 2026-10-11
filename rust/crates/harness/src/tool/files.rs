@@ -810,6 +810,7 @@ pub(super) mod native {
     pub(super) struct ReadText(pub(super) String);
 
     impl crate::filesystem::UploadRecord for ReadText {
+        fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
         fn logical_owned_bytes(&self) -> Result<u64> {
             Ok(self.0.capacity() as u64)
         }
@@ -818,6 +819,7 @@ pub(super) mod native {
     macro_rules! record {
         ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
             impl crate::filesystem::UploadRecord for $ty {
+                fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
                 fn logical_owned_bytes(&$value) -> Result<u64> {
                     let mut bytes = 0_u64;
                     $(bytes = bytes.checked_add($bytes as u64)

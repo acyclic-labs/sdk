@@ -432,6 +432,7 @@ fn clone_admission_with_native_work(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for WorkflowAdmission {
+    fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let deep = crate::tool::value_owned_bytes(&self.initial.state)? - std::mem::size_of::<Value>() as u64;
         (self.initial.machine.name.capacity() as u64)

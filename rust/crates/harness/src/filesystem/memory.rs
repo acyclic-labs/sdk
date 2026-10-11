@@ -294,6 +294,7 @@ fn list_files_page_wire<'a>(
 
 #[cfg(not(target_arch = "wasm32"))]
 impl super::UploadRecord for ListFilesInput {
+    fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = 0_u64;
         for size in [

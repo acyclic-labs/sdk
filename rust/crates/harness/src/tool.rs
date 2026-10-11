@@ -146,8 +146,40 @@ pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
     add(std::mem::size_of::<Value>() as u64, deep(value)?)
 }
 
+/// Static labels of the closed tool DTO graphs, extending the SDK profile with
+/// their actual derived type and field names before serde constructs an error.
+#[cfg(feature = "filesystem")]
+pub(crate) const fn tool_serde_diagnostic_label_bytes() -> u64 {
+    const BYTES: u64 = {
+        const LABELS: &[&str] = &[
+            "ToolDefinition", "ToolInvocation", "ToolResult", "ReadFileInput",
+            "WriteFileInput", "EditFileInput", "PatchFileInput", "FileResult",
+            "ReadText", "ReadInput", "SearchInput", "ReadResult", "SearchResult",
+            "TextRange", "TextSelection", "SearchMatches", "ListFilesInput",
+            "WorkflowAdmission", "MachineCheckpoint", "MachineIdentity",
+            "operation_id", "call_id", "name", "revision", "description",
+            "input_schema", "output_schema", "projection_schema", "arguments",
+            "value", "file", "path", "text", "media_type", "display_name",
+            "old_text", "new_text", "diff", "range", "query", "selection",
+            "matches", "start", "end", "omitted_before", "omitted_after",
+            "total_matches", "omitted_matches", "work", "expected_generation",
+            "after", "maximum_entries", "request_digest", "initial", "machine",
+            "version", "digest", "state",
+        ];
+        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
+        let mut index = 0;
+        while index < LABELS.len() {
+            bytes += LABELS[index].len() as u64 + 4;
+            index += 1;
+        }
+        bytes
+    };
+    BYTES
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolDefinition {
+    fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = 0_u64;
         for text in [&self.name, &self.revision, &self.description] {
@@ -169,6 +201,7 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolInvocation {
+    fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let deep = value_owned_bytes(&self.arguments)? - std::mem::size_of::<Value>() as u64;
         (self.call_id.capacity() as u64)
@@ -183,6 +216,7 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolResult {
+    fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         Ok(value_owned_bytes(&self.value)? - std::mem::size_of::<Value>() as u64)
     }
@@ -190,6 +224,7 @@ impl crate::filesystem::UploadRecord for ToolResult {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolInvocation {
+    fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
     }
@@ -197,6 +232,7 @@ impl crate::filesystem::PreparationRecord for ToolInvocation {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResult {
+    fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
     }
