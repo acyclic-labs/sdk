@@ -444,7 +444,7 @@ impl<'a> ForkStepsWork<'a> {
         Ok(receipt.value)
     }
 
-    async fn first<S, F, Fut, G: NativeForkStepGuard<'a>>(
+    async fn first<S, F, Fut, G: NativeForkStepGuard>(
         &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit, guard: Option<&mut F>,
         native_guard: &mut G,
     ) -> Result<bool, ForkStepsFailure<G::Error>>
@@ -467,7 +467,7 @@ impl<'a> ForkStepsWork<'a> {
         self.accept(result).map_err(|failure| failure.map_error(Into::into))
     }
 
-    async fn create<S, F, Fut, G: NativeForkStepGuard<'a>>(
+    async fn create<S, F, Fut, G: NativeForkStepGuard>(
         &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId,
         operation: OperationId, guard: Option<&mut F>, native_guard: &mut G,
     ) -> Result<CreateAuthorityOutcome, ForkStepsFailure<G::Error>>
@@ -513,7 +513,7 @@ pub(crate) async fn commit_workspace_fork_in_steps_with_native_work<S: AsyncAuth
     ).await.map(|receipt| receipt.value).map_err(ForkStepsFailure::native)
 }
 
-async fn commit_workspace_fork_steps_engine<'a, S, F, Fut, G: NativeForkStepGuard<'a>>(
+async fn commit_workspace_fork_steps_engine<'a, S, F, Fut, G: NativeForkStepGuard>(
     store: &S, fork: WorkspaceForkCommit, permit: PublicationPermit,
     mut work: ForkStepsWork<'a>, mut guard: Option<&mut F>, native_guard: &mut G,
 ) -> Result<crate::facade::FsReceipt<WorkspaceForkOutcome>, ForkStepsFailure<G::Error>>
@@ -544,27 +544,27 @@ where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + Send,
     Ok(crate::facade::FsReceipt { value, work: work.work })
 }
 
-trait NativeForkStepGuard<'a>: Send {
+trait NativeForkStepGuard: Send {
     type Error: From<crate::FsError> + Send;
     #[cfg(not(target_arch = "wasm32"))]
     fn first<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit,
-        original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
     #[cfg(not(target_arch = "wasm32"))]
     fn create<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId, operation: OperationId,
-        original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<CreateAuthorityOutcome, Self::Error>> + Send;
 }
 
 struct NoNativeForkGuard;
-impl<'a> NativeForkStepGuard<'a> for NoNativeForkGuard {
+impl NativeForkStepGuard for NoNativeForkGuard {
     type Error = crate::FsError;
     #[cfg(not(target_arch = "wasm32"))]
     async fn first<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit,
-        original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<bool, crate::FsError> {
         store.create_authority_with_first_record_with_native_work(authority, commit, original, cancellation)
             .await.map_err(Into::into)
@@ -572,7 +572,7 @@ impl<'a> NativeForkStepGuard<'a> for NoNativeForkGuard {
     #[cfg(not(target_arch = "wasm32"))]
     async fn create<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId, operation: OperationId,
-        original: &'a crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<CreateAuthorityOutcome, crate::FsError> {
         match source {
             Some(source) => store.fork_generation_authority_with_native_work(
@@ -586,34 +586,33 @@ impl<'a> NativeForkStepGuard<'a> for NoNativeForkGuard {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct GuardedNativeFork<'g, 'a, F> {
-    original: &'a crate::NativeMaterializationWork,
+struct GuardedNativeFork<'g, F> {
     callback: &'g mut F,
 }
 #[cfg(not(target_arch = "wasm32"))]
-impl<'m, 'a, E, F, Fut> NativeForkStepGuard<'m> for GuardedNativeFork<'_, 'a, F>
+impl<E, F, Fut> NativeForkStepGuard for GuardedNativeFork<'_, F>
 where E: From<crate::FsError> + Send + 'static,
     F: for<'n> FnMut(&'n crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static {
     type Error = E;
     async fn first<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit,
-        _original: &'m crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<bool, E> {
         store.create_authority_with_first_record_guarded_with_native_work(
-            authority, commit, self.original, cancellation, self.callback,
+            authority, commit, original, cancellation, self.callback,
         ).await
     }
     async fn create<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId, operation: OperationId,
-        _original: &'m crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<CreateAuthorityOutcome, E> {
         match source {
             Some(source) => store.fork_generation_authority_guarded_with_native_work(
-                source, destination, operation, self.original, cancellation, self.callback,
+                source, destination, operation, original, cancellation, self.callback,
             ).await,
             None => store.create_authority_guarded_with_native_work(
-                destination, Epoch::GENESIS, self.original, cancellation, self.callback,
+                destination, Epoch::GENESIS, original, cancellation, self.callback,
             ).await,
         }
     }
@@ -633,7 +632,7 @@ where S: AsyncAuthorityStore + ?Sized, E: From<crate::FsError> + Send + 'static,
         store, fork, permit,
         ForkStepsWork { work: original.receipt(), budget: WorkBudget::default(), cancellation, original: Some(original) },
         None::<&mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>>,
-        &mut GuardedNativeFork { original, callback: guard },
+        &mut GuardedNativeFork { callback: guard },
     ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
