@@ -354,6 +354,11 @@ have zero retained bytes after its own physical payloads drop; its byte count is
 not the size or custody proof of intrinsically owned source data. Native
 work/cancellation causes and source failures move into their typed Harness error
 carriers with existing custody, without formatting a new diagnostic after denial.
+`read_native_link_with_native_work` uses that same guarded source operation and
+reads the opaque symbolic-link target without following it. It forwards the
+minimum of the original caller's file ceiling and sealed source byte ceiling
+to the SDK's actual link body before payload IO, including unresolved targets
+whose length was not available in metadata.
 
 `lookup_native_path_with_native_work` uses that same selected handle, frozen
 snapshot and original ledger for the SDK's actual immutable lookup body. It
