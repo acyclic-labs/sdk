@@ -117,6 +117,15 @@ impl<'a, 'b> Quota<'a, 'b> {
         }
         Ok(Self { work, bytes })
     }
+    /// Takes responsibility for an existing allowance on this exact observer.
+    /// The caller transfers already-paid custody; this does not admit new data.
+    /// Unlike `new`, transfer must also work after cancellation or quota denial.
+    pub(crate) fn from_retained(
+        work: &'a mut Option<&'b mut dyn HistoryIo>,
+        bytes: u64,
+    ) -> Self {
+        Self { work, bytes }
+    }
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> { self.work }
     pub(super) fn replace(&mut self, bytes: u64) -> Result<()> {
         if bytes <= self.bytes {
