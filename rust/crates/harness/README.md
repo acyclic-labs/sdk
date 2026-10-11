@@ -174,6 +174,13 @@ envelope against the Stream record limit before encode/hash, then uses the
 existing provider append gate. This finite record bound is not an SDK-work receipt
 or a claim about opaque provider allocations.
 
+Trusted native bootstrap uses `AuthorityIssuer::verifier_with_native_work`,
+`root_with_native_work`, or `root_for_agent_with_native_work` on its original
+ledger. These reuse the configured issuer and canonical MAC; they neither create
+authority nor infer an agent or capability. The returned metadata custody must
+outlive every retained verifier/scope consumer. SDK String/vector growth is
+observed before allocation; opaque BTree allocator overhead is not an RSS claim.
+
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
 `Bindings::local()` starts without authority or implicit providers. `HarnessBuilder::bindings` installs its scope, registries, provider boundaries, and concurrency together. An imported binding scope can only be narrowed; configure local root grants on `HarnessBuilder` before building, or construct the desired scope in the binding set before importing it. Later builder calls can register more tasks and tools.

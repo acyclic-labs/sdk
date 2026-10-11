@@ -283,6 +283,18 @@ impl AuthorityIssuer {
         }
     }
 
+    /// Copies this configured issuer's real verifier on the original native
+    /// ledger. Keep custody until after dropping the verifier and its users.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn verifier_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(AuthorityVerifier, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
+        let verifier = self.verifier_with_work(&mut Some(&mut io))?;
+        Ok((verifier, io.into_custody()))
+    }
+
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
@@ -301,43 +313,92 @@ impl AuthorityIssuer {
         self.issue(id.into(), capabilities, Some(agent), None)
     }
 
+    /// Issues the same explicit root grant and MAC as `root_for_agent`, observing
+    /// SDK-owned metadata and canonical signing work on the supplied ledger.
+    /// This does not create an issuer or infer an agent, audience, or capability.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn root_for_agent_with_native_work(
+        &self, agent: AgentId, id: &str, capabilities: &Capabilities,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Scope, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
+        let scope = self.root_for_agent_with_work(agent,id,capabilities,&mut Some(&mut io))?;
+        Ok((scope, io.into_custody()))
+    }
+
+    /// Issues the same configured, agent-less root-purpose grant on the supplied
+    /// ledger; the caller still explicitly selects its ID and capabilities.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn root_with_native_work(
+        &self, id: &str, capabilities: &Capabilities,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Scope, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
+        let scope = self.root_with_work(id,capabilities,&mut Some(&mut io))?;
+        Ok((scope, io.into_custody()))
+    }
+
     #[cfg(feature = "filesystem")]
-    /// Signs the same root grant on the caller's original admitted work ledger.
+    pub(crate) fn root_with_work(
+        &self, id: &str, capabilities: &Capabilities,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Scope> {
+        self.root_with_optional_agent_with_work(None, id, capabilities, work)
+    }
+
+    #[cfg(feature = "filesystem")]
     pub(crate) fn root_for_agent_with_work(
-        &self,
-        agent: AgentId,
-        id: &str,
-        capabilities: &Capabilities,
+        &self, agent: AgentId, id: &str, capabilities: &Capabilities,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Scope> {
+        self.root_with_optional_agent_with_work(Some(agent), id, capabilities, work)
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn root_with_optional_agent_with_work(
+        &self, agent: Option<AgentId>, id: &str, capabilities: &Capabilities,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Scope> {
         let id = match work.as_deref_mut() {
-            Some(work) => work.clone_text(id)?,
+            Some(io) => io.clone_text(id)?,
             None => id.to_owned(),
         };
-        if let Some(work) = work.as_deref_mut() {
-            let owned = capabilities.iter().try_fold(0_u64, |bytes, capability| {
-                bytes.checked_add(std::mem::size_of::<String>() as u64)
-                    .and_then(|bytes| bytes.checked_add(capability.len() as u64))
-                    .ok_or_else(|| Error::Invalid("grant clone byte count overflows".into()))
-            })?;
-            work.admit_owned(owned)?;
-            for capability in capabilities.iter() {
-                work.admit_allocation(capability.len() as u64)?;
-                work.copy_bytes(capability.len() as u64)?;
+        let capabilities = match work.as_deref_mut() {
+            None => capabilities.clone(),
+            Some(io) => {
+                io.check_cancellation()?;
+                let count = capabilities.iter().size_hint().0;
+                let slots = count.checked_mul(std::mem::size_of::<String>())
+                    .ok_or_else(|| Error::Invalid("grant clone slots overflow".into()))? as u64;
+                let mut values = Vec::new();
+                io.admit_owned(slots)?;
+                if slots != 0 { io.admit_allocation(slots)?; }
+                values.try_reserve_exact(count).map_err(|cause| io.allocation_failure(cause))?;
+                let vector_bytes = values.capacity() as u64 * std::mem::size_of::<String>() as u64;
+                io.retain_owned(vector_bytes)?;
+                for value in capabilities.iter() {
+                    values.push(io.clone_text(value)?);
+                }
+                // One logical String slot per resulting BTree entry, admitted
+                // while the source vector is still live. Opaque node allocator
+                // overhead/calls are not inferred from this library operation.
+                io.admit_owned(slots)?;
+                io.retain_owned(slots)?;
+                let result = Capabilities::new(values);
+                io.release_owned(vector_bytes)?;
+                result
             }
-        }
-        let capabilities = capabilities.clone();
-        if let Some(work) = work.as_deref_mut() {
-            work.retain_owned(capabilities.logical_owned_bytes()?)?;
-        }
+        };
         let proof = scope_proof_with_work(
-            &self.key, &self.audience, &self.id, &id, &capabilities,
-            Some(agent), None, work)?;
+            &self.key, &self.audience, &self.id, &id, &capabilities, agent, None, work,
+        )?;
         let issuer = match work.as_deref_mut() {
-            Some(work) => work.clone_text(&self.id)?,
+            Some(io) => io.clone_text(&self.id)?,
             None => self.id.clone(),
         };
-        Ok(Scope { id, capabilities, issuer, agent: Some(agent), parent_proof: None, proof })
+        Ok(Scope {id, capabilities, issuer, agent, parent_proof:None, proof})
     }
 
     /// Issues a root grant after resolving all explicit hierarchy policy layers.
@@ -4417,6 +4478,14 @@ mod tests {
         }
     }
 
+    fn native_authority_budget() -> acyclic_fs::WorkBudget {
+        let mut value = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED).unwrap();
+        for bound in value.as_object_mut().unwrap().values_mut() {
+            *bound = serde_json::Value::from(1_000_000_u64);
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn indexed_plan_returns_original_applied_and_replayed_retained_quota() -> Result<()> {
@@ -4493,6 +4562,36 @@ mod tests {
                 acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", .. }), ..
         })));
         assert_eq!(denied.receipt(), prefix);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_issuer_bootstrap_preserves_original_agent_and_agentless_mac() -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(native_authority_budget(), &cancellation).unwrap();
+        let available = work.remaining().unwrap().maximum_owned_bytes;
+        let issuer = issuer();
+        let capabilities = Capabilities::new(["volume:read:exact", "effect:run"]);
+        let agent = AgentId::from_bytes([9;16]);
+        let (scope, scope_custody) = issuer.root_for_agent_with_native_work(agent,"native-bootstrap",&capabilities,&work)?;
+        let (verifier, verifier_custody) = issuer.verifier_with_native_work(&work)?;
+        verifier.verify(&scope)?;
+        assert_eq!(scope.proof, issuer.root_for_agent(agent,"native-bootstrap",capabilities.clone()).proof);
+        let (root, root_custody) = issuer.root_with_native_work("native-purpose",&capabilities,&work)?;
+        assert_eq!(root.agent, None);
+        assert_eq!(root.proof, issuer.root("native-purpose",capabilities).proof);
+        let mut substituted = scope.clone();
+        substituted.agent = Some(AgentId::from_bytes([10;16]));
+        assert!(verifier.verify(&substituted).is_err());
+        drop(substituted);
+        drop(root);
+        drop(root_custody);
+        drop(scope);
+        drop(scope_custody);
+        drop(verifier);
+        drop(verifier_custody);
+        assert_eq!(work.remaining().unwrap().maximum_owned_bytes, available);
         Ok(())
     }
 
@@ -4612,6 +4711,27 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_issuer_metadata_denial_and_precancel_precede_signing() {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = native_authority_budget();
+        budget.maximum_owned_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+        let work = acyclic_fs::NativeMaterializationWork::new(budget,&cancellation).unwrap();
+        let issuer = issuer();
+        let capabilities = Capabilities::new(["effect:run"]);
+        let prefix = work.receipt();
+        assert!(matches!(issuer.root_with_native_work("native",&capabilities,&work),
+            Err(error) if error.is_native_failure()));
+        assert_eq!(work.receipt(), prefix);
+        let work = acyclic_fs::NativeMaterializationWork::new(native_authority_budget(),&cancellation).unwrap();
+        cancellation.cancel();
+        let prefix = work.receipt();
+        assert!(matches!(issuer.verifier_with_native_work(&work),
+            Err(error) if error.is_native_failure()));
+        assert_eq!(work.receipt(), prefix);
     }
 
     /// One generated reducer input; indices select earlier operations.
