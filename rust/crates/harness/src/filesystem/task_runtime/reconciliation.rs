@@ -71,7 +71,7 @@ where
     ) -> Result<WorkerTurn> {
         let operation = lease.operation.operation_id;
         let task = TaskId::from_bytes(operation.into_bytes());
-        let fence = observed::lease_fence(&lease.reservation, io)?;
+        let fence = observed::lease_fence(lease, io)?;
         self.owner_observed(task, &fence, true, io).await?;
         let admission = self.admission_observed(task, io).await?;
         if admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.host.now_unix_millis() >= deadline) {
@@ -105,7 +105,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let transition = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native outbox requires original work"))?;
-            let (transition, custody) = journal.observe_latest_outbox_with_native_work(work).await?;
+            let (transition, custody) = journal.observe_latest_outbox_with_native_work(work)?.await?;
             io.absorb_native_custody(custody)?;
             transition
         } else { journal.observe_latest_outbox().await? };

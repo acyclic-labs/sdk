@@ -278,46 +278,62 @@ struct TaskInteractionOwner {
     volume: VolumeRef,
 }
 
+enum TaskMailboxOwner<P: StreamProvider> {
+    Ordinary(crate::durable_host::TaskJournalOwner<P>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(Arc<crate::durable_host::TaskJournalOwner<P>>),
+}
+
+impl<P: StreamProvider> TaskMailboxOwner<P> {
+    fn borrowed(&self) -> &crate::durable_host::TaskJournalOwner<P> {
+        match self {
+            Self::Ordinary(owner) => owner,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(owner) => owner,
+        }
+    }
+}
+
 struct TaskJournalMailbox<P: StreamProvider> {
     host: Arc<CoordinatorTaskHost<P>>,
-    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+    owner: TaskMailboxOwner<P>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_custody: acyclic_fs::NativeAllocation,
+    native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.require_mail_scope(scope)
+        self.owner.borrowed().require_mail_scope(scope)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
-        self.owner.task_binding()
+        self.owner.borrowed().task_binding()
     }
     fn matches_task_binding(&self, task: TaskId, fence: &LeaseFence) -> bool {
-        self.owner.matches_task_binding(task, fence)
+        self.owner.borrowed().matches_task_binding(task, fence)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn validate_scope_with_native_work(&self, scope: &RuntimeScope, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if !self.native_custody.work().shares_ledger(work) {
+        if !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized, reason: "mailbox metadata differs from original work",
             });
         }
-        self.owner.require_mail_scope_with_native_work(scope, work)
+        self.owner.borrowed().require_mail_scope_with_native_work(scope, work)
     }
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.task_binding();
+            let (task, fence) = self.owner.borrowed().task_binding();
             self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
         })
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
         Box::pin(async move {
-            self.owner.verify(true).await?;
-            let (task, _) = self.owner.task_binding();
+            self.owner.borrowed().verify(true).await?;
+            let (task, _) = self.owner.borrowed().task_binding();
             let items = self.host.inbox(task, after, maximum).await?;
-            self.owner.verify(true).await?;
+            self.owner.borrowed().verify(true).await?;
             Ok(items)
         })
     }
@@ -325,7 +341,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.task_binding();
+            let (task, fence) = self.owner.borrowed().task_binding();
             self.host.read_received_mail_owned(task, fence.clone(), receive_operation, item).await
         })
     }
@@ -1012,7 +1028,8 @@ where
                 }
                 if records.iter().any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. })) {
                     let projection = crate::executor::completed_tool_projection_with_native_work(
-                        journal.as_ref(), &records, step, &invocation, &request.request().tools, work,
+                        journal.as_ref(), &records, step, &invocation, &request.request().tools,
+                        context.scope().limits(), work,
                     )?.await?;
                     drop(projection);
                     continue;
@@ -2324,31 +2341,32 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn stock_executor_with_native_work(
-        &self, task: TaskId, fence: &LeaseFence, turn: OperationId,
+    pub(super) fn stock_executor_with_native_work(
+        &self, task: TaskId, fence: &LeaseFence, operation: OperationId,
         context: &Arc<crate::NativeTaskContext>, model: &Model,
         provider: Arc<dyn ModelProvider>, pipeline: &ContextPipeline,
+        journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::executor::NativeStockExecutor, Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
+    ) -> Result<crate::executor::NativeStockExecutor> {
         if !context.context().original_task_binding_matches(task, fence) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock model differs from original task binding",
             });
         }
-        let (journal, operation) = self.execution_journal_with_native_work(task, fence, turn, work).await?;
         let executor = crate::executor::StockExecutor::new_with_native_work(
             model, provider, pipeline, &self.tools, work,
         )?.with_limits(context.context().scope().limits())
-            .with_tool_authority_with_native_work(self.policy.clone(), work)?
             .with_task_context_with_native_work(
                 Arc::clone(context), operation, self.host.clone(), task, fence, work,
+            )?.with_tool_authority_with_native_work(
+                context.context().scope(), self.policy.clone(), work,
             )?;
-        let executor = match self.native_journal_interactions(task, Arc::clone(&journal), work)? {
+        let executor = match self.native_journal_interactions(task, Arc::clone(journal), work)? {
             Some(router) => executor.with_native_interactions(router, work)?,
             None => executor,
         };
-        Ok((executor, journal, operation))
+        Ok(executor)
     }
 
     /// Constructs stock execution with mandatory shared accounting, retained
@@ -2604,12 +2622,12 @@ async fn verify_native_model_file(
     context: &TaskContext, file: &crate::conversation::FileRef,
     policy: &crate::model::FileProjectionPolicy, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let body = context.read_file_with_native_work(file, work)?.await?;
+    let body = context.read_file_with_native_work(file, work).await?;
     drop(body);
     if let crate::model::FileProjectionPolicy::Native(policy) = policy
         && let Some(binding) = &policy.configuration
     {
-        let body = context.read_file_with_native_work(&binding.configuration.content, work)?.await?;
+        let body = context.read_file_with_native_work(&binding.configuration.content, work).await?;
         drop(body);
     }
     Ok(())

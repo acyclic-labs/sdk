@@ -24,16 +24,23 @@ use std::sync::Arc;
 mod mail;
 
 macro_rules! command_record {
-    ($($record:ty),+ $(,)?) => {
+    ($($record:ty => $schema:ident),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 {
-                std::mem::size_of::<Self>().max(std::mem::size_of::<Value>()) as u64
+                super::fork_preparer::bounded_io::preparation_slot_bytes::<Self>()
+            }
+            fn json_value_schema() -> crate::contract::JsonValueSchema {
+                crate::contract::JsonValueSchema::$schema
             }
         })+
     };
 }
 
-command_record!(TimerTaskCommand, TaskAdmitCommand, TaskObserveCommand, ModelTaskCommand, ToolTaskCommand);
+command_record!(
+    TimerTaskCommand => None, TaskObserveCommand => None,
+    TaskAdmitCommand => TaskAdmitCommand, ModelTaskCommand => ModelTaskCommand,
+    ToolTaskCommand => ToolTaskCommand,
+);
 
 /// Versioned stock model command contract.
 pub const MODEL_TASK_COMMAND_KIND: &str = "acyclic.model.v1";
@@ -725,7 +732,13 @@ where
             MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io).await,
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => self.task_command_with_io(task, context.context(), &fence, &command, payload, reconciliation_only, io).await,
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
-                let input: TimerTaskCommand = mail::decode_command(payload, io)?;
+                let input: TimerTaskCommand = if io.is_some() {
+                    mail::decode_command(payload, io)?
+                } else {
+                    serde_json::from_value(payload).map_err(|error| {
+                        Error::Invalid(format!("invalid timer command: {error}"))
+                    })?
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 let ready = if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native timer requires original work" })?;
@@ -780,7 +793,7 @@ where
             let (status, custody) = if reconciliation_only {
                 effects.reconcile_task_effect_with_native_work(&owner, command, &plan, work).await?
             } else {
-                effects.run_task_effect_with_native_work(&owner, command, plan, work).await?
+                effects.run_task_effect_with_native_work(&owner, command, &plan, work).await?
             };
             io.absorb_native_custody(custody)?;
             return match status {
@@ -954,7 +967,7 @@ where
         command: &WorkflowCommand, payload: Value, reconciliation_only: bool,
         io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        use super::task_runtime::observed::{boundary, clone_fence};
+        use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
         if command.kind == TASK_ADMIT_COMMAND_KIND {
             let input: TaskAdmitCommand = if io.is_some() {
@@ -968,21 +981,28 @@ where
                 let work = io.original_native_work().ok_or(Error::NativeBoundary {
                     code: ErrorCode::Unsupported, reason: "native child requires original work",
                 })?;
-                let (admission, custody) = self.runtime.harness().registered_child_admission_with_native_work(
-                    operation, &input.name, &input.version, input.input, task, context.scope(), work,
+                let input_bytes = (std::mem::size_of::<Value>() as u64)
+                    .checked_add(crate::contract::owned_logical_bytes(&input.input))
+                    .ok_or_else(|| boundary(Some(io), ErrorCode::Invalid, "child input ownership overflow"))?;
+                let input_custody = io.take_native_custody(input_bytes)?;
+                let admission = self.runtime.harness().registered_child_admission_with_native_work(
+                    operation, &input.name, &input.version, (input.input, input_custody),
+                    task, context.scope(), work,
                 )?;
-                io.absorb_native_custody(custody)?;
                 if reconciliation_only {
-                    let (retained, custody) = self.runtime.task_host().reconcile_admission_with_native_work(operation, work).await?;
-                    io.absorb_native_custody(custody)?;
-                    if let Some((_, retained)) = retained && retained != admission {
+                    let (retained, retained_custody) = crate::DurableTaskHost::reconcile_admission_with_native_work(
+                        self.runtime.task_host().as_ref(), operation, work,
+                    )?.await?;
+                    io.absorb_native_custody(retained_custody)?;
+                    if let Some((_, retained)) = retained && retained != admission.0 {
                         return Err(boundary(Some(io), ErrorCode::Conflict, "retained child admission differs"));
                     }
                     return mail::reconciled(Some(io));
                 }
-                let (result, custody) = self.runtime.task_host().admit_owned_with_native_work(
-                    admission, clone_fence(fence, Some(io))?, work,
-                ).await?;
+                let paid_fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
+                let (result, custody) = crate::DurableTaskHost::admit_owned_with_native_work(
+                    self.runtime.task_host().as_ref(), admission, paid_fence, work,
+                )?.await?;
                 io.absorb_native_custody(custody)?;
                 return match result {
                     crate::Admission::Accepted(child) => mail::mail_ready(Outcome::Succeeded(child), Some(io)),
@@ -1035,8 +1055,8 @@ where
         let binding = self.model.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported, reason: "model command provider is not bound",
         })?;
-        let (executor, journal, operation) = self.runtime.stock_executor_with_native_work(
-            task, fence, turn, &context, &binding.model, Arc::clone(&binding.provider), &binding.context, work,
+        let (journal, operation) = self.runtime.execution_journal_with_native_work(
+            task, fence, turn, work,
         ).await?;
         if reconciliation_only {
             let dispatched = std::sync::atomic::AtomicBool::new(false);
@@ -1054,6 +1074,10 @@ where
                 return mail::reconciled(Some(io));
             }
         }
+        let executor = self.runtime.stock_executor_with_native_work(
+            task, fence, operation, &context, &binding.model, Arc::clone(&binding.provider),
+            &binding.context, &journal, work,
+        )?;
         let executor = executor.with_compaction_policy_with_native_work(&binding.compaction, work)?;
         let executor = match input.max_output_tokens {
             Some(maximum) => executor.with_max_output_tokens(maximum)?,
@@ -1080,7 +1104,7 @@ where
                 Err(Error::Indeterminate(_)) => {}
                 Err(error) => return Err(error),
             }
-            return if journal.is_quiescent_with_native_work(work).await? {
+            return if journal.is_quiescent_with_native_work(work)?.await? {
                 mail::reconciled(Some(io))
             } else { Ok(TaskCommandProgress::Indeterminate) };
         }

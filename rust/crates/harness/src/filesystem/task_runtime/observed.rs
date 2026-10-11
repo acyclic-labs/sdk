@@ -25,6 +25,20 @@ pub(in crate::filesystem) fn clone_fence(fence: &LeaseFence, io: Option<&Prepara
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::filesystem) fn clone_fence_with_custody(
+    original: &LeaseFence, io: &PreparationIo,
+) -> Result<(LeaseFence, acyclic_fs::NativeAllocation)> {
+    io.retain_owned(std::mem::size_of::<LeaseFence>() as u64)?;
+    let fence = clone_fence(original, Some(io))?;
+    let bytes = (std::mem::size_of::<LeaseFence>() as u64)
+        .checked_add(fence.reservation_id.capacity() as u64)
+        .and_then(|bytes| bytes.checked_add(fence.placement.capacity() as u64))
+        .ok_or_else(|| boundary(Some(io), crate::wire::ErrorCode::Invalid, "owned fence metadata overflow"))?;
+    let custody = io.take_native_custody(bytes)?;
+    Ok((fence, custody))
+}
+
 pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
         reservation_id: clone_string(&lease.reservation.id, io)?,

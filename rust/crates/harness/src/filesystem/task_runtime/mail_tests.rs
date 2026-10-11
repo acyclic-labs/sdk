@@ -149,3 +149,48 @@ async fn native_mailbox_rejects_hostile_v3_records_with_real_atomic_sdk_location
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    let task = TaskId::from_bytes([104; 16]);
+    let payloads = FilesystemSchedulerPayloadStore::new(
+        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(), &fixture.signed, 65_536,
+    )?;
+    let payload = payloads.stage(OperationId::from_bytes([106; 16]), "native-stock-mail-body", b"7").await?;
+    let cancellation = CancellationToken::new();
+    let work = original_mail_work(finite_mail_budget()?, &cancellation)?;
+    let (lease, custody) = fixture.native_lease_command(
+        &runtime, super::super::super::MAIL_SEND_TASK_COMMAND_KIND,
+        serde_json::to_value(super::super::super::MailSendTaskCommand { recipient: task, payload: payload.clone() })?,
+        &work,
+    ).await?;
+    let reservation = lease.reservation.clone();
+    let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &runtime.commands(), 1, &work).await?;
+    assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })));
+    assert!(custody.work().shares_ledger(&work));
+    assert!(work.receipt().backend_write_operations > 0);
+    let inbox = runtime.task_host().inbox_with_native_work(task, 0, 8, &work).await?;
+    assert_eq!(inbox.0.len(), 1);
+    assert_eq!(inbox.0[0].payload, payload);
+    assert_eq!(inbox.0[0].task_id, task);
+    let inbox_before = inbox.0[0].message_id.clone();
+    drop(inbox);
+    let lease = match attempt {
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) => lease,
+        _ => unreachable!(),
+    };
+    assert_eq!(lease.reservation, reservation);
+    let (attempt, custody) = runtime.reconcile_task_with_native_work(lease, custody, &runtime.commands(), 1, 1_000, &work).await?;
+    assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. })));
+    let inbox = runtime.task_host().inbox_with_native_work(task, 0, 8, &work).await?;
+    assert_eq!(inbox.0.len(), 1);
+    assert_eq!(inbox.0[0].message_id, inbox_before);
+    assert!(custody.work().shares_ledger(&work));
+    drop(inbox);
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}

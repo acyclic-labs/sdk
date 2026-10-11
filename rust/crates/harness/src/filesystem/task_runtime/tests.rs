@@ -286,9 +286,16 @@ impl Fixture {
     async fn native_lease(
         &self, runtime: &Runtime, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
-        let operation = self.admit_only(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
+        self.native_lease_command(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
             &super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-        )?).await?;
+        )?, work).await
+    }
+
+    async fn native_lease_command(
+        &self, runtime: &Runtime, kind: &str, command: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
+        let operation = self.admit_only(runtime, kind, command).await?;
         let pulled = runtime.task_host().pull_operation_with_native_work(&Worker {
             id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
         }, operation, work).await?;
@@ -451,6 +458,43 @@ impl ModelProvider for PendingModel {
                 crate::model::ModelEvent::Content { delta: "original model receipt".into() },
                 crate::model::ModelEvent::Completed { metadata: Value::Null },
             ]))
+        })
+    }
+    fn supports_native_model(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<bool> { Ok(true) }
+    fn generate_with_native_work<'a>(
+        &'a self, _: &'a crate::model::PreparedModelRequest, _: crate::model::ModelDispatch,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, crate::model::NativeModelStream<'a>>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let stream = crate::model::NativeModelStream::new(work, || {
+                futures::stream::pending::<Result<(crate::model::ModelEvent, acyclic_fs::NativeAllocation)>>()
+            })?;
+            self.generated.fetch_add(1, Ordering::SeqCst);
+            self.clock.0.store(20, Ordering::SeqCst);
+            Ok(stream)
+        })
+    }
+    fn reconcile_with_native_work<'a>(
+        &'a self, _: crate::model::NativeModelAttempt<'a>, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<crate::model::ModelEvent>>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            self.reconciled.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(self.generated.load(Ordering::SeqCst), 1);
+            let io = super::super::PreparationIo::from_native_work(work)?;
+            let (delta, custody) = work.display(&"original model receipt")?;
+            io.absorb_native_custody(custody)?;
+            let bytes = std::mem::size_of::<crate::model::ModelEvent>() as u64;
+            io.retain_owned(2 * bytes + std::mem::size_of::<Vec<crate::model::ModelEvent>>() as u64)?;
+            io.allocation_attempt(2 * bytes)?;
+            let mut events = Vec::new();
+            events.try_reserve_exact(2).map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage, reason: "native model control event allocation failed",
+            })?;
+            if events.capacity() > 2 { io.retain_owned((events.capacity() as u64 - 2) * bytes)?; }
+            events.push(crate::model::ModelEvent::Content { delta });
+            events.push(crate::model::ModelEvent::Completed { metadata: Value::Null });
+            let custody = io.take_native_custody(io.owned_bytes()?)?;
+            Ok((Some(events), custody))
         })
     }
 }
@@ -668,5 +712,191 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
         assert!(!state.cancellation_requested);
         assert!(state.outcome.is_none());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    fixture.tool.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
+    let original = lease.clone();
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &runtime.commands(), 2, &work).await?;
+    let lease = match attempt {
+        TaskWorkerAttempt::Unresolved { lease, error: Error::Indeterminate(operation) } => {
+            assert_eq!(operation, original.operation.operation_id);
+            assert_eq!(lease, original);
+            lease
+        }
+        _ => return Err(Error::Invalid("native lost acknowledgement did not preserve original attempt".into())),
+    };
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    assert!(custody.work().shares_ledger(&work));
+    let before = work.receipt();
+    drop(runtime);
+    let reopened = fixture.runtime().await?;
+    let (attempt, custody) = reopened.reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 5, &work).await?;
+    let lease = match attempt {
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { lease }) => {
+            assert_eq!(lease, original);
+            lease
+        }
+        _ => return Err(Error::Invalid("native pending receipt replaced original attempt".into())),
+    };
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
+    let state = reopened.task_host().observe_task(task).await?;
+    assert!(state.outcome.is_none());
+    assert_eq!(state.reservation, Some(original.reservation.clone()));
+    fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
+    let (attempt, custody) = reopened.reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 1_000, &work).await?;
+    assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
+    assert!(custody.work().shares_ledger(&work));
+    assert!(work.receipt().backend_read_operations > before.backend_read_operations);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    assert!(matches!(reopened.task_host().outcome(task).await?, Some(Outcome::Cancelled)));
+    assert!(reopened.task_host().observe_task(task).await?.reservation.is_none());
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_work() -> Result<()> {
+    for stale in [true, false] {
+        let fixture = Fixture::new().await?;
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        fixture.tool.native.store(true, Ordering::SeqCst);
+        let runtime = fixture.runtime().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (mut lease, custody) = fixture.native_lease(&runtime, &work).await?;
+        if stale { lease.reservation.id.replace_range(0..1, "x"); }
+        else { fixture.clock.0.store(20, Ordering::SeqCst); }
+        let original = lease.clone();
+        let (attempt, custody) = runtime.run_task_with_native_work(lease, custody, &runtime.commands(), 2, &work).await?;
+        match attempt {
+            TaskWorkerAttempt::Unresolved { lease, error } => {
+                assert_eq!(lease, original);
+                if stale { assert!(error.is_native_failure()); }
+                else { assert!(matches!(error, Error::Indeterminate(_))); }
+                drop(lease);
+                drop(error);
+            }
+            _ => return Err(Error::Invalid("native stale or expired work escaped original attempt".into())),
+        }
+        assert!(custody.work().shares_ledger(&work));
+        assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+        drop(custody);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlement() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let input = super::super::ModelTaskCommand {
+        input: crate::model::ModelContent::Text("question".into()),
+        selected_context: None, max_steps: 1, max_output_tokens: None,
+    };
+    let (lease, custody) = fixture.native_lease_command(
+        &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input)?, &work,
+    ).await?;
+    let original = lease.clone();
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
+    });
+    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let commands = runtime.commands().with_model(
+        model.clone(), provider.clone(), ContextPipeline::default(), crate::context::CompactionPolicy::Disabled,
+    );
+    let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work).await?;
+    let lease = match attempt {
+        TaskWorkerAttempt::Unresolved { lease, error: Error::Indeterminate(_) } => {
+            assert_eq!(lease, original);
+            lease
+        }
+        _ => return Err(Error::Invalid("native model lost acknowledgement did not preserve original lease".into())),
+    };
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    let before = work.receipt();
+    drop(commands);
+    drop(runtime);
+    let reopened = fixture.runtime().await?;
+    let commands = reopened.commands().with_model(
+        model, provider.clone(), ContextPipeline::default(), crate::context::CompactionPolicy::Disabled,
+    );
+    let (attempt, custody) = reopened.reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work).await?;
+    assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    assert!(work.receipt().backend_read_operations > before.backend_read_operations);
+    assert!(custody.work().shares_ledger(&work));
+    assert!(matches!(reopened.task_host().outcome(task).await?, Some(Outcome::Cancelled)));
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_source() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
+    runtime.task_host().start_task_with_native_work(&lease, &work).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let fence = LeaseFence::from(&lease.reservation);
+    let shared = runtime.task_context_with_native_work(task, &fence, &work).await?;
+    assert!(shared.context().original_task_binding_matches(task, &fence));
+    let operation = lease.operation.operation_id;
+    let call_id = work.display(&operation)?;
+    let tool = ToolContext::new_with_native_work(Arc::clone(&shared), operation, &call_id.0, &work)?;
+    drop(call_id);
+    let before = work.receipt();
+    tool.validate_native_mcp_context(&work)?;
+    tool.validate_native_mcp_reconciliation_context(&work)?;
+    assert_eq!(work.receipt(), before);
+    let read = runtime.harness().durable_context_with_native_work(task, operation, &work).await?;
+    let read = read.0.into_native_shared(read.1, &work)?;
+    let read_tool = ToolContext::new_with_native_work(read, operation, "read-context-control", &work)?;
+    assert!(matches!(read_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(read_tool.validate_native_mcp_reconciliation_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    fixture.clock.0.store(20, Ordering::SeqCst);
+    runtime.task_host().expire_task_deadline_with_native_work(task, Some(fence.clone()), &work).await?;
+    let settlement = runtime.task_context_for_original_owner_with_native_work(task, &fence, true, &work).await?;
+    let settlement_tool = ToolContext::new_with_native_work(settlement, operation, "settlement-context-control", &work)?;
+    assert!(matches!(settlement_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    settlement_tool.validate_native_mcp_reconciliation_context(&work)?;
+    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+    drop(settlement_tool);
+    drop(read_tool);
+    drop(tool);
+    drop(shared);
+    drop(lease);
+    drop(recovery_custody);
     Ok(())
 }

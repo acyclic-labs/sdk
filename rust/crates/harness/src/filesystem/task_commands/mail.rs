@@ -3,13 +3,12 @@
 use super::*;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use acyclic_fs::WorkCounters;
-use std::mem::size_of;
 
 impl PreparationRecord for MailSendTaskCommand {
-    fn maximum_slot_bytes() -> u64 { size_of::<Self>().max(size_of::<Value>()) as u64 }
+    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
 }
 impl PreparationRecord for MailReceiveTaskCommand {
-    fn maximum_slot_bytes() -> u64 { size_of::<Self>().max(size_of::<Value>()) as u64 }
+    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
 }
 
 fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
@@ -92,7 +91,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     pub(super) async fn mail_command_with_io(
-        &self, task: TaskId, context: &TaskContext, fence: &LeaseFence,
+        &self, task: TaskId, _context: &TaskContext, fence: &LeaseFence,
         command: &WorkflowCommand, payload: Value, io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         require_native_observer(io)?;
@@ -108,17 +107,12 @@ where
                 let (items, custody) = self.runtime.task_host().inbox_with_native_work(task, input.after, 1, native).await?;
                 io.absorb_native_custody(custody)?;
                 let Some(item) = items.into_iter().next() else { return Ok(TaskCommandProgress::Pending); };
-                let (bytes, body_custody) = self.runtime.task_host()
-                    .read_recipient_file_with_native_work(task, &item.payload, native).await?;
-                drop(bytes);
-                drop(body_custody);
                 return mail_ready(Outcome::Succeeded(item), Some(io));
             }
             let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
             let Some(item) = items.into_iter().next() else { return Ok(TaskCommandProgress::Pending); };
             // The first immutable item is stable across a crash before checkpoint
             // publication. Native observation neither acknowledges nor advances it.
-            context.read_file(&item.payload).await?;
             mail_ready(Outcome::Succeeded(item), io)
         }
     }
@@ -139,25 +133,18 @@ where
     }
 
     pub(super) async fn wait_mail_with_io(
-        &self, task: TaskId, context: &TaskContext, after: u64, io: Option<&PreparationIo>,
+        &self, task: TaskId, _context: &TaskContext, after: u64, io: Option<&PreparationIo>,
     ) -> Result<bool> {
         require_native_observer(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io && let Some(native) = io.original_native_work() {
             let (items, custody) = self.runtime.task_host().inbox_with_native_work(task, after, 1, native).await?;
-            let ready = if let Some(item) = items.first() {
-                let (bytes, body_custody) = self.runtime.task_host()
-                    .read_recipient_file_with_native_work(task, &item.payload, native).await?;
-                drop(bytes);
-                drop(body_custody);
-                true
-            } else { false };
+            let ready = !items.is_empty();
             drop(items);
             drop(custody);
             return Ok(ready);
         }
         let items = self.runtime.task_host().inbox(task, after, 1).await?;
-        if let Some(item) = items.first() { context.read_file(&item.payload).await?; Ok(true) }
-        else { Ok(false) }
+        Ok(!items.is_empty())
     }
 }
