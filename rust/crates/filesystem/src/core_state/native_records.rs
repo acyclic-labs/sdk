@@ -385,6 +385,7 @@ fn live_ids(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancellation
     Ok(Owned::from_parts(ids, held))
 }
 
+
 struct Bucket {
     parent: WorkspaceContextId,
     children: Vec<WorkspaceContextId>,
@@ -482,6 +483,7 @@ fn rebuild_index(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancell
     }
     commit_index(root, log, Owned::from_parts(buckets, held), work, cxl)
 }
+
 
 pub(super) fn compare_native_context(root: &Namespace, log: &mut CoreLog, id: WorkspaceContextId, expected: u64, replacement: Owned<WorkspaceContext>, work: &Work, cxl: &CancellationToken) -> Result<bool, Error> {
     check(work, cxl)?;
