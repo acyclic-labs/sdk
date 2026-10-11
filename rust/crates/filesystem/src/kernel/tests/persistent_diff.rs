@@ -11,7 +11,6 @@ use crate::storage::{ObjectKind, ObjectStore};
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use bytes::Bytes;
-use std::mem::size_of;
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
@@ -248,11 +247,13 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
         failure.error,
         DiffError::Work(WorkError::BudgetExceeded {
             counter: "page_reads",
-            observed: 1,
+            observed: 2,
             maximum: 0,
         })
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(failure.work.page_reads, 0);
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert!(failure.work.allocation_operations > 0, "the guarded frontier precedes provider admission");
     Ok(())
 }
 
@@ -662,8 +663,8 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(warm.work.page_reads, 4);
-    let one_leaf_bytes = u64::try_from(size_of::<TreeEntry>())? + 1;
-    assert_eq!(warm.work.bytes_copied, one_leaf_bytes * 2);
+    // Only the two result names and their sorted-map routing key are copied.
+    assert_eq!(warm.work.bytes_copied, 3);
     assert_eq!(store.stats()?.decoded_hits, 4);
     Ok(())
 }
@@ -813,4 +814,118 @@ mod model {
             check(&before, &after, page).map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_diff_retains_changed_names_until_output_guard_retires()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = OwnedReadObjectStore::default();
+    let before = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 1)?, entry("same", 2)?]))?;
+    let after = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 3)?, entry("same", 2)?]))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (diff, allocation) = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
+        &store, Some(before), Some(after), 8, DecodeLimits::default(), &mut accounting, &cancellation,
+    ))?;
+    assert_eq!(diff.changes.len(), 1);
+    let change = diff.changes.first().ok_or("changed name missing")?;
+    assert_eq!(change.key.as_bytes(), b"alpha");
+    assert_eq!(change.before.as_ref().map(|entry| entry.file_id), Some(FileId::from_bytes([1; 16])));
+    assert_eq!(change.after.as_ref().map(|entry| entry.file_id), Some(FileId::from_bytes([3; 16])));
+    assert!(!diff.truncated);
+    assert_eq!(original.receipt().page_reads, 2);
+    assert!(original.receipt().backend_read_operations > 0);
+    assert!(diff.retained_allocation_bytes >= 15);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?,
+        baseline + diff.retained_allocation_bytes);
+    drop(diff);
+    drop(allocation);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_diff_reports_real_changed_file_records_on_original_ledger()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = OwnedReadObjectStore::default();
+    let old = file_record(1)?;
+    let mut new = old.clone();
+    new.link_count = 2;
+    let before = put_file_table(&store.inner, &FileTablePage::Leaf(vec![old.clone()]))?;
+    let after = put_file_table(&store.inner, &FileTablePage::Leaf(vec![new.clone()]))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (diff, allocation) = crate::async_storage::poll_immediate(diff_file_records_with_accounting(
+        &store, Some(before), Some(after), 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    ))?;
+    assert_eq!(diff.changes, vec![ValueChange { key: old.file_id, before: Some(old), after: Some(new) }]);
+    assert!(!diff.truncated);
+    assert_eq!(original.receipt().page_reads, 2);
+    assert!(diff.retained_allocation_bytes > 0);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?,
+        baseline + diff.retained_allocation_bytes);
+    drop(diff);
+    drop(allocation);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_diff_denies_frontier_allocation_before_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?]))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
+        &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    ));
+    assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    Ok(())
+}
+
+#[test]
+fn standalone_common_diff_exposes_exact_retained_release_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = OwnedReadObjectStore::default();
+    let root = put(&store.inner, &TreePage::Leaf(vec![entry("alpha", 1)?]))?;
+    let cancellation = CancellationToken::new();
+    let mut ledger = super::super::allocation::AllocationLedger::default();
+    let mut work = WorkCounters::UNCHARGED;
+    let mut accounting = KernelAccounting::borrowed_standalone(
+        &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+    );
+    let (diff, allocation) = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
+        &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    ))?;
+    let bytes = diff.retained_allocation_bytes;
+    accounting.with_allocations(|ledger, _, _, _| {
+        assert_eq!(ledger.live_bytes(), bytes);
+        Ok(())
+    })?;
+    assert_eq!(diff.changes.first().map(|change| change.key.as_bytes()), Some(b"alpha".as_slice()));
+    drop(diff);
+    retire_allocation(allocation, bytes, &mut accounting)?;
+    accounting.with_allocations(|ledger, _, _, _| {
+        assert_eq!(ledger.live_bytes(), 0);
+        Ok(())
+    })?;
+    Ok(())
 }

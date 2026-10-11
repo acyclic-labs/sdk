@@ -8502,6 +8502,21 @@ pub(crate) fn allocated_data_ranges_with_work<W: NativeHostWork<Error = DemandEr
     )
 }
 
+/// Shares the existing native-runtime held request/completion engine without
+/// depending on the optional snapshot-capture module. The original typed meter
+/// cause wins over its allocation-free IO marker; ordinary OS misses stay IO.
+#[cfg(windows)]
+fn native_device_control_measured<W: crate::demand::SourceDemandReadWork>(
+    file: &File, code: u32, input: &[u8], output: &mut [u8], work: &mut W,
+) -> Result<usize, DemandError> {
+    work.with_native_read_meter(|meter| {
+        acyclic_native_runtime::device_control_in_place_measured(file, code, input, output, meter)
+    }).map_err(|error| {
+        work.with_original_leaf(|original| original.take_native_io_failure())
+            .unwrap_or_else(|| crate::demand::native_demand_error(error))
+    })
+}
+
 pub(crate) fn query_allocated_data_ranges_measured<W: crate::demand::SourceDemandReadWork>(
     file: &File,
     offset: u64,
@@ -8513,7 +8528,7 @@ pub(crate) fn query_allocated_data_ranges_measured<W: crate::demand::SourceDeman
         file, offset, length, maximum_ranges, work, |work| work.remaining(),
         #[cfg(windows)]
         |file, code, input, output, work| {
-            crate::native_capture::native_device_control_measured::<W>(file, code, input, output, work)
+            native_device_control_measured::<W>(file, code, input, output, work)
         },
     )
 }

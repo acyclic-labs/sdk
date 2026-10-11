@@ -1,14 +1,9 @@
 //! Zero-copy logical range clone over immutable sparse extents.
 
-use super::{
-    DecodeLimits, ExtentMutation, ExtentMutationError, ExtentMutationOptions,
-    apply_extent_mutations_async, plan_extent_range_async,
-};
+use super::DecodeLimits;
 use crate::cancellation::CancellationToken;
-use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind};
-use std::mem::size_of;
 use thiserror::Error;
 
 /// Candidate destination extent root and exact clone work.
@@ -88,100 +83,18 @@ pub async fn clone_extent_range_async<S: crate::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<ExtentCloneReceipt, ExtentCloneFailure> {
-    validate_request(request, limits)?;
-    let plan = plan_extent_range_async(
-        store,
-        super::ExtentRangeRequest {
-            root: request.source_root,
-            file_size: request.source_logical_bytes,
-            range: request.source_range,
-            maximum_spans: request.maximum_spans,
-            limits,
-            budget,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    let allocation_bytes =
-        usize_to_u64(plan.spans.len()).saturating_mul(usize_to_u64(size_of::<ExtentMutation>()));
-    let simultaneous_plan_allocation = plan
-        .retained_allocation_bytes
-        .checked_add(allocation_bytes)
-        .ok_or_else(|| {
-            OperationFailure::new(ExtentCloneError::Work(WorkError::Overflow), plan.work)
-        })?;
-    let mut work = plan
-        .work
-        .checked_add(WorkCounters {
-            allocation_operations: 1,
-            items_examined: usize_to_u64(plan.spans.len()),
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), plan.work))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(simultaneous_plan_allocation);
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), plan.work))?;
-    let mut mutations = Vec::new();
-    if mutations.try_reserve_exact(plan.spans.len()).is_err() {
-        return Err(OperationFailure::new(
-            ExtentCloneError::AllocationFailed,
-            work,
-        ));
-    }
-    for span in plan.spans {
-        let relative = span
-            .offset
-            .checked_sub(request.source_range.offset)
-            .ok_or_else(|| OperationFailure::new(ExtentCloneError::RangeOverflow, work))?;
-        let offset = request
-            .destination_offset
-            .checked_add(relative)
-            .ok_or_else(|| OperationFailure::new(ExtentCloneError::RangeOverflow, work))?;
-        mutations.push(ExtentMutation::Replace {
-            offset,
-            length: span.length,
-            kind: span.kind,
-            extend: true,
-        });
-    }
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    remaining.peak_allocation_bytes = budget
-        .peak_allocation_bytes
-        .checked_sub(allocation_bytes)
-        .ok_or_else(|| OperationFailure::new(ExtentCloneError::Work(WorkError::Overflow), work))?;
-    let receipt = apply_extent_mutations_async(
-        store,
-        request.destination_root,
-        request.destination_logical_bytes,
-        &mutations,
-        ExtentMutationOptions {
-            maximum_mutations: request.maximum_mutations,
-            limits,
-            budget: remaining,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    work = work
-        .with_backend(receipt.work, allocation_bytes)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    Ok(ExtentCloneReceipt {
-        root: receipt.root,
-        logical_bytes: receipt.logical_bytes,
-        work,
-    })
+    let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
+    super::regular_mutation::clone_extent_range_with_accounting(
+        store, request, limits, &mut accounting, cancellation,
+    ).await.map_err(|error| OperationFailure::new(
+        super::regular_mutation::project_clone_error(error), accounting.spent(),
+    ))
 }
 
-fn validate_request(
+pub(super) fn validate_request(
     request: ExtentCloneRequest,
     limits: DecodeLimits,
-) -> Result<(), ExtentCloneFailure> {
+) -> Result<(), ExtentCloneError> {
     let error = if request.source_root.kind != ObjectKind::ExtentPage
         || request.destination_root.kind != ObjectKind::ExtentPage
     {
@@ -208,7 +121,7 @@ fn validate_request(
         None
     };
     match error {
-        Some(error) => Err(OperationFailure::before_work(error)),
+        Some(error) => Err(error),
         None => Ok(()),
     }
 }

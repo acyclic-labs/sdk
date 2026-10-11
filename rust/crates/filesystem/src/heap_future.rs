@@ -36,6 +36,31 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
     Ok((in_heap(move || create(state)), bytes))
 }
 
+/// Known logical ownership of the existing boxed future, not proof DATA.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HeapFutureEvent {
+    BeforeFrame { bytes: u64, budget: crate::WorkBudget },
+    Admitted(crate::WorkCounters),
+    Released(u64),
+}
+
+type HeapFutureObserver<'a> =
+    &'a (dyn Fn(HeapFutureEvent) -> Result<u64, crate::WorkError> + Sync);
+
+struct HeapFutureRelease<'a> {
+    observer: Option<HeapFutureObserver<'a>>,
+    bytes: u64,
+}
+
+impl Drop for HeapFutureRelease<'_> {
+    fn drop(&mut self) {
+        if let Some(observer) = self.observer {
+            observer(HeapFutureEvent::Released(self.bytes))
+                .expect("the actual admitted SDK future must release once");
+        }
+    }
+}
+
 /// Preserves the short-frame boundary while admitting its actual future body.
 /// The nested permit reserves the live box until the operation has completed.
 pub(crate) async fn in_heap_measured<F, T, E>(
@@ -43,6 +68,7 @@ pub(crate) async fn in_heap_measured<F, T, E>(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
     cancelled: E,
+    observer: Option<HeapFutureObserver<'_>>,
 ) -> crate::MeasuredResult<crate::OperationReceipt<T>, E>
 where
     F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
@@ -53,13 +79,37 @@ where
         return Err(crate::OperationFailure::new(cancelled, work));
     }
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
-    work.charge_allocation(u64::from(bytes != 0), bytes, &budget)
+    let standing = match observer {
+        Some(observer) => observer(HeapFutureEvent::BeforeFrame { bytes, budget })
+            .map_err(|error| crate::OperationFailure::before_work(error.into()))?,
+        None => 0,
+    };
+    let mut frame_budget = budget;
+    frame_budget.peak_allocation_bytes = frame_budget.peak_allocation_bytes.checked_sub(standing)
+        .ok_or_else(|| crate::OperationFailure::before_work(crate::WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", observed: standing, maximum: budget.peak_allocation_bytes,
+        }.into()))?;
+    work.charge_allocation(u64::from(bytes != 0), bytes, &frame_budget)
         .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+    if let Some(observer) = observer {
+        observer(HeapFutureEvent::Admitted(work))
+            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
+    }
+    // Declared before all fallible bookkeeping and the box so admission retires
+    // on errors and unwinding, after the whole future has been destroyed.
+    let frame = HeapFutureRelease { observer, bytes };
+    work.peak_allocation_bytes = work.peak_allocation_bytes.checked_add(standing)
+        .ok_or_else(|| crate::OperationFailure::new(crate::WorkError::Overflow.into(), work))?;
     let mut remaining = work.remaining(budget)
         .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+    // The existing cache leaf reserves its own backing. Only this new frame
+    // is delegated here, otherwise the very same cache would be charged twice.
     remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(bytes)
         .ok_or_else(|| crate::OperationFailure::new(crate::WorkError::Overflow.into(), work))?;
-    let result = in_heap(move || create(remaining)).await;
+    let mut future = in_heap(move || create(remaining));
+    let result = future.as_mut().await;
+    drop(future);
+    drop(frame);
     let (value, nested) = match result {
         Ok(receipt) => (Ok(receipt.value), receipt.work),
         Err(failure) => (Err(failure.error), *failure.work),
@@ -73,7 +123,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{in_heap_admitted, in_heap_measured};
+    use super::{HeapFutureEvent, in_heap_admitted, in_heap_measured};
     use crate::kernel::allocation::AllocationLedger;
     use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
     use std::cell::Cell;
@@ -135,7 +185,7 @@ mod tests {
         let failure = in_heap_measured(|budget| {
             created.set(created.get() + 1);
             CopyFuture { budget, copied: [0; 8] }
-        }, copy_budget(), &cancelled, TestError::Cancelled).await.expect_err("cold cancellation");
+        }, copy_budget(), &cancelled, TestError::Cancelled, None).await.expect_err("cold cancellation");
         assert_eq!(failure.error, TestError::Cancelled);
         assert_eq!(*failure.work, WorkCounters::default());
 
@@ -147,7 +197,7 @@ mod tests {
             let failure = in_heap_measured(|budget| {
                 created.set(created.get() + 1);
                 CopyFuture { budget, copied: [0; 8] }
-            }, budget, &cancellation, TestError::Cancelled).await.expect_err("future admission");
+            }, budget, &cancellation, TestError::Cancelled, None).await.expect_err("future admission");
             assert!(matches!(failure.error, TestError::Work(WorkError::BudgetExceeded { .. })));
             assert_eq!(*failure.work, WorkCounters::default());
         }
@@ -161,17 +211,63 @@ mod tests {
             assert_eq!(budget.allocation_operations, 0);
             assert_eq!(budget.peak_allocation_bytes, 0);
             CopyFuture { budget, copied: [0; 8] }
-        }, copy_budget(), &cancellation, TestError::Cancelled).await.expect("exact permit");
+        }, copy_budget(), &cancellation, TestError::Cancelled, None).await.expect("exact permit");
         assert_eq!(receipt.value, *b"heapbody");
         assert_eq!(receipt.work, copy_budget());
 
         let budget = WorkBudget { bytes_copied: 7, ..copy_budget() };
-        let failure = in_heap_measured(|budget| CopyFuture { budget, copied: [0; 8] },
-            budget, &cancellation, TestError::Cancelled).await.expect_err("second copy denied");
+        let failure = in_heap_measured(|budget| CopyFuture { budget, copied: [0; 8] }, budget, &cancellation, TestError::Cancelled, None).await.expect_err("second copy denied");
         assert_eq!(failure.error, TestError::Work(WorkError::BudgetExceeded {
             counter: "bytes_copied", observed: 8, maximum: 7,
         }));
         assert_eq!(*failure.work, WorkCounters { bytes_copied: 4, ..copy_budget() });
+    }
+
+    #[tokio::test]
+    async fn cache_standing_and_actual_frame_share_exact_peak_without_double_delegation() {
+        let cancellation = CancellationToken::new();
+        let cache = Box::new([0_u8; 13]);
+        let admitted = std::sync::atomic::AtomicU64::new(0);
+        let released = std::sync::atomic::AtomicU64::new(0);
+        let trace = |event| {
+            match event {
+                HeapFutureEvent::BeforeFrame { .. } => return Ok(cache.len() as u64),
+                HeapFutureEvent::Admitted(work) => {
+                    admitted.fetch_add(work.allocation_operations, std::sync::atomic::Ordering::AcqRel);
+                }
+                HeapFutureEvent::Released(bytes) => {
+                    released.fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            Ok(0)
+        };
+        let budget = WorkBudget {
+            peak_allocation_bytes: copy_budget().peak_allocation_bytes + cache.len() as u64,
+            ..copy_budget()
+        };
+        let receipt = in_heap_measured(|remaining| {
+            assert_eq!(remaining.peak_allocation_bytes, cache.len() as u64);
+            CopyFuture { budget: remaining, copied: [0; 8] }
+        }, budget, &cancellation, TestError::Cancelled, Some(&trace))
+            .await.expect("exact standing plus frame");
+        assert_eq!(receipt.value, *b"heapbody");
+        assert_eq!(receipt.work, budget);
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(released.load(std::sync::atomic::Ordering::Acquire),
+            copy_budget().peak_allocation_bytes);
+
+        let created = Cell::new(false);
+        let failure = in_heap_measured(|remaining| {
+            created.set(true);
+            CopyFuture { budget: remaining, copied: [0; 8] }
+        }, WorkBudget { peak_allocation_bytes: budget.peak_allocation_bytes - 1, ..budget },
+            &cancellation, TestError::Cancelled, Some(&trace))
+            .await.expect_err("cache and frame overlap denied");
+        assert!(!created.get());
+        assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(released.load(std::sync::atomic::Ordering::Acquire),
+            copy_budget().peak_allocation_bytes);
     }
 
     #[tokio::test]
@@ -246,5 +342,72 @@ mod tests {
         assert_eq!(parent.len(), 17);
         drop(parent);
         allocations.release(17).expect("release parent");
+    }
+
+    #[test]
+    fn observer_future_panic_preserves_exact_frame_and_data_prefix_after_box_drop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct PanicDataFuture<'a> {
+            owner: &'a crate::kernel::ProofDataCustody,
+            dropped: &'a AtomicBool,
+            budget: WorkBudget,
+        }
+        impl Future for PanicDataFuture<'_> {
+            type Output = MeasuredResult<OperationReceipt<()>, TestError>;
+
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+                let mut work = WorkCounters::default();
+                let mut allocations = AllocationLedger::default();
+                allocations.claim_bytes(3, 1, &mut work, self.budget).expect("actual DATA admission");
+                self.owner.record_data_work(work).expect("admitted DATA prefix");
+                let mut data = Vec::new();
+                data.try_reserve_exact(3).expect("three actual DATA bytes");
+                let copy = WorkCounters { bytes_copied: 3, ..WorkCounters::default() };
+                work.charge(&copy, &self.budget).expect("actual copy admission");
+                self.owner.record_data_work(WorkCounters {
+                    peak_allocation_bytes: 3, ..copy
+                }).expect("completed copy prefix");
+                data.extend_from_slice(b"cow");
+                panic!("backend unwind after actual SDK DATA copy");
+            }
+        }
+        impl Drop for PanicDataFuture<'_> {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        let owner = crate::kernel::ProofDataCustody::default();
+        let dropped = AtomicBool::new(false);
+        let observer = |event| {
+            if matches!(event, super::HeapFutureEvent::Released(_)) {
+                assert!(dropped.load(Ordering::Acquire), "the entire box must die before release");
+            }
+            owner.record_heap_future_event(event)
+        };
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::async_storage::poll_immediate(in_heap_measured(
+                |budget| PanicDataFuture { owner: &owner, dropped: &dropped, budget },
+                WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), TestError::Cancelled,
+                Some(&observer),
+            ))
+        }));
+        assert!(panic.is_err());
+        assert_eq!(owner.retained_bytes(), 0, "frames are not proof DATA adoption");
+        let prefix = owner.pending_data_work();
+        assert_eq!(prefix.allocation_operations, 2);
+        assert_eq!(prefix.bytes_copied, 3);
+        assert_eq!(prefix.peak_allocation_bytes,
+            crate::foundation::usize_to_u64(std::mem::size_of::<PanicDataFuture<'_>>()) + 3);
+        assert_eq!(owner.take_completed_data_work(), prefix);
+        assert_eq!(owner.pending_data_work(), WorkCounters::default());
+        assert_eq!(owner.completed_data_work(), prefix);
+
+        // A later segment must not inherit the retired frame's live bytes.
+        owner.record_data_work(WorkCounters {
+            allocation_operations: 1, peak_allocation_bytes: 1, ..WorkCounters::default()
+        }).expect("later actual DATA");
+        assert_eq!(owner.pending_data_work().peak_allocation_bytes, 1);
     }
 }

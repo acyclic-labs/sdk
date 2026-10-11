@@ -84,7 +84,7 @@ impl<T> Owned<Vec<T>> {
     }
 }
 
-pub(super) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]

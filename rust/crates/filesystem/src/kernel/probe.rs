@@ -444,9 +444,10 @@ fn project_accounted_capture(
             crate::FsError::Decode(error) => AuthenticatedProbeError::Decode(error),
             crate::FsError::Work(error) => AuthenticatedProbeError::Work(error),
             crate::FsError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+            crate::FsError::EncodedAllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
             #[cfg(not(target_arch = "wasm32"))]
             crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
-            _ => unreachable!("standalone capture leaves return only typed decode, work, probe, native or cancellation errors"),
+            _ => unreachable!("standalone capture leaves return only typed decode, allocation, work, probe, native or cancellation errors"),
         };
         failed(error, work)
     })
@@ -519,6 +520,7 @@ fn capture_directory_page_encoding(
             super::TreePageEncodeError::Canonical(error) => error.into(),
             super::TreePageEncodeError::Work(error) => error.into(),
             super::TreePageEncodeError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+            super::TreePageEncodeError::AllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
         };
         failed(error, completed)
     })?;
@@ -1561,11 +1563,13 @@ fn project_probe_error(error: crate::FsError) -> AuthenticatedProbeError {
         crate::FsError::Decode(error) => AuthenticatedProbeError::Decode(error),
         crate::FsError::Work(error) => AuthenticatedProbeError::Work(error),
         crate::FsError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+        crate::FsError::EncodedAllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
         crate::FsError::FileRecord(error) => AuthenticatedProbeError::FileRecord(error),
         crate::FsError::Path(super::PathLookupError::Tree(error)) => AuthenticatedProbeError::Tree(error),
         crate::FsError::Directory(error) => AuthenticatedProbeError::Directory(error),
         crate::FsError::FileRead(super::FileRangeReadError::Extent(error)) => AuthenticatedProbeError::Extent(error),
         crate::FsError::BlobRead(error) => AuthenticatedProbeError::Blob(error),
+        crate::FsError::EncodedAllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
         error => AuthenticatedProbeError::Context(Box::new(error)),
@@ -1593,6 +1597,9 @@ pub enum AuthenticatedProbeError {
     /// Bounded dependency output allocation failed or overflowed.
     #[error("authenticated dependency batch allocation failed")]
     AllocationFailed,
+    /// A canonical state encoder retains the allocator's actual failure cause.
+    #[error("authenticated dependency encoding allocation failed: {0}")]
+    EncodedAllocationFailed(#[source] std::collections::TryReserveError),
     /// A directly supplied record does not own the requested dependency region.
     #[error("authenticated record identity does not match dependency region")]
     RecordIdentityMismatch,

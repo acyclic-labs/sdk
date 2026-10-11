@@ -402,6 +402,10 @@ impl From<FsError> for ReadDecodeError {
     fn from(error: FsError) -> Self { Self::Accounting(error) }
 }
 
+impl From<WorkError> for ReadDecodeError {
+    fn from(error: WorkError) -> Self { Self::Accounting(error.into()) }
+}
+
 pub(crate) struct ReadDecodeAccounting<'a> {
     pub(crate) allocations: &'a mut super::allocation::AllocationLedger,
     pub(crate) work: &'a mut WorkCounters,

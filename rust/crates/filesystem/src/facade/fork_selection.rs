@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::kernel::{
-    FileTableMutation, TreeEntry, TreeMutation, Owned,
+    FileTableMutation, FileTablePage, TreeEntry, TreeMutation, Owned,
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
     encode_file_table_page_with_accounting, encode_tree_page_with_accounting,
     list_tree_entries_async_with_accounting, lookup_file_record_async_with_accounting,
@@ -89,7 +89,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         paths: Option<Vec<String>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredReceipt<bool, WorkspaceError> {
+    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
         let mut work = WorkCounters::default();
         let mut allocations = AllocationLedger::default();
         let result = async {

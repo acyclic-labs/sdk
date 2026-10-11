@@ -7,6 +7,8 @@ use crate::{
     LiveMutationOutcome, OperationId, PublicationPermit, WorkBudget, WorkCounters,
 };
 
+const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
+
 /// Seals the exact current checkout candidate under one stable operation ID.
 ///
 /// Callers must retain `operation_id` across every ambiguous retry and must not
@@ -125,7 +127,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
             "forced publication requires a private-overlay checkout".to_owned(),
         ));
     }
-    const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
+    // The same safe-rebase bound governs the original native carrier below.
     for _ in 0..MAXIMUM_SAFE_REBASE_ATTEMPTS {
         let remaining = work.remaining(budget).map_err(engine_error)?;
         let publication = if checkout.has_pending_mutations() {
@@ -174,6 +176,85 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
         .map_err(|error| crate::OperationFailure::new(error, work))
+}
+
+/// Publishes the retained mounted operation on its actual original native
+/// allocation family. `false` is an SDK conflict/fence decision, never a
+/// callback failure: callers may clear only that deterministic rejected op.
+pub(super) async fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F, Fut>(
+    checkout: &mut Checkout<A, O>,
+    operation_id: OperationId,
+    permit: PublicationPermit,
+    force: bool,
+    original: &'a crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+    before_publication: &mut F,
+) -> Result<bool, T>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    T: From<crate::FsError> + From<MountSourceError> + Send,
+    F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<(), T>> + Send,
+{
+    cancellation.check().map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
+    let mode = checkout.mode().mutations;
+    if force && mode != crate::model::MutationMode::PrivateOverlay {
+        return Err(T::from(MountSourceError::NativeUnsupported));
+    }
+    match mode {
+        crate::model::MutationMode::PrivateOverlay => {
+            // Resolve the original durable operation before another compile,
+            // owner callback, flush or authority append. A known ACK converges
+            // through the very same SDK pending-publication engine.
+            if let Some(outcome) = checkout.retry_stale_commit_guarded_with_native_work(
+                operation_id, permit, original, cancellation, before_publication, None,
+            ).await? {
+                return Ok(matches!(outcome,
+                    CheckoutCommitOutcome::Committed { .. }
+                    | CheckoutCommitOutcome::AlreadyCommitted { .. }));
+            }
+            if !force && !checkout.has_pending_mutations() { return Ok(true); }
+            let attempts = if force { MAXIMUM_SAFE_REBASE_ATTEMPTS } else { 1 };
+            for _ in 0..attempts {
+                original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+                    .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
+                let outcome = checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
+                    operation_id, permit, original, cancellation, before_publication, None,
+                ).await?;
+                match outcome {
+                    CheckoutCommitOutcome::Committed { .. }
+                    | CheckoutCommitOutcome::AlreadyCommitted { .. } => return Ok(true),
+                    CheckoutCommitOutcome::Conflict { .. } if force => {
+                        let (decision, allocation) = checkout.rebase_head_with_native_work(
+                            checkout.volume_config().limits.maximum_checkout_dependencies,
+                            original, cancellation,
+                        ).await.map_err(T::from)?;
+                        let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
+                        drop(decision);
+                        drop(allocation);
+                        if conflicted { return Ok(false); }
+                    }
+                    CheckoutCommitOutcome::Conflict { .. }
+                    | CheckoutCommitOutcome::Fenced { .. }
+                    | CheckoutCommitOutcome::IdempotencyConflict { .. } => return Ok(false),
+                }
+            }
+            Err(T::from(MountSourceError::PublicationRetryLimit))
+        }
+        crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
+            let (outcome, allocation) = checkout.resume_live_guarded_with_native_work(
+                operation_id, 8, 256, permit, original, cancellation, before_publication, None,
+            ).await?;
+            let published = matches!(outcome,
+                LiveMutationOutcome::Committed { .. } | LiveMutationOutcome::AlreadyCommitted { .. });
+            drop(outcome);
+            drop(allocation);
+            Ok(published)
+        }
+        crate::model::MutationMode::DirectLive | crate::model::MutationMode::None =>
+            Err(T::from(MountSourceError::NativeUnsupported)),
+    }
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {

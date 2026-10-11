@@ -2,7 +2,7 @@ use super::*;
 use crate::CancellationToken;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{AttributeChild, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributeChild, AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use bytes::Bytes;

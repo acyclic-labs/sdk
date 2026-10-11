@@ -44,10 +44,10 @@ fn leaf_ordering_is_raw_byte_order_not_locale_aware() -> Result<(), Box<dyn std:
         entry("é".as_bytes(), 4)?,
         entry(b"Z", 1)?,
     ]);
-    assert!(matches!(
-        encode_tree_page(&locale_ordered, 16),
-        Err(CanonicalDecodeError::Invariant(message)) if message.contains("not strictly ordered")
-    ));
+    assert_eq!(
+        encode_tree_page(&locale_ordered, 16).err(),
+        Some(invariant(TreePageError::NamesNotStrictlyOrdered)),
+    );
     Ok(())
 }
 
@@ -257,4 +257,76 @@ fn measured_tree_refusals_and_invalid_pages_preserve_completed_prefixes()
     assert!(matches!(failure.error, TreePageEncodeError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_tree_encoder_retains_real_capacity_and_uses_same_canonical_body()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    for page in [
+        TreePage::Leaf(vec![entry(b"a", 1)?]),
+        TreePage::Internal(vec![TreeChild {
+            first_name: name(b"a")?,
+            page: ObjectId { kind: ObjectKind::TreePage, digest: crate::foundation::Digest::from_bytes([7; 32]) },
+        }]),
+    ] {
+        let before = work.receipt();
+        let live_before = work.live_allocation_bytes();
+        let (encoded, guard) = encode_tree_page_with_accounting(&page, 16, &mut accounting, &cancellation)?;
+        assert_eq!(encoded, encode_tree_page(&page, 16)?);
+        match &guard {
+            KernelOwnedAllocation::NativeOriginal(allocation) => {
+                assert!(allocation.work().shares_ledger(&work));
+                assert_eq!(allocation.bytes(), encoded.capacity() as u64);
+            }
+            KernelOwnedAllocation::Standalone => panic!("original writer returned standalone custody"),
+        }
+        let after = work.receipt();
+        assert_eq!(after.items_examined - before.items_examined, 1);
+        assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded.len() as u64);
+        assert_eq!(after.allocation_operations - before.allocation_operations, 1);
+        assert_eq!(work.live_allocation_bytes(), live_before + encoded.capacity() as u64);
+        drop(encoded);
+        drop(guard);
+        assert_eq!(work.live_allocation_bytes(), live_before);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_tree_encoder_rejects_on_original_budget_before_capacity_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    let before = work.receipt();
+    let live_before = work.live_allocation_bytes();
+    let result = encode_tree_page_with_accounting(&TreePage::Leaf(vec![entry(b"a", 1)?]), 16, &mut accounting, &cancellation);
+    assert!(matches!(result, Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)))));
+    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(work.receipt().bytes_encoded, before.bytes_encoded);
+    assert_eq!(work.receipt().items_examined, before.items_examined + 1);
+    assert_eq!(work.live_allocation_bytes(), live_before);
+    cancellation.cancel();
+    let before_cancelled = work.receipt();
+    let result = encode_tree_page_with_accounting(&TreePage::Leaf(Vec::new()), 16, &mut accounting, &cancellation);
+    assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
+    assert_eq!(work.receipt(), before_cancelled);
+    Ok(())
+}
+
+#[test]
+fn measured_tree_allocation_error_retains_the_actual_reservation_cause() {
+    let source = Vec::<u8>::new().try_reserve_exact(usize::MAX)
+        .expect_err("byte capacity exceeds Vec's addressable allocation bound");
+    let error = TreePageEncodeError::AllocationFailed(source);
+    assert!(std::error::Error::source(&error)
+        .is_some_and(|cause| cause.downcast_ref::<std::collections::TryReserveError>().is_some()));
 }

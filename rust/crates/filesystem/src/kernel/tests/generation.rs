@@ -241,3 +241,70 @@ fn measured_root_encoding_refuses_before_allocation_and_retains_invalid_prefix()
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_root_encoder_retains_real_output_capacity_on_original_ledger()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let before = work.receipt();
+    let live_before = work.live_allocation_bytes();
+    let value = root();
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    let (encoded, guard) = encode_generation_root_with_accounting(&value, &mut accounting, &cancellation)?;
+    assert_eq!(encoded, encode_generation_root(&value)?);
+    match &guard {
+        KernelOwnedAllocation::NativeOriginal(allocation) => {
+            assert!(allocation.work().shares_ledger(&work));
+            assert_eq!(allocation.bytes(), encoded.capacity() as u64);
+        }
+        KernelOwnedAllocation::Standalone => panic!("original writer returned standalone custody"),
+    }
+    let after = work.receipt();
+    assert_eq!(after.items_examined - before.items_examined, 1);
+    assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded.len() as u64);
+    assert_eq!(after.bytes_copied - before.bytes_copied, 96);
+    assert_eq!(after.allocation_operations - before.allocation_operations, 1);
+    assert_eq!(after.peak_allocation_bytes, live_before + encoded.capacity() as u64);
+    assert_eq!(work.live_allocation_bytes(), live_before + encoded.capacity() as u64);
+    drop(encoded);
+    drop(guard);
+    assert_eq!(work.live_allocation_bytes(), live_before);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_root_encoder_refuses_without_allocating_and_preserves_original_cancel()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = work.receipt();
+    let live_before = work.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    let result = encode_generation_root_with_accounting(&root(), &mut accounting, &cancellation);
+    assert!(matches!(result, Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)))));
+    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(work.receipt().bytes_encoded, before.bytes_encoded);
+    assert_eq!(work.receipt().items_examined, before.items_examined + 1);
+    assert_eq!(work.live_allocation_bytes(), live_before);
+    cancellation.cancel();
+    let before_cancelled = work.receipt();
+    let result = encode_generation_root_with_accounting(&root(), &mut accounting, &cancellation);
+    assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
+    assert_eq!(work.receipt(), before_cancelled);
+    Ok(())
+}
+
+#[test]
+fn measured_root_allocation_error_retains_the_actual_reservation_cause() {
+    let source = Vec::<u8>::new().try_reserve_exact(usize::MAX)
+        .expect_err("byte capacity exceeds Vec's addressable allocation bound");
+    let error = GenerationRootEncodeError::AllocationFailed(source);
+    assert!(std::error::Error::source(&error)
+        .is_some_and(|cause| cause.downcast_ref::<std::collections::TryReserveError>().is_some()));
+}

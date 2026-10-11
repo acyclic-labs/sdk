@@ -6784,20 +6784,6 @@ fn native_positional_file_measured(
         .unwrap_or_else(|| native_demand_error(error))))
 }
 
-#[cfg(windows)]
-pub(crate) fn native_device_control_measured<W: crate::demand::SourceDemandReadWork>(
-    file: &impl std::os::windows::io::AsRawHandle,
-    code: u32,
-    input: &[u8],
-    output: &mut [u8],
-    work: &mut W,
-) -> Result<usize, crate::DemandError> {
-    let result = work.with_native_read_meter(|meter| {
-        acyclic_native_runtime::device_control_in_place_measured(file, code, input, output, meter)
-    });
-    result.map_err(|error| work.with_original_leaf(|work| work.take_native_io_failure())
-        .unwrap_or_else(|| native_demand_error(error)))
-}
 
 impl NativeRangeSource {
     #[cfg(test)]

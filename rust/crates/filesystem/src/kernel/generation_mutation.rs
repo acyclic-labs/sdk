@@ -1,21 +1,20 @@
 //! One-volume generation transaction composition over sparse persistent kernels.
+//! Ordinary and original-native transactions share this sparse engine. Producers
+//! run outside Root loans and keep explicit preadmitted custody for actual data.
 
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+#[cfg(all(test, feature = "memory"))]
 use super::allocation::{AllocationError, AllocationLedger};
-use super::regular_mutation::{
-    RegularMutation, RegularMutationError, apply_regular_clone_async, apply_regular_mutation_async,
-};
+use super::regular_mutation::{RegularMutation, RegularMutationError};
 use super::{
     DecodeLimits, DirectoryReadError, FileKind, FileMutation, FilePayload, FileRecord,
     FileRecordReadError, FileTableMutation, FileTableMutationError, GenerationRoot, LogicalName,
     MetadataField, Mutation, MutationPlan, MutationPlanError, NamespacePath, PathBatchEntry,
-    PathLookupError, TreeEntry, TreeMutation, TreeMutationError, apply_file_table_mutations_async,
-    apply_tree_mutations_async, list_tree_entries_async, lookup_file_records_async,
-    lookup_path_refs_async,
+    PathLookupError, TreeEntry, TreeMutation, TreeMutationError,
 };
-use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
+use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, GenerationId, usize_to_u64};
-use crate::heap_future::in_heap;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ObjectId;
@@ -149,19 +148,9 @@ struct DirectoryEdit {
     mutation: Option<TreeMutation>,
 }
 
-struct FreshnessContext<'a, S> {
-    store: &'a S,
-    generation: &'a GenerationRoot,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &'a CancellationToken,
-}
-
 struct InitialLookups {
-    paths: Vec<PathBatchEntry>,
-    path_bytes: u64,
-    identities: Vec<Option<FileRecord>>,
-    identity_bytes: u64,
+    paths: Owned<Vec<PathBatchEntry>>,
+    identities: Owned<Vec<Option<FileRecord>>>,
 }
 
 /// Applies one ordered namespace, metadata, and content batch to a generation.
@@ -205,72 +194,282 @@ pub(crate) async fn apply_generation_mutations_retaining_async<S: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationMutationReceipt, Vec<Mutation>), GenerationMutationFailure> {
-    in_heap(move || async move {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(path_cancelled()))?;
-        preflight_generation_mutations(&operations, config)?;
-        let plan = MutationPlan::compile(operations, config.limits, budget)
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        let mut work = plan.work();
-        let mut allocations = AllocationLedger::default();
-        allocations
-            .claim_bytes(plan.retained_allocation_bytes(), 0, &mut work, budget)
-            .map_err(|error| allocation_failure(error, work))?;
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    apply_generation_mutations_retaining_with_accounting(
+        store, generation, operations, config, &mut accounting, cancellation,
+    ).await.map(|(receipt, operations, _)| (receipt, operations))
+        .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
+}
 
-        let (created_ids, created_id_bytes) = verify_created_identities(
-            FreshnessContext {
-                store,
-                generation,
-                config,
-                budget,
-                cancellation,
-            },
-            &plan,
-            &mut allocations,
-            &mut work,
-        )
-        .await?;
+/// Runs the canonical transaction on the original invocation. Incoming
+/// operations keep their caller-owned custody; the returned guard owns only
+/// the actual newly produced generation-root heap.
+pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    generation: &GenerationRoot,
+    operations: Vec<Mutation>,
+    config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(GenerationMutationReceipt, Vec<Mutation>, KernelOwnedAllocation), crate::FsError> {
+    accounting.check()?;
+    preflight_generation_mutations(&operations, config)?;
+    let (plan, plan_allocation) = MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
+    let plan = Owned { value: plan, allocation: plan_allocation };
+    let created_ids = verify_created_identities(store, generation, &plan.value, config, accounting, cancellation).await?;
+    let lookups = load_initial_lookups(store, generation, &plan.value, &created_ids.value, config, accounting, cancellation).await?;
+    let created_bytes = logical_vec_bytes(&created_ids.value)?;
+    drop_owned(created_ids, created_bytes, accounting)?;
+    let mut allocation = accounting.claim_owned(0, 0)?;
+    let state = TransactionState::new(
+        &plan.value, &lookups, config,
+        &mut MutationLeaf { accounting, allocation: &mut allocation },
+    )?;
+    let path_bytes = logical_vec_bytes(&lookups.paths.value)?;
+    let identity_bytes = logical_vec_bytes(&lookups.identities.value)?;
+    drop_owned(lookups.paths, path_bytes, accounting)?;
+    drop_owned(lookups.identities, identity_bytes, accounting)?;
+    let mut state = Owned { value: state, allocation };
+    state.simulate(store, &plan.value, config, accounting, cancellation).await?;
+    let Owned { value: plan, allocation: plan_allocation } = plan;
+    let plan_bytes = plan.retained_allocation_bytes();
+    let operations = plan.into_operations();
+    release_allocation(plan_allocation, plan_bytes, accounting)?;
+    state.rewrite_directories(store, config, accounting, cancellation).await?;
+    state.verify_removed_directories(store, config, accounting, cancellation).await?;
+    let (root, allocation) = state.rewrite_file_table(store, generation, config, accounting, cancellation).await?;
+    let state_bytes = state.value.retained_bytes()?;
+    drop_owned(state, state_bytes, accounting)?;
+    Ok((GenerationMutationReceipt { root, work: accounting.spent() }, operations, allocation))
+}
 
-        let lookups = load_initial_lookups(
-            FreshnessContext {
-                store,
-                generation,
-                config,
-                budget,
-                cancellation,
-            },
-            &plan,
-            &created_ids,
-            &mut allocations,
-            &mut work,
-        )
-        .await?;
-        drop(created_ids);
-        allocations
-            .release(created_id_bytes)
-            .map_err(|error| allocation_failure(error, work))?;
+/// Field order destroys the concrete data before releasing its physical guard.
+struct Owned<T> {
+    value: T,
+    allocation: KernelOwnedAllocation,
+}
 
-        let mut state = TransactionState::new(&plan, lookups, config, allocations, work, budget)?;
-        state.simulate(store, &plan, config, cancellation).await?;
-        let plan_bytes = plan.retained_allocation_bytes();
-        let operations = plan.into_operations();
-        state
-            .allocations
-            .release(plan_bytes)
-            .map_err(|error| allocation_failure(error, state.work))?;
-        state
-            .rewrite_directories(store, config, cancellation)
-            .await?;
-        state
-            .verify_removed_directories(store, config, cancellation)
-            .await?;
-        let receipt = state
-            .rewrite_file_table(store, generation, config, cancellation)
-            .await?;
-        Ok((receipt, operations))
-    })
-    .await
+fn accounting_error(error: crate::FsError) -> crate::FsError {
+    match error {
+        crate::FsError::Work(error) => GenerationMutationError::Work(error).into(),
+        crate::FsError::PendingMutationAllocationFailed | crate::FsError::HandleAllocationFailed =>
+            GenerationMutationError::AllocationFailed.into(),
+        error => error,
+    }
+}
+
+fn account_items(accounting: &mut KernelAccounting<'_>, count: u64) -> Result<(), crate::FsError> {
+    accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::default() })
+        .map_err(accounting_error)
+}
+
+fn reserve_owned<T>(count: usize, accounting: &mut KernelAccounting<'_>) -> Result<Owned<Vec<T>>, crate::FsError> {
+    let requested = count.checked_mul(size_of::<T>()).map(usize_to_u64).ok_or(WorkError::Overflow)?;
+    let allocation = accounting.claim_owned(requested, u64::from(count != 0)).map_err(accounting_error)?;
+    let mut owned = Owned { value: Vec::new(), allocation };
+    if let Err(cause) = owned.value.try_reserve_exact(count) {
+        drop_owned(owned, requested, accounting)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if is_original(accounting) {
+            return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(cause)));
+        }
+        let _ = cause;
+        return Err(GenerationMutationError::AllocationFailed.into());
+    }
+    let actual = logical_vec_bytes(&owned.value)?;
+    if let Err(error) = accounting.reconcile_owned(&mut owned.allocation, requested, actual) {
+        drop_owned(owned, actual, accounting)?;
+        return Err(accounting_error(error));
+    }
+    Ok(owned)
+}
+
+fn drop_owned<T>(owned: Owned<T>, bytes: u64, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    let Owned { value, allocation } = owned;
+    drop(value);
+    release_allocation(allocation, bytes, accounting)
+}
+
+fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+    match allocation {
+        KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.split_off(bytes)
+            .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
+    }
+}
+
+enum RegularAction {
+    Mutate { id: FileId, payload: FilePayload, mutation: RegularMutation },
+    Clone {
+        destination: FileId, source_payload: FilePayload, source_offset: u64,
+        destination_payload: FilePayload, destination_offset: u64, length: u64,
+    },
+}
+
+impl Owned<TransactionState> {
+    /// SDK state callbacks execute outside Root loans; each allocation carries
+    /// its explicit paid guard from preadmission through physical destruction.
+    fn leaf<T>(
+        &mut self, accounting: &mut KernelAccounting<'_>,
+        operation: impl FnOnce(&mut TransactionState, &mut MutationLeaf<'_, '_>) -> Result<T, crate::FsError>,
+    ) -> Result<T, crate::FsError> {
+        accounting.check()?;
+        let mut leaf = MutationLeaf { accounting, allocation: &mut self.allocation };
+        let result = operation(&mut self.value, &mut leaf);
+        if result.is_err() { self.value.clear(); }
+        result
+    }
+
+    async fn simulate<S: AsyncObjectStore>(
+        &mut self, store: &S, plan: &MutationPlan, config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        for (ordinal, operation) in plan.operations().iter().enumerate() {
+            let Some(action) = self.leaf(accounting, |state, leaf| state.prepare(leaf, plan, ordinal, operation))? else { continue; };
+            let (id, payload) = match action {
+                RegularAction::Mutate { id, payload, mutation } => {
+                    let receipt = super::regular_mutation::apply_regular_mutation_with_accounting(
+                        store, payload, mutation, config, accounting, cancellation,
+                    ).await.map_err(|error| {
+                        if is_original(accounting) { error } else {
+                            GenerationMutationError::Regular(super::regular_mutation::project_regular_error(error)).into()
+                        }
+                    })?;
+                    (id, receipt.payload)
+                }
+                RegularAction::Clone { destination, source_payload, source_offset, destination_payload, destination_offset, length } => {
+                    let receipt = super::regular_mutation::apply_regular_clone_with_accounting(
+                        store, source_payload, source_offset, destination_payload, destination_offset, length,
+                        config, accounting, cancellation,
+                    ).await.map_err(|error| {
+                        if is_original(accounting) { error } else {
+                            GenerationMutationError::Regular(super::regular_mutation::project_regular_error(error)).into()
+                        }
+                    })?;
+                    (destination, receipt.destination)
+                }
+            };
+            self.leaf(accounting, |state, leaf| { state.record_mut(leaf, id)?.working.payload = payload; Ok(()) })?;
+        }
+        Ok(())
+    }
+
+    async fn rewrite_directories<S: AsyncObjectStore>(
+        &mut self, store: &S, config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        self.leaf(accounting, TransactionState::sort_directory_edits)?;
+        let mut cursor = 0;
+        while cursor < self.value.directory_edits.len() {
+            let (id, root, mutations, bytes, end) = self.leaf(accounting, |state, leaf| state.take_directory_edits(leaf, cursor))?;
+            let allocation = split_allocation(&mut self.allocation, bytes)?;
+            let mutations = Owned { value: mutations, allocation };
+            let receipt = super::tree_mutation::apply_tree_mutations_with_accounting(
+                store, root, &mutations.value, config.limits.maximum_mutations_per_batch,
+                DecodeLimits::for_volume(config), accounting, cancellation,
+            ).await.map_err(|error| {
+                if is_original(accounting) { error } else {
+                    GenerationMutationError::Tree(super::tree_mutation::project_tree_error(error)).into()
+                }
+            })?;
+            drop_owned(mutations, bytes, accounting)?;
+            self.leaf(accounting, |state, leaf| {
+                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.root }; Ok(())
+            })?;
+            cursor = end;
+        }
+        Ok(())
+    }
+
+    async fn verify_removed_directories<S: AsyncObjectStore>(
+        &mut self, store: &S, config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        self.leaf(accounting, TransactionState::sort_removed_directories)?;
+        for index in 0..self.value.removed_directories.len() {
+            let entries = self.leaf(accounting, |state, leaf| {
+                let id = *state.removed_directories.get(index).ok_or(GenerationMutationError::InconsistentState)?;
+                let FilePayload::Directory { entries } = state.record(leaf, id)?.working.payload else {
+                    return Err(GenerationMutationError::InconsistentState.into());
+                };
+                Ok(entries)
+            })?;
+            let (listing, allocation) = super::list::list_tree_entries_async_with_accounting(
+                store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation, None,
+            ).await.map_err(|error| {
+                if is_original(accounting) { error } else {
+                    GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()
+                }
+            })?;
+            let listing = Owned { value: listing, allocation };
+            if !listing.value.entries.is_empty() { return Err(GenerationMutationError::DirectoryNotEmpty.into()); }
+            let bytes = logical_vec_bytes(&listing.value.entries)?;
+            drop_owned(listing, bytes, accounting)?;
+        }
+        Ok(())
+    }
+
+    async fn rewrite_file_table<S: AsyncObjectStore>(
+        &mut self, store: &S, generation: &GenerationRoot, config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
+        let mutations = self.leaf(accounting, TransactionState::file_table_edits)?;
+        let bytes = logical_vec_bytes(&mutations)?;
+        let allocation = split_allocation(&mut self.allocation, bytes)?;
+        let mutations = Owned { value: mutations, allocation };
+        let root = if mutations.value.is_empty() { generation.file_table } else {
+            super::file_table_mutation::apply_file_table_mutations_with_accounting(
+                store, generation.file_table, &mutations.value,
+                u32::try_from(mutations.value.len()).map_err(|_| WorkError::Overflow)?,
+                DecodeLimits::for_volume(config), accounting, cancellation,
+            ).await.map_err(|error| {
+                if is_original(accounting) { error } else {
+                    GenerationMutationError::FileTable(super::file_table_mutation::project_file_table_error(error)).into()
+                }
+            })?.root
+        };
+        drop_owned(mutations, bytes, accounting)?;
+        let root = self.leaf(accounting, |state, leaf| state.clone_generation_root(leaf, generation, root))?;
+        let bytes = logical_vec_bytes(&root.parents)?;
+        let allocation = split_allocation(&mut self.allocation, bytes)?;
+        Ok((root, allocation))
+    }
+}
+
+fn is_original(accounting: &KernelAccounting<'_>) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    { accounting.native_work().is_some() }
+    #[cfg(target_arch = "wasm32")]
+    { let _ = accounting; false }
+}
+
+fn release_allocation(
+    mut allocation: KernelOwnedAllocation, bytes: u64, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    accounting.release_owned(&mut allocation, bytes).map_err(accounting_error)
+}
+
+
+fn generation_error(error: crate::FsError) -> GenerationMutationError {
+    match error {
+        crate::FsError::Mutation(error) => error,
+        crate::FsError::Work(error) => error.into(),
+        crate::FsError::Path(error) => error.into(),
+        crate::FsError::FileRecord(error) => error.into(),
+        crate::FsError::Directory(error) => error.into(),
+        crate::FsError::Cancelled(_) => path_cancelled(),
+        crate::FsError::Object(error) => GenerationMutationError::FileRecord(FileRecordReadError::Storage(error)),
+        crate::FsError::Decode(error) => GenerationMutationError::FileRecord(FileRecordReadError::Decode(error)),
+        crate::FsError::MergeTree(error) => error.into(),
+        crate::FsError::MergeFileTable(error) => error.into(),
+        crate::FsError::DetachedMutation(error) => error.into(),
+        error @ (crate::FsError::BlobRead(_) | crate::FsError::FileRead(_)) =>
+            GenerationMutationError::Regular(super::regular_mutation::project_regular_error(error)),
+        crate::FsError::HandleAllocationFailed => GenerationMutationError::AllocationFailed,
+        crate::FsError::Config(error) => error.into(),
+        _ => unreachable!("standalone generation leaves return typed generation/read/work errors"),
+    }
 }
 
 /// Synchronous adapter over [`apply_generation_mutations_async`].
@@ -297,266 +496,131 @@ pub fn apply_generation_mutations<S: crate::ImmediateObjectStore>(
 }
 
 async fn verify_created_identities<S: AsyncObjectStore>(
-    context: FreshnessContext<'_, S>,
-    plan: &MutationPlan,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<(Vec<FileId>, u64), GenerationMutationFailure> {
-    in_heap(move || async move {
-        let created_count = plan
-            .operations()
-            .iter()
-            .filter(|operation| matches!(operation, Mutation::Create { .. }))
-            .count();
-        if created_count == 0 {
-            return Ok((Vec::new(), 0));
+    store: &S, generation: &GenerationRoot, plan: &MutationPlan, config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<Owned<Vec<FileId>>, crate::FsError> {
+    let original = is_original(accounting);
+    let count = plan.operations().iter().filter(|operation| matches!(operation, Mutation::Create { .. })).count();
+    let mut ids = reserve_owned::<FileId>(count, accounting)?;
+    ids.value.extend(plan.operations().iter().filter_map(|operation| {
+        if let Mutation::Create { record, .. } = operation { Some(record.file_id) } else { None }
+    }));
+    let comparisons = Cell::new(0_u64);
+    ids.value.sort_unstable_by(|left, right| {
+        comparisons.set(comparisons.get().saturating_add(1));
+        left.cmp(right)
+    });
+    account_items(accounting, comparisons.get())?;
+    let mut examined = 0;
+    for pair in ids.value.windows(2) {
+        examined += 1;
+        if let [left, right] = pair && left == right {
+            account_items(accounting, examined)?;
+            return Err(GenerationMutationError::FileIdentityAlreadyExists.into());
         }
-        let mut created_ids =
-            reserve_exact::<FileId>(created_count, allocations, work, context.budget)?;
-        created_ids.extend(plan.operations().iter().filter_map(|operation| {
-            if let Mutation::Create { record, .. } = operation {
-                Some(record.file_id)
-            } else {
-                None
+    }
+    account_items(accounting, examined)?;
+    if !ids.value.is_empty() {
+        let (records, allocation) = super::file_table::lookup_file_records_async_with_accounting(
+            store, generation.file_table, &ids.value, config.limits.maximum_mutations_per_batch,
+            DecodeLimits::for_volume(config), accounting, cancellation, None,
+        ).await.map_err(|error| {
+            if original { error } else {
+                GenerationMutationError::FileRecord(super::file_table::map_batch_error(super::persistent_point::project_failure(error))).into()
             }
-        }));
-        let comparisons = Cell::new(0_u64);
-        created_ids.sort_unstable_by(|left, right| {
-            comparisons.set(comparisons.get().saturating_add(1));
-            left.cmp(right)
-        });
-        charge_items(work, comparisons.get(), context.budget)?;
-        let mut duplicate_examined = 0_u64;
-        for pair in created_ids.windows(2) {
-            duplicate_examined = duplicate_examined
-                .checked_add(1)
-                .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-            if let [left, right] = pair
-                && left == right
-            {
-                charge_items(work, duplicate_examined, context.budget)?;
-                return Err(failed(
-                    GenerationMutationError::FileIdentityAlreadyExists,
-                    *work,
-                ));
-            }
-        }
-        charge_items(work, duplicate_examined, context.budget)?;
-        let created_bytes = logical_vec_bytes(&created_ids)?;
-        let freshness = lookup_file_records_async(
-            context.store,
-            context.generation.file_table,
-            &created_ids,
-            context.config.limits.maximum_mutations_per_batch,
-            DecodeLimits::for_volume(context.config),
-            nested_budget(*work, context.budget, allocations.live_bytes())?,
-            context.cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                *work,
-                *failure.work,
-                allocations.live_bytes(),
-                failure.error.into(),
-            )
         })?;
-        *work = merge_nested(
-            *work,
-            freshness.work,
-            allocations.live_bytes(),
-            context.budget,
-        )?;
-        if freshness.records.iter().any(Option::is_some) {
-            return Err(failed(
-                GenerationMutationError::FileIdentityAlreadyExists,
-                *work,
-            ));
+        let records = Owned { value: records, allocation };
+        if records.value.iter().any(Option::is_some) {
+            return Err(GenerationMutationError::FileIdentityAlreadyExists.into());
         }
-        drop(freshness);
-        Ok((created_ids, created_bytes))
-    })
-    .await
+        let bytes = logical_vec_bytes(&records.value)?;
+        drop_owned(records, bytes, accounting)?;
+    }
+    Ok(ids)
 }
 
 async fn load_initial_lookups<S: AsyncObjectStore>(
-    context: FreshnessContext<'_, S>,
-    plan: &MutationPlan,
-    created_ids: &[FileId],
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<InitialLookups, GenerationMutationFailure> {
-    in_heap(move || async move {
-        let (paths, path_bytes) = load_path_lookups(&context, plan, allocations, work).await?;
-        let (identities, identity_bytes) =
-            load_identity_lookups(&context, plan, created_ids, allocations, work).await?;
-        Ok(InitialLookups {
-            paths,
-            path_bytes,
-            identities,
-            identity_bytes,
-        })
-    })
-    .await
-}
-
-async fn load_path_lookups<S: AsyncObjectStore>(
-    context: &FreshnessContext<'_, S>,
-    plan: &MutationPlan,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<(Vec<PathBatchEntry>, u64), GenerationMutationFailure> {
-    let path_count = plan.ordered_operation_paths().len();
-    let mut path_refs =
-        reserve_exact::<&NamespacePath>(path_count, allocations, work, context.budget)?;
-    path_refs.extend(plan.ordered_paths());
-    let path_ref_bytes = logical_vec_bytes(&path_refs)?;
-    let (paths, path_bytes) = if path_refs.is_empty() {
-        (Vec::new(), 0)
+    store: &S, generation: &GenerationRoot, plan: &MutationPlan, created_ids: &[FileId],
+    config: VolumeConfig, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<InitialLookups, crate::FsError> {
+    let original = is_original(accounting);
+    let mut refs = reserve_owned::<&NamespacePath>(plan.ordered_operation_paths().len(), accounting)?;
+    refs.value.extend(plan.ordered_paths());
+    let (paths, path_allocation) = if refs.value.is_empty() {
+        (Vec::new(), accounting.claim_owned(0, 0)?)
     } else {
-        let lookup = lookup_path_refs_async(
-            context.store,
-            context.generation,
-            &path_refs,
-            context.config,
-            nested_budget(*work, context.budget, allocations.live_bytes())?,
-            context.cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                *work,
-                *failure.work,
-                allocations.live_bytes(),
-                failure.error.into(),
-            )
+        let result = super::path_access::lookup_path_refs_async_with_accounting(
+            store, generation, &refs.value, config, accounting, cancellation, None,
+        ).await.map_err(|error| {
+            if original { error } else { GenerationMutationError::Path(super::path_access::path_error(error)).into() }
         })?;
-        *work = merge_nested(*work, lookup.work, allocations.live_bytes(), context.budget)?;
-        (lookup.entries, lookup.retained_allocation_bytes)
+        let (lookup, allocation) = result.into_parts();
+        (lookup.entries, allocation)
     };
-    drop(path_refs);
-    allocations
-        .release(path_ref_bytes)
-        .map_err(|error| allocation_failure(error, *work))?;
-    allocations
-        .claim_bytes(path_bytes, 0, work, context.budget)
-        .map_err(|error| allocation_failure(error, *work))?;
-    Ok((paths, path_bytes))
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "loads every identity lookup a plan needs in one bounded pass"
-)]
-async fn load_identity_lookups<S: AsyncObjectStore>(
-    context: &FreshnessContext<'_, S>,
-    plan: &MutationPlan,
-    created_ids: &[FileId],
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<(Vec<Option<FileRecord>>, u64), GenerationMutationFailure> {
-    let mut maximum_identity_uses = 0_usize;
-    for operation in plan.operations() {
-        maximum_identity_uses = maximum_identity_uses
-            .checked_add(match operation {
-                Mutation::File { .. } | Mutation::Restore { .. } => 1,
-                Mutation::CloneFileRange { .. } => 2,
-                _ => 0,
-            })
-            .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-    }
-    if maximum_identity_uses == 0 {
-        return Ok((Vec::new(), 0));
-    }
-    let mut identity_ids =
-        reserve_exact::<FileId>(maximum_identity_uses, allocations, work, context.budget)?;
+    let paths = Owned { value: paths, allocation: path_allocation };
+    let ref_bytes = logical_vec_bytes(&refs.value)?;
+    drop_owned(refs, ref_bytes, accounting)?;
+    let maximum = plan.operations().iter().try_fold(0_usize, |total, operation| {
+        total.checked_add(match operation {
+            Mutation::File { .. } | Mutation::Restore { .. } => 1,
+            Mutation::CloneFileRange { .. } => 2,
+            _ => 0,
+        }).ok_or(WorkError::Overflow)
+    })?;
+    let mut ids = reserve_owned::<FileId>(maximum, accounting)?;
     for operation in plan.operations() {
         match operation {
-            Mutation::File { file_id, .. } => identity_ids.push(*file_id),
-            Mutation::Restore { record, .. } => identity_ids.push(record.file_id),
-            Mutation::CloneFileRange {
-                source_file_id,
-                destination_file_id,
-                ..
-            } => {
-                identity_ids.push(*source_file_id);
-                identity_ids.push(*destination_file_id);
+            Mutation::File { file_id, .. } => ids.value.push(*file_id),
+            Mutation::Restore { record, .. } => ids.value.push(record.file_id),
+            Mutation::CloneFileRange { source_file_id, destination_file_id, .. } => {
+                ids.value.push(*source_file_id); ids.value.push(*destination_file_id);
             }
             _ => {}
         }
     }
     let comparisons = Cell::new(0_u64);
-    identity_ids.sort_unstable_by(|left, right| {
-        comparisons.set(comparisons.get().saturating_add(1));
-        left.cmp(right)
+    ids.value.sort_unstable_by(|left, right| {
+        comparisons.set(comparisons.get().saturating_add(1)); left.cmp(right)
     });
-    charge_items(work, comparisons.get(), context.budget)?;
-    // `dedup` examines every sorted identity once. Keep that deterministic
-    // linear pass visible in the exact-work receipt instead of hiding it in
-    // standard-library collection maintenance.
-    charge_items(work, usize_to_u64(identity_ids.len()), context.budget)?;
-    identity_ids.dedup();
-    let identity_id_bytes = logical_vec_bytes(&identity_ids)?;
-    let identities = if identity_ids.is_empty() {
-        Vec::new()
+    account_items(accounting, comparisons.get())?;
+    account_items(accounting, usize_to_u64(ids.value.len()))?;
+    ids.value.dedup();
+    let (identities, allocation) = if ids.value.is_empty() {
+        (Vec::new(), accounting.claim_owned(0, 0)?)
     } else {
-        let lookup = lookup_file_records_async(
-            context.store,
-            context.generation.file_table,
-            &identity_ids,
-            u32::try_from(identity_ids.len())
-                .map_err(|_| failed(WorkError::Overflow.into(), *work))?,
-            DecodeLimits::for_volume(context.config),
-            nested_budget(*work, context.budget, allocations.live_bytes())?,
-            context.cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            nested_failure(
-                *work,
-                *failure.work,
-                allocations.live_bytes(),
-                failure.error.into(),
-            )
-        })?;
-        *work = merge_nested(*work, lookup.work, allocations.live_bytes(), context.budget)?;
-        for (file_id, record) in identity_ids.iter().zip(&lookup.records) {
-            if record.is_none() {
-                let comparisons = Cell::new(0_u64);
-                let created = created_ids.binary_search_by(|candidate| {
-                    comparisons.set(comparisons.get().saturating_add(1));
-                    candidate.cmp(file_id)
-                });
-                charge_items(work, comparisons.get(), context.budget)?;
-                let mut restored = false;
-                let mut restore_examined = 0_u64;
-                for operation in plan.operations() {
-                    restore_examined = restore_examined
-                        .checked_add(1)
-                        .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-                    if matches!(operation, Mutation::Restore { record, .. } if record.file_id == *file_id)
-                    {
-                        restored = true;
-                        break;
-                    }
-                }
-                charge_items(work, restore_examined, context.budget)?;
-                if created.is_err() && !restored {
-                    return Err(failed(GenerationMutationError::MissingSource, *work));
+        super::file_table::lookup_file_records_async_with_accounting(
+            store, generation.file_table, &ids.value,
+            u32::try_from(ids.value.len()).map_err(|_| WorkError::Overflow)?,
+            DecodeLimits::for_volume(config), accounting, cancellation, None,
+        ).await.map_err(|error| {
+            if original { error } else {
+                GenerationMutationError::FileRecord(super::file_table::map_batch_error(super::persistent_point::project_failure(error))).into()
+            }
+        })?
+    };
+    let identities = Owned { value: identities, allocation };
+    for (file_id, record) in ids.value.iter().zip(&identities.value) {
+        if record.is_none() {
+            let comparisons = Cell::new(0_u64);
+            let created = created_ids.binary_search_by(|candidate| {
+                comparisons.set(comparisons.get().saturating_add(1)); candidate.cmp(file_id)
+            });
+            account_items(accounting, comparisons.get())?;
+            let mut restored = false;
+            let mut examined = 0;
+            for operation in plan.operations() {
+                examined += 1;
+                if matches!(operation, Mutation::Restore { record, .. } if record.file_id == *file_id) {
+                    restored = true; break;
                 }
             }
+            account_items(accounting, examined)?;
+            if created.is_err() && !restored { return Err(GenerationMutationError::MissingSource.into()); }
         }
-        lookup.records
-    };
-    let identity_bytes = logical_vec_bytes(&identities)?;
-    allocations
-        .claim_bytes(identity_bytes, 0, work, context.budget)
-        .map_err(|error| allocation_failure(error, *work))?;
-    drop(identity_ids);
-    allocations
-        .release(identity_id_bytes)
-        .map_err(|error| allocation_failure(error, *work))?;
-    Ok((identities, identity_bytes))
+    }
+    let id_bytes = logical_vec_bytes(&ids.value)?;
+    drop_owned(ids, id_bytes, accounting)?;
+    Ok(InitialLookups { paths, identities })
 }
 
 struct TransactionState {
@@ -565,10 +629,32 @@ struct TransactionState {
     records: Vec<RecordState>,
     directory_edits: Vec<DirectoryEdit>,
     removed_directories: Vec<FileId>,
-    allocations: AllocationLedger,
-    work: WorkCounters,
-    budget: WorkBudget,
     config: VolumeConfig,
+}
+
+struct MutationLeaf<'a, 'work> {
+    accounting: &'a mut KernelAccounting<'work>,
+    allocation: &'a mut KernelOwnedAllocation,
+}
+
+impl MutationLeaf<'_, '_> {
+    fn reserve<T>(&mut self, count: usize) -> Result<Vec<T>, crate::FsError> {
+        let Owned { value, mut allocation } = reserve_owned::<T>(count, self.accounting)?;
+        if let Err(error) = self.allocation.absorb(&mut allocation) {
+            drop(value);
+            return Err(error);
+        }
+        Ok(value)
+    }
+
+    fn items(&mut self, count: u64) -> Result<(), crate::FsError> {
+        account_items(self.accounting, count)
+    }
+
+    fn release(&mut self, bytes: u64) -> Result<(), crate::FsError> {
+        let allocation = split_allocation(self.allocation, bytes)?;
+        release_allocation(allocation, bytes, self.accounting)
+    }
 }
 
 impl TransactionState {
@@ -578,37 +664,28 @@ impl TransactionState {
     )]
     fn new(
         plan: &MutationPlan,
-        lookups: InitialLookups,
+        lookups: &InitialLookups,
         config: VolumeConfig,
-        mut allocations: AllocationLedger,
-        mut work: WorkCounters,
-        budget: WorkBudget,
-    ) -> Result<Self, GenerationMutationFailure> {
-        let InitialLookups {
-            paths: lookup,
-            path_bytes: lookup_retained_bytes,
-            identities: identity_records,
-            identity_bytes: identity_record_bytes,
-        } = lookups;
+        leaf: &mut MutationLeaf<'_, '_>,
+    ) -> Result<Self, crate::FsError> {
+        let lookup = &lookups.paths.value;
+        let identity_records = &lookups.identities.value;
         let operation_count = plan.operations().len();
         let mut operation_paths =
-            reserve_exact::<[usize; 2]>(operation_count, &mut allocations, &mut work, budget)?;
+            leaf.reserve::<[usize; 2]>(operation_count)?;
         operation_paths.resize(operation_count, [usize::MAX; 2]);
         let mut paths =
-            reserve_exact::<PathState>(lookup.len(), &mut allocations, &mut work, budget)?;
+            leaf.reserve::<PathState>(lookup.len())?;
         if plan.ordered_operation_paths().len() != lookup.len() {
-            return Err(failed(GenerationMutationError::InconsistentState, work));
+            return Err(failed(GenerationMutationError::InconsistentState));
         }
-        let mut seeds = reserve_exact::<RecordSeed>(
+        let mut seeds = leaf.reserve::<RecordSeed>(
             lookup
                 .len()
                 .checked_mul(2)
                 .and_then(|value| value.checked_add(operation_count))
                 .and_then(|value| value.checked_add(identity_records.len()))
-                .ok_or_else(|| failed(WorkError::Overflow.into(), work))?,
-            &mut allocations,
-            &mut work,
-            budget,
+                .ok_or_else(|| failed(WorkError::Overflow.into()))?,
         )?;
         let mut previous: Option<&NamespacePath> = None;
         let mut previous_entry: Option<PathBatchEntry> = None;
@@ -636,7 +713,7 @@ impl TransactionState {
                 });
                 previous = Some(path);
             } else if previous_entry != Some(*entry) {
-                return Err(failed(GenerationMutationError::InconsistentState, work));
+                return Err(failed(GenerationMutationError::InconsistentState));
             }
             previous_entry = Some(*entry);
             #[allow(
@@ -698,9 +775,9 @@ impl TransactionState {
             comparisons.set(comparisons.get().saturating_add(1));
             left.record.file_id.cmp(&right.record.file_id)
         });
-        charge_items(&mut work, comparisons.get(), budget)?;
+        leaf.items(comparisons.get())?;
         let mut records =
-            reserve_exact::<RecordState>(seeds.len(), &mut allocations, &mut work, budget)?;
+            leaf.reserve::<RecordState>(seeds.len())?;
         for group in seeds.chunk_by(|left, right| left.record.file_id == right.record.file_id) {
             let mut base = None;
             let mut created = None;
@@ -709,42 +786,33 @@ impl TransactionState {
             for seed in group {
                 group_examined = group_examined
                     .checked_add(1)
-                    .ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
+                    .ok_or_else(|| failed(WorkError::Overflow.into()))?;
                 if seed.created {
                     if created.replace(seed.record).is_some() {
-                        charge_items(&mut work, group_examined, budget)?;
-                        return Err(failed(
-                            GenerationMutationError::FileIdentityAlreadyExists,
-                            work,
-                        ));
+                        leaf.items(group_examined)?;
+                        return Err(failed(GenerationMutationError::FileIdentityAlreadyExists));
                     }
                 } else if seed.replacement {
                     if replacement.is_some_and(|value| value != seed.record) {
-                        charge_items(&mut work, group_examined, budget)?;
-                        return Err(failed(GenerationMutationError::InconsistentState, work));
+                        leaf.items(group_examined)?;
+                        return Err(failed(GenerationMutationError::InconsistentState));
                     }
                     replacement = Some(seed.record);
                 } else if base.is_some_and(|value| value != seed.record) {
-                    charge_items(&mut work, group_examined, budget)?;
-                    return Err(failed(
-                        GenerationMutationError::FileIdentityAlreadyExists,
-                        work,
-                    ));
+                    leaf.items(group_examined)?;
+                    return Err(failed(GenerationMutationError::FileIdentityAlreadyExists));
                 } else {
                     base = Some(seed.record);
                 }
             }
-            charge_items(&mut work, group_examined, budget)?;
+            leaf.items(group_examined)?;
             if base.is_some() && created.is_some() {
-                return Err(failed(
-                    GenerationMutationError::FileIdentityAlreadyExists,
-                    work,
-                ));
+                return Err(failed(GenerationMutationError::FileIdentityAlreadyExists));
             }
             let working = base
                 .or(created)
                 .or(replacement)
-                .ok_or_else(|| failed(GenerationMutationError::InconsistentState, work))?;
+                .ok_or_else(|| failed(GenerationMutationError::InconsistentState))?;
             records.push(RecordState {
                 base,
                 working,
@@ -764,458 +832,157 @@ impl TransactionState {
         for index in 0..paths.len() {
             let path = state_path(plan, &paths[index]);
             let Some((parent, _)) = path.split_last() else {
-                return Err(failed(GenerationMutationError::InconsistentState, work));
+                return Err(failed(GenerationMutationError::InconsistentState));
             };
             paths[index].parent_state = find_path_state(plan, &paths, parent, &path_comparisons);
         }
-        charge_items(&mut work, path_comparisons.get(), budget)?;
-        let directory_edits = reserve_exact::<DirectoryEdit>(
+        leaf.items(path_comparisons.get())?;
+        let directory_edits = leaf.reserve::<DirectoryEdit>(
             operation_count
                 .checked_mul(2)
-                .ok_or_else(|| failed(WorkError::Overflow.into(), work))?,
-            &mut allocations,
-            &mut work,
-            budget,
+                .ok_or_else(|| failed(WorkError::Overflow.into()))?,
         )?;
         let removed_directories =
-            reserve_exact::<FileId>(operation_count, &mut allocations, &mut work, budget)?;
+            leaf.reserve::<FileId>(operation_count)?;
         let seed_bytes = logical_vec_bytes(&seeds)?;
         drop(seeds);
-        allocations
-            .release(seed_bytes)
-            .map_err(|error| allocation_failure(error, work))?;
-        drop(lookup);
-        allocations
-            .release(lookup_retained_bytes)
-            .map_err(|error| allocation_failure(error, work))?;
-        drop(identity_records);
-        allocations
-            .release(identity_record_bytes)
-            .map_err(|error| allocation_failure(error, work))?;
+        leaf.release(seed_bytes)?;
         Ok(Self {
             paths,
             operation_paths,
             records,
             directory_edits,
             removed_directories,
-            allocations,
-            work,
-            budget,
             config,
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive simulation over every mutation kind in plan order"
-    )]
-    async fn simulate<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        plan: &MutationPlan,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        in_heap(move || async move {
-            for (ordinal, operation) in plan.operations().iter().enumerate() {
-                let order = u32::try_from(ordinal)
-                    .map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))?;
-                match operation {
-                    Mutation::Create { record, .. } => {
-                        self.create(plan, ordinal, *record, order)?;
+    fn clear(&mut self) {
+        drop(std::mem::take(&mut self.paths));
+        drop(std::mem::take(&mut self.operation_paths));
+        drop(std::mem::take(&mut self.records));
+        drop(std::mem::take(&mut self.directory_edits));
+        drop(std::mem::take(&mut self.removed_directories));
+    }
+
+    fn retained_bytes(&self) -> Result<u64, crate::FsError> {
+        let vectors = [
+            logical_vec_bytes(&self.paths)?, logical_vec_bytes(&self.operation_paths)?,
+            logical_vec_bytes(&self.records)?, logical_vec_bytes(&self.directory_edits)?,
+            logical_vec_bytes(&self.removed_directories)?,
+        ];
+        let base = vectors.into_iter().try_fold(0_u64, |sum, bytes| sum.checked_add(bytes).ok_or(WorkError::Overflow))?;
+        self.directory_edits.iter().try_fold(base, |sum, edit| {
+            sum.checked_add(edit.retained_name_bytes).ok_or_else(|| WorkError::Overflow.into())
+        })
+    }
+
+    /// Executes only known-owned synchronous work. Storage actions leave the
+    /// original allocation lock before entering any lower asynchronous engine.
+    fn prepare(
+        &mut self, leaf: &mut MutationLeaf<'_, '_>, plan: &MutationPlan, ordinal: usize, operation: &Mutation,
+    ) -> Result<Option<RegularAction>, crate::FsError> {
+        let order = u32::try_from(ordinal).map_err(|_| GenerationMutationError::InconsistentState)?;
+        let path_id = |state: &Self| state.source_binding(ordinal).map(|binding| binding.file_id);
+        match operation {
+            Mutation::Create { record, .. } => self.create(leaf, plan, ordinal, *record, order)?,
+            Mutation::Restore { record, .. } => self.restore(leaf, plan, ordinal, *record, order)?,
+            Mutation::Remove { expected_file_id, .. } => {
+                let expected = match expected_file_id {
+                    MetadataField::Unavailable => None, MetadataField::Value(value) => Some(*value),
+                };
+                self.remove(leaf, plan, ordinal, expected, order)?;
+            }
+            Mutation::Rename { source, destination, replace } => self.rename(leaf, plan, ordinal, source, destination, *replace, order)?,
+            Mutation::Link { .. } => self.link(leaf, plan, ordinal, order)?,
+            Mutation::SetMetadata { metadata, .. } => {
+                let id = path_id(self)?; self.record_mut(leaf, id)?.working.metadata = *metadata;
+            }
+            Mutation::ValidateRegular { .. } => { let id = path_id(self)?; self.regular_payload(leaf, id)?; }
+            Mutation::Write { offset, length, content, content_offset, .. } => {
+                let id = path_id(self)?;
+                return self.regular_action(leaf, id, RegularMutation::Write {
+                    offset: *offset, length: *length, content: *content, content_offset: *content_offset,
+                }).map(Some);
+            }
+            Mutation::Resize { logical_bytes, .. } => {
+                let id = path_id(self)?;
+                return self.regular_action(leaf, id, RegularMutation::Resize { logical_bytes: *logical_bytes }).map(Some);
+            }
+            Mutation::ZeroRange { offset, length, allocated, extend, .. } => {
+                let id = path_id(self)?;
+                return self.regular_action(leaf, id, RegularMutation::ZeroRange {
+                    offset: *offset, length: *length, allocated: *allocated, extend: *extend,
+                }).map(Some);
+            }
+            Mutation::Preallocate { offset, length, keep_size, .. } => {
+                let id = path_id(self)?;
+                return self.regular_action(leaf, id, RegularMutation::Preallocate {
+                    offset: *offset, length: *length, keep_size: *keep_size,
+                }).map(Some);
+            }
+            Mutation::CloneRange { source_offset, destination_offset, length, .. } => {
+                let source = self.binding(ordinal, 0)?.file_id;
+                let destination = self.binding(ordinal, 1)?.file_id;
+                return self.clone_action(leaf, source, *source_offset, destination, *destination_offset, *length).map(Some);
+            }
+            Mutation::File { file_id, mutation } => match mutation {
+                FileMutation::ReplaceRecord { record } => {
+                    let binding = self.identity_binding(leaf, *file_id)?;
+                    if binding.kind != record.kind || binding.kind == FileKind::Directory {
+                        return Err(GenerationMutationError::InconsistentState.into());
                     }
-                    Mutation::Restore { record, .. } => {
-                        self.restore(plan, ordinal, *record, order)?;
-                    }
-                    Mutation::Remove {
-                        expected_file_id, ..
-                    } => {
-                        let expected = match expected_file_id {
-                            MetadataField::Unavailable => None,
-                            MetadataField::Value(value) => Some(*value),
-                        };
-                        self.remove(plan, ordinal, expected, order)?;
-                    }
-                    Mutation::Rename {
-                        source,
-                        destination,
-                        replace,
-                    } => self.rename(plan, ordinal, source, destination, *replace, order)?,
-                    Mutation::Link { .. } => self.link(plan, ordinal, order)?,
-                    Mutation::SetMetadata { metadata, .. } => {
-                        let binding = self.source_binding(ordinal)?;
-                        self.record_mut(binding.file_id)?.working.metadata = *metadata;
-                    }
-                    Mutation::Write {
-                        offset,
-                        length,
-                        content,
-                        content_offset,
-                        ..
-                    } => {
-                        self.mutate_regular(
-                            store,
-                            ordinal,
-                            RegularMutation::Write {
-                                offset: *offset,
-                                length: *length,
-                                content: *content,
-                                content_offset: *content_offset,
-                            },
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Mutation::ValidateRegular { .. } => {
-                        let binding = self.source_binding(ordinal)?;
-                        if binding.kind != FileKind::Regular {
-                            return Err(failed(
-                                GenerationMutationError::InconsistentState,
-                                self.work,
-                            ));
-                        }
-                    }
-                    Mutation::Resize { logical_bytes, .. } => {
-                        self.mutate_regular(
-                            store,
-                            ordinal,
-                            RegularMutation::Resize {
-                                logical_bytes: *logical_bytes,
-                            },
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Mutation::ZeroRange {
-                        offset,
-                        length,
-                        allocated,
-                        extend,
-                        ..
-                    } => {
-                        self.mutate_regular(
-                            store,
-                            ordinal,
-                            RegularMutation::ZeroRange {
-                                offset: *offset,
-                                length: *length,
-                                allocated: *allocated,
-                                extend: *extend,
-                            },
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Mutation::Preallocate {
-                        offset,
-                        length,
-                        keep_size,
-                        ..
-                    } => {
-                        self.mutate_regular(
-                            store,
-                            ordinal,
-                            RegularMutation::Preallocate {
-                                offset: *offset,
-                                length: *length,
-                                keep_size: *keep_size,
-                            },
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Mutation::CloneRange {
-                        source_offset,
-                        destination_offset,
-                        length,
-                        ..
-                    } => {
-                        self.clone_regular(
-                            store,
-                            ordinal,
-                            *source_offset,
-                            *destination_offset,
-                            *length,
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
-                    Mutation::File { file_id, mutation } => match mutation {
-                        FileMutation::ReplaceRecord { record } => {
-                            let binding = self.identity_binding(*file_id)?;
-                            if binding.kind != record.kind || binding.kind == FileKind::Directory {
-                                return Err(failed(
-                                    GenerationMutationError::InconsistentState,
-                                    self.work,
-                                ));
-                            }
-                            let link_count = self.record(*file_id)?.working.link_count;
-                            self.record_mut(*file_id)?.working = FileRecord {
-                                link_count,
-                                ..*record
-                            };
-                        }
-                        FileMutation::SetMetadata { metadata } => {
-                            self.identity_binding(*file_id)?;
-                            self.record_mut(*file_id)?.working.metadata = *metadata;
-                        }
-                        FileMutation::Write {
-                            offset,
-                            length,
-                            content,
-                            content_offset,
-                        } => {
-                            self.mutate_regular_id(
-                                store,
-                                *file_id,
-                                RegularMutation::Write {
-                                    offset: *offset,
-                                    length: *length,
-                                    content: *content,
-                                    content_offset: *content_offset,
-                                },
-                                config,
-                                cancellation,
-                            )
-                            .await?;
-                        }
-                        FileMutation::ValidateRegular => {
-                            let binding = self.identity_binding(*file_id)?;
-                            if binding.kind != FileKind::Regular {
-                                return Err(failed(
-                                    GenerationMutationError::InconsistentState,
-                                    self.work,
-                                ));
-                            }
-                        }
-                        FileMutation::Resize { logical_bytes } => {
-                            self.mutate_regular_id(
-                                store,
-                                *file_id,
-                                RegularMutation::Resize {
-                                    logical_bytes: *logical_bytes,
-                                },
-                                config,
-                                cancellation,
-                            )
-                            .await?;
-                        }
-                        FileMutation::ZeroRange {
-                            offset,
-                            length,
-                            allocated,
-                            extend,
-                        } => {
-                            self.mutate_regular_id(
-                                store,
-                                *file_id,
-                                RegularMutation::ZeroRange {
-                                    offset: *offset,
-                                    length: *length,
-                                    allocated: *allocated,
-                                    extend: *extend,
-                                },
-                                config,
-                                cancellation,
-                            )
-                            .await?;
-                        }
-                        FileMutation::Preallocate {
-                            offset,
-                            length,
-                            keep_size,
-                        } => {
-                            self.mutate_regular_id(
-                                store,
-                                *file_id,
-                                RegularMutation::Preallocate {
-                                    offset: *offset,
-                                    length: *length,
-                                    keep_size: *keep_size,
-                                },
-                                config,
-                                cancellation,
-                            )
-                            .await?;
-                        }
-                    },
-                    Mutation::CloneFileRange {
-                        source_file_id,
-                        source_offset,
-                        destination_file_id,
-                        destination_offset,
-                        length,
-                    } => {
-                        self.clone_regular_ids(
-                            store,
-                            *source_file_id,
-                            *source_offset,
-                            *destination_file_id,
-                            *destination_offset,
-                            *length,
-                            config,
-                            cancellation,
-                        )
-                        .await?;
-                    }
+                    let link_count = self.record(leaf, *file_id)?.working.link_count;
+                    self.record_mut(leaf, *file_id)?.working = FileRecord { link_count, ..*record };
                 }
+                FileMutation::SetMetadata { metadata } => {
+                    self.identity_binding(leaf, *file_id)?; self.record_mut(leaf, *file_id)?.working.metadata = *metadata;
+                }
+                FileMutation::ValidateRegular => { self.regular_payload(leaf, *file_id)?; }
+                FileMutation::Write { offset, length, content, content_offset } => {
+                    return self.regular_action(leaf, *file_id, RegularMutation::Write {
+                        offset: *offset, length: *length, content: *content, content_offset: *content_offset,
+                    }).map(Some);
+                }
+                FileMutation::Resize { logical_bytes } => {
+                    return self.regular_action(leaf, *file_id, RegularMutation::Resize { logical_bytes: *logical_bytes }).map(Some);
+                }
+                FileMutation::ZeroRange { offset, length, allocated, extend } => {
+                    return self.regular_action(leaf, *file_id, RegularMutation::ZeroRange {
+                        offset: *offset, length: *length, allocated: *allocated, extend: *extend,
+                    }).map(Some);
+                }
+                FileMutation::Preallocate { offset, length, keep_size } => {
+                    return self.regular_action(leaf, *file_id, RegularMutation::Preallocate {
+                        offset: *offset, length: *length, keep_size: *keep_size,
+                    }).map(Some);
+                }
+            },
+            Mutation::CloneFileRange { source_file_id, source_offset, destination_file_id, destination_offset, length } => {
+                return self.clone_action(leaf, *source_file_id, *source_offset, *destination_file_id, *destination_offset, *length).map(Some);
             }
-            Ok(())
-        })
-        .await
+        }
+        Ok(None)
     }
 
-    async fn mutate_regular<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        operation: usize,
-        mutation: RegularMutation,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        let binding = self.source_binding(operation)?;
-        self.mutate_regular_id(store, binding.file_id, mutation, config, cancellation)
-            .await
+    fn regular_payload(&mut self, leaf: &mut MutationLeaf<'_, '_>, id: FileId) -> Result<FilePayload, crate::FsError> {
+        if self.identity_binding(leaf, id)?.kind != FileKind::Regular {
+            return Err(GenerationMutationError::InconsistentState.into());
+        }
+        Ok(self.record(leaf, id)?.working.payload)
     }
 
-    fn mutate_regular_id<'a, S: AsyncObjectStore>(
-        &'a mut self,
-        store: &'a S,
-        file_id: FileId,
-        mutation: RegularMutation,
-        config: VolumeConfig,
-        cancellation: &'a CancellationToken,
-    ) -> BoxStorageFuture<'a, Result<(), GenerationMutationFailure>> {
-        Box::pin(async move {
-            let binding = self.identity_binding(file_id)?;
-            if binding.kind != FileKind::Regular {
-                return Err(failed(
-                    GenerationMutationError::InconsistentState,
-                    self.work,
-                ));
-            }
-            let payload = self.record(file_id)?.working.payload;
-            let receipt = apply_regular_mutation_async(
-                store,
-                payload,
-                mutation,
-                config,
-                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                nested_failure(
-                    self.work,
-                    *failure.work,
-                    self.allocations.live_bytes(),
-                    failure.error.into(),
-                )
-            })?;
-            self.work = merge_nested(
-                self.work,
-                receipt.work,
-                self.allocations.live_bytes(),
-                self.budget,
-            )?;
-            self.record_mut(file_id)?.working.payload = receipt.payload;
-            Ok(())
-        })
+    fn regular_action(&mut self, leaf: &mut MutationLeaf<'_, '_>, id: FileId, mutation: RegularMutation) -> Result<RegularAction, crate::FsError> {
+        Ok(RegularAction::Mutate { id, payload: self.regular_payload(leaf, id)?, mutation })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the copy_file_range shape: operation, two offsets, and a length, plus store, config, and cancellation"
-    )]
-    async fn clone_regular<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        operation: usize,
-        source_offset: u64,
-        destination_offset: u64,
-        length: u64,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        in_heap(move || async move {
-            let source = self.binding(operation, 0)?;
-            let destination = self.binding(operation, 1)?;
-            self.clone_regular_ids(
-                store,
-                source.file_id,
-                source_offset,
-                destination.file_id,
-                destination_offset,
-                length,
-                config,
-                cancellation,
-            )
-            .await
+    fn clone_action(
+        &mut self, leaf: &mut MutationLeaf<'_, '_>, source: FileId, source_offset: u64, destination: FileId, destination_offset: u64, length: u64,
+    ) -> Result<RegularAction, crate::FsError> {
+        Ok(RegularAction::Clone {
+            destination, source_payload: self.regular_payload(leaf, source)?, source_offset,
+            destination_payload: self.regular_payload(leaf, destination)?, destination_offset, length,
         })
-        .await
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the copy_file_range shape: two identities, two offsets, and a length, plus store, config, and cancellation"
-    )]
-    async fn clone_regular_ids<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        in_heap(move || async move {
-            let source = self.identity_binding(source_file_id)?;
-            let destination = self.identity_binding(destination_file_id)?;
-            if source.kind != FileKind::Regular || destination.kind != FileKind::Regular {
-                return Err(failed(
-                    GenerationMutationError::InconsistentState,
-                    self.work,
-                ));
-            }
-            let source_payload = self.record(source_file_id)?.working.payload;
-            let destination_payload = self.record(destination_file_id)?.working.payload;
-            let receipt = apply_regular_clone_async(
-                store,
-                source_payload,
-                source_offset,
-                destination_payload,
-                destination_offset,
-                length,
-                config,
-                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                nested_failure(
-                    self.work,
-                    *failure.work,
-                    self.allocations.live_bytes(),
-                    failure.error.into(),
-                )
-            })?;
-            self.work = merge_nested(
-                self.work,
-                receipt.work,
-                self.allocations.live_bytes(),
-                self.budget,
-            )?;
-            self.record_mut(destination_file_id)?.working.payload = receipt.destination;
-            Ok(())
-        })
-        .await
     }
 
     #[allow(
@@ -1229,23 +996,20 @@ impl TransactionState {
                   with a valid index into `self.paths`"
     )]
     fn create(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         record: FileRecord,
         order: u32,
-    ) -> Result<(), GenerationMutationFailure> {
+    ) -> Result<(), crate::FsError> {
         let state = self.operation_paths[operation][0];
         if self.paths[state].binding.is_some() {
-            return Err(failed(GenerationMutationError::AlreadyExists, self.work));
+            return Err(failed(GenerationMutationError::AlreadyExists));
         }
-        let directory_id = self.parent_directory(state)?;
-        let record_state = self.record_mut(record.file_id)?;
+        let directory_id = self.parent_directory(leaf, state)?;
+        let record_state = self.record_mut(leaf, record.file_id)?;
         if record_state.base.is_some() || record_state.present {
-            return Err(failed(
-                GenerationMutationError::FileIdentityAlreadyExists,
-                self.work,
-            ));
+            return Err(failed(GenerationMutationError::FileIdentityAlreadyExists));
         }
         record_state.working = record;
         record_state.present = true;
@@ -1253,7 +1017,7 @@ impl TransactionState {
             file_id: record.file_id,
             kind: record.kind,
         });
-        let (name, retained_name_bytes) = self.clone_terminal_name(plan, operation, 0)?;
+        let (name, retained_name_bytes) = self.clone_terminal_name(leaf, plan, operation, 0)?;
         self.push_edit(
             directory_id,
             order,
@@ -1272,12 +1036,12 @@ impl TransactionState {
     /// destination is already a directory: Git-shaped history tracks the
     /// children individually and must not erase live ignored descendants.
     fn restore(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         source: FileRecord,
         order: u32,
-    ) -> Result<(), GenerationMutationFailure> {
+    ) -> Result<(), crate::FsError> {
         #[allow(
             clippy::indexing_slicing,
             reason = "operation paths are preflighted and indexed by the enumerated mutation ordinal"
@@ -1290,12 +1054,12 @@ impl TransactionState {
         let current = self.paths[state].binding;
         if let Some(current) = current {
             if current.kind == FileKind::Directory && source.kind == FileKind::Directory {
-                self.record_mut(current.file_id)?.working.metadata = source.metadata;
+                self.record_mut(leaf, current.file_id)?.working.metadata = source.metadata;
                 return Ok(());
             }
             if current.file_id == source.file_id {
-                let link_count = self.record(source.file_id)?.working.link_count;
-                self.record_mut(source.file_id)?.working = FileRecord {
+                let link_count = self.record(leaf, source.file_id)?.working.link_count;
+                self.record_mut(leaf, source.file_id)?.working = FileRecord {
                     link_count,
                     ..source
                 };
@@ -1303,8 +1067,8 @@ impl TransactionState {
             }
         }
 
-        let directory_id = self.parent_directory(state)?;
-        let (name, retained_name_bytes) = self.clone_terminal_name(plan, operation, 0)?;
+        let directory_id = self.parent_directory(leaf, state)?;
+        let (name, retained_name_bytes) = self.clone_terminal_name(leaf, plan, operation, 0)?;
         let entry = TreeEntry {
             name,
             file_id: source.file_id,
@@ -1323,23 +1087,20 @@ impl TransactionState {
             },
         );
         if let Some(existing) = current {
-            self.drop_link(existing)?;
+            self.drop_link(leaf, existing)?;
         }
-        let current_work = self.work;
-        let desired = self.record_mut(source.file_id)?;
+        
+        let desired = self.record_mut(leaf, source.file_id)?;
         if desired.present {
             if source.kind == FileKind::Directory {
-                return Err(failed(
-                    GenerationMutationError::UnsupportedHardLink,
-                    self.work,
-                ));
+                return Err(failed(GenerationMutationError::UnsupportedHardLink));
             }
             desired.working = FileRecord {
                 link_count: desired
                     .working
                     .link_count
                     .checked_add(1)
-                    .ok_or_else(|| failed(WorkError::Overflow.into(), current_work))?,
+                    .ok_or_else(|| failed(WorkError::Overflow.into()))?,
                 ..source
             };
         } else {
@@ -1372,24 +1133,21 @@ impl TransactionState {
                   with a valid index into `self.paths`"
     )]
     fn remove(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         expected: Option<FileId>,
         order: u32,
-    ) -> Result<(), GenerationMutationFailure> {
+    ) -> Result<(), crate::FsError> {
         let state = self.operation_paths[operation][0];
         let binding = self.paths[state]
             .binding
-            .ok_or_else(|| failed(GenerationMutationError::MissingSource, self.work))?;
+            .ok_or_else(|| failed(GenerationMutationError::MissingSource))?;
         if expected.is_some_and(|value| value != binding.file_id) {
-            return Err(failed(
-                GenerationMutationError::FileIdentityConflict,
-                self.work,
-            ));
+            return Err(failed(GenerationMutationError::FileIdentityConflict));
         }
-        let directory_id = self.parent_directory(state)?;
-        let (name, retained_name_bytes) = self.clone_terminal_name(plan, operation, 0)?;
+        let directory_id = self.parent_directory(leaf, state)?;
+        let (name, retained_name_bytes) = self.clone_terminal_name(leaf, plan, operation, 0)?;
         self.push_edit(
             directory_id,
             order,
@@ -1400,7 +1158,7 @@ impl TransactionState {
             },
         );
         self.paths[state].binding = None;
-        self.drop_link(binding)
+        self.drop_link(leaf, binding)
     }
 
     #[allow(
@@ -1414,21 +1172,21 @@ impl TransactionState {
                   `[usize::MAX; 2]` resize sentinel with valid indices into `self.paths`"
     )]
     fn rename(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         source_path: &NamespacePath,
         destination_path: &NamespacePath,
         replace: bool,
         order: u32,
-    ) -> Result<(), GenerationMutationFailure> {
+    ) -> Result<(), crate::FsError> {
         let source_state = self.operation_paths[operation][0];
         let destination_state = self.operation_paths[operation][1];
         let source = self.paths[source_state]
             .binding
-            .ok_or_else(|| failed(GenerationMutationError::MissingSource, self.work))?;
+            .ok_or_else(|| failed(GenerationMutationError::MissingSource))?;
         if source.kind == FileKind::Directory && destination_path.is_within(source_path) {
-            return Err(failed(GenerationMutationError::DirectoryCycle, self.work));
+            return Err(failed(GenerationMutationError::DirectoryCycle));
         }
         let destination = self.paths[destination_state].binding;
         // POSIX and Windows both define renaming one hard-link alias over
@@ -1439,11 +1197,11 @@ impl TransactionState {
             return Ok(());
         }
         if destination.is_some() && !replace {
-            return Err(failed(GenerationMutationError::AlreadyExists, self.work));
+            return Err(failed(GenerationMutationError::AlreadyExists));
         }
-        let source_parent = self.parent_directory(source_state)?;
-        let destination_parent = self.parent_directory(destination_state)?;
-        let (source_name, source_name_bytes) = self.clone_terminal_name(plan, operation, 0)?;
+        let source_parent = self.parent_directory(leaf, source_state)?;
+        let destination_parent = self.parent_directory(leaf, destination_state)?;
+        let (source_name, source_name_bytes) = self.clone_terminal_name(leaf, plan, operation, 0)?;
         self.push_edit(
             source_parent,
             order,
@@ -1454,7 +1212,7 @@ impl TransactionState {
             },
         );
         let (destination_name, destination_name_bytes) =
-            self.clone_terminal_name(plan, operation, 1)?;
+            self.clone_terminal_name(leaf, plan, operation, 1)?;
         let entry = TreeEntry {
             name: destination_name,
             file_id: source.file_id,
@@ -1473,7 +1231,7 @@ impl TransactionState {
             },
         );
         if let Some(existing) = destination {
-            self.drop_link(existing)?;
+            self.drop_link(leaf, existing)?;
         }
         self.paths[source_state].binding = None;
         self.paths[destination_state].binding = Some(source);
@@ -1491,30 +1249,27 @@ impl TransactionState {
                   `[usize::MAX; 2]` resize sentinel with valid indices into `self.paths`"
     )]
     fn link(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         order: u32,
-    ) -> Result<(), GenerationMutationFailure> {
+    ) -> Result<(), crate::FsError> {
         let source = self.source_binding(operation)?;
         if source.kind == FileKind::Directory {
-            return Err(failed(
-                GenerationMutationError::UnsupportedHardLink,
-                self.work,
-            ));
+            return Err(failed(GenerationMutationError::UnsupportedHardLink));
         }
         let destination_state = self.operation_paths[operation][1];
         if self.paths[destination_state].binding.is_some() {
-            return Err(failed(GenerationMutationError::AlreadyExists, self.work));
+            return Err(failed(GenerationMutationError::AlreadyExists));
         }
-        let destination_parent = self.parent_directory(destination_state)?;
-        let current_links = self.record(source.file_id)?.working.link_count;
+        let destination_parent = self.parent_directory(leaf, destination_state)?;
+        let current_links = self.record(leaf, source.file_id)?.working.link_count;
         let next_links = current_links
             .checked_add(1)
-            .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))?;
-        self.record_mut(source.file_id)?.working.link_count = next_links;
+            .ok_or_else(|| failed(WorkError::Overflow.into()))?;
+        self.record_mut(leaf, source.file_id)?.working.link_count = next_links;
         self.paths[destination_state].binding = Some(source);
-        let (name, retained_name_bytes) = self.clone_terminal_name(plan, operation, 1)?;
+        let (name, retained_name_bytes) = self.clone_terminal_name(leaf, plan, operation, 1)?;
         self.push_edit(
             destination_parent,
             order,
@@ -1528,7 +1283,7 @@ impl TransactionState {
         Ok(())
     }
 
-    fn source_binding(&self, operation: usize) -> Result<Binding, GenerationMutationFailure> {
+    fn source_binding(&self, operation: usize) -> Result<Binding, crate::FsError> {
         self.binding(operation, 0)
     }
 
@@ -1547,10 +1302,10 @@ impl TransactionState {
         &self,
         operation: usize,
         endpoint: usize,
-    ) -> Result<Binding, GenerationMutationFailure> {
+    ) -> Result<Binding, crate::FsError> {
         self.paths[self.operation_paths[operation][endpoint]]
             .binding
-            .ok_or_else(|| failed(GenerationMutationError::MissingSource, self.work))
+            .ok_or_else(|| failed(GenerationMutationError::MissingSource))
     }
 
     #[allow(
@@ -1562,36 +1317,33 @@ impl TransactionState {
                   (`find_path_state`, below), so any `Some(parent_state)` it returns is also a \
                   valid index into `self.paths`"
     )]
-    fn parent_directory(&mut self, state: usize) -> Result<FileId, GenerationMutationFailure> {
+    fn parent_directory(&mut self, leaf: &mut MutationLeaf<'_, '_>, state: usize) -> Result<FileId, crate::FsError> {
         let file_id = match self.paths[state].parent_state {
             Some(parent_state) => {
                 self.paths[parent_state]
                     .binding
-                    .ok_or_else(|| failed(GenerationMutationError::MissingParent, self.work))?
+                    .ok_or_else(|| failed(GenerationMutationError::MissingParent))?
                     .file_id
             }
             None if self.paths[state].base_parent_exact => self.paths[state]
                 .base_parent
-                .ok_or_else(|| failed(GenerationMutationError::MissingParent, self.work))?,
-            None => return Err(failed(GenerationMutationError::MissingParent, self.work)),
+                .ok_or_else(|| failed(GenerationMutationError::MissingParent))?,
+            None => return Err(failed(GenerationMutationError::MissingParent)),
         };
-        let record = self.record(file_id)?;
+        let record = self.record(leaf, file_id)?;
         if record.working.kind != FileKind::Directory || !record.present {
-            return Err(failed(GenerationMutationError::MissingParent, self.work));
+            return Err(failed(GenerationMutationError::MissingParent));
         }
         Ok(file_id)
     }
 
-    fn drop_link(&mut self, binding: Binding) -> Result<(), GenerationMutationFailure> {
-        let current_links = self.record(binding.file_id)?.working.link_count;
+    fn drop_link(&mut self, leaf: &mut MutationLeaf<'_, '_>, binding: Binding) -> Result<(), crate::FsError> {
+        let current_links = self.record(leaf, binding.file_id)?.working.link_count;
         if current_links == 0 {
-            return Err(failed(
-                GenerationMutationError::InconsistentState,
-                self.work,
-            ));
+            return Err(failed(GenerationMutationError::InconsistentState));
         }
         let next_links = current_links - 1;
-        let record = self.record_mut(binding.file_id)?;
+        let record = self.record_mut(leaf, binding.file_id)?;
         record.working.link_count = next_links;
         record.present = next_links != 0;
         if binding.kind == FileKind::Directory {
@@ -1601,46 +1353,24 @@ impl TransactionState {
     }
 
     fn clone_terminal_name(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         plan: &MutationPlan,
         operation: usize,
         endpoint: usize,
-    ) -> Result<(LogicalName, u64), GenerationMutationFailure> {
+    ) -> Result<(LogicalName, u64), crate::FsError> {
         let path = Self::operation_path(plan, operation, endpoint);
         let name = path
             .split_last()
             .map(|(_, name)| name)
-            .ok_or_else(|| failed(GenerationMutationError::InconsistentState, self.work))?;
-        let bytes = usize_to_u64(name.as_bytes().len());
-        self.allocations
-            .claim_bytes(bytes, 1, &mut self.work, self.budget)
-            .map_err(|error| allocation_failure(error, self.work))?;
-        let admitted = self.work;
-        let mut copied = Vec::new();
-        if copied.try_reserve_exact(name.as_bytes().len()).is_err() {
-            self.allocations
-                .release(bytes)
-                .map_err(|error| allocation_failure(error, self.work))?;
-            return Err(failed(GenerationMutationError::AllocationFailed, admitted));
-        }
-        let copied_work = self
-            .work
-            .checked_add(WorkCounters {
-                bytes_copied: bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| failed(error.into(), self.work))?;
-        copied_work
-            .verify(self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
+            .ok_or_else(|| failed(GenerationMutationError::InconsistentState))?;
+        let mut copied = leaf.reserve::<u8>(name.as_bytes().len())?;
+        let bytes = logical_vec_bytes(&copied)?;
+        let delta = WorkCounters { bytes_copied: usize_to_u64(name.as_bytes().len()), ..WorkCounters::default() };
+        leaf.accounting.admit(delta).map_err(accounting_error)?;
         copied.extend_from_slice(name.as_bytes());
-        self.work = copied_work;
-        let name = LogicalName::new(
-            name.encoding(),
-            copied,
-            self.config.limits.maximum_component_bytes,
-        )
-        .map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))?;
+        leaf.accounting.record_completed(delta).map_err(accounting_error)?;
+        let name = LogicalName::new(name.encoding(), copied, self.config.limits.maximum_component_bytes)
+            .map_err(|_| GenerationMutationError::InconsistentState)?;
         Ok((name, bytes))
     }
 
@@ -1686,15 +1416,15 @@ impl TransactionState {
                   (see `record_index` below), which guarantees `index < self.records.len()`, \
                   and nothing resizes `self.records` between that call and this indexing"
     )]
-    fn record(&mut self, file_id: FileId) -> Result<&RecordState, GenerationMutationFailure> {
-        let index = self.record_index(file_id)?;
+    fn record(&mut self, leaf: &mut MutationLeaf<'_, '_>, file_id: FileId) -> Result<&RecordState, crate::FsError> {
+        let index = self.record_index(leaf, file_id)?;
         Ok(&self.records[index])
     }
 
-    fn identity_binding(&mut self, file_id: FileId) -> Result<Binding, GenerationMutationFailure> {
-        let record = self.record(file_id)?;
+    fn identity_binding(&mut self, leaf: &mut MutationLeaf<'_, '_>, file_id: FileId) -> Result<Binding, crate::FsError> {
+        let record = self.record(leaf, file_id)?;
         if !record.present || record.working.link_count == 0 {
-            return Err(failed(GenerationMutationError::MissingSource, self.work));
+            return Err(failed(GenerationMutationError::MissingSource));
         }
         Ok(Binding {
             file_id,
@@ -1710,318 +1440,114 @@ impl TransactionState {
                   and nothing resizes `self.records` between that call and this indexing"
     )]
     fn record_mut(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         file_id: FileId,
-    ) -> Result<&mut RecordState, GenerationMutationFailure> {
-        let index = self.record_index(file_id)?;
+    ) -> Result<&mut RecordState, crate::FsError> {
+        let index = self.record_index(leaf, file_id)?;
         Ok(&mut self.records[index])
     }
 
-    fn record_index(&mut self, file_id: FileId) -> Result<usize, GenerationMutationFailure> {
+    fn record_index(&mut self, leaf: &mut MutationLeaf<'_, '_>, file_id: FileId) -> Result<usize, crate::FsError> {
         let comparisons = Cell::new(0_u64);
         let result = self.records.binary_search_by(|record| {
             comparisons.set(comparisons.get().saturating_add(1));
             record.working.file_id.cmp(&file_id)
         });
-        charge_items(&mut self.work, comparisons.get(), self.budget)?;
-        result.map_err(|_| failed(GenerationMutationError::InconsistentState, self.work))
+        leaf.items(comparisons.get())?;
+        result.map_err(|_| failed(GenerationMutationError::InconsistentState))
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`cursor` is only ever read after a `cursor < self.directory_edits.len()` \
-                  guard (the outer `while` here, and the inner `while` just below), so both \
-                  point reads of `self.directory_edits[cursor]` are in-bounds; `start` is the \
-                  `cursor` value captured before either loop advances it further, so \
-                  `start <= cursor <= self.directory_edits.len()` always holds, which is exactly \
-                  what makes `self.directory_edits[start..cursor]` a valid range"
-    )]
-    async fn rewrite_directories<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
-        in_heap(move || async move {
-            let comparisons = Cell::new(0_u64);
-            self.directory_edits.sort_unstable_by(|left, right| {
-                comparisons.set(comparisons.get().saturating_add(1));
-                left.directory_id
-                    .cmp(&right.directory_id)
-                    .then_with(|| left.order.cmp(&right.order))
-            });
-            charge_items(&mut self.work, comparisons.get(), self.budget)?;
-            let mut cursor = 0;
-            while cursor < self.directory_edits.len() {
-                cancellation
-                    .check()
-                    .map_err(|_| failed(path_cancelled(), self.work))?;
-                let directory_id = self.directory_edits[cursor].directory_id;
-                let start = cursor;
-                cursor += 1;
-                while cursor < self.directory_edits.len()
-                    && self.directory_edits[cursor].directory_id == directory_id
-                {
-                    cursor += 1;
-                }
-                let mut mutations = reserve_exact::<TreeMutation>(
-                    cursor - start,
-                    &mut self.allocations,
-                    &mut self.work,
-                    self.budget,
-                )?;
-                let mutation_bytes = logical_vec_bytes(&mutations)?;
-                let retained_name_bytes =
-                    self.directory_edits[start..cursor]
-                        .iter()
-                        .try_fold(0_u64, |total, edit| {
-                            total
-                                .checked_add(edit.retained_name_bytes)
-                                .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))
-                        })?;
-                for edit in &mut self.directory_edits[start..cursor] {
-                    mutations.push(edit.mutation.take().ok_or_else(|| {
-                        failed(GenerationMutationError::InconsistentState, self.work)
-                    })?);
-                }
-                let directory = self.record(directory_id)?.working;
-                let FilePayload::Directory { entries } = directory.payload else {
-                    return Err(failed(GenerationMutationError::MissingParent, self.work));
-                };
-                let receipt = apply_tree_mutations_async(
-                    store,
-                    entries,
-                    mutations,
-                    config.limits.maximum_mutations_per_batch,
-                    DecodeLimits::for_volume(config),
-                    nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| {
-                    nested_failure(
-                        self.work,
-                        *failure.work,
-                        self.allocations.live_bytes(),
-                        failure.error.into(),
-                    )
-                })?;
-                self.work = merge_nested(
-                    self.work,
-                    receipt.work,
-                    self.allocations.live_bytes(),
-                    self.budget,
-                )?;
-                self.allocations
-                    .release(
-                        mutation_bytes
-                            .checked_add(retained_name_bytes)
-                            .ok_or_else(|| failed(WorkError::Overflow.into(), self.work))?,
-                    )
-                    .map_err(|error| allocation_failure(error, self.work))?;
-                self.record_mut(directory_id)?.working.payload = FilePayload::Directory {
-                    entries: receipt.root,
-                };
-            }
-            Ok(())
-        })
-        .await
+    fn sort_directory_edits(&mut self, leaf: &mut MutationLeaf<'_, '_>) -> Result<(), crate::FsError> {
+        let comparisons = Cell::new(0_u64);
+        self.directory_edits.sort_unstable_by(|left, right| {
+            comparisons.set(comparisons.get().saturating_add(1));
+            left.directory_id.cmp(&right.directory_id).then_with(|| left.order.cmp(&right.order))
+        });
+        leaf.items(comparisons.get())
     }
 
-    async fn verify_removed_directories<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<(), GenerationMutationFailure> {
+    fn take_directory_edits(
+        &mut self, leaf: &mut MutationLeaf<'_, '_>, start: usize,
+    ) -> Result<(FileId, ObjectId, Vec<TreeMutation>, u64, usize), crate::FsError> {
+        let directory_id = self.directory_edits.get(start).ok_or(GenerationMutationError::InconsistentState)?.directory_id;
+        let mut end = start + 1;
+        while self.directory_edits.get(end).is_some_and(|edit| edit.directory_id == directory_id) { end += 1; }
+        let mut mutations = leaf.reserve::<TreeMutation>(end - start)?;
+        let mut bytes = logical_vec_bytes(&mutations)?;
+        for edit in self.directory_edits.get_mut(start..end).ok_or(GenerationMutationError::InconsistentState)? {
+            bytes = bytes.checked_add(edit.retained_name_bytes).ok_or(WorkError::Overflow)?;
+            mutations.push(edit.mutation.take().ok_or(GenerationMutationError::InconsistentState)?);
+            edit.retained_name_bytes = 0;
+        }
+        let FilePayload::Directory { entries } = self.record(leaf, directory_id)?.working.payload else {
+            return Err(GenerationMutationError::MissingParent.into());
+        };
+        Ok((directory_id, entries, mutations, bytes, end))
+    }
+
+    fn sort_removed_directories(&mut self, leaf: &mut MutationLeaf<'_, '_>) -> Result<(), crate::FsError> {
         let comparisons = Cell::new(0_u64);
         self.removed_directories.sort_unstable_by(|left, right| {
-            comparisons.set(comparisons.get().saturating_add(1));
-            left.cmp(right)
+            comparisons.set(comparisons.get().saturating_add(1)); left.cmp(right)
         });
-        charge_items(&mut self.work, comparisons.get(), self.budget)?;
-        charge_items(
-            &mut self.work,
-            usize_to_u64(self.removed_directories.len().saturating_sub(1)),
-            self.budget,
-        )?;
+        leaf.items(comparisons.get())?;
+        leaf.items(usize_to_u64(self.removed_directories.len().saturating_sub(1)))?;
         self.removed_directories.dedup();
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "`index` is bounded by the `for index in 0..self.removed_directories.len()` \
-                      loop here; a by-value `for file_id in &self.removed_directories` iterator \
-                      would hold an immutable borrow of `self` across the `self.record(file_id)` \
-                      call below, which needs `&mut self`, so the index form is required to \
-                      satisfy the borrow checker without cloning this ledger-tracked vector"
-        )]
-        for index in 0..self.removed_directories.len() {
-            let file_id = self.removed_directories[index];
-            let record = self.record(file_id)?.working;
-            let FilePayload::Directory { entries } = record.payload else {
-                return Err(failed(
-                    GenerationMutationError::InconsistentState,
-                    self.work,
-                ));
-            };
-            let listing = list_tree_entries_async(
-                store,
-                entries,
-                None,
-                1,
-                DecodeLimits::for_volume(config),
-                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                nested_failure(
-                    self.work,
-                    *failure.work,
-                    self.allocations.live_bytes(),
-                    failure.error.into(),
-                )
-            })?;
-            self.work = merge_nested(
-                self.work,
-                listing.work,
-                self.allocations.live_bytes(),
-                self.budget,
-            )?;
-            if !listing.entries.is_empty() {
-                return Err(failed(
-                    GenerationMutationError::DirectoryNotEmpty,
-                    self.work,
-                ));
-            }
-        }
         Ok(())
     }
 
-    async fn rewrite_file_table<S: AsyncObjectStore>(
-        mut self,
-        store: &S,
-        generation: &GenerationRoot,
-        config: VolumeConfig,
-        cancellation: &CancellationToken,
-    ) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-        in_heap(move || async move {
-            let mutation_count = self
-                .records
-                .iter()
-                .filter(|record| {
-                    matches!(
-                        (record.base, record.present),
-                        (None, true) | (Some(_), false)
-                    ) || matches!(
-                        (record.base, record.present),
-                        (Some(expected), true) if expected != record.working
-                    )
-                })
-                .count();
-            charge_items(
-                &mut self.work,
-                usize_to_u64(self.records.len()),
-                self.budget,
-            )?;
-            if mutation_count == 0 {
-                let root = self.clone_generation_root(generation, generation.file_table)?;
-                return Ok(GenerationMutationReceipt {
-                    root,
-                    work: self.work,
-                });
+    fn file_table_edits(&mut self, leaf: &mut MutationLeaf<'_, '_>) -> Result<Vec<FileTableMutation>, crate::FsError> {
+        let count = self.records.iter().filter(|record| {
+            matches!((record.base, record.present), (None, true) | (Some(_), false))
+                || matches!((record.base, record.present), (Some(expected), true) if expected != record.working)
+        }).count();
+        leaf.items(usize_to_u64(self.records.len()))?;
+        let mut mutations = leaf.reserve::<FileTableMutation>(count)?;
+        for record in &self.records {
+            match (record.base, record.present) {
+                (None, true) => mutations.push(FileTableMutation::Insert(record.working)),
+                (Some(expected), false) => mutations.push(FileTableMutation::Remove { file_id: expected.file_id, expected: Some(expected) }),
+                (Some(expected), true) if expected != record.working => mutations.push(FileTableMutation::Replace { expected, replacement: record.working }),
+                (None, false) | (Some(_), true) => {}
             }
-            let mut mutations = reserve_exact::<FileTableMutation>(
-                mutation_count,
-                &mut self.allocations,
-                &mut self.work,
-                self.budget,
-            )?;
-            let mutation_bytes = logical_vec_bytes(&mutations)?;
-            for record in &self.records {
-                match (record.base, record.present) {
-                    (None, true) => mutations.push(FileTableMutation::Insert(record.working)),
-                    (Some(expected), false) => mutations.push(FileTableMutation::Remove {
-                        file_id: expected.file_id,
-                        expected: Some(expected),
-                    }),
-                    (Some(expected), true) if expected != record.working => {
-                        mutations.push(FileTableMutation::Replace {
-                            expected,
-                            replacement: record.working,
-                        });
-                    }
-                    (None, false) | (Some(_), true) => {}
-                }
-            }
-            let receipt = apply_file_table_mutations_async(
-                store,
-                generation.file_table,
-                mutations,
-                u32::try_from(mutation_count)
-                    .map_err(|_| failed(WorkError::Overflow.into(), self.work))?,
-                DecodeLimits::for_volume(config),
-                nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                nested_failure(
-                    self.work,
-                    *failure.work,
-                    self.allocations.live_bytes(),
-                    failure.error.into(),
-                )
-            })?;
-            self.work = merge_nested(
-                self.work,
-                receipt.work,
-                self.allocations.live_bytes(),
-                self.budget,
-            )?;
-            self.allocations
-                .release(mutation_bytes)
-                .map_err(|error| allocation_failure(error, self.work))?;
-            let root = self.clone_generation_root(generation, receipt.root)?;
-            Ok(GenerationMutationReceipt {
-                root,
-                work: self.work,
-            })
-        })
-        .await
+        }
+        Ok(mutations)
     }
 
     fn clone_generation_root(
-        &mut self,
+        &mut self, leaf: &mut MutationLeaf<'_, '_>,
         generation: &GenerationRoot,
         file_table: ObjectId,
-    ) -> Result<GenerationRoot, GenerationMutationFailure> {
-        let mut parents = reserve_exact::<GenerationId>(
-            generation.parents.len(),
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        )?;
-        let parent_bytes = logical_vec_bytes(&parents)?;
-        let prospective = self
-            .work
-            .checked_add(WorkCounters {
-                bytes_copied: parent_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| failed(error.into(), self.work))?;
-        prospective
-            .verify(self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        parents.extend_from_slice(&generation.parents);
-        self.work = prospective;
-        Ok(GenerationRoot {
-            volume_id: generation.volume_id,
-            root_file_id: generation.root_file_id,
-            file_table,
-            parents,
-            required_features: generation.continuation_features(),
-        })
+    ) -> Result<GenerationRoot, crate::FsError> {
+        let (mut root, mut allocation) = clone_generation_root_with_accounting(generation, leaf.accounting)?;
+        if let Err(error) = leaf.allocation.absorb(&mut allocation) {
+            drop(root);
+            return Err(error);
+        }
+        root.file_table = file_table;
+        root.required_features = generation.continuation_features();
+        Ok(root)
     }
+}
+
+/// Clones an existing root without changing its lineage/features. Both merge
+/// inputs and the generation candidate use this one preadmitted parent leaf.
+pub(crate) fn clone_generation_root_with_accounting(
+    root: &GenerationRoot, accounting: &mut KernelAccounting<'_>,
+) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
+    let mut parents = reserve_owned::<GenerationId>(root.parents.len(), accounting)?;
+    let delta = WorkCounters {
+        bytes_copied: usize_to_u64(root.parents.len()).checked_mul(size_of::<GenerationId>() as u64).ok_or(WorkError::Overflow)?,
+        ..WorkCounters::default()
+    };
+    accounting.admit(delta).map_err(accounting_error)?;
+    parents.value.extend_from_slice(&root.parents);
+    accounting.record_completed(delta).map_err(accounting_error)?;
+    let Owned { value: parents, allocation } = parents;
+    Ok((GenerationRoot {
+        volume_id: root.volume_id, root_file_id: root.root_file_id, file_table: root.file_table,
+        parents, required_features: root.required_features,
+    }, allocation))
 }
 
 fn operation_uses_one_path(mutation: &Mutation) -> bool {
@@ -2033,41 +1559,31 @@ fn operation_uses_one_path(mutation: &Mutation) -> bool {
 fn preflight_generation_mutations(
     operations: &[Mutation],
     config: VolumeConfig,
-) -> Result<(), GenerationMutationFailure> {
-    config
-        .validate()
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
+) -> Result<(), crate::FsError> {
+    config.validate().map_err(GenerationMutationError::from)?;
     let mut endpoints = 0_u32;
     for operation in operations {
         if let Some([first, second]) = operation.paths() {
             endpoints = endpoints
                 .checked_add(if first == second { 1 } else { 2 })
                 .ok_or_else(|| {
-                    OperationFailure::before_work(GenerationMutationError::TooManyPaths)
+                    crate::FsError::Mutation(GenerationMutationError::TooManyPaths)
                 })?;
         }
         match operation {
             Mutation::Create { record, .. } | Mutation::Restore { record, .. } => {
                 if !record.kind.is_supported_by_profile(config.profile) {
-                    return Err(OperationFailure::before_work(
-                        GenerationMutationError::UnsupportedFileKind,
-                    ));
+                    return Err(crate::FsError::Mutation(GenerationMutationError::UnsupportedFileKind));
                 }
                 if matches!(operation, Mutation::Create { .. }) && record.link_count != 1 {
-                    return Err(OperationFailure::before_work(
-                        GenerationMutationError::InvalidInitialLinkCount,
-                    ));
+                    return Err(crate::FsError::Mutation(GenerationMutationError::InvalidInitialLinkCount));
                 }
                 if record.kind == FileKind::SymbolicLink && !config.symbolic_links {
-                    return Err(OperationFailure::before_work(
-                        GenerationMutationError::UnsupportedSymbolicLink,
-                    ));
+                    return Err(crate::FsError::Mutation(GenerationMutationError::UnsupportedSymbolicLink));
                 }
             }
             Mutation::Link { .. } if !config.hard_links => {
-                return Err(OperationFailure::before_work(
-                    GenerationMutationError::UnsupportedHardLink,
-                ));
+                return Err(crate::FsError::Mutation(GenerationMutationError::UnsupportedHardLink));
             }
             Mutation::ZeroRange { .. }
             | Mutation::Preallocate { .. }
@@ -2079,9 +1595,7 @@ fn preflight_generation_mutations(
             | Mutation::CloneFileRange { .. }
                 if !config.sparse_files =>
             {
-                return Err(OperationFailure::before_work(
-                    GenerationMutationError::UnsupportedSparseMutation,
-                ));
+                return Err(crate::FsError::Mutation(GenerationMutationError::UnsupportedSparseMutation));
             }
             Mutation::Remove { .. }
             | Mutation::Rename { .. }
@@ -2098,9 +1612,7 @@ fn preflight_generation_mutations(
         }
     }
     if endpoints > config.limits.maximum_paths_per_batch {
-        return Err(OperationFailure::before_work(
-            GenerationMutationError::TooManyPaths,
-        ));
+        return Err(crate::FsError::Mutation(GenerationMutationError::TooManyPaths));
     }
     Ok(())
 }
@@ -2138,106 +1650,28 @@ fn find_path_state(
         .ok()
 }
 
-fn reserve_exact<T>(
-    count: usize,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<Vec<T>, GenerationMutationFailure> {
-    let bytes = count
-        .checked_mul(size_of::<T>())
-        .map(usize_to_u64)
-        .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
-    allocations
-        .claim_bytes(bytes, u64::from(count != 0), work, budget)
-        .map_err(|error| allocation_failure(error, *work))?;
-    let admitted = *work;
-    let mut values = Vec::new();
-    if values.try_reserve_exact(count).is_err() {
-        allocations
-            .release(bytes)
-            .map_err(|error| allocation_failure(error, *work))?;
-        return Err(failed(GenerationMutationError::AllocationFailed, admitted));
-    }
-    Ok(values)
-}
 
-fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, GenerationMutationFailure> {
+fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, crate::FsError> {
     values
         .capacity()
         .checked_mul(size_of::<T>())
         .map(usize_to_u64)
-        .ok_or_else(|| {
-            OperationFailure::before_work(GenerationMutationError::Work(WorkError::Overflow))
-        })
+        .ok_or_else(|| WorkError::Overflow.into())
 }
 
-#[inline]
-fn nested_budget(
-    work: WorkCounters,
-    budget: WorkBudget,
-    live_bytes: u64,
-) -> Result<WorkBudget, GenerationMutationFailure> {
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| failed(error.into(), work))?;
-    remaining.peak_allocation_bytes = remaining
-        .peak_allocation_bytes
-        .checked_sub(live_bytes)
-        .ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
-    Ok(remaining)
-}
 
-#[inline]
-fn merge_nested(
-    prior: WorkCounters,
-    nested: WorkCounters,
-    live_bytes: u64,
-    budget: WorkBudget,
-) -> Result<WorkCounters, GenerationMutationFailure> {
-    let work = prior
-        .with_backend(nested, live_bytes)
-        .map_err(|error| failed(error.into(), prior))?;
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), work))?;
-    Ok(work)
-}
 
-fn nested_failure(
-    prior: WorkCounters,
-    nested: WorkCounters,
-    live_bytes: u64,
-    error: GenerationMutationError,
-) -> GenerationMutationFailure {
-    match prior.with_backend(nested, live_bytes) {
-        Ok(work) => failed(error, work),
-        Err(overflow) => failed(overflow.into(), prior),
-    }
-}
-
-#[inline]
-fn charge_items(
-    work: &mut WorkCounters,
-    count: u64,
-    budget: WorkBudget,
-) -> Result<(), GenerationMutationFailure> {
-    work.charge_items(count, &budget)
-        .map_err(|error| failed(error.into(), *work))
-}
-
-fn allocation_failure(error: AllocationError, work: WorkCounters) -> GenerationMutationFailure {
-    OperationFailure::new(
-        error.into_work_or(GenerationMutationError::AllocationFailed),
-        work,
-    )
+#[cfg(all(test, feature = "memory"))]
+fn allocation_failure(error: AllocationError) -> crate::FsError {
+    error.into_work_or(GenerationMutationError::AllocationFailed).into()
 }
 
 fn path_cancelled() -> GenerationMutationError {
     GenerationMutationError::Path(PathLookupError::Tree(super::TreeReadError::Cancelled))
 }
 
-fn failed(error: GenerationMutationError, work: WorkCounters) -> GenerationMutationFailure {
-    OperationFailure::new(error, work)
+fn failed(error: GenerationMutationError) -> crate::FsError {
+    error.into()
 }
 
 #[cfg(all(test, feature = "memory"))]

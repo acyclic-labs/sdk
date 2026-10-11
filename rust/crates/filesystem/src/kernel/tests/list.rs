@@ -463,3 +463,101 @@ fn pagination_error_translation_is_total() {
         DirectoryReadError::Work(WorkError::Overflow)
     ));
 }
+
+#[test]
+fn custody_listing_preserves_engine_results_and_denies_before_owned_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = tree(&store)?;
+    let cancellation = CancellationToken::new();
+    let ordinary = list_tree_entries(
+        &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+    )?;
+    let owner = crate::kernel::ProofDataCustody::default();
+    let observed = crate::async_storage::poll_ready(list_tree_entries_async_with_custody(
+        &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation, Some(&owner),
+    )).ok_or("custody memory list suspended")??;
+    assert_eq!(observed, ordinary);
+    let completed = owner.pending_data_work();
+    assert_eq!(completed.page_reads, observed.work.page_reads);
+    assert_eq!(completed.backend_read_operations, observed.work.backend_read_operations);
+    assert_eq!(completed.bytes_copied, observed.work.bytes_copied);
+    assert_eq!(owner.operation_cache_bytes(), 0);
+
+    let denied_owner = crate::kernel::ProofDataCustody::default();
+    let capacity = 3 * std::mem::size_of::<TreeEntry>() as u64;
+    let failure = crate::async_storage::poll_ready(list_tree_entries_async_with_custody(
+        &store, root, None, 2, DecodeLimits::default(),
+        WorkBudget { peak_allocation_bytes: capacity - 1, ..WorkBudget::UNBOUNDED },
+        &cancellation, Some(&denied_owner),
+    )).ok_or("denied custody list suspended")?.err().ok_or("output allocated outside capacity permit")?;
+    assert!(matches!(failure.error, DirectoryReadError::Work(WorkError::BudgetExceeded {
+        counter: "peak_allocation_bytes", observed, maximum,
+    }) if observed == capacity && maximum == capacity - 1));
+    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(denied_owner.pending_data_work(), WorkCounters::default());
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = crate::async_storage::poll_ready(list_tree_entries_async_with_custody(
+        &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancelled, Some(&denied_owner),
+    )).ok_or("cancelled custody list suspended")?.err().ok_or("cancelled list allocated")?;
+    assert!(matches!(failure.error, DirectoryReadError::Cancelled));
+    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(denied_owner.pending_data_work(), WorkCounters::default());
+    Ok(())
+}
+
+#[test]
+fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::async_storage::AsyncObjectStore;
+    use crate::storage::{ObjectRead, ObjectReadRequest, ObjectResult};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct PanickingRead {
+        inner: MemoryObjectStore,
+        reached: AtomicUsize,
+    }
+    impl AsyncObjectStore for PanickingRead {
+        async fn put(&self, id: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken)
+        -> ObjectResult<()> {
+            AsyncObjectStore::put(&self.inner, id, bytes, budget, cancellation).await
+        }
+        async fn read(&self, _id: ObjectId, _maximum: u64, _budget: WorkBudget, _cancellation: &CancellationToken)
+        -> ObjectResult<ObjectRead> {
+            self.reached.fetch_add(1, Ordering::SeqCst);
+            panic!("provider unwinds without returning its private work");
+        }
+        async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken)
+        -> ObjectResult<Vec<ObjectRead>> {
+            AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+        }
+        async fn contains(&self, id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken)
+        -> ObjectResult<bool> {
+            AsyncObjectStore::contains(&self.inner, id, budget, cancellation).await
+        }
+    }
+    let inner = MemoryObjectStore::default();
+    let root = tree(&inner)?;
+    let store = PanickingRead { inner, reached: AtomicUsize::new(0) };
+    let cancellation = CancellationToken::new();
+    let owner = crate::kernel::ProofDataCustody::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::async_storage::poll_ready(list_tree_entries_async_with_custody(
+            &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+            &cancellation, Some(&owner),
+        ))
+    }));
+    assert!(result.is_err());
+    assert_eq!(store.reached.load(Ordering::SeqCst), 1);
+    let known = owner.pending_data_work();
+    assert_eq!(known.page_reads, 1);
+    assert_eq!(known.allocation_operations, 4, "owned output, visited/frontier buffers, and actual read-future frame");
+    assert_eq!(known.backend_read_operations, 0, "no provider receipt was returned");
+    assert_eq!(known.object_bytes_read, 0);
+    assert_eq!(known.bytes_copied, 0);
+    assert_eq!(owner.operation_cache_bytes(), 0);
+    Ok(())
+}

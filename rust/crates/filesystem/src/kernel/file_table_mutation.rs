@@ -2,13 +2,10 @@
 
 use super::allocation::AllocationError;
 use super::codec::DecodedPageShape;
-use super::file_table::{
-    encode_file_table_internal_children, encode_file_table_leaf_records,
-    file_record_encoded_length, file_table_page_decode_shape,
-};
+use super::file_table::{file_record_encoded_length, file_table_page_decode_shape};
 use super::persistent_btree::{self, Child, Format, Page, PageRef};
 use super::{
-    CanonicalDecodeError, DecodeLimits, FileRecord, FileTablePage, decode_file_table_page,
+    CanonicalDecodeError, DecodeLimits, FileRecord,
 };
 use crate::foundation::FileId;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -30,18 +27,19 @@ impl Format for FileTableFormat {
     }
 
     fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError> {
-        Ok(match decode_file_table_page(bytes, limits)? {
-            FileTablePage::Leaf(records) => Page::Leaf(records),
-            FileTablePage::Internal(children) => Page::Internal(
-                children
-                    .into_iter()
-                    .map(|child| Child {
-                        first: child.first_file_id,
-                        page: child.page,
-                    })
-                    .collect(),
-            ),
-        })
+        Self::decode_with_steps(bytes, limits, &mut |_| Ok(()))
+    }
+
+    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+        bytes: &[u8],
+        limits: DecodeLimits,
+        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Page<Self>, E> {
+        super::file_table::decode_file_table_page_mapped_with_steps(
+            bytes, limits, observe, Page::Leaf, Page::Internal,
+            |first, page| Child { first, page },
+            |child| &child.first,
+        )
     }
 
     fn decode_shape(
@@ -51,15 +49,18 @@ impl Format for FileTableFormat {
         file_table_page_decode_shape(bytes, limits)
     }
 
-    fn encode(
-        page: &PageRef<'_, Self>,
-        maximum_items: u32,
-    ) -> Result<Vec<u8>, CanonicalDecodeError> {
+
+    fn encode_with_accounting(
+        page: &PageRef<'_, Self>, maximum_items: u32,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+    ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(records) => encode_file_table_leaf_records(records, maximum_items),
-            PageRef::Internal(children) => encode_file_table_internal_children(
+            PageRef::Leaf(records) => super::file_table::encode_file_table_leaf_records_with_accounting(
+                records, maximum_items, accounting,
+            ),
+            PageRef::Internal(children) => super::file_table::encode_file_table_internal_children_with_accounting(
                 children.iter().map(|child| (child.first, child.page)),
-                maximum_items,
+                maximum_items, accounting,
             ),
         }
     }
@@ -111,18 +112,46 @@ impl Format for FileTableFormat {
         0
     }
 
+    fn key_owned_bytes(_key: &Self::Key) -> u64 { 0 }
+
+    fn value_owned_bytes(_value: &Self::Value) -> u64 { 0 }
+
     fn try_clone_key(
         key: &Self::Key,
-        _maximum_bytes: u32,
+        maximum_bytes: u32,
     ) -> Result<Self::Key, CanonicalDecodeError> {
-        Ok(*key)
+        Self::try_clone_key_with_steps(key, maximum_bytes, &mut |_| Ok(()))
+    }
+
+    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+        key: &Self::Key,
+        _maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self::Key, E> {
+        let copied_bytes = std::mem::size_of::<Self::Key>() as u64;
+        steps(super::codec::ReadAllocationStep::BeforeCopy(copied_bytes))?;
+        let copied = *key;
+        steps(super::codec::ReadAllocationStep::Copied(copied_bytes))?;
+        Ok(copied)
     }
 
     fn try_clone_value(
         value: &Self::Value,
-        _maximum_bytes: u32,
+        maximum_bytes: u32,
     ) -> Result<Self::Value, CanonicalDecodeError> {
-        Ok(*value)
+        Self::try_clone_value_with_steps(value, maximum_bytes, &mut |_| Ok(()))
+    }
+
+    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+        value: &Self::Value,
+        _maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self::Value, E> {
+        let copied_bytes = std::mem::size_of::<Self::Value>() as u64;
+        steps(super::codec::ReadAllocationStep::BeforeCopy(copied_bytes))?;
+        let copied = *value;
+        steps(super::codec::ReadAllocationStep::Copied(copied_bytes))?;
+        Ok(copied)
     }
 }
 
@@ -200,37 +229,25 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
     }
 
-    fn apply_current(&self, current: &mut Option<FileRecord>) -> Result<(), Self::Error> {
+    fn replacement<'a>(&'a self, current: Option<&FileRecord>) -> Result<Option<&'a FileRecord>, Self::Error> {
         match self {
             Self::Insert(_) if current.is_some() => Err(FileTableSemanticError::AlreadyExists),
-            Self::Insert(record) => {
-                *current = Some(*record);
-                Ok(())
-            }
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => {
-                Err(FileTableSemanticError::Missing)
-            }
+            Self::Insert(record) => Ok(Some(record)),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(FileTableSemanticError::Missing),
             Self::Remove { expected, .. } => {
                 let existing = current.ok_or(FileTableSemanticError::Missing)?;
-                if expected.is_some_and(|value| existing != value) {
-                    return Err(FileTableSemanticError::StateConflict);
-                }
-                *current = None;
-                Ok(())
+                if expected.as_ref().is_some_and(|value| existing != value) { return Err(FileTableSemanticError::StateConflict); }
+                Ok(None)
             }
-            Self::Replace {
-                expected,
-                replacement,
-            } => {
+            Self::Replace { expected, replacement } => {
                 let existing = current.ok_or(FileTableSemanticError::Missing)?;
-                if existing != *expected {
-                    return Err(FileTableSemanticError::StateConflict);
-                }
-                *current = Some(*replacement);
-                Ok(())
+                if existing != expected { return Err(FileTableSemanticError::StateConflict); }
+                Ok(Some(replacement))
             }
         }
     }
+
+    fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
 }
 
 /// Candidate file-table root and exact sparse path-copy work.
@@ -260,24 +277,10 @@ pub fn apply_file_table_mutations<S: crate::ImmediateObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
 ) -> Result<FileTableMutationReceipt, FileTableMutationFailure> {
-    for mutation in &mutations {
-        mutation
-            .validate()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-    }
-    let receipt = persistent_btree::apply::<S, FileTableFormat, FileTableMutation>(
-        store,
-        root,
-        mutations,
-        maximum_mutations,
-        limits,
-        budget,
-    )
-    .map_err(|failure| OperationFailure::new(map_error(failure.error), *failure.work))?;
-    Ok(FileTableMutationReceipt {
-        root: receipt.root,
-        work: receipt.work,
-    })
+    let cancellation = crate::CancellationToken::new();
+    crate::async_storage::poll_immediate(apply_file_table_mutations_async(
+        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
+    ))
 }
 
 /// Asynchronously applies one ordered sparse file-table mutation batch.
@@ -298,21 +301,38 @@ pub async fn apply_file_table_mutations_async<S: crate::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> Result<FileTableMutationReceipt, FileTableMutationFailure> {
-    let receipt = persistent_btree::apply_async::<S, FileTableFormat, FileTableMutation>(
-        store,
-        root,
-        mutations,
-        maximum_mutations,
-        limits,
-        budget,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| OperationFailure::new(map_error(failure.error), *failure.work))?;
-    Ok(FileTableMutationReceipt {
-        root: receipt.root,
-        work: receipt.work,
-    })
+    let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
+    apply_file_table_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
+        .await.map_err(|error| OperationFailure::new(project_file_table_error(error), accounting.spent()))
+}
+
+/// Borrows the compiler's already-owned input, with no post-adoption.
+pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncObjectStore>(
+    store: &S, root: ObjectId, mutations: &[FileTableMutation], maximum_mutations: u32,
+    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &crate::CancellationToken,
+) -> Result<FileTableMutationReceipt, crate::FsError> {
+    accounting.check()?;
+    for mutation in mutations { mutation.validate().map_err(|error| crate::FsError::from(FileTableMutationError::from(error)))?; }
+    let receipt = persistent_btree::apply_with_accounting::<S, FileTableFormat, FileTableMutation>(
+        store, root, mutations, maximum_mutations, limits, accounting, cancellation,
+    ).await?;
+    Ok(FileTableMutationReceipt { root: receipt.root, work: receipt.work })
+}
+
+pub(super) fn project_file_table_error(error: crate::FsError) -> FileTableMutationError {
+    match error {
+        crate::FsError::MergeFileTable(error) => error,
+        crate::FsError::Work(error) => FileTableMutationError::Work(error),
+        crate::FsError::Object(error) => FileTableMutationError::Storage(error),
+        crate::FsError::PendingMutationAllocationFailed | crate::FsError::HandleAllocationFailed
+        | crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => FileTableMutationError::AllocationFailed,
+        crate::FsError::Decode(error) => FileTableMutationError::Decode(error),
+        crate::FsError::Cancelled(_) => FileTableMutationError::Storage(ObjectStoreError::Cancelled),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => FileTableMutationError::Storage(ObjectStoreError::Native(error)),
+        _ => unreachable!("file-table mutation engine returns only its typed kernel errors"),
+    }
 }
 
 fn map_error(error: persistent_btree::Error<FileTableSemanticError>) -> FileTableMutationError {

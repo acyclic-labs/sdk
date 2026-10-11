@@ -7,12 +7,12 @@
 use crate::cancellation::CancellationToken;
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+#[cfg(any(feature = "native-watch", target_arch = "wasm32"))]
 use crate::WorkError;
+#[cfg(feature = "native-watch")]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::NativeReadMeter as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
@@ -1648,7 +1648,7 @@ impl NativeDemandReadMeter {
                 let mut held = self.lock();
                 let work = held.as_work();
                 work.with_resource_scope(None, |work| work.with_native_capture_scope(None, |work| {
-                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), DemandWork::check)
+                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), |work| work.check())
                 })).map_err(crate::materializer::native_materialization_work_error)?;
                 if work.cancellation_wait.owns_native_control(producer) {
                     return Err(Error::InvalidLayout);
@@ -1670,7 +1670,7 @@ impl NativeDemandReadMeter {
                 let mut held = self.lock();
                 let work = held.as_work();
                 work.with_resource_scope(None, |work| work.with_native_capture_scope(None, |work| {
-                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), DemandWork::check)
+                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), |work| work.check())
                 })).map_err(crate::materializer::native_materialization_work_error)?;
                 if work.cancellation_wait.observer_overflow.is_none() {
                     let bytes = metadata.transfer_checkout_metadata(self, std::mem::size_of::<NativeObserverOverflow>() as u64)?;
@@ -1686,7 +1686,7 @@ impl NativeDemandReadMeter {
                 let mut held = self.lock();
                 let work = held.as_work();
                 work.with_resource_scope(None, |work| work.with_native_capture_scope(None, |work| {
-                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), DemandWork::check)
+                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), |work| work.check())
                 })).map_err(crate::materializer::native_materialization_work_error)?;
                 if work.cancellation_wait.owns_native_control(producer) { return Err(Error::InvalidLayout); }
                 let mut entries = overflow.lock();
@@ -1724,7 +1724,7 @@ impl NativeDemandReadMeter {
                 let mut held = self.lock();
                 let work = held.as_work();
                 work.with_resource_scope(None, |work| work.with_native_capture_scope(None, |work| {
-                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), DemandWork::check)
+                    work.with_invocation_scope(native.invocation_view_state().map(std::sync::Arc::downgrade), |work| work.check())
                 })).map_err(crate::materializer::native_materialization_work_error)?;
                 let mut entries = overflow.lock();
                 if entries.len() != replacement.len() || entries.capacity() != capacity
@@ -2826,7 +2826,7 @@ impl DemandWork {
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let previous = std::mem::replace(&mut self.native_resource, resource);
-        let mut scope = DemandResourceScope { work: self, previous };
+        let scope = DemandResourceScope { work: self, previous };
         operation(&mut *scope.work)
     }
 
@@ -2837,7 +2837,7 @@ impl DemandWork {
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let previous = std::mem::replace(&mut self.capture_custody, capture.map(CaptureCustodyBinding::Native));
-        let mut scope = DemandNativeCaptureScope { work: self, previous };
+        let scope = DemandNativeCaptureScope { work: self, previous };
         operation(&mut *scope.work)
     }
 
@@ -2846,7 +2846,7 @@ impl DemandWork {
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let previous = std::mem::replace(&mut self.native_invocation, invocation);
-        let mut scope = DemandInvocationScope { work: self, previous };
+        let scope = DemandInvocationScope { work: self, previous };
         operation(&mut *scope.work)
     }
 
@@ -3834,7 +3834,7 @@ impl DemandWork {
         self.check()?;
         let mut allocations = self.allocations;
         let mut work = self.work;
-        work.charge(delta, &self.budget)?;
+        work.charge(&delta, &self.budget)?;
         allocations.claim_bytes(bytes, operations, &mut work, self.budget)
             .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
         self.allocations = allocations;
@@ -4600,7 +4600,7 @@ impl<D> FilteredDemandSource<D> {
                 root.components().iter(), work,
             )? { return Ok(true); }
         }
-        work.with_original_leaf(DemandWork::check)?;
+        work.with_original_leaf(|work| work.check())?;
         Ok(false)
     }
 
@@ -4619,7 +4619,7 @@ impl<D> FilteredDemandSource<D> {
                 root.components().iter(), work,
             )? { return Ok(true); }
         }
-        work.with_original_leaf(DemandWork::check)?;
+        work.with_original_leaf(|work| work.check())?;
         Ok(false)
     }
 
@@ -9319,6 +9319,41 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn real_native_lookup_miss_does_not_poison_the_original_next_read()
+        -> Result<(), Box<dyn Error>>
+    {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("present"), b"real source")?;
+        let source = NativeDemandSource::open(
+            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(),
+        ).await?;
+        let cancellation = CancellationToken::new();
+        let budget = finite_watch_budget()?;
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        assert!(source.lookup_with_native_work(
+            source.reference(), &path("/absent")?,
+            NativeSourceWork::from_native_materialization_work(&original),
+        ).await?.is_none());
+        let missed = original.receipt();
+        assert!(missed.backend_read_operations > before.backend_read_operations);
+        assert_eq!(missed.source_entries_visited, before.source_entries_visited);
+        original.native_read_meter().with_original_leaf(|work| {
+            assert!(work.take_native_io_failure().is_none(),
+                "normal held-path NotFound is an observed miss, not a fatal meter marker");
+            work.check()
+        })?;
+        assert!(source.lookup_with_native_work(
+            source.reference(), &path("/present")?,
+            NativeSourceWork::from_native_materialization_work(&original),
+        ).await?.is_some());
+        assert!(original.receipt().backend_read_operations > missed.backend_read_operations);
+        original.receipt().verify(budget)?;
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn raw_source_packet_partitions_retire_only_physically_dropped_link_buffers()
@@ -11110,6 +11145,7 @@ impl<T: NativeDemandReadWork> NativeDemandReadMeter<T> {
     }
 }
 
+#[cfg(all(feature = "native-watch", target_os = "macos"))]
 pub(crate) fn native_demand_read_error(error: crate::DemandError) -> std::io::Error {
     if matches!(error, crate::DemandError::Cancelled) {
         std::io::Error::new(std::io::ErrorKind::Interrupted, error)
@@ -11274,8 +11310,10 @@ pub(crate) fn native_demand_error(error: std::io::Error) -> crate::DemandError {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native_io_meter::{
-    NativeDemandReadWork, native_demand_error, native_demand_read_error,
+    NativeDemandReadWork, native_demand_error,
 };
+#[cfg(all(feature = "native-watch", target_os = "macos"))]
+pub(crate) use native_io_meter::native_demand_read_error;
 /// Physical ownership of known native SDK payloads admitted by one original
 /// lifecycle ledger. Clones are aliases, not new allocations or authorities.
 #[cfg(not(target_arch = "wasm32"))]

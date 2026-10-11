@@ -180,8 +180,9 @@ fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
 }
 
 fn decode_object_id(decoder: &mut Decoder<'_>) -> Result<ObjectId, CanonicalDecodeError> {
-    let kind = ObjectKind::from_canonical_tag(decoder.u8()?)
-        .map_err(|error| CanonicalDecodeError::Invariant(error.to_string()))?;
+    let tag = decoder.u8()?;
+    let kind = ObjectKind::from_canonical_tag(tag)
+        .map_err(|_| CanonicalDecodeError::UnknownTag { field: "object kind", tag })?;
     Ok(ObjectId {
         kind,
         digest: Digest::from_bytes(decoder.fixed()?),

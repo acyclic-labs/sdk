@@ -195,7 +195,7 @@ where S: AsyncObjectStore, F: Format {
     let mut machine = Machine::<F>::new_with_accounting(
         root, after, inclusive, maximum_values, limits, borrowed, data_custody,
     ).map_err(|failure| query_error(failure.error))?;
-    let result = async {
+    let result: Result<(), Failure> = async {
         while machine.values.len() < machine.target && !machine.pending.value.is_empty() {
             cancellation.check().map_err(|error| machine.failure(error.into()))?;
             let mut pending = Some(machine.pop_pending()?);

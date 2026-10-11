@@ -19,6 +19,7 @@ struct ViewState {
     reader_slots: Vec<Option<ReadSlot>>,
     occupied_slots: usize,
     writer: bool,
+    mutation_phase: bool,
     waiting_writers: usize,
 }
 
@@ -217,13 +218,10 @@ fn gate_allocation_error(error: crate::kernel::allocation::AllocationError) -> M
     super::lazy::mount_engine_error(crate::collection::handle_allocation_error(error))
 }
 
-fn adopt_reader_registry(
+fn reconcile_reader_registry(
     entry: &mut ReadAdmission,
     gate: &ViewGate,
-    state: &ViewState,
     allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
 ) -> Result<(), MountSourceError> {
     let generation = gate.reader_generation.load(Ordering::Acquire);
     if let Some((owned_generation, bytes)) = entry.registry
@@ -233,10 +231,7 @@ fn adopt_reader_registry(
         entry.registry = None;
     }
     if entry.registry.is_none() {
-        let bytes = state.reader_slots.capacity().checked_mul(std::mem::size_of::<Option<ReadSlot>>())
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-        allocations.claim_bytes(bytes, 0, work, budget).map_err(gate_allocation_error)?;
-        entry.registry = Some((generation, bytes));
+        entry.registry = Some((generation, 0));
     }
     Ok(())
 }
@@ -268,6 +263,8 @@ pub(super) struct ViewGate {
     reader_generation: AtomicU64,
     #[cfg(test)]
     next_reader: AtomicU64,
+    // The gate's readers and wake state drop before its original custody.
+    _native_allocation: Option<crate::NativeAllocation>,
 }
 
 pub(super) struct ViewReadLease {
@@ -281,6 +278,35 @@ pub(super) struct ViewReadLease {
 pub(super) struct ViewWriteLease {
     pub(super) generation: u64,
     gate: Arc<ViewGate>,
+    armed: bool,
+}
+
+pub(super) struct ViewMutationPhase {
+    pub(super) generation: u64,
+    gate: Arc<ViewGate>,
+}
+
+impl ViewWriteLease {
+    pub(super) fn into_mutation_phase(mut self) -> ViewMutationPhase {
+        let mut state = self.gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(state.writer && !state.mutation_phase, "original exclusive view owner");
+        state.mutation_phase = true;
+        state.writer = false;
+        self.armed = false;
+        let phase = ViewMutationPhase { generation: self.generation, gate: Arc::clone(&self.gate) };
+        drop(state);
+        self.gate.changed.notify_waiters();
+        phase
+    }
+}
+
+impl Drop for ViewMutationPhase {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.mutation_phase = false;
+        drop(state);
+        self.gate.changed.notify_waiters();
+    }
 }
 
 struct WaitingWriter {
@@ -338,7 +364,9 @@ impl Drop for ViewReadLease {
             }
         }
         state.release_empty_registry(&self.gate);
-        if state.readers == 0 { self.gate.changed.notify_waiters(); }
+        let wake = state.readers == 0;
+        drop(state);
+        if wake { self.gate.changed.notify_waiters(); }
     }
 }
 
@@ -368,6 +396,7 @@ impl Drop for WaitingWriter {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             state.waiting_writers = state.waiting_writers.saturating_sub(1);
+            drop(state);
             self.gate.changed.notify_waiters();
         }
     }
@@ -375,12 +404,14 @@ impl Drop for WaitingWriter {
 
 impl Drop for ViewWriteLease {
     fn drop(&mut self) {
+        if !self.armed { return; }
         let mut state = self
             .gate
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         state.writer = false;
+        drop(state);
         self.gate.changed.notify_waiters();
     }
 }
@@ -396,7 +427,18 @@ impl ViewGate {
             reader_generation: AtomicU64::new(1),
             #[cfg(test)]
             next_reader: AtomicU64::new(1),
+            _native_allocation: None,
         }
+    }
+
+    pub(super) fn new_with_native_work(
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<Self>, MountSourceError> {
+        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1)
+            .map_err(MountSourceError::NativeWork)?;
+        let mut value = Self::new();
+        value._native_allocation = Some(allocation);
+        Ok(Arc::new(value))
     }
 
     #[cfg(test)]
@@ -457,9 +499,6 @@ impl ViewGate {
         }
     }
 
-    pub(super) fn notified(&self) -> tokio::sync::futures::Notified<'_> {
-        self.changed.notified()
-    }
 
     pub(super) fn reads_for_callback_measured(
         self: &Arc<Self>,
@@ -471,7 +510,7 @@ impl ViewGate {
     ) -> Result<bool, MountSourceError> {
         let entry = admissions.entry_mut(self, allocations, work, budget)?;
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        adopt_reader_registry(entry, self, &state, allocations, work, budget)?;
+        reconcile_reader_registry(entry, self, allocations)?;
         for slot in &state.reader_slots {
             work.charge(&crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }, &budget)
                 .map_err(MountSourceError::Work)?;
@@ -501,26 +540,53 @@ impl ViewGate {
         work: &mut crate::demand::DemandWork,
         cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
     ) -> Result<ViewReadLease, MountSourceError> {
+        self.read_for_callback_with_carrier(
+            owner, expected, &mut super::adapter::NativeDemandCarrier::Borrowed(work),
+            cancellation, lifetime,
+        ).await
+    }
+
+    pub(super) async fn read_for_callback_with_meter(
+        self: &Arc<Self>, owner: CallbackOwner, expected: Option<u64>,
+        meter: &Arc<crate::demand::NativeDemandReadMeter>,
+        cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
+    ) -> Result<ViewReadLease, MountSourceError> {
+        self.read_for_callback_with_carrier(
+            owner, expected, &mut super::adapter::NativeDemandCarrier::Shared(meter),
+            cancellation, lifetime,
+        ).await
+    }
+
+    pub(super) async fn read_for_callback_with_carrier(
+        self: &Arc<Self>, owner: CallbackOwner, expected: Option<u64>,
+        carrier: &mut super::adapter::NativeDemandCarrier<'_>,
+        cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
+    ) -> Result<ViewReadLease, MountSourceError> {
         loop {
             if cancellation.is_cancelled() { return Err(MountSourceError::Cancelled); }
             if lifetime.is_some_and(crate::CancellationToken::is_cancelled) {
                 return Err(MountSourceError::Stale);
             }
-            work.check().map_err(super::lazy::mount_demand_error)?;
+            carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
             let notified = self.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let admitted = {
-                let (admissions, allocations, counters, mut budget) =
-                    work.view_gate_admission_parts().map_err(super::lazy::mount_demand_error)?;
-                let result = self.try_read_for_callback_measured(
-                    owner, expected, admissions, allocations, counters, &mut budget,
-                );
-                (result, budget)
-            };
-            work.budget = admitted.1;
-            if let Some(lease) = admitted.0? { return Ok(lease); }
-            super::adapter::await_measured_lock(notified, work, cancellation, lifetime).await?;
+            let admitted = carrier.with_work(|work| {
+                let (result, budget) = {
+                    let (admissions, allocations, counters, mut budget) =
+                        work.view_gate_admission_parts().map_err(super::lazy::mount_demand_error)?;
+                    let result = self.try_read_for_callback_measured(
+                        owner, expected, admissions, allocations, counters, &mut budget,
+                    );
+                    (result, budget)
+                };
+                work.budget = budget;
+                result
+            })?;
+            if let Some(lease) = admitted { return Ok(lease); }
+            super::adapter::await_measured_lock_with_carrier(
+                notified, carrier, cancellation, lifetime,
+            ).await?;
         }
     }
 
@@ -536,7 +602,7 @@ impl ViewGate {
         let entry = admissions.entry_mut(self, allocations, work, *budget)?;
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.writer { return Ok(None); }
-        adopt_reader_registry(entry, self, &state, allocations, work, *budget)?;
+        reconcile_reader_registry(entry, self, allocations)?;
         let mut owner_slot = None;
         let mut first_free = None;
         let mut second_free = None;
@@ -550,7 +616,7 @@ impl ViewGate {
                 _ => {}
             }
         }
-        if state.waiting_writers != 0 && owner_slot.is_none() { return Ok(None); }
+        if state.waiting_writers != 0 && owner_slot.is_none() && !state.mutation_phase { return Ok(None); }
         let generation = self.generation.load(Ordering::Acquire);
         if !generation.is_multiple_of(2) || expected.is_some_and(|expected| expected != generation) {
             return Err(MountSourceError::Stale);
@@ -591,7 +657,7 @@ impl ViewGate {
             let width = std::mem::size_of::<Option<ReadSlot>>();
             let bytes = capacity.checked_mul(width)
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-            let old_bytes = (state.reader_slots.capacity() * width) as u64;
+            let old_bytes = entry.registry.map_or(0, |(_, bytes)| bytes);
             let copied = crate::WorkCounters {
                 items_examined: state.reader_slots.len() as u64,
                 bytes_copied: (state.reader_slots.len() * width) as u64,
@@ -654,6 +720,17 @@ impl ViewGate {
         Ok(lease)
     }
 
+    pub(super) async fn write_stable_with_carrier(
+        self: &Arc<Self>, expected: Option<u64>,
+        carrier: &mut super::adapter::NativeDemandCarrier<'_>,
+        cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
+    ) -> Result<ViewWriteLease, MountSourceError> {
+        carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
+        super::adapter::await_measured_lock_with_carrier(
+            self.write_stable(expected), carrier, cancellation, lifetime,
+        ).await?
+    }
+
     async fn acquire_writer(self: &Arc<Self>) -> ViewWriteLease {
         let mut waiter = WaitingWriter::register(self);
         loop {
@@ -662,13 +739,14 @@ impl ViewGate {
             notified.as_mut().enable();
             {
                 let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                if !state.writer && state.readers == 0 {
+                if !state.writer && !state.mutation_phase && state.readers == 0 {
                     let generation = self.generation.load(Ordering::Acquire);
                     waiter.admit(&mut state);
                     state.writer = true;
                     return ViewWriteLease {
                         generation,
                         gate: Arc::clone(self),
+                        armed: true,
                     };
                 }
             }
@@ -905,5 +983,109 @@ mod tests {
         assert_eq!(work.work.items_examined, before + 2);
         assert_eq!(work.live_allocation_bytes(), live - bytes * 2);
         assert_eq!(work.budget.items_examined, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn measured_callback_wait_preserves_original_lifetime_cancellation() {
+        let gate = Arc::new(ViewGate::new());
+        let writer = gate.write().await;
+        let cancellation = CancellationToken::new();
+        let lifetime = CancellationToken::new();
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        {
+            let mut read = std::pin::pin!(gate.read_for_callback_with_work(
+                CallbackOwner(1), None, &mut work, &cancellation, Some(&lifetime),
+            ));
+            assert!(futures::poll!(read.as_mut()).is_pending());
+            lifetime.cancel();
+            assert!(matches!(read.await, Err(MountSourceError::Stale)));
+        }
+        assert!(!cancellation.is_cancelled());
+        drop(writer);
+        work.record(WorkCounters::default()).expect("original wait cleanup");
+        assert_eq!(gate.state.lock().expect("gate state").readers, 0);
+    }
+
+    #[tokio::test]
+    async fn original_mutation_phase_allows_new_sdk_readers_but_not_later_writers() {
+        let gate = Arc::new(ViewGate::new());
+        let cancellation = CancellationToken::new();
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let writer = gate.write_stable(None).await.expect("original writer");
+        let phase = writer.into_mutation_phase();
+        assert_eq!(phase.generation, ViewGate::INITIAL_GENERATION);
+        assert!(!gate.state.lock().expect("original state").writer);
+        let mut next = std::pin::pin!(gate.write_stable(None));
+        assert!(futures::poll!(next.as_mut()).is_pending());
+        let reader = gate.read_for_callback_with_work(
+            CallbackOwner(10), Some(phase.generation), &mut work, &cancellation, None,
+        ).await.expect("new SDK callback reads original frozen view");
+        assert!(futures::poll!(next.as_mut()).is_pending());
+        drop(phase);
+        assert!(futures::poll!(next.as_mut()).is_pending(), "original reader still owns its lane");
+        drop(reader);
+        work.record(WorkCounters::UNCHARGED).expect("actual callback cleanup");
+        drop(next.await.expect("later original writer"));
+        assert_eq!(work.budget.items_examined, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn foreign_existing_registry_capacity_remains_borrowed() {
+        let gate = Arc::new(ViewGate::new());
+        let first = gate.read_for_callback(CallbackOwner(1), None).await.expect("existing first reader");
+        let second = gate.read_for_callback(CallbackOwner(2), None).await.expect("existing second reader");
+        let spare = gate.read_for_callback(CallbackOwner(3), None).await.expect("existing spare reader");
+        drop(spare);
+        let cancellation = CancellationToken::new();
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.allocation_operations = 0;
+        budget.bytes_allocated = 0;
+        budget.peak_live_bytes = 0;
+        let mut work = DemandWork::new(budget, &cancellation);
+        let reader = measured_read(&gate, CallbackOwner(1), &mut work).expect("reuse borrowed original slots");
+        assert_eq!(work.work.allocation_operations, 0);
+        assert_eq!(work.work.bytes_allocated, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        drop(reader);
+        work.record(WorkCounters::UNCHARGED).expect("only actual lease cleanup");
+        drop(second);
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn shared_original_read_and_write_gate_preserve_custody_and_tokens() {
+        let gate = Arc::new(ViewGate::new());
+        let cancellation = CancellationToken::new();
+        let meter = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+            DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )));
+        let lease = gate.read_for_callback_with_meter(
+            CallbackOwner(1), None, &meter, &cancellation, None,
+        ).await.expect("original shared read");
+        let before = meter.lock().work.items_examined;
+        let lifetime = CancellationToken::new();
+        {
+            let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
+            let mut writer = std::pin::pin!(gate.write_stable_with_carrier(
+                Some(ViewGate::INITIAL_GENERATION), &mut carrier, &cancellation, Some(&lifetime),
+            ));
+            assert!(futures::poll!(writer.as_mut()).is_pending());
+            assert!(meter.0.try_lock().is_ok(), "pending writer retained the original work mutex");
+            lifetime.cancel();
+            assert!(matches!(writer.await, Err(MountSourceError::Stale)));
+        }
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(gate.state.lock().expect("original gate").waiting_writers, 0);
+        drop(lease);
+        meter.lock().record(WorkCounters::default()).expect("physical original cleanup");
+        assert!(meter.lock().work.items_examined > before);
+        assert_eq!(meter.lock().budget.items_examined, u64::MAX);
+        let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
+        let writer = gate.write_stable_with_carrier(
+            Some(ViewGate::INITIAL_GENERATION), &mut carrier, &cancellation, None,
+        ).await.expect("same original exclusive gate");
+        assert!(gate.state.lock().expect("original gate").writer);
+        drop(writer);
+        assert!(!gate.state.lock().expect("original gate").writer);
     }
 }

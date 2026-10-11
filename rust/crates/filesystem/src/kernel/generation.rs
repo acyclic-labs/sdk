@@ -72,6 +72,7 @@ pub fn encode_generation_root(root: &GenerationRoot) -> Result<Vec<u8>, Canonica
         .map(|receipt| receipt.value)
         .map_err(|failure| match failure.error {
             GenerationRootEncodeError::Canonical(error) => error,
+            GenerationRootEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
             GenerationRootEncodeError::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
             GenerationRootEncodeError::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
         })
@@ -84,7 +85,7 @@ pub fn encode_generation_root(root: &GenerationRoot) -> Result<Vec<u8>, Canonica
 /// The ordinary encoder projects this same engine with an unbounded permit.
 ///
 /// # Errors
-/// Preserves completed validation and allocation work on every failure.
+/// Preserves completed work and the actual output-reservation cause on failure.
 pub fn encode_generation_root_measured(
     root: &GenerationRoot,
     budget: WorkBudget,
@@ -108,7 +109,7 @@ fn encode_generation_root_with_permit(
             .map_err(|error| error.into_work_or(GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
         encode_generation_root_with_allocations(
             root, &mut allocations, &mut work, budget, cancellation,
-            |_| GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed),
+            GenerationRootEncodeError::AllocationFailed,
         )
     })();
     result.map(|value| OperationReceipt { value, work })
@@ -123,20 +124,11 @@ pub(crate) fn encode_generation_root_with_accounting(
     cancellation: &CancellationToken,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
     cancellation.check()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let native_original = accounting.native_work().is_some();
     let mut encoding = EncodeAccounting::new(accounting);
     let result = encode_generation_root_with_steps(
         root,
         |step| encoding.observe(step),
-        |error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native_original {
-                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
-            }
-            let _ = error;
-            CanonicalDecodeError::AllocationFailed.into()
-        },
+        crate::FsError::EncodedAllocationFailed,
     );
     encoding.finish(result)
 }
@@ -231,9 +223,12 @@ fn encode_generation_root_with_steps<E: From<CanonicalDecodeError>>(
 /// Failure from finite canonical root encoding.
 #[derive(Debug, Error)]
 pub enum GenerationRootEncodeError {
-    /// Invalid canonical root or failed owned-buffer allocation.
+    /// Invalid canonical root.
     #[error(transparent)]
     Canonical(#[from] CanonicalDecodeError),
+    /// The canonical output reservation failed with its actual allocator cause.
+    #[error("canonical generation-root output allocation failed")]
+    AllocationFailed(#[source] std::collections::TryReserveError),
     /// The actual operation exceeded its permit.
     #[error(transparent)]
     Work(#[from] crate::WorkError),

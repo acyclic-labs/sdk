@@ -1231,7 +1231,7 @@ where
         }
         let probe = self.workspace().engine_checkout_with_native_work(
             GenerationSelector::Head, CheckoutMode::read_only_pinned(),
-            native_work, cancellation,
+            &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
         let config = probe.volume_config();
         drop(probe);
@@ -1304,7 +1304,7 @@ where
         };
         let checkout = self.workspace().engine_checkout_with_native_work(
             expected_generation.map_or(GenerationSelector::Head, GenerationSelector::Exact),
-            mode, native_work, cancellation,
+            mode, &original, cancellation,
         ).await.map_err(MountLifecycleError::Workspace)?;
         let shared = SharedCheckout::with_publication_meter(checkout, options.publication, native_work)
             .map_err(MountLifecycleError::Source)?;
@@ -1757,7 +1757,7 @@ where
                     CheckoutMode::read_only_pinned()
                 };
                 let checkout = workspace.engine_checkout_with_native_work(
-                    GenerationSelector::Exact(expected_generation), mode, meter, cancellation,
+                    GenerationSelector::Exact(expected_generation), mode, original, cancellation,
                 ).await?;
                 let mut checkout = if mount.writable {
                     checkout

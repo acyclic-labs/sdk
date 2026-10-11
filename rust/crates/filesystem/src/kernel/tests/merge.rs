@@ -318,20 +318,16 @@ fn optional_and_change_index_resolution_is_total() {
     ));
 
     let second_id = FileId::from_bytes([2; 16]);
-    let indexed = changes_by_file(vec![
-        ValueChange {
-            key: base.file_id,
-            before: Some(base),
-            after: Some(ours),
-        },
-        ValueChange {
-            key: second_id,
-            before: None,
-            after: Some(theirs),
-        },
-    ]);
-    assert_eq!(indexed.get(&base.file_id), Some(&(Some(base), Some(ours))));
-    assert_eq!(indexed.get(&second_id), Some(&(None, Some(theirs))));
+    let left = [ValueChange { key: base.file_id, before: Some(base), after: Some(ours) }];
+    let right = [ValueChange { key: second_id, before: None, after: Some(theirs) }];
+    let mut indices = [0, 0];
+    let first = next_changes(&left, &right, &mut indices).expect("first changed file");
+    assert_eq!(first.0.map(|change| change.key), Some(base.file_id));
+    assert!(first.1.is_none());
+    let second = next_changes(&left, &right, &mut indices).expect("second changed file");
+    assert!(second.0.is_none());
+    assert_eq!(second.1.map(|change| change.key), Some(second_id));
+    assert!(next_changes(&left, &right, &mut indices).is_none());
 
     assert!(is_directory(Some(directory(4, 1, 1, 5))));
     assert!(!is_directory(Some(base)));
@@ -344,129 +340,20 @@ fn optional_and_change_index_resolution_is_total() {
 }
 
 #[test]
-fn diff_failure_translation_preserves_exact_receipts() {
-    let prior = WorkCounters {
-        object_probes: 2,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        page_reads: 3,
-        ..WorkCounters::default()
-    };
-
-    let cases = [
-        PersistentDiffError::WrongRootKind,
-        PersistentDiffError::InvalidLimit,
-        PersistentDiffError::AllocationFailed,
-        PersistentDiffError::Storage(ObjectStoreError::Missing),
-        PersistentDiffError::Decode(CanonicalDecodeError::Truncated),
-        PersistentDiffError::Work(WorkError::Overflow),
-        PersistentDiffError::Cancelled,
-    ];
-    for (ordinal, error) in cases.into_iter().enumerate() {
-        let mapped = map_diff_failure(OperationFailure::new(error, nested), prior);
-        assert_eq!(mapped.work.object_probes, 2);
-        assert_eq!(mapped.work.page_reads, 3);
-        match ordinal {
-            0 | 1 => assert!(matches!(mapped.error, MergeGenerationError::InvalidDiff)),
-            2 => assert!(matches!(
-                mapped.error,
-                MergeGenerationError::AllocationFailed
-            )),
-            3 => assert!(matches!(
-                mapped.error,
-                MergeGenerationError::Object(ObjectStoreError::Missing)
-            )),
-            4 => assert!(matches!(
-                mapped.error,
-                MergeGenerationError::Decode(CanonicalDecodeError::Truncated)
-            )),
-            5 => assert!(matches!(
-                mapped.error,
-                MergeGenerationError::Work(WorkError::Overflow)
-            )),
-            6 => assert!(matches!(mapped.error, MergeGenerationError::Cancelled(_))),
-            _ => unreachable!(),
-        }
-    }
-
-    let overflow = map_diff_failure(
-        OperationFailure::new(
-            PersistentDiffError::Cancelled,
-            WorkCounters {
-                object_probes: 1,
-                ..WorkCounters::default()
-            },
-        ),
-        WorkCounters {
-            object_probes: u64::MAX,
-            ..WorkCounters::default()
-        },
-    );
-    assert!(matches!(
-        overflow.error,
-        MergeGenerationError::Work(WorkError::Overflow)
-    ));
-    assert_eq!(overflow.work.object_probes, u64::MAX);
-}
-
-#[test]
-fn work_helpers_preserve_exact_receipts() -> Result<(), Box<dyn std::error::Error>> {
-    let prior = WorkCounters {
-        object_probes: 2,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        page_reads: 3,
-        ..WorkCounters::default()
-    };
-
-    assert_eq!(
-        remaining(prior, WorkBudget::UNBOUNDED)?.object_probes,
-        u64::MAX - 2
-    );
-    let exhausted = remaining(prior, WorkCounters::default())
-        .err()
-        .ok_or_else(|| std::io::Error::other("spent work was admitted by an empty budget"))?;
-    assert!(matches!(
-        exhausted.error,
-        MergeGenerationError::Work(WorkError::BudgetExceeded {
-            counter: "object_probes",
-            observed: 2,
-            maximum: 0
-        })
-    ));
-    assert_eq!(*exhausted.work, prior);
-
-    assert_eq!(
-        add(prior, nested)?,
-        WorkCounters {
-            object_probes: 2,
-            page_reads: 3,
-            ..WorkCounters::default()
-        }
-    );
-    let add_overflow = add(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-    )
-    .err()
-    .ok_or_else(|| std::io::Error::other("exact accounting saturated an overflow"))?;
-    assert!(matches!(
-        add_overflow.error,
-        MergeGenerationError::Work(WorkError::Overflow)
-    ));
-
-    let invalid = invalid(prior);
-    assert!(matches!(invalid.error, MergeGenerationError::InvalidDiff));
-    assert_eq!(*invalid.work, prior);
-    Ok(())
+fn common_merge_error_projection_preserves_typed_causes() {
+    assert!(matches!(project_merge_error(FsError::InvalidDiff), MergeGenerationError::InvalidDiff));
+    assert!(matches!(project_merge_error(FsError::MergeChangeLimit), MergeGenerationError::ChangeLimit));
+    assert!(matches!(project_merge_error(FsError::DiffAllocationFailed), MergeGenerationError::AllocationFailed));
+    assert!(matches!(project_merge_error(FsError::Object(ObjectStoreError::Missing)),
+        MergeGenerationError::Object(ObjectStoreError::Missing)));
+    assert!(matches!(project_merge_error(FsError::Decode(CanonicalDecodeError::Truncated)),
+        MergeGenerationError::Decode(CanonicalDecodeError::Truncated)));
+    assert!(matches!(project_merge_error(FsError::Work(WorkError::Overflow)),
+        MergeGenerationError::Work(WorkError::Overflow)));
+    assert!(matches!(project_merge_error(FsError::Cancelled(CancellationError)),
+        MergeGenerationError::Cancelled(_)));
+    assert!(matches!(project_merge_error(FsError::HandleAllocationFailed),
+        MergeGenerationError::Kernel(FsError::HandleAllocationFailed)));
 }
 
 #[test]
@@ -499,6 +386,32 @@ fn tree_mutation_preserves_exact_names_and_file_identity() -> Result<(), Box<dyn
     ));
     assert!(tree_mutation(name, None, None).is_none());
     Ok(())
+}
+
+async fn adjust_test_link_counts(
+    store: &MemoryObjectStore, records: &mut BTreeMap<FileId, RecordChange>, remaining_changes: &mut u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken, work: &mut WorkCounters,
+) -> Result<(), OperationFailure<MergeGenerationError>> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = async {
+        let mut state = MergeState::new(*remaining_changes, &mut accounting)?;
+        for (file, value) in records.iter() {
+            state.records.ensure_for_push(usize::MAX, &mut accounting)?;
+            state.records.value.push((*file, *value));
+        }
+        let result = adjust_link_counts(store, limits, &mut state, &mut accounting, cancellation).await;
+        for (file, value) in &state.records.value {
+            *records.get_mut(file).ok_or(FsError::InvalidDiff)? = *value;
+        }
+        *remaining_changes = state.remaining_changes;
+        state.records.retire(&mut accounting)?;
+        state.conflicts.retire(&mut accounting)?;
+        state.folds.retire(&mut accounting)?;
+        state.file_folds.retire(&mut accounting)?;
+        result
+    }.await;
+    *work = accounting.spent();
+    result.map_err(|error| OperationFailure::new(project_merge_error(error), *work))
 }
 
 #[test]
@@ -541,15 +454,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     ]);
     let mut remaining_changes = 8;
     let mut work = WorkCounters::default();
-    poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut remaining_changes,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut work,
-    ))
+    poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut remaining_changes,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &cancellation,
+    &mut work,))
     .ok_or("link-count adjustment unexpectedly suspended")??;
     assert_eq!(
         resolutions
@@ -566,15 +477,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     let introduced = record(33, 1, 1, FilePayload::Empty, FileKind::Fifo);
     let introduced_id = introduced.file_id;
     let mut resolutions = BTreeMap::from([(introduced_id, (None, Some(introduced)))]);
-    poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut 8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut WorkCounters::default(),
-    ))
+    poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut 8,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &cancellation,
+    &mut WorkCounters::default(),))
     .ok_or("orphaned file adjustment unexpectedly suspended")??;
     assert_eq!(
         resolutions.get(&introduced_id).map(|(_, record)| *record),
@@ -592,15 +501,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         (Some(base_directory), Some(renamed_directory)),
     )]);
     let mut remaining_changes = 8;
-    poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut remaining_changes,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut WorkCounters::default(),
-    ))
+    poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut remaining_changes,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &cancellation,
+    &mut WorkCounters::default(),))
     .ok_or("rename-neutral link adjustment unexpectedly suspended")??;
     assert!(!resolutions.contains_key(&target_id));
 
@@ -608,15 +515,13 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         directory_id,
         (Some(base_directory), Some(removed_directory)),
     )]);
-    let limit = poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut 0,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut WorkCounters::default(),
-    ))
+    let limit = poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut 0,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &cancellation,
+    &mut WorkCounters::default(),))
     .ok_or("zero link frontier unexpectedly suspended")?
     .err()
     .ok_or("zero link frontier unexpectedly succeeded")?;
@@ -650,15 +555,13 @@ fn pruning_an_unbound_directory_recomputes_descendant_links()
         (directory_id, (None, Some(directory))),
         (child_id, (None, Some(child))),
     ]);
-    poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut 8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        &mut WorkCounters::default(),
-    ))
+    poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut 8,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &CancellationToken::new(),
+    &mut WorkCounters::default(),))
     .ok_or("orphan pruning unexpectedly suspended")??;
     assert!(resolutions.values().all(|(_, resolved)| resolved.is_none()));
     Ok(())
@@ -669,15 +572,13 @@ fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn st
     let store = MemoryObjectStore::default();
     let linked = record(92, 1, 2, FilePayload::Empty, FileKind::Fifo);
     let mut resolutions = BTreeMap::from([(linked.file_id, (Some(linked), None))]);
-    let failure = poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut 8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        &mut WorkCounters::default(),
-    ))
+    let failure = poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut 8,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &CancellationToken::new(),
+    &mut WorkCounters::default(),))
     .ok_or("remaining-link adjustment unexpectedly suspended")?
     .err()
     .ok_or("remaining-link deletion unexpectedly succeeded")?;
@@ -968,15 +869,13 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
 
     let mut resolutions = BTreeMap::from([(directory_id, (Some(base), Some(with(both))))]);
     let mut remaining_changes = 1;
-    let failure = poll_ready(adjust_link_counts(
-        &store,
-        &mut resolutions,
-        &mut remaining_changes,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut WorkCounters::default(),
-    ))
+    let failure = poll_ready(adjust_test_link_counts(&store,
+    &mut resolutions,
+    &mut remaining_changes,
+    DecodeLimits::default(),
+    WorkBudget::UNBOUNDED,
+    &cancellation,
+    &mut WorkCounters::default(),))
     .ok_or("truncated link recount suspended")?
     .err()
     .ok_or("truncated link recount succeeded")?;
@@ -1103,24 +1002,16 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
         MergeConflict::File(directory_id),
         MergeConflictResolution::File(Some(dir(chosen, only_b))),
     )]);
-    let resolved = poll_ready(merge_directory_record_with_resolutions_async(
-        &store,
-        directory_id,
-        base,
-        ours,
-        theirs,
-        8,
-        8,
-        &resolutions,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("resolved directory merge suspended")??;
-    let record = resolved
-        .value
-        .record
-        .ok_or("resolved directory merge produced no record")?;
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut state = MergeState::new(8, &mut accounting)?;
+    let record = poll_ready(merge_directory_record_with_resolutions_async(
+        &store, directory_id, base, ours, theirs, &resolutions, 8,
+        DecodeLimits::default(), &mut state, &mut accounting, &cancellation,
+    )).ok_or("resolved directory merge suspended")??.ok_or("resolved directory merge produced no record")?;
+    state.records.retire(&mut accounting)?;
+    state.conflicts.retire(&mut accounting)?;
+    state.folds.retire(&mut accounting)?;
+    state.file_folds.retire(&mut accounting)?;
     assert_eq!(record.metadata, chosen);
     assert_eq!(record.payload, FilePayload::Directory { entries: both });
     Ok(())
@@ -1212,4 +1103,181 @@ mod laws {
             );
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let metadata = put_metadata(&store, FileMetadata::default())?;
+    let a = FileId::from_bytes([2; 16]);
+    let b = FileId::from_bytes([3; 16]);
+    let entry = |name: &str, file_id| -> Result<TreeEntry, Box<dyn std::error::Error>> {
+        Ok(TreeEntry { name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
+            file_id, kind: FileKind::Fifo })
+    };
+    let base_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?])?;
+    let ours_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("left", a)?])?;
+    let theirs_entries = put_tree(&store, vec![entry("alpha", a)?, entry("beta", b)?, entry("right", b)?])?;
+    let directory = |entries| FileRecord { metadata, payload: FilePayload::Directory { entries }, ..directory(1, 0, 1, 0) };
+    let first = FileRecord { metadata, ..record(2, 0, 1, FilePayload::Empty, FileKind::Fifo) };
+    let second = FileRecord { metadata, ..record(3, 0, 1, FilePayload::Empty, FileKind::Fifo) };
+    let base = GenerationRoot { file_table: put_table(&store, vec![directory(base_entries), first, second])?, ..root(1, 1, 0) };
+    let ours = GenerationRoot { file_table: put_table(&store,
+        vec![directory(ours_entries), FileRecord { link_count: 2, ..first }, second])?, ..root(1, 1, 0) };
+    let ours_table = ours.file_table;
+    let theirs = GenerationRoot { file_table: put_table(&store,
+        vec![directory(theirs_entries), first, FileRecord { link_count: 2, ..second }])?, ..root(1, 1, 0) };
+    let request = stored_request(&store, base, ours, theirs)?;
+    let second_parent = GenerationId::new(request.theirs_generation.digest);
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (outcome, allocation) = poll_ready(merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("native merge suspended")??;
+    let MergeGenerationOutcome::Prepared { generation_root, root, generation_id } = outcome
+        else { return Err("independent native additions conflicted".into()); };
+    assert_eq!(generation_id, GenerationId::new(generation_root.digest));
+    assert_eq!(root.parents.len(), 2);
+    assert_eq!(root.parents.get(1), Some(&second_parent));
+    let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("native merge lost output custody".into()); };
+    assert_eq!(guard.bytes(), (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64);
+    let changes = poll_ready(super::super::diff_file_records_async(&store, Some(ours_table), Some(root.file_table),
+        8, DecodeLimits::default(), WorkBudget::UNBOUNDED, &cancellation)).ok_or("merged table diff suspended")??;
+    let merged_second = changes.changes.iter().find(|change| change.key == b).and_then(|change| change.after).ok_or("second hardlink delta missing")?;
+    assert_eq!(merged_second.link_count, 2);
+    let merged_directory = changes.changes.iter().find(|change| change.key == FileId::from_bytes([1; 16]))
+        .and_then(|change| change.after).ok_or("merged directory missing")?;
+    let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
+    let read = ObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
+    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default())?
+        else { return Err("small merged directory was not a leaf".into()); };
+    assert_eq!(entries.len(), 4);
+    assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));
+    assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b));
+    let stored = ObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
+    assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default())?, root);
+    assert!(original.receipt().page_reads > 0);
+    assert!(original.receipt().page_writes > 0);
+    drop(root);
+    drop(guard);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_merge_bounds_real_binding_conflicts_and_exact_output_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let metadata = put_metadata(&store, FileMetadata::default())?;
+    let empty = put_tree(&store, Vec::new())?;
+    let entry = |name: &str, file_id, kind| -> Result<TreeEntry, Box<dyn std::error::Error>> {
+        Ok(TreeEntry { name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?, file_id, kind })
+    };
+    let ours_file = FileRecord { metadata, ..record(2, 0, 2, FilePayload::Empty, FileKind::Fifo) };
+    let theirs_file = FileRecord { metadata, ..record(3, 0, 2, FilePayload::Empty, FileKind::Socket) };
+    let ours_entries = put_tree(&store, vec![entry("x", ours_file.file_id, ours_file.kind)?, entry("y", ours_file.file_id, ours_file.kind)?])?;
+    let theirs_entries = put_tree(&store, vec![entry("x", theirs_file.file_id, theirs_file.kind)?, entry("y", theirs_file.file_id, theirs_file.kind)?])?;
+    let directory = |entries| FileRecord { metadata, payload: FilePayload::Directory { entries }, ..directory(1, 0, 1, 0) };
+    let base = GenerationRoot { file_table: put_table(&store, vec![directory(empty)])?, ..root(1, 1, 0) };
+    let ours = GenerationRoot { file_table: put_table(&store, vec![directory(ours_entries), ours_file])?, ..root(1, 1, 0) };
+    let theirs = GenerationRoot { file_table: put_table(&store, vec![directory(theirs_entries), theirs_file])?, ..root(1, 1, 0) };
+    let mut request = stored_request(&store, base, ours, theirs)?;
+    request.maximum_conflicts = 1;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (outcome, allocation) = poll_ready(merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("native conflicting merge suspended")??;
+    let MergeGenerationOutcome::Conflicted { conflicts, truncated } = outcome else { return Err("competing native bindings were prepared".into()); };
+    assert!(truncated);
+    assert_eq!(conflicts.len(), 1);
+    let Some(MergeConflict::Binding { directory_id, name }) = conflicts.first() else { return Err("exact binding conflict missing".into()); };
+    assert_eq!(*directory_id, FileId::from_bytes([1; 16]));
+    assert_eq!(name.as_bytes(), b"x");
+    let bytes = (conflicts.capacity() * std::mem::size_of::<MergeConflict>()) as u64 + TreeFormat::key_owned_bytes(name);
+    let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("conflict output lost custody".into()); };
+    assert_eq!(guard.bytes(), bytes);
+    assert!(original.receipt().page_reads > 0);
+    assert_eq!(original.receipt().page_writes, 0);
+    drop(conflicts);
+    drop(guard);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_merge_combines_nonoverlapping_extent_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let metadata = put_metadata(&store, FileMetadata::default())?;
+    let extent = |offset, length, kind| super::super::Extent { offset, length, kind };
+    let put_extents = |values| -> Result<ObjectId, Box<dyn std::error::Error>> {
+        let page = super::super::ExtentPage::Leaf(values);
+        let bytes = super::super::encode_extent_page(&page, 8)?;
+        let object = ObjectId { kind: ObjectKind::ExtentPage, digest: crate::storage::object_digest(ObjectKind::ExtentPage, &bytes) };
+        ObjectStore::put(&store, object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+        Ok(object)
+    };
+    let base_extents = put_extents(vec![extent(0, 8, ExtentKind::AllocatedZero)])?;
+    let ours_extents = put_extents(vec![extent(0, 4, ExtentKind::Hole), extent(4, 4, ExtentKind::AllocatedZero)])?;
+    let theirs_extents = put_extents(vec![extent(0, 4, ExtentKind::AllocatedZero), extent(4, 4, ExtentKind::Hole)])?;
+    let expected_extents = put_extents(vec![extent(0, 8, ExtentKind::Hole)])?;
+    let entries = put_tree(&store, vec![TreeEntry {
+        name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec(), 8)?,
+        file_id: FileId::from_bytes([2; 16]), kind: FileKind::Regular,
+    }])?;
+    let directory = FileRecord { metadata, payload: FilePayload::Directory { entries }, ..directory(1, 0, 1, 0) };
+    let regular = |extents| FileRecord { metadata,
+        ..record(2, 0, 1, FilePayload::Regular { logical_bytes: 8, extents }, FileKind::Regular) };
+    let base = GenerationRoot { file_table: put_table(&store, vec![directory, regular(base_extents)])?, ..root(1, 1, 0) };
+    let ours = GenerationRoot { file_table: put_table(&store, vec![directory, regular(ours_extents)])?, ..root(1, 1, 0) };
+    let ours_table = ours.file_table;
+    let theirs = GenerationRoot { file_table: put_table(&store, vec![directory, regular(theirs_extents)])?, ..root(1, 1, 0) };
+    let request = stored_request(&store, base, ours, theirs)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (outcome, allocation) = poll_ready(merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("native extent merge suspended")??;
+    let MergeGenerationOutcome::Prepared { root, .. } = outcome else { return Err("nonoverlapping extent edits conflicted".into()); };
+    let changes = poll_ready(super::super::diff_file_records_async(&store, Some(ours_table), Some(root.file_table),
+        8, DecodeLimits::default(), WorkBudget::UNBOUNDED, &cancellation)).ok_or("merged extent record diff suspended")??;
+    let merged = changes.changes.iter().find(|change| change.key == FileId::from_bytes([2; 16]))
+        .and_then(|change| change.after).ok_or("merged extent record missing")?;
+    assert_eq!(merged.payload, FilePayload::Regular { logical_bytes: 8, extents: expected_extents });
+    let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("extent merge output lost custody".into()); };
+    assert_eq!(guard.bytes(), (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64);
+    assert!(original.receipt().page_reads > 0);
+    assert!(original.receipt().page_writes > 0);
+    drop(root);
+    drop(guard);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_merge_original_allocation_denial_precedes_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let base = GenerationRoot { file_table: put_table(&store,
+        vec![record(1, 1, 1, FilePayload::Empty, FileKind::Fifo)])?, ..root(1, 1, 0) };
+    let ours = GenerationRoot { file_table: put_table(&store,
+        vec![record(1, 2, 1, FilePayload::Empty, FileKind::Fifo)])?, ..root(1, 1, 0) };
+    let request = request(base.clone(), ours, base);
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = poll_ready(merge_generation_with_accounting(
+        &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("denied native merge suspended")?;
+    assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    Ok(())
 }

@@ -2,7 +2,7 @@ use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{
-    FileKind, FileRangeRequest, FileRecord, build_blob, decode_extent_page, read_file_range_async,
+    BlobBuildOptions, FileKind, FileRangeRequest, FileRecord, build_blob, decode_extent_page, read_file_range_async,
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::{
@@ -10,6 +10,8 @@ use crate::model::{
 };
 use crate::storage::object_digest;
 use crate::storage::{ByteRange, ObjectStore};
+use crate::kernel::allocation::AllocationError;
+use std::io::Cursor;
 
 fn config() -> VolumeConfig {
     VolumeConfig {
@@ -389,12 +391,14 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
     )?;
     assert!(matches!(still_sparse.payload, FilePayload::Regular { .. }));
 
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let promoted = poll_ready(promote_inline(
         &store,
         InlineFileData::new(&[b'q'; 64])?,
         config(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
+        &mut accounting,
+        &cancellation,
     ))
     .ok_or("memory-backed inline promotion unexpectedly blocked")??;
     let promoted_payload = FilePayload::Regular {
@@ -1959,66 +1963,36 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
 #[test]
 fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let prior = WorkCounters {
-        bytes_copied: 2,
-        peak_allocation_bytes: 3,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        bytes_hashed: 4,
-        peak_allocation_bytes: 5,
-        ..WorkCounters::default()
-    };
-    let merged = simultaneous(prior, nested, 7, WorkBudget::UNBOUNDED)?;
-    assert_eq!(merged.bytes_copied, 2);
-    assert_eq!(merged.bytes_hashed, 4);
-    assert_eq!(merged.peak_allocation_bytes, 12);
-    let normal = simultaneous_failure(prior, nested, 7, RegularMutationError::NotRegular);
-    assert!(matches!(normal.error, RegularMutationError::NotRegular));
-    assert_eq!(normal.work.peak_allocation_bytes, 12);
-    let peak_overflow = simultaneous_failure(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        RegularMutationError::NotRegular,
-    );
-    assert!(matches!(
-        peak_overflow.error,
-        RegularMutationError::RangeOverflow
-    ));
-    let work_overflow = simultaneous_failure(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        RegularMutationError::NotRegular,
-    );
-    assert!(matches!(
-        work_overflow.error,
-        RegularMutationError::Work(WorkError::Overflow)
-    ));
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut prior = Owned::<Vec<u8>>::allocate(7, &mut accounting)?;
+    prior.value.extend_from_slice(b"prefix!");
+    let mut nested = Owned::<Vec<u8>>::allocate(5, &mut accounting)?;
+    nested.value.extend_from_slice(b"child");
+    charge_copy(&mut accounting, 2)?;
+    accounting.charge(WorkCounters { bytes_hashed: 4, ..WorkCounters::UNCHARGED })?;
+    assert_eq!(accounting.spent().bytes_copied, 2);
+    assert_eq!(accounting.spent().bytes_hashed, 4);
+    assert!(accounting.spent().peak_allocation_bytes >= 12);
+    nested.retire(&mut accounting)?;
+    let before = accounting.spent();
+    let store = MemoryObjectStore::default();
+    let rejected = poll_ready(apply_regular_mutation_with_accounting(
+        &store, FilePayload::Empty, RegularMutation::Resize { logical_bytes: 0 },
+        config(), &mut accounting, &cancellation,
+    )).ok_or("non-regular original invocation blocked")?.err().ok_or("non-regular payload accepted")?;
+    assert!(matches!(project_regular_error(rejected), RegularMutationError::NotRegular));
+    assert_eq!(accounting.spent(), before);
+    assert_eq!(prior.value, b"prefix!");
+    prior.retire(&mut accounting)?;
 
-    let work = WorkCounters {
-        object_probes: 1,
-        ..WorkCounters::default()
-    };
     assert!(matches!(
-        allocation_error(AllocationError::Work(WorkError::Overflow), work).error,
+        project_regular_error(regular_allocation_error(AllocationError::Work(WorkError::Overflow))),
         RegularMutationError::Work(WorkError::Overflow)
     ));
     for allocation in [AllocationError::Overflow, AllocationError::ReleaseInvariant] {
-        assert!(matches!(
-            allocation_error(allocation, work).error,
-            RegularMutationError::RangeOverflow
-        ));
+        assert!(matches!(project_regular_error(regular_allocation_error(allocation)),
+            RegularMutationError::RangeOverflow));
     }
     assert_eq!(
         regular_logical_bytes(FilePayload::Regular {
@@ -2036,12 +2010,12 @@ fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
         AllocationError::AllocationFailed,
     ] {
         assert!(matches!(
-            allocation_error(allocation, work).error,
+            project_regular_error(regular_allocation_error(allocation)),
             RegularMutationError::AllocationFailed
         ));
     }
     assert!(matches!(
-        cancelled(),
+        project_regular_error(FsError::Cancelled(crate::cancellation::CancellationError)),
         RegularMutationError::Storage(ObjectStoreError::Cancelled)
     ));
 
@@ -2051,21 +2025,22 @@ fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
         maximum_object_bytes: 1,
         ..DecodeLimits::default()
     };
-    let rejected = poll_ready(put_extent_page_async(
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let rejected = poll_ready(super::super::extent_mutation::put_extent_page_with_accounting(
         &store,
         &page,
         too_small,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
+        &mut accounting,
+        &cancellation,
     ))
     .ok_or("tiny-limit extent page write blocked")?
     .err()
     .ok_or("tiny-limit extent page write succeeded")?;
     assert!(matches!(
-        rejected.error,
+        project_regular_error(rejected),
         RegularMutationError::Codec(CanonicalDecodeError::ObjectTooLarge { maximum: 1, .. })
     ));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(accounting.spent(), WorkCounters::default());
 
     let source = FilePayload::InlineRegular(InlineFileData::new(&[b's'; 64])?);
     let destination_failure = poll_ready(apply_regular_clone_async(
@@ -2121,7 +2096,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
         },
     ] {
         assert!(matches!(
-            regular_logical_bytes(payload).map_err(|failure| failure.error),
+            regular_logical_bytes(payload),
             Err(RegularMutationError::NotRegular)
         ));
     }
@@ -2135,8 +2110,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
                 digest: Digest::ZERO,
             },
             content_offset: 0,
-        })
-        .map_err(|failure| failure.error),
+        }),
         Err(RegularMutationError::WrongContentKind)
     ));
     for invalid in [
@@ -2162,11 +2136,12 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
         },
     ] {
         assert!(matches!(
-            validate_mutation(invalid).map_err(|failure| failure.error),
+            validate_mutation(invalid),
             Err(RegularMutationError::RangeOverflow)
         ));
     }
 
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let overflow = poll_ready(try_inline(
         &store,
         data,
@@ -2177,14 +2152,14 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
             extend: true,
         },
         config(),
-        WorkBudget::UNBOUNDED,
+        &mut accounting,
         &cancellation,
     ))
     .ok_or("inline overflow guard unexpectedly suspended")?
     .err()
     .ok_or("inline overflowing range unexpectedly succeeded")?;
     assert!(matches!(
-        overflow.error,
+        project_regular_error(overflow),
         RegularMutationError::RangeOverflow
     ));
 
@@ -2197,14 +2172,14 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
             keep_size: true,
         },
         config(),
-        WorkBudget::UNBOUNDED,
+        &mut accounting,
         &cancellation,
     ))
     .ok_or("inline keep-size guard unexpectedly suspended")?
     .err()
     .ok_or("inline keep-size growth unexpectedly succeeded")?;
     assert!(matches!(
-        keep_size.error,
+        project_regular_error(keep_size),
         RegularMutationError::KeepSizeBeyondEofUnsupported
     ));
 
@@ -2247,13 +2222,74 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
             data,
             mutation,
             config(),
-            WorkBudget::UNBOUNDED,
+            &mut accounting,
             &cancellation,
         ))
         .ok_or("inline decision unexpectedly suspended")??;
-        if let Some(receipt) = result {
-            assert_eq!(receipt.work, WorkCounters::default());
+        if result.is_some() {
+            assert_eq!(accounting.spent(), WorkCounters::default());
         }
     }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_regular_copy_denial_and_written_prefix_use_original_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let content = blob(&store, b"native source")?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let denied = poll_ready(apply_regular_mutation_with_accounting(
+        &store, FilePayload::InlineRegular(InlineFileData::new(b"old")?),
+        RegularMutation::Write { offset: 0, length: 3, content, content_offset: 0 },
+        config(), &mut accounting, &cancellation,
+    )).ok_or("native inline write blocked")?.err().ok_or("zero-copy write accepted")?;
+    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let written = poll_ready(apply_regular_mutation_with_accounting(
+        &store, FilePayload::InlineRegular(InlineFileData::new(b"old")?),
+        RegularMutation::Write { offset: 0, length: 3, content, content_offset: 0 },
+        config(), &mut accounting, &cancellation,
+    )).ok_or("admitted native inline write blocked")??;
+    let FilePayload::InlineRegular(data) = written.payload else { return Err("native inline payload promoted unexpectedly".into()); };
+    assert_eq!(data.as_bytes(), b"nat");
+    assert!(original.receipt().backend_read_operations > 0);
+    assert!(original.receipt().bytes_copied >= 3);
+
+    let store = MemoryObjectStore::default();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { page_writes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let denied = poll_ready(apply_regular_mutation_with_accounting(
+        &store, FilePayload::InlineRegular(InlineFileData::new(b"prefix!")?),
+        RegularMutation::Resize { logical_bytes: usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) + 1 },
+        config(), &mut accounting, &cancellation,
+    )).ok_or("native promotion prefix blocked")?.err().ok_or("second page-write admitted")?;
+    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)));
+    assert_eq!(original.receipt().page_writes, 1);
+    assert_eq!(original.receipt().backend_write_operations, 2);
+    let chunk = ObjectId { kind: ObjectKind::BlobChunk, digest: object_digest(ObjectKind::BlobChunk, b"prefix!") };
+    assert_eq!(store.read(chunk, 7, WorkBudget::UNBOUNDED)?.value.as_ref(), b"prefix!");
+    let prefix = original.receipt();
+    assert!(matches!(original.claim(u64::MAX),
+        Err(crate::NativeTreeMaterializationError::Work(WorkError::Overflow))));
+    assert!(matches!(original.spent(WorkCounters { bytes_hashed: u64::MAX, ..WorkCounters::UNCHARGED }),
+        Err(crate::NativeTreeMaterializationError::Work(WorkError::Overflow))));
+    assert_eq!(original.receipt(), prefix);
+    drop(store);
+    assert_eq!(original.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
     Ok(())
 }

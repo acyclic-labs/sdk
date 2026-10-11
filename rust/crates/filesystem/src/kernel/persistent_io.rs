@@ -238,7 +238,7 @@ async fn read_page_mode<S: AsyncObjectStore, F: Format>(
     store: &S, page: ObjectId, context: &mut ReadContext<'_, '_>, mode: ReadMode,
 ) -> Result<(OwnedPage<F>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     context.accounting.check()?;
-    if context.cancellation.is_cancelled() { return Err(crate::FsError::Cancelled); }
+    if context.cancellation.is_cancelled() { return Err(crate::FsError::Cancelled(crate::CancellationError)); }
     context.accounting.charge(PAGE_READ)?;
     let cache_key = DecodedCacheKey::new::<Page<F>>(page, context.limits);
     #[cfg(not(target_arch = "wasm32"))]

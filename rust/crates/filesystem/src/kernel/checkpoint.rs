@@ -118,58 +118,147 @@ pub async fn build_checkpoint_async<S: crate::async_storage::AsyncObjectStore>(
         work.bytes = crate::obs::Empty,
         work.durability = crate::obs::Empty,
     );
-    let result = crate::obs::in_span(&span, async move {
-        validate_request(request)?;
-        let (base, mut work) = read_root_async(
-            store,
-            request.base,
-            limits,
-            budget,
-            WorkCounters::default(),
-            cancellation,
-        )
-        .await?;
-        let merge = match request.merge_parent {
-            Some(parent_id) => {
-                let (parent, next) =
-                    read_root_async(store, parent_id, limits, budget, work, cancellation).await?;
-                work = next;
-                validate_merge_parents(&base, &parent, work)?;
-                Some(parent_id)
-            }
-            None => None,
-        };
-        if merge.is_none() && request.file_table == base.file_table {
-            return Ok(reused_checkpoint(request.base, work));
-        }
-        let (object, encoded, prospective) =
-            encode_checkpoint(request, &base, merge, work, budget)?;
-        let remaining = prospective
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let receipt = crate::async_storage::AsyncObjectStore::put(
-            store,
-            object,
-            Bytes::from(encoded),
-            remaining,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(prospective, Into::into))?;
-        work = prospective
-            .checked_add(receipt.work)
-            .map_err(|error| OperationFailure::new(error.into(), prospective))?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        Ok(CheckpointReceipt {
-            root: object,
-            generation_id: GenerationId::new(object.digest),
-            reused_base: false,
-            work,
-        })
+    let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
+    let result = crate::obs::in_span(&span, async {
+        build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation)
+            .await.map_err(|error| OperationFailure::new(
+                checkpoint_error(error), accounting.spent(),
+            ))
     })
     .await;
     crate::obs::measured_on(&span, result, |receipt| &receipt.work)
+}
+
+fn checkpoint_error(error: crate::FsError) -> CheckpointError {
+    match error {
+        crate::FsError::Checkpoint(error) => error,
+        crate::FsError::Work(error) => error.into(),
+        crate::FsError::Decode(error) => error.into(),
+        crate::FsError::Object(error) => error.into(),
+        crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
+        _ => unreachable!("standalone checkpoint returns only checkpoint, codec, storage, cancellation, or work errors"),
+    }
+}
+
+/// Constructs a checkpoint using the same original native invocation.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn build_checkpoint_with_native_work<S: crate::AsyncObjectStore>(
+    store: &S,
+    request: CheckpointRequest,
+    limits: DecodeLimits,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<CheckpointReceipt, crate::FsError> {
+    let mut accounting = super::allocation::KernelAccounting::native(original, cancellation);
+    build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation).await
+}
+
+async fn checkpoint_parent<S: crate::AsyncObjectStore>(
+    store: &S, object: ObjectId, limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if accounting.native_work().is_some() {
+        return super::generation::read_generation_root_with_limits_and_accounting(
+            store, object, limits, accounting, cancellation,
+        ).await;
+    }
+    let result = read_root_async(
+        store, object, limits, accounting.remaining()?, WorkCounters::default(), cancellation,
+    ).await;
+    let spent = match &result { Ok((_, work)) => *work, Err(error) => *error.work };
+    accounting.charge(spent)?;
+    result.map(|(root, _)| (root, super::allocation::KernelOwnedAllocation::Standalone))
+        .map_err(|failure| failure.error.into())
+}
+
+/// Canonical asynchronous checkpoint engine for ordinary and original-native
+/// callers. Native parent and encoded buffers retain explicit paid guards;
+/// allocation, encoding, hashing and object-store callbacks run unlocked.
+pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>(
+    store: &S, request: CheckpointRequest, limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<CheckpointReceipt, crate::FsError> {
+    validate_request(request).map_err(|failure| crate::FsError::from(failure.error))?;
+    accounting.check()?;
+    let base = checkpoint_parent(store, request.base, limits, accounting, cancellation).await?;
+    let result = async {
+        if let Some(parent_id) = request.merge_parent {
+            let parent = checkpoint_parent(store, parent_id, limits, accounting, cancellation).await?;
+            let valid = validate_merge_parents(&base.0, &parent.0, accounting.spent())
+                .map_err(|failure| crate::FsError::from(failure.error));
+            drop(parent);
+            valid?;
+        }
+        if request.merge_parent.is_none() && request.file_table == base.0.file_table {
+            return Ok(reused_checkpoint(request.base, accounting.spent()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let count = 1 + usize::from(request.merge_parent.is_some());
+            let requested = usize_to_u64(count * size_of::<GenerationId>());
+            let allocation = accounting.claim_owned(requested, 1)?;
+            // Tuple destruction always frees the vector before its paid guard.
+            let mut parents = (Vec::new(), allocation);
+            if parents.0.try_reserve_exact(count).is_err() {
+                return Err(crate::FsError::HandleAllocationFailed);
+            }
+            let actual = usize_to_u64(parents.0.capacity() * size_of::<GenerationId>());
+            accounting.reconcile_owned(&mut parents.1, requested, actual)?;
+            accounting.check()?;
+            parents.0.push(GenerationId::new(request.base.digest));
+            if let Some(parent) = request.merge_parent {
+                parents.0.push(GenerationId::new(parent.digest));
+            }
+            let root = (GenerationRoot {
+                volume_id: base.0.volume_id, root_file_id: base.0.root_file_id,
+                file_table: request.file_table, parents: parents.0,
+                required_features: base.0.continuation_features(),
+            }, parents.1);
+            let mut encoded = super::generation::encode_generation_root_with_accounting(
+                &root.0, accounting, cancellation,
+            )?;
+            drop(root);
+            let guard = match &mut encoded.1 {
+                super::allocation::KernelOwnedAllocation::NativeOriginal(guard) => guard,
+                _ => unreachable!("native encoding retains original custody"),
+            };
+            let hashed = crate::storage::HashedObject::from_native_vec(
+                ObjectKind::GenerationRoot, &mut encoded.0, guard, original, cancellation,
+            ).map_err(native_checkpoint_storage_error)?;
+            let object = hashed.object_id();
+            store.put_hashed_with_native_work(hashed, original, cancellation).await
+                .map_err(native_checkpoint_storage_error)?;
+            return Ok(CheckpointReceipt {
+                root: object, generation_id: GenerationId::new(object.digest),
+                reused_base: false, work: accounting.spent(),
+            });
+        }
+        let (object, encoded, prospective) = encode_checkpoint(
+            request, &base.0, request.merge_parent, WorkCounters::default(), accounting.remaining()?,
+        ).map_err(|failure| crate::FsError::from(failure.error))?;
+        accounting.charge(prospective)?;
+        let receipt = store.put(object, Bytes::from(encoded), accounting.remaining()?, cancellation).await;
+        let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+        accounting.charge(spent)?;
+        receipt.map_err(|failure| crate::FsError::from(failure.error))?;
+        Ok(CheckpointReceipt {
+            root: object, generation_id: GenerationId::new(object.digest),
+            reused_base: false, work: accounting.spent(),
+        })
+    }.await;
+    drop(base);
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_checkpoint_storage_error(error: ObjectStoreError) -> crate::FsError {
+    match error {
+        ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
+        error => error.into(),
+    }
 }
 
 fn validate_request(request: CheckpointRequest) -> Result<(), CheckpointFailure> {
