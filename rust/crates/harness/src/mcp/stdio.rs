@@ -470,6 +470,8 @@ fn codec_charge(
         Charge::Retain { bytes } => custody.resize_retained(custody.bytes().checked_add(bytes)
             .ok_or_else(|| rejection(Some(work), "MCP codec custody overflows"))?).map_err(native_error),
         Charge::Admission { maximum_owned_bytes } => quota.resize_retained(maximum_owned_bytes).map_err(native_error),
+        Charge::CopyAdmission { bytes } => work.admit(acyclic_fs::WorkCounters {
+            bytes_copied: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
         Charge::AllocationOperation { .. } => work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
         Charge::Copy { bytes } => work.charge(acyclic_fs::WorkCounters {
