@@ -1103,10 +1103,8 @@ where
         let _grant;
         let grant = self.stage_write_grant(io)?;
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
-        self.host.put_content_impl(
-            &self.volume, &grant, &path, &bytes, "application/json", "admission.json",
-            self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io,
-        ).await
+        self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json", "admission.json",
+        self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io, None, None).await
     }
 
     fn stage_write_grant(&self, io: Option<&PreparationIo>) -> Result<ContentGrant> {
@@ -1189,10 +1187,8 @@ where
         let _grant;
         let grant = self.stage_write_grant(io)?;
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
-        self.host.put_content_impl(
-            &self.volume, &grant, &path, &bytes, "application/json", "transition.json",
-            self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io,
-        ).await
+        self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json", "transition.json",
+        self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io, None, None).await
     }
 
     async fn reconcile(&self, record: &WorkflowRecord) -> Result<Option<WorkflowCommitOutcome>> {

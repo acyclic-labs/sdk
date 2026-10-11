@@ -414,6 +414,25 @@ the boxed future physically drops before that frame claim is released on
 success or failure. Native verification instead retains the original funded
 bundle and cancellation ledger, with no ordinary fallback or rebuilt budget.
 
+Root writer facades pass the original bootstrap allocation into that same
+content engine. A loaned file selects its authenticated source generation;
+a newly authored file keeps its own immutable Filesystem generation. Root
+lazy writes publish the complete data, metadata and receipt batch through the
+existing SDK source, rather than substituting an opaque snapshot ID for a
+Filesystem generation. After its generation is acknowledged, the engine pins
+that validated generation once before allocating the returned ref or
+classifying the companion snapshot. Snapshot or pin failure remains typed
+publication uncertainty with the original generation and both causes retained.
+The recursive whole-error slot is admitted at its actual compiled size and
+boxed before that SDK batch starts. A failure moves its original cause into
+the existing box and unsizes it without allocating; its original native guard
+outlives both the box and any secondary pin cause. Success destroys the unused
+box before releasing that reservation. Root retries reconcile the whole
+candidate and its companion through the SDK source's original-operation path,
+not the Filesystem-only upload fast path.
+Ordinary lease checks use genuine ordinary guarded commit; finite checks
+borrow the same `PreparationIo`, and native checks retain the original ledger.
+
 `FilesystemTaskRuntime::with_interaction_owner` installs that conversation verifier, schema registry, signed request-owner scope and private volume on the existing runtime providers. The scope must include `interaction:open`; response rights remain with the separately signed participant. Stock model journals use the binding when the admission includes `interaction:route`. Stock tool commands additionally bind their exact task context to the same leased journal through the existing `InteractionRouter` seam, reusing the host's task/operation ticket identity. A cloned context retains this exact journal fence; it cannot select another owner or bypass the task grant. Tasks without an interaction grant can still execute commands that need no approval. The durable-local policy regression retries one pending approval before provider dispatch, rejects resolution by the request owner, resolves with the ticket's exact responder grant, then drops all runtime/Filesystem/Stream handles and reconciles the approved tool once after reopening. It qualifies recovery of a resolved approval with an uncertain tool call. Confirmed pending approvals release the worker slot only after the execution-journal quiescence proof and atomic coordinator comparison. Passive readiness authenticates the retained command and exact approval without policy/model/tool callbacks. Real-store reopen controls cover typed and model-triggered approval, declined model approval without tool dispatch, cancelled waits without stale wake, and one tool dispatch followed by lost-result reconciliation. An uncertain tool execution retains its reservation. Broader provider acknowledgement faults and platform gates remain open. No protocol DTO changed.
 
 Cold model-selection verification reads its committed operation and the selected message locators at that operation's event cutoff. Canonical checkpoint reconstruction reads the exact message-sequence range after the previous checkpoint coverage, including non-model messages before filtering the projection. These locators share the original message publication commit; missing, altered, or later records reject without a replay fallback. `FilesystemExecutionJournal::with_history_read_limits(HistoryReadLimits)` sets a separate positive message-work and encoded-byte allowance for those canonical range reads. Without an override, the admitted `Limits::context_messages` also caps the number of canonical records read, and the byte ceiling covers two maximum-sized protocol records per message. This read allowance does not expand model projection or content grants. It does not evict the conversation reducer's resident history.

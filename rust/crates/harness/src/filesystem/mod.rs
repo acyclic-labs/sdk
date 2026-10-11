@@ -148,6 +148,75 @@ pub(crate) fn native_volume_storage_name(
     Ok((name, io.into_native_custody(retained)?))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct SourcePublicationCause {
+    source: Option<Error>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Display for SourcePublicationCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.source {
+            Some(source) => std::fmt::Display::fmt(source, formatter),
+            None => formatter.write_str("reserved source publication failure"),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::error::Error for SourcePublicationCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|source| source as &dyn std::error::Error)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SourcePublicationFailureSlot {
+    source: Box<SourcePublicationCause>,
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SourcePublicationFailureSlot {
+    fn prepare(io: Option<&PreparationIo>) -> Result<Self> {
+        let bytes = std::mem::size_of::<SourcePublicationCause>() as u64;
+        let custody = if let Some(io) = io {
+            io.claim(bytes)?;
+            io.allocation_attempt(bytes)?;
+            if io.original_native_work().is_some() {
+                Some(io.take_native_custody(bytes)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Ok(Self { source: Box::new(SourcePublicationCause { source: None }), custody })
+    }
+
+    fn finish(
+        self, generation: acyclic_fs::GenerationId, source: Error,
+        retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
+    ) -> Error {
+        let Self { source: mut slot, custody } = self;
+        slot.source = Some(source);
+        Error::NativeSourcePublicationUncertain {
+            generation, source: slot, retention_failure, custody,
+        }
+    }
+
+    fn discard(self, io: Option<&PreparationIo>) -> Result<()> {
+        // The concrete Box physically drops before its original guard.
+        drop(self);
+        if let Some(io) = io
+            && io.original_native_work().is_none() {
+            io.release(std::mem::size_of::<SourcePublicationCause>() as u64)?;
+        }
+        Ok(())
+    }
+}
+
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
 pub struct FilesystemSchedulerPayloadStore<A, O> {
     host: Arc<FilesystemHost<A, O>>,
@@ -298,7 +367,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let retry = IdempotencyKey::new(retry)?;
         let file = self.host.put_content_impl(&self.volume, &self.grant, &path, bytes,
             "application/json", "result.json", self.maximum_bytes, &retry,
-            None, None, io).await?;
+            None, None, io, None, None).await?;
         drop(retry);
         drop(path);
         drop(scratch_hold);
@@ -3767,19 +3836,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
     ) -> Result<FileRef> {
-        self.put_content_impl(
-            volume,
-            grant,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            maximum_bytes,
-            idempotency_key,
-            None,
-            None,
-            None,
-        )
+        self.put_content_impl(volume,
+        grant,
+        path,
+        bytes,
+        media_type,
+        display_name,
+        maximum_bytes,
+        idempotency_key,
+        None,
+        None,
+        None, None, None)
         .await
     }
 
@@ -3794,7 +3861,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
-            maximum_bytes, idempotency_key, None, None, Some(&io)).await;
+            maximum_bytes, idempotency_key, None, None, Some(&io), None, None).await;
         match result {
             Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
             Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
@@ -3812,7 +3879,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
         let io = PreparationIo::from_native_work(work)?;
         let file = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
-            maximum_bytes, key, None, None, Some(&io)).await?;
+            maximum_bytes, key, None, None, Some(&io), None, None).await?;
         let retained = file.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((file, custody))
@@ -4053,19 +4120,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: &GenerationRef,
     ) -> Result<FileRef> {
         crate::tool::edit::validate_edit_bound(maximum_bytes)?;
-        self.put_content_impl(
-            volume,
-            grant,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            maximum_bytes,
-            idempotency_key,
-            None,
-            Some(expected_generation),
-            None,
-        )
+        self.put_content_impl(volume,
+        grant,
+        path,
+        bytes,
+        media_type,
+        display_name,
+        maximum_bytes,
+        idempotency_key,
+        None,
+        Some(expected_generation),
+        None, None, None)
         .await
     }
 
@@ -4087,19 +4152,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
         class: InternalContentClass,
     ) -> Result<FileRef> {
-        self.put_content_impl(
-            volume,
-            grant,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            maximum_bytes,
-            idempotency_key,
-            Some(class),
-            None,
-            None,
-        )
+        self.put_content_impl(volume,
+        grant,
+        path,
+        bytes,
+        media_type,
+        display_name,
+        maximum_bytes,
+        idempotency_key,
+        Some(class),
+        None,
+        None, None, None)
         .await
     }
 
@@ -4117,10 +4180,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             verifier, scope, volume, VolumeOperation::Write, io,
         )?;
         grant_hold = io.guard_owned(grant.logical_owned_bytes()?)?;
-        let result = self.put_content_impl(
-            volume, &grant, path, bytes, media_type, display_name,
-            maximum_bytes, idempotency_key, Some(class), None, Some(io),
-        ).await;
+        let result = self.put_content_impl(volume, &grant, path, bytes, media_type, display_name,
+        maximum_bytes, idempotency_key, Some(class), None, Some(io), None, None).await;
         drop(grant);
         drop(grant_hold);
         result
@@ -4144,8 +4205,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&GenerationRef>,
         io: Option<&fork_preparer_io::PreparationIo>,
+        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
+        root_allocation: Option<&fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef> {
-        grant.require_with_io(volume, VolumeOperation::Write, io)?;
+        if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
+            return Err(fork_preparer_io::unauthorized(io,
+                "Root publication allocation names another original volume"));
+        }
+        #[cfg(target_arch = "wasm32")]
+        if publication_lease.is_some() {
+            return Err(Error::Unsupported("Root publication lease is native-platform only".into()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(lease) = publication_lease {
+            match io {
+                Some(io) => io.verify_publication_lease(lease).await?,
+                None => lease.verify().await?,
+            }
+        }
+        let publication_permit = grant.require_with_io(volume, VolumeOperation::Write, io)?;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(fork_preparer_io::invalid(io, "content provider or size limit mismatch"));
         }
@@ -4188,18 +4266,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
         let metadata_bytes = match io {
             Some(io) => io.encode_json(&provisional, io.remaining()?.bytes_encoded, false)?,
-            None => serde_json::to_vec(&provisional).map_err(|error| Error::Invalid(error.to_string()))?,
+            None => acyclic_stream::OwnedBytes::from(
+                serde_json::to_vec(&provisional).map_err(|error| Error::Invalid(error.to_string()))?),
         };
         let receipt_bytes = match io {
             Some(io) => io.encode_json(&(&provisional, expected_generation), io.remaining()?.bytes_encoded, true)?,
-            None => crate::contract::canonical_json_bytes(&(&provisional, expected_generation))?,
+            None => acyclic_stream::OwnedBytes::from(
+                crate::contract::canonical_json_bytes(&(&provisional, expected_generation))?),
         };
+        // Root source writes reconcile the same full lazy candidate, including
+        // its companion snapshot, inside the canonical SDK source engine. A
+        // Filesystem-only receipt must not hide a prior snapshot failure.
+        let reconcile_source = root_allocation.is_some();
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
-        let opened = match io {
-            Some(io) => fork_preparer_io::open(self, &workspace, io).await?,
-            None => self.open(&workspace).await?,
-        };
-        let prior = match io {
+        let prior = if reconcile_source {
+            None
+        } else {
+            let opened = match io {
+                Some(io) => fork_preparer_io::open(self, &workspace, io).await?,
+                None => self.open(&workspace).await?,
+            };
+            match io {
             Some(io) => {
                 let hash = acyclic_fs::WorkCounters { bytes_hashed: idempotency_key.as_str().len() as u64, ..Default::default() };
                 io.preflight(hash)?;
@@ -4220,6 +4307,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
             None => opened.operation_generation(filesystem_key(idempotency_key)).await.map_err(map_error)?,
+            }
         };
         if let Some(prior) = prior {
             let generation = fork_preparer_io::generation_ref(self, &prior, io)?;
@@ -4278,17 +4366,108 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             path: fork_preparer_io::format_text(format_args!("/{receipt_path}"), io)?,
             bytes: receipt_bytes,
         });
+        let publication = async {
         let generation = match io {
-            Some(io) => fork_preparer_io::apply_generation(self, &workspace, expected_generation, &mutations, idempotency_key, io).await?,
-            None => self.apply_generation(&workspace, expected_generation, &mutations, idempotency_key).await?,
+            Some(io) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(lease) = publication_lease {
+                    if io.original_native_work().is_some() {
+                        let mut before_publication = |original| async move {
+                            lease.verify_with_native_work(original)?.await
+                        };
+                        fork_preparer_io::apply_generation_guarded(
+                            self, &workspace, expected_generation, &mutations,
+                            idempotency_key, io, &mut before_publication,
+                        ).await?
+                    } else {
+                        let mut before_publication = || io.verify_publication_lease(lease);
+                        fork_preparer_io::apply_generation_measured_guarded(
+                            self, &workspace, expected_generation, &mutations,
+                            idempotency_key, io, &mut before_publication,
+                        ).await?
+                    }
+                } else {
+                    fork_preparer_io::apply_generation(
+                        self, &workspace, expected_generation, &mutations,
+                        idempotency_key, io,
+                    ).await?
+                }
+                #[cfg(target_arch = "wasm32")]
+                fork_preparer_io::apply_generation(
+                    self, &workspace, expected_generation, &mutations,
+                    idempotency_key, io,
+                ).await?
+            }
+            None => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(lease) = publication_lease {
+                    let mut before_publication = || lease.verify();
+                    fork_preparer_io::apply_generation_ordinary_guarded(
+                        self, &workspace, expected_generation, &mutations,
+                        idempotency_key, &mut before_publication,
+                    ).await?
+                } else {
+                    self.apply_generation(
+                        &workspace, expected_generation, &mutations, idempotency_key,
+                    ).await?
+                }
+                #[cfg(target_arch = "wasm32")]
+                self.apply_generation(
+                    &workspace, expected_generation, &mutations, idempotency_key,
+                ).await?
+            }
         };
+        Ok::<_, Error>(generation)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let (generation, source_snapshot) = if let Some(allocation) = root_allocation {
+            let failure_slot = SourcePublicationFailureSlot::prepare(io)?;
+            let (generation, snapshot) = allocation.publish_lazy_candidate_with_io(
+                &mutations, idempotency_key, publication_permit, io,
+            ).await?;
+            (generation, Some((snapshot, failure_slot)))
+        } else {
+            (publication.await?, None)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let generation = {
+            let _ = publication_permit;
+            publication.await?
+        };
+        // A Root lazy publication may acknowledge the generation before its
+        // companion snapshot is durable. Pin that same validated generation
+        // exactly once before classifying either outcome or allocating its ref.
+        #[cfg(not(target_arch = "wasm32"))]
+        let root_retained = if let Some((snapshot, failure_slot)) = source_snapshot {
+            let retention = fork_preparer_io::retain_generation(&generation, io).await;
+            match (snapshot, retention) {
+                (Ok(_), Ok(())) => failure_slot.discard(io)?,
+                (Err(source), retention) => {
+                    return Err(failure_slot.finish(
+                        generation.id(), source, retention.err(),
+                    ));
+                }
+                (Ok(_), Err(source)) => {
+                    return Err(failure_slot.finish(
+                        generation.id(), Error::from(source), None,
+                    ));
+                }
+            }
+            true
+        } else {
+            false
+        };
+        #[cfg(target_arch = "wasm32")]
+        let root_retained = false;
         let generation_reference = fork_preparer_io::generation_ref(self, &generation, io)?;
         // Keep the validated commit object in custody until its retention pin
         // is durable; reopening by identity would leave a reclamation gap.
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
-        match io {
-            Some(io) => fork_preparer_io::retain(self, &generation, io).await?,
-            None => { generation.pin(format!("harness-generation-{version}")).await.map_err(map_error)?; }
+        if !root_retained {
+            match io {
+                Some(io) => fork_preparer_io::retain(self, &generation, io).await?,
+                None => { generation.pin(format!("harness-generation-{version}")).await.map_err(map_error)?; }
+            }
         }
         let reference = fork_preparer_io::file_ref(volume, path, &version, &descriptor, display_name, io)?;
         // Read back the exact committed generation, not the mutable workspace head.
