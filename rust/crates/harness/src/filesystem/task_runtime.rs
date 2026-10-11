@@ -354,10 +354,10 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
         Box::pin(async move {
-            self.owner.borrowed().verify(true).await?;
+            self.owner.borrowed().verify(true, &mut None).await?;
             let (task, _) = self.owner.borrowed().task_binding();
             let items = self.host.inbox(task, after, maximum).await?;
-            self.owner.borrowed().verify(true).await?;
+            self.owner.borrowed().verify(true, &mut None).await?;
             Ok(items)
         })
     }

@@ -191,9 +191,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         )).map_err(|error| Error::Invalid(error.to_string()))?;
         owner.verify_project_source_handle(context, &handle).await?;
         let admission = self.host.observe_admission(source).await?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), budget).await?;
         Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes,
             #[cfg(not(target_arch = "wasm32"))]

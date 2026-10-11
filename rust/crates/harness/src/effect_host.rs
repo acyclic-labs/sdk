@@ -120,7 +120,7 @@ async fn verify_owner<P: StreamProvider>(
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
         return owner.verify_with_native_work(settlement, native).await;
     }
-    owner.verify(settlement).await
+    owner.verify(settlement, &mut None).await
 }
 
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {

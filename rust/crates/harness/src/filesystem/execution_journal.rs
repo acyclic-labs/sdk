@@ -533,13 +533,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         let quiescent = {
             let mut summary = self.verified.lock().await;
             Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
             summary.quiescent(None)?
         };
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(quiescent)
     }
 
@@ -588,7 +588,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
         let result: Result<_> = async {
             let mut borrowed = io.history_io();
-            owner.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+            owner.verify(true, &mut Some(&mut borrowed)).await?;
             let tail = {
                 let before = io.owned_bytes()?;
                 let summary_hold;
@@ -1483,7 +1483,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.verify(true, &mut work).await?;
         }
         let records_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -1558,7 +1558,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 }
                 _ => false,
             };
-            if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+            if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
             return if same { Ok(()) } else {
                 Err(super::interaction_host::interaction_boundary(
                     io, crate::wire::ErrorCode::Conflict, "interaction was already resolved"))
@@ -1569,7 +1569,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Invalid,
                     "interaction version exhausted")))?;
         let resolution_operation = interaction_resolution_operation(id, expected_version, io)?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         let staged = host.stage_answer_with_io(id, expected_version, resolution_operation, response, io).await?;
         let (outcome, detail) = match response {
             InteractionResponse::Approval { approved: true, .. } => (InteractionOutcome::Approved, Some(staged)),
@@ -1585,7 +1585,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         host.resolve_with_io(resolution_operation, responder, InteractionResolution {
             id: ticket.id, expected_version, outcome, detail,
         }, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         drop(request);
         drop(request_hold);
         drop(prior);
@@ -2130,10 +2130,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.verify(true, &mut work).await?;
         }
         host.verify_approval_with_io(id, operation, digest, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         Ok(())
     }
 }
@@ -2715,7 +2715,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         interaction.validate_with_work(&mut work)?;
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
             io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
@@ -2727,7 +2727,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "interaction request custody underflows"))?)).transpose()?;
             if let Some(original) = &original {
-                if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+                if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
                 return if original == interaction { Ok(()) } else {
                     Err(super::interaction_host::interaction_boundary(
                         io, crate::wire::ErrorCode::Conflict, "interaction identity reused"))
@@ -2747,7 +2747,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             operation, &ticket, self.owner.as_ref().map(|(owner, _)| owner), io).await;
         drop(ticket);
         drop(ticket_hold);
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
         let result = match publication {
             Ok(()) => Ok(()),
             Err(error) if matches!(error.code(),
@@ -2770,7 +2770,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
             Err(error) => Err(error),
         };
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
         result
     }
 
@@ -2782,12 +2782,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.verify(true, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
             io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
         let outcome = host.read_outcome_with_io(id, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         Ok(outcome)
     }
 }

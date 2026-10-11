@@ -59,7 +59,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if cancellation.is_cancelled() {
             return Err(Error::Unauthorized("project source invocation is cancelled".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes)?;
         snapshot.project.validate()?;
         snapshot.generation.validate()?;
@@ -94,7 +94,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             created_project_authenticated,
             cancellation,
         }, &snapshot).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Unauthorized("project source invocation cancelled during snapshot verification".into()));
         }
@@ -122,10 +122,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("project source restoration lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         request.validate()?;
         let handle = self.host.seal_prepared_project_source(request, self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if self.invocation_cancellation.as_ref().is_some_and(acyclic_fs::CancellationToken::is_cancelled) {
             return Err(Error::Unauthorized("project source restoration invocation is cancelled".into()));
         }
@@ -145,9 +145,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("project source intent restoration lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         let handle = self.host.seal_project_source_authorization(authorization, self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         if self.invocation_cancellation.as_ref().is_some_and(acyclic_fs::CancellationToken::is_cancelled) {
             return Err(Error::Unauthorized("project source intent restoration invocation is cancelled".into()));
         }
@@ -325,9 +325,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("selected project read lacks its current original owner".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         self.host.verify_project_source_authorization(handle.authorization(), self.task_id).await?;
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         cancellation.check().map_err(|_| Error::Unauthorized("selected project invocation cancelled".into()))
     }
 

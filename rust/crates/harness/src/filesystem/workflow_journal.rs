@@ -613,9 +613,9 @@ where
                     return owner.verify_with_native_work(true, work).await;
                 }
                 let mut borrowed = io.history_io();
-                owner.verify_with_work(true, &mut Some(&mut borrowed)).await
+                owner.verify(true, &mut Some(&mut borrowed)).await
             }
-            None => owner.verify(true).await,
+            None => owner.verify(true, &mut None).await,
         }
     }
 
@@ -1210,7 +1210,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         let _admission;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -1396,7 +1396,7 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let mut work = borrowed.as_mut()
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify_with_work(false, &mut work).await?;
+            owner.verify(false, &mut work).await?;
         }
         if let Some(existing) = self.read_admission_with_io(io).await? {
             return if existing == admission { Ok(existing) } else {

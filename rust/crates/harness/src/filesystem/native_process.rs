@@ -673,7 +673,7 @@ where
         approval: InteractionId,
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         finite_binding::bind_original(
             owner, command, Cow::Owned(plan), Some(view), approval, authority, None,
         ).await
@@ -844,7 +844,7 @@ async fn publish_view<P: StreamProvider>(
     super::native_execution::NativeViewPublicationReceipt,
     super::native_execution::NativeViewPublicationError,
 > {
-    owner.verify(false).await
+    owner.verify(false, &mut None).await
         .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
     if view.manifest() != admitted {
         return Err(slot.original_failure(Error::NativeBoundary {
@@ -867,7 +867,7 @@ async fn publish_view<P: StreamProvider>(
                 reason: "native publication view changed after publication",
             });
         }
-        owner.verify(false).await
+        owner.verify(false, &mut None).await
     }.await;
     match checked {
         Ok(()) => Ok(receipt),

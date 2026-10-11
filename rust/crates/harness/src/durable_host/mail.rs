@@ -371,7 +371,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                         reason: "mail owner differs from its original native metadata ledger" });
                 }
             }
-            return owner.verify_with_work(settlement, work).await;
+            return owner.verify(settlement, work).await;
         }
         if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
         Ok(())

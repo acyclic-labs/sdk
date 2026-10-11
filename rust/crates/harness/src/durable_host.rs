@@ -775,7 +775,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let bytes = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+                self.verify(true, &mut Some(&mut borrowed)).await?;
                 let (bytes, retained) = crate::store::history::HistoryIo::read_content(
                     &mut borrowed, reader.as_ref(), file)?.await?;
                 bytes_hold = Some(io.guard_owned(retained)?);
@@ -784,7 +784,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             None => {
                 bytes_hold = None;
-                self.verify(true).await?;
+                self.verify(true, &mut None).await?;
                 acyclic_stream::OwnedBytes::from(reader.read(file).await?)
             }
         };
@@ -792,9 +792,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+                self.verify(true, &mut Some(&mut borrowed)).await?;
             }
-            None => self.verify(true).await?,
+            None => self.verify(true, &mut None).await?,
         }
         drop(bytes);
         drop(bytes_hold);
@@ -1190,7 +1190,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("tool workflow changed original admission policy".into()));
         }
-        self.verify(false).await?;
+        self.verify(false, &mut None).await?;
         self.workflow = tool.workflow_admission(context, invocation)?;
         self.output_schema = tool.definition.output_schema.clone();
         Ok(self)
@@ -1313,14 +1313,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-    pub(crate) async fn verify_dispatch_with_work(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        self.verify_with_work(false, work).await
-    }
 
-    pub(crate) async fn verify_with_work(
+
+    pub(crate) async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1344,7 +1339,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
                 }
             }
-            self.verify_with_work(allow_settlement, &mut Some(&mut io)).await
+            self.verify(allow_settlement, &mut Some(&mut io)).await
         }.await;
         result
     }
@@ -1367,7 +1362,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) async fn verify_read_access(&self) -> Result<()> {
         if self.verify_original_read_witness()? { return Ok(()); }
-        self.verify(true).await
+        self.verify(true, &mut None).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1612,10 +1607,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if let Some(native) = native.as_ref() {
                 self.verify_with_native_work(false, native).await?;
             } else {
-                self.verify(false).await?;
+                self.verify(false, &mut None).await?;
             }
             #[cfg(target_arch = "wasm32")]
-            self.verify(false).await?;
+            self.verify(false, &mut None).await?;
             self.host.coordinator.lock().await.scheduler()
                 .session_limits(self.operation_id())?.validate_with_work(quota.work())?;
             let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;
@@ -1703,16 +1698,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(token)
     }
 
-    pub(crate) async fn verify(&self, settlement: bool) -> Result<()> {
-        use crate::distributed::JournalWrite;
-        self.condition(if settlement {
-            JournalWrite::Settlement
-        } else {
-            JournalWrite::Fresh
-        }, &mut None)
-        .await
-        .map(|_| ())
-    }
+
 
     fn execution_write(
         operation: OperationId,
@@ -3058,7 +3044,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         item: &InboxItem,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let owner = self.journal_owner(receiver, fence.clone()).await?;
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         if item.task_id != receiver || item.sequence == 0 {
             return Err(Error::Unauthorized("parcel recipient or sequence differs".into()));
         }
@@ -3137,7 +3123,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("parcel has no original atomic receipt".into()));
         }
         let bytes = self.read_mail_source(&sender_admission, &event.payload).await?;
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(bytes)
     }
 
@@ -4381,10 +4367,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(native) = &native {
             owner.verify_read_access_with_native_work(native).await?;
         } else {
-            owner.verify(true).await?;
+            owner.verify(true, &mut None).await?;
         }
         #[cfg(target_arch = "wasm32")]
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(owner)
     }
     /// Binds a trusted owner, its exact task/machine registries, and immutable admission payload provider.
@@ -4761,19 +4747,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .absorb(&mut custody)?;
         self.resource_creation = copied;
         Ok(self)
-    }
-
-    /// Admits through the existing task path while retaining the parent's lease.
-    pub async fn admit_owned(
-        &self,
-        admission: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> Result<Admission<TaskId>> {
-        let parent = admission
-            .parent
-            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner_with_work(parent, &fence, false, &mut None).await?;
-        self.admit_record_with_work(admission, Some(fence), &mut None).await
     }
 
     async fn admit_record_with_work(
@@ -5333,18 +5306,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference).await?), 0),
         };
         custody.adopt(byte_retained)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
-            reference.descriptor().verify_with_native_work(&bytes, native)?;
-        } else {
-            if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-            reference.descriptor().verify(&bytes)?;
-        }
-        #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
-        {
-            if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-            reference.descriptor().verify(&bytes)?;
-        }
+        reference.descriptor().verify_with_work(&bytes, custody.work())?;
         let (value, retained) = match custody.work().as_deref_mut() {
             Some(io) => io.decode_json_value(&bytes)?,
             None => (crate::contract::json_from_slice(&bytes)
@@ -5489,12 +5451,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
             let retained = match coordinator.scheduler().session_limits_with_work(operation_id, work) {
-                Err(Error::NotFound(_)) => {
-                    coordinator.refresh_with_work(work).await?;
-                    coordinator.scheduler().session_limits_with_work(operation_id, work)?
-                }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, .. }) => {
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
                     coordinator.refresh_with_work(work).await?;
                     coordinator.scheduler().session_limits_with_work(operation_id, work)?
                 }
@@ -6426,7 +6383,13 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         request: TaskAdmissionRecord,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async move { CoordinatorTaskHost::admit_owned(self, request, fence).await })
+        Box::pin(async move {
+            let parent = request
+                .parent
+                .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
+            self.verify_owner_with_work(parent, &fence, false, &mut None).await?;
+            self.admit_record_with_work(request, Some(fence), &mut None).await
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -9567,7 +9530,7 @@ pub(crate) mod tests {
                     .is_err(),
                 "the previous lease cannot replay a checkpoint mutation"
             );
-            assert!(original_owner.verify(false).await.is_err());
+            assert!(original_owner.verify(false, &mut None).await.is_err());
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let path =
                 acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
@@ -9888,7 +9851,7 @@ pub(crate) mod tests {
             assert!(
                 host.journal_owner(task_id, fence.clone())
                     .await?
-                    .verify(false)
+                    .verify(false, &mut None)
                     .await
                     .is_err()
             );

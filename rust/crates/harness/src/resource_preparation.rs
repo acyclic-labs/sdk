@@ -533,7 +533,7 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
     }
 
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        Box::pin(async move { self.verify(settlement).await })
+        Box::pin(async move { self.verify(settlement, &mut None).await })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

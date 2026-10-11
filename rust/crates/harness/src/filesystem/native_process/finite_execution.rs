@@ -131,7 +131,7 @@ fn verify<'a, P: StreamProvider>(
     match original {
         Some(work) => crate::NativeFutureBundle::new(work, || owner.verify_with_native_work(false, work))
             .map(NativeProcessFuture::Original),
-        None => Ok(NativeProcessFuture::Ordinary(Box::pin(owner.verify(false)))),
+        None => Ok(NativeProcessFuture::Ordinary(Box::pin(owner.verify(false, &mut None)))),
     }
 }
 

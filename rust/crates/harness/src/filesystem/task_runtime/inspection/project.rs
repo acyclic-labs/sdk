@@ -152,7 +152,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Ok(());
         }
         io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
