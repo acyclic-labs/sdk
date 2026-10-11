@@ -209,6 +209,11 @@ The finite Root driver recovers the original reservation before discovery and
 keeps its lease/attempt custody through the worker result. Checked native command
 futures retain the original shared context instead of cloning or retrofitting
 ordinary contexts. Root output binding precedes every scoped control adapter.
+Recovered lease and allocation custody enter the native worker together, before
+cancellation checks; early denial retains the original unresolved reservation.
+Caller scopes use the protected coordinator's original issuer on that same
+ledger. Their exact claims are compared against borrowed retained bindings,
+without copying a second claims DTO or giving callers operator or file grants.
 Opaque original scratch-allocation evidence is separate from native disposal
 authority. Releasing SDK-owned scratch additionally requires its original owned
 preparation, current fenced write grant and drained effects; never project or
@@ -549,8 +554,11 @@ These scopes account namespace activity, not client identity or OS confinement.
 Original post-mount witnesses, not fresh
 cwd observations, authenticate project built-in IO. Request/schema/plan uploads,
 observed effect results and copied mixed-view metadata keep their actual SDK
-payload guards through their final consumer. A partial source-watch startup
-retains its actual watch owner until bounded stop proves physical drainage.
+payload guards through their final consumer. Intent loading, original runtime
+binding and request construction use borrowed DTOs and the original bounded
+native codec before owned copies. A partial startup retains the actual native
+session, including its source watcher and destination guard, until bounded stop
+and `cleanup_state().cleanup_complete` establish physical drainage.
 Publication permits come only from the original task's actual SDK reservation.
 Normal cleanup confirms the authenticated native process result and stops the
 actual project drivers, retaining SDK session scratch. Explicit scratch disposal
