@@ -190,6 +190,9 @@ fn transfer_in_place_observed(
                 match observer.kind {
                     crate::NativeOperationKind::Read => observer.meter.admit_bytes(0)?,
                     crate::NativeOperationKind::Write => observer.meter.admit_write_bytes(0)?,
+                    // Durability owns only the already reserved operation
+                    // credits; it carries no transferred byte allowance.
+                    crate::NativeOperationKind::Durability => {}
                 }
                 None
             }
@@ -1425,6 +1428,20 @@ mod tests {
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
     use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE};
 
+    fn intrinsic_file(file: File, overlapped: bool) -> io::Result<Arc<NativeFilePayload>> {
+        crate::initialize_native_io_services()?;
+        let meter: Arc<dyn NativeReadMeter> =
+            Arc::new(crate::tests::ReadBudgetMeter::new(128, 1024));
+        let native = if overlapped {
+            // SAFETY: the fixture transfers its freshly opened, sole-owned
+            // overlapped handle before any completion-port attachment.
+            unsafe { crate::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)? }
+        } else {
+            crate::NativeFile::from_file_measured_owned(file, meter)?
+        };
+        Ok(native.file)
+    }
+
     #[test]
     fn empty_nonblocking_poll_is_not_a_driver_failure() -> io::Result<()> {
         let mut proactor = Proactor::new()?;
@@ -1520,7 +1537,7 @@ mod tests {
             .open(directory.path().join("positional"))?;
         file.write_all(b"abcdefghijklmnop")?;
         file.seek(SeekFrom::Start(13))?;
-        let file = Arc::new(NativeFilePayload::unmetered(file));
+        let file = intrinsic_file(file, false)?;
         let (sender, receiver) = mpsc::sync_channel(1);
         submit_write(
             Arc::clone(&file),
@@ -1576,7 +1593,7 @@ mod tests {
                 Bytes::from_static(b"op"),
             ]
         );
-        assert_eq!((&**file).stream_position()?, 13);
+        assert_eq!((&***file).stream_position()?, 13);
         Ok(())
     }
 
@@ -1609,14 +1626,15 @@ mod tests {
     #[test]
     fn sdk_owned_overlapped_handle_attaches_once_and_reuses_original() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let file = Arc::new(
+        let file = intrinsic_file(
             OpenOptions::new()
                 .create_new(true)
                 .read(true)
                 .write(true)
                 .custom_flags(FILE_FLAG_OVERLAPPED)
                 .open(directory.path().join("overlapped"))?,
-        );
+            true,
+        )?;
         let (sender, receiver) = mpsc::sync_channel(1);
         submit_write(
             Arc::clone(&file),
@@ -1679,13 +1697,14 @@ mod tests {
     #[test]
     fn invalid_batch_rejects_without_partial_write() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let file = Arc::new(
+        let file = intrinsic_file(
             OpenOptions::new()
                 .create_new(true)
                 .read(true)
                 .write(true)
                 .open(directory.path().join("invalid"))?,
-        );
+            false,
+        )?;
         let (sender, receiver) = mpsc::sync_channel(1);
         submit_write(
             Arc::clone(&file),
@@ -1719,13 +1738,14 @@ mod tests {
     #[test]
     fn detached_observer_does_not_cancel_accepted_write() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
-        let file = Arc::new(
+        let file = intrinsic_file(
             OpenOptions::new()
                 .create_new(true)
                 .read(true)
                 .write(true)
                 .open(directory.path().join("detached"))?,
-        );
+            false,
+        )?;
         let (sender, receiver) = mpsc::sync_channel(1);
         let completed = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&completed);

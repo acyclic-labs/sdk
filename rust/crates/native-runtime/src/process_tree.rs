@@ -784,7 +784,9 @@ impl ProcessTree {
         #[cfg(unix)]
         return self.child.is_none() && self.native_child.is_none() && !self.spawn_resources.pending();
         #[cfg(windows)]
-        self.child.is_none() && !self.guard.pending()
+        {
+            self.child.is_none() && !self.guard.pending()
+        }
     }
 
     /// Requests graceful Unix group termination, then performs mandatory tree
