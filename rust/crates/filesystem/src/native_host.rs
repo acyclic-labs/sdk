@@ -1016,9 +1016,24 @@ fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, LinuxMetadataError
 }
 
 impl HostRoot {
-    /// Opens an existing real directory without following the final path.
+    /// Opens an existing real directory through held capabilities without
+    /// following any intermediate symbolic link or reparse point.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let file = open_root_directory(path)?;
+        let absolute;
+        let path = if path.is_absolute() {
+            path
+        } else {
+            absolute = std::path::absolute(path)?;
+            &absolute
+        };
+        let anchor = path.ancestors().last().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "host root has no filesystem anchor")
+        })?;
+        let relative = path.strip_prefix(anchor).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "host root escaped its filesystem anchor")
+        })?;
+        let directory = Dir::from_std_file(open_root_directory(anchor)?);
+        let file = open_directory_held(directory, relative)?.into_std_file();
         let metadata = file.metadata()?;
         if !metadata.is_dir() || root_is_reparse_point(&metadata) {
             return Err(io::Error::new(
@@ -1105,37 +1120,7 @@ impl HostRoot {
     /// Enumerates through held directory capabilities without following any
     /// intermediate symlink or reparse point.
     pub fn open_dir_held(&self, path: &Path) -> io::Result<Dir> {
-        let mut current = self.directory.try_clone()?;
-        for component in path.components() {
-            let std::path::Component::Normal(name) = component else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid directory path",
-                ));
-            };
-            #[cfg(target_os = "linux")]
-            {
-                use cap_std::fs::OpenOptionsExt as _;
-
-                let mut options = OpenOptions::new();
-                options
-                    .read(true)
-                    .custom_flags(libc::O_DIRECTORY | libc::O_NOATIME);
-                options._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
-                current = match current.open_with(name, &options) {
-                    Ok(file) => Dir::from_std_file(file.into_std()),
-                    Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                        current.open_dir_nofollow(name)?
-                    }
-                    Err(error) => return Err(error),
-                };
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                current = current.open_dir_nofollow(name)?;
-            }
-        }
-        Ok(current)
+        open_directory_held(self.directory.try_clone()?, path)
     }
 
     pub(crate) fn scan_held_dir(directory: &Dir) -> io::Result<HostReadDir<'_>> {
@@ -3665,6 +3650,33 @@ fn allocated_data_ranges_platform(
         io::ErrorKind::Unsupported,
         "host sparse range discovery is unavailable",
     ))
+}
+
+fn open_directory_held(mut current: Dir, path: &Path) -> io::Result<Dir> {
+    for component in path.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid directory path"));
+        };
+        #[cfg(target_os = "linux")]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            let mut options = OpenOptions::new();
+            options.read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOATIME);
+            options._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+            current = match current.open_with(name, &options) {
+                Ok(file) => Dir::from_std_file(file.into_std()),
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    current.open_dir_nofollow(name)?
+                }
+                Err(error) => return Err(error),
+            };
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            current = current.open_dir_nofollow(name)?;
+        }
+    }
+    Ok(current)
 }
 
 #[cfg(unix)]
