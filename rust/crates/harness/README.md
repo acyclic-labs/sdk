@@ -883,6 +883,16 @@ work prefix before the next action. A crash between mutation and CAS, or a lost
 CAS acknowledgment, leaves authentic incomplete/uncertain preparation: durable
 work is a known lower bound, not reconstructed exact spend. Live failures retain
 the actual complete observed prefix and original cleanup ownership.
+`NativeTaskContext::volume_callback_guard_with_native_work` authenticates the
+SDK-issued fresh-dispatch purpose, original task/full fence, protected shared
+owner and exact declared scope before the canonical native scope copy. The guard
+retains only that independent owner and immutable metadata, never the task
+context or its held view. `NativeVolumeCallbackGuard::for_volume` selects the
+exact READ/WRITE policy on the original per-volume resource work before physical
+preparation; each SDK callback prepays its concrete future and typed original
+error slot, then rechecks the same current owner and exact volume grants. READ
+and reconciliation metadata cannot authorize fresh preparation. Logical custody
+covers known Self and deep capacities, not opaque Arc backing or process RSS.
 Authenticated history effect queries use
 `HistoryReader.effect(cursor, effect, HistoryReadLimits)`, with qualified identities
 and finite read limits. Native process receipts expose queryable publication
