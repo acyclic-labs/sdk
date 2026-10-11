@@ -1041,6 +1041,30 @@ impl NativeMaterializationWork {
         Ok((writer.image, writer.allocation))
     }
 
+    /// Sorts caller-owned values in place through the existing native heap
+    /// engine, without an allocation, alternate algorithm or fresh ledger.
+    ///
+    /// `less` returns true when its left argument belongs AFTER its right in
+    /// the final ordering (ascending order therefore uses `left > right`).
+    /// Each actual comparator call is admitted as one examined item; existing
+    /// engine swaps charge their actual moved logical bytes before mutation.
+    /// Callback-internal work remains the caller's responsibility and runs
+    /// outside the original accounting mutex. No namespace access is granted.
+    ///
+    /// # Errors
+    /// Stops on the first original quota/cancellation or comparator cause,
+    /// preserving the actual comparison/swap prefix and any partial ordering.
+    pub fn sort_by_with_native_work<T>(
+        &self, values: &mut [T],
+        mut less: impl FnMut(&T, &T) -> Result<bool, NativeTreeMaterializationError>,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        self.admit(crate::WorkCounters::UNCHARGED)?;
+        native_sort_by(values, self, |left, right| {
+            self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+            less(left, right)
+        })
+    }
+
     /// Reads an already-authorized reader with bounded retained output.
     /// Each SDK reader call and its returned bytes use the original native
     /// operation/byte reservations. Provider-internal work is not observable.
@@ -1219,6 +1243,9 @@ impl NativeMaterializationWork {
     /// list is introduced. Known output/header storage is funded before its
     /// allocation/copy boundary, with actual capacities reconciled before late
     /// cancellation. The returned tuple owns data first and its guard last.
+    /// Directory controls count native read operations and examined records,
+    /// not BODY bytes; each retained row records one returned item. Sorting
+    /// remains a separate caller-selected use of the existing native engine.
     ///
     /// # Errors
     /// Preserves native directory/stat errors and typed original quota,
