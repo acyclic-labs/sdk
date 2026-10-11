@@ -53,6 +53,8 @@ Native host callers that already have an original key use
 `put_content_with_native_work` and `content_for_operation_with_native_work`.
 They preserve that key exactly rather than substituting the publisher's
 single-file key domain, and keep returned metadata custody through last use.
+Their original path policy rejects traversal and reserved public retry paths
+before hashing, copying or backend calls, with a fixed native diagnostic.
 
 The upload codec preserves the existing struct-ordered metadata bytes and
 sorted-key canonical receipt bytes. Its allowance covers logical owned

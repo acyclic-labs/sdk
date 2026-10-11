@@ -2778,10 +2778,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume.validate()?;
         self.validate_provider(volume.provider())?;
         if let Some(path) = expected_path {
-            crate::conversation::validate_content_path(path)?;
+            fork_preparer_io::validate_content_path(path, io)?;
             if path == ".system" || path.starts_with(".system/")
                 || path == "turns/.canonical" || path.starts_with("turns/.canonical/") {
-                return Err(Error::Invalid("internal storage paths are reserved".into()));
+                return Err(fork_preparer_io::invalid(io, "internal storage paths are reserved"));
             }
         }
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
@@ -2947,10 +2947,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<FileRef> {
         grant.require(volume, VolumeOperation::Write)?;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
-            return Err(Error::Invalid(
-                "content provider or size limit mismatch".into(),
-            ));
+            return Err(fork_preparer_io::invalid(io, "content provider or size limit mismatch"));
         }
+        fork_preparer_io::validate_content_path(path, io)?;
         if let Some(io) = io {
             let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
             io.preflight(hash)?;

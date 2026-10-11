@@ -676,6 +676,23 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     }
 }
 
+pub(in crate::filesystem) fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    }
+    let _ = io;
+    Error::Invalid(reason.into())
+}
+
+pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+        return crate::conversation::validate_content_path_with_native_work(path, work);
+    }
+    crate::conversation::validate_content_path(path)
+}
+
 pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Result<()> {
     for value in values {
         io.claim(value.len() as u64)?;

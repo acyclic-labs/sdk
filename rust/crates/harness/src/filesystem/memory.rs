@@ -1159,6 +1159,19 @@ mod tests {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let key = IdempotencyKey::new("acyclic.pi/input/root-task/original-operation/label")?;
+        let mut path_budget = finite_content_budget();
+        path_budget.allocation_operations = work.receipt().allocation_operations;
+        let path_work = acyclic_fs::NativeMaterializationWork::new(path_budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let path_prefix = path_work.receipt();
+        assert!(matches!(storage.host.put_content_with_native_work(
+            &storage.volume, &storage.write, "../outside", b"never",
+            "text/plain", "never", 1024, &key, &path_work,
+        ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert!(matches!(storage.host.content_for_operation_with_native_work(
+            &storage.volume, &storage.write, &key, ".system/private", 1024, &path_work,
+        ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert_eq!(path_work.receipt(), path_prefix);
         let staged = storage.host.put_content_with_native_work(
             &storage.volume, &storage.write, "inputs/original.json", b"original",
             "application/json", "original.json", 1024, &key, &work,
