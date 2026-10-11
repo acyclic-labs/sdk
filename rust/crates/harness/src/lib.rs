@@ -117,10 +117,14 @@ pub use contract::{
     COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId,
     EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
-    JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
-    json_from_slice_bounded_trusted,
+    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
+    canonical_json_bytes_bounded, json_bytes_bounded_trusted,
+    json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
+    sdk_json_diagnostic_bytes,
     is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use contract::{json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 pub use extension::{
