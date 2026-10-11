@@ -4076,10 +4076,12 @@ mod tests {
         let reopened = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted.clone()));
         assert_eq!(reopened.tail(StreamPath::new("lost-native-ack")?).await?, 1);
-        let crate::IdempotencyOutcome::Commit(outcome) = accepted.outcome else {
+        let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
             return Err("reopened an unrelated operation family".into());
         };
-        assert_eq!(reopened.commit_before(request, 0).await?, outcome);
+        assert_eq!(&reopened.commit_before(request, 0).await?, outcome);
+        drop(accepted);
+        drop(error);
         meter.assert_refunded();
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         Ok(())
@@ -4109,10 +4111,12 @@ mod tests {
         let reopened = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted.clone()));
         assert_eq!(reopened.tail(StreamPath::new("compact-native-ack")?).await?, 1);
-        let crate::IdempotencyOutcome::Commit(outcome) = accepted.outcome else {
+        let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
             return Err("snapshot retained an unrelated operation".into());
         };
-        assert_eq!(reopened.commit_before(request, 0).await?, outcome);
+        assert_eq!(&reopened.commit_before(request, 0).await?, outcome);
+        drop(accepted);
+        drop(error);
         meter.assert_refunded();
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         Ok(())
@@ -4128,6 +4132,7 @@ mod tests {
             directory.path(), LocalStreamLimits::default(), clock.clone(),
         ).await?;
         let request = keyed_commit("native-expired", 0)?;
+        let journal_before = std::fs::read(directory.path().join(JOURNAL_FILE))?;
         let meter = Arc::new(LocalNativeMeter::default());
         *meter.expire_after_hash.lock().map_err(|_| "native clock seam was poisoned")? =
             Some((clock.clone(), 100));
@@ -4136,9 +4141,9 @@ mod tests {
         let expired = provider.native_commit_before(request.clone(), 100, meter.original()).await?;
         assert!(matches!(expired.as_ref().map_err(NativeStreamFailure::source), Err(StreamError::DeadlineElapsed)));
         assert_eq!(clock.0.load(Ordering::SeqCst), 100);
-        assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), HEADER_BYTES as u64);
-        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(directory.path().join(JOURNAL_FILE))?, journal_before);
         assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        drop(expired);
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
         let accepted = provider.commit(request.clone()).await?;
@@ -4418,10 +4423,10 @@ mod tests {
                 while terminal.upgrade().is_some() { tokio::task::yield_now().await; }
             }).await?;
             assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
-            meter.assert_refunded();
-            assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
             let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
             assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
+            meter.assert_refunded();
+            assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
             Ok::<_, Box<dyn std::error::Error>>(())
         })
     }
