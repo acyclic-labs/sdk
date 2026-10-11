@@ -267,8 +267,8 @@ fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         return Err("authority unexpectedly existed".into());
     };
     for (operation, fingerprint, payload) in [
-        ([17; 16], [18; 32], OwnedBytes::from_static(b"aa")),
-        ([19; 16], [20; 32], OwnedBytes::from_static(b"bb")),
+        ([17; 16], [18; 32], bytes::Bytes::from_static(b"aa")),
+        ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
     ] {
         let appended = store.compare_and_append(
             authority_id,

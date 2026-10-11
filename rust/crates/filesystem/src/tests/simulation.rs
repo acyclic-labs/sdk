@@ -1269,10 +1269,19 @@ fn original_proposal(
     bytes.try_reserve_exact(2)?;
     original.charge(WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
     bytes.extend_from_slice(&[operation, fingerprint]);
-    let object = crate::HashedObject::from_native_vec(
-        ObjectKind::BlobChunk, &mut bytes, &mut allocation, original, cancellation,
-    )?;
-    let (_, payload) = object.into_parts();
+    cancellation.check()?;
+    allocation.reconcile_capacity(bytes.capacity() as u64)?;
+    let hash = WorkCounters {
+        bytes_hashed: bytes.len() as u64 + crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES,
+        ..WorkCounters::UNCHARGED
+    };
+    original.admit(hash)?;
+    let _digest = crate::storage::object_digest(ObjectKind::BlobChunk, &bytes);
+    original.record_admitted(hash)?;
+    let control = original.claim(crate::kernel::allocation::bytes_owner_control_bytes::<crate::kernel::NativePublicationPayload>()?)?;
+    let payload = bytes::Bytes::from_owner(crate::kernel::NativePublicationPayload {
+        bytes, _original_evidence: None, _allocation: allocation, _control: control,
+    });
     Ok(ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
@@ -1304,7 +1313,7 @@ impl From<AuthorityStoreError> for SimulationOwnerFailure {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore>(
+async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore + 'static>(
     backend: A,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::NativeMaterializationWork;

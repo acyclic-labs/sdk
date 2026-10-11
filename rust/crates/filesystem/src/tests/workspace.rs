@@ -3391,7 +3391,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         assert!(collected.removed >= 1, "{collected:?}");
         let again = fs.collect_local_garbage(None, &cancellation).await?;
         assert_eq!(again.removed, 0);
-        assert_eq!(main.read("/base.txt", 64).await?, "base");
+        assert_eq!(main.read("/base.txt", 64).await?.as_ref(), b"base");
         drop((main, agent));
         close_local(fs).await?;
     }
@@ -3403,7 +3403,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         "the fork base went with its fork"
     );
     let main = fs.open_workspace("repo").await?;
-    assert_eq!(main.read("/base.txt", 64).await?, "base");
+    assert_eq!(main.read("/base.txt", 64).await?.as_ref(), b"base");
     // Content the collection removed is stored again when written again.
     let content = "only the agent ".repeat(8_192);
     main.write_text("/again.txt", &content).await?;
@@ -3411,7 +3411,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     close_local(fs).await?;
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = fs.open_workspace("repo").await?;
-    assert_eq!(main.read("/again.txt", 1 << 20).await?, content.as_str());
+    assert_eq!(main.read("/again.txt", 1 << 20).await?.as_ref(), content.as_bytes());
     Ok(())
 }
 
@@ -3464,8 +3464,8 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = fs.open_workspace("repo").await?;
     assert_eq!(
-        main.read("/churn.txt", 1 << 20).await?,
-        "23".repeat(20_000).as_str()
+        main.read("/churn.txt", 1 << 20).await?.as_ref(),
+        "23".repeat(20_000).as_bytes()
     );
     assert_eq!(
         fs.collect_local_garbage(None, &cancellation).await?.removed,

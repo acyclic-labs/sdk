@@ -537,14 +537,14 @@ async fn private_mutation_root_vectors_follow_their_actual_owner_across_replacem
     cancelled.cancel();
     let original_control = custody.physical_retained_bytes();
     let failed = candidate.create_file(
-        path("cancelled")?, OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancelled,
+        path("cancelled")?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancelled,
     ).await.err().ok_or("cancelled mutation changed the working roots")?;
     assert!(matches!(failed.error, FsError::Cancelled(_) | FsError::Mutation(_)));
     assert_eq!(custody.physical_retained_bytes(), original_control);
     assert_eq!(candidate.base_root, base);
     for name in ["first", "second"] {
         let receipt = candidate.create_file(
-            path(name)?, OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active,
+            path(name)?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active,
         ).await?;
         assert!(receipt.work.allocation_operations > 0);
         assert_eq!(candidate.generation_id(), generation);
@@ -576,7 +576,7 @@ async fn private_post_seal_roots_preserve_custody_and_cancelled_preparation_reti
     let mut checkout = workspace.checkout_measured(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
     ).await?.value;
-    checkout.create_file(path("pending")?, OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active).await?;
+    checkout.create_file(path("pending")?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active).await?;
     let mut candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?.value;
     let custody = candidate.private_control_custody();
     let original_root = candidate.generation_id();
@@ -696,7 +696,7 @@ async fn borrowed_seal_tags_only_new_root_buffers_to_the_current_producer()
     let mut checkout = workspace.checkout_measured(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
     ).await?.value;
-    checkout.create_file(path("pending")?, OwnedBytes::from_static(b"pending"), WorkBudget::UNBOUNDED, &active).await?;
+    checkout.create_file(path("pending")?, bytes::Bytes::from_static(b"pending"), WorkBudget::UNBOUNDED, &active).await?;
     let mut service = checkout.private_candidate();
     let foreign = service.private_control_custody();
     let foreign_control = foreign.physical_retained_bytes();
@@ -968,7 +968,7 @@ async fn prepared_merge_custody_retires_precommit_copies_and_follows_actual_map_
 async fn native_candidate_adoption_enforces_full_resource_copies_and_actual_map_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::KernelAccounting;
-    use crate::kernel::persistent_point::Owned;
+    use crate::kernel::Owned;
     let fs = Fs::memory();
     let workspace = fs.create_workspace("native-candidate-adoption-resource").await?;
     let cancellation = CancellationToken::new();
@@ -1766,7 +1766,7 @@ async fn workspace_fork_reads_the_verified_source_root_once()
     );
     let source = fs.create_workspace("fork-read-bound").await?;
     source
-        .write("/payload", OwnedBytes::from(vec![7_u8; 128 * 1_024]))
+        .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
         .await?;
     let generation = source.head().await?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
@@ -1811,7 +1811,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
     );
     let workspace = fs.create_workspace("retention-proof").await?;
     let crate::TransactionCommit::Committed(generation) = workspace
-        .write("/payload", OwnedBytes::from(vec![7_u8; 128 * 1_024]))
+        .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
         .await?
     else {
         return Err("retention fixture did not commit".into());
@@ -2848,7 +2848,7 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
     ))
     .ok_or("checkout blocked")??
     .value;
-    let original = OwnedBytes::from(vec![b'a'; 100]);
+    let original = bytes::Bytes::from(vec![b'a'; 100]);
     poll_ready(checkout.create_file(
         path("file")?,
         original,
@@ -2861,7 +2861,7 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
     poll_ready(checkout.write_file(
         path("file")?,
         40,
-        OwnedBytes::from_static(b"changed"),
+        bytes::Bytes::from_static(b"changed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -2976,7 +2976,7 @@ fn commit_records_its_span_and_one_work_receipt() -> Result<(), Box<dyn std::err
     .value;
     poll_ready(checkout.create_file(
         path("traced")?,
-        OwnedBytes::from_static(b"secret contents"),
+        bytes::Bytes::from_static(b"secret contents"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3134,7 +3134,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let large = path("fault-large")?;
     let large_id = through_every_object_cut!(checkout.create_file(
         large.clone(),
-        OwnedBytes::from(vec![b'x'; 4_096]),
+        bytes::Bytes::from(vec![b'x'; 4_096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3142,7 +3142,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let inline = path("fault-inline")?;
     let inline_id = through_every_object_cut!(checkout.create_file(
         inline.clone(),
-        OwnedBytes::from_static(b"inline"),
+        bytes::Bytes::from_static(b"inline"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3156,7 +3156,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: authored.clone(),
-            bytes: OwnedBytes::from(vec![b'a'; 4_096]),
+            bytes: bytes::Bytes::from(vec![b'a'; 4_096]),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -3332,7 +3332,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.write_named_attribute(
         large.clone(),
         attribute.clone(),
-        OwnedBytes::from_static(b"fault-checked-value"),
+        bytes::Bytes::from_static(b"fault-checked-value"),
         NamedAttributeWriteMode::Upsert,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -3403,7 +3403,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.write_file_by_id(
         large_id,
         128,
-        OwnedBytes::from_static(b"atomic-retry"),
+        bytes::Bytes::from_static(b"atomic-retry"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -3681,21 +3681,21 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     .value;
     poll_ready(writer.create_file(
         path("first")?,
-        OwnedBytes::from_static(b"abcdefgh"),
+        bytes::Bytes::from_static(b"abcdefgh"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("first create blocked")??;
     poll_ready(writer.create_file(
         path("second")?,
-        OwnedBytes::from_static(b"01234567"),
+        bytes::Bytes::from_static(b"01234567"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("second create blocked")??;
     poll_ready(writer.create_symbolic_link(
         path("link")?,
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3717,7 +3717,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     for name in ["a", "b"] {
         poll_ready(writer.create_file(
             path_parts(&["first-directory", name])?,
-            OwnedBytes::from_static(b"x"),
+            bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -3725,7 +3725,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     }
     poll_ready(writer.create_file(
         path_parts(&["second-directory", "c"])?,
-        OwnedBytes::from_static(b"y"),
+        bytes::Bytes::from_static(b"y"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3800,7 +3800,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     .value;
     poll_ready(other_writer.create_file(
         path("foreign")?,
-        OwnedBytes::from_static(b"WXYZ"),
+        bytes::Bytes::from_static(b"WXYZ"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4027,7 +4027,7 @@ fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::e
     let file_path = path("private")?;
     let file_id = poll_ready(checkout.create_file(
         file_path.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4050,7 +4050,7 @@ fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::e
     poll_ready(checkout.write_file(
         file_path,
         0,
-        OwnedBytes::from_static(b"later"),
+        bytes::Bytes::from_static(b"later"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4135,7 +4135,7 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     control.disable();
     poll_ready(checkout.create_file(
         path("authority-cut-file")?,
-        OwnedBytes::from_static(b"authority cut candidate"),
+        bytes::Bytes::from_static(b"authority cut candidate"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4200,7 +4200,7 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     control.disable();
     poll_ready(live.create_file(
         path("live-authority-cut")?,
-        OwnedBytes::from_static(b"live"),
+        bytes::Bytes::from_static(b"live"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4431,14 +4431,14 @@ fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     .value;
     poll_ready(rebasing.create_file(
         path("local")?,
-        OwnedBytes::from_static(b"local sparse candidate"),
+        bytes::Bytes::from_static(b"local sparse candidate"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("local mutation blocked")??;
     poll_ready(writer.create_file(
         path("remote")?,
-        OwnedBytes::from_static(b"remote sparse head"),
+        bytes::Bytes::from_static(b"remote sparse head"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4539,14 +4539,14 @@ fn every_object_cut_preserves_diff_export_and_merge_preparation()
     .value;
     poll_ready(ours.create_file(
         path("ours")?,
-        OwnedBytes::from(vec![b'o'; 4_096]),
+        bytes::Bytes::from(vec![b'o'; 4_096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("ours mutation blocked")??;
     poll_ready(theirs.create_file(
         path("theirs")?,
-        OwnedBytes::from(vec![b't'; 4_096]),
+        bytes::Bytes::from(vec![b't'; 4_096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4659,7 +4659,7 @@ fn every_object_cut_preserves_authenticated_publication_retry()
     .value;
     poll_ready(checkout.create_file(
         path("publish-large")?,
-        OwnedBytes::from(vec![b'p'; 16_384]),
+        bytes::Bytes::from(vec![b'p'; 16_384]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4671,7 +4671,7 @@ fn every_object_cut_preserves_authenticated_publication_retry()
             b"user.publication".to_vec(),
             config().limits.maximum_component_bytes,
         )?,
-        OwnedBytes::from(vec![b'a'; 4_096]),
+        bytes::Bytes::from(vec![b'a'; 4_096]),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4736,7 +4736,7 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
     .value;
     poll_ready(checkout.create_file(
         path("indeterminate-file")?,
-        OwnedBytes::from_static(b"durable exactly once"),
+        bytes::Bytes::from_static(b"durable exactly once"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4832,7 +4832,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     .value;
     poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -4909,7 +4909,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     assert!(matches!(absent_remove.error, FsError::NotFound));
     let absent_replace = poll_ready(detached.write_named_attribute(
         attribute.clone(),
-        OwnedBytes::from_static(b"replacement"),
+        bytes::Bytes::from_static(b"replacement"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4920,7 +4920,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
     poll_ready(detached.write_named_attribute(
         attribute.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4946,7 +4946,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     assert!(
         poll_ready(detached.write_named_attribute(
             attribute.clone(),
-            OwnedBytes::from_static(b"duplicate"),
+            bytes::Bytes::from_static(b"duplicate"),
             NamedAttributeWriteMode::Create,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -4956,7 +4956,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     );
     poll_ready(detached.write_named_attribute(
         attribute.clone(),
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -5089,7 +5089,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     .value;
     poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5168,7 +5168,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     poll_ready(content_writer.write_file(
         file.clone(),
         64,
-        OwnedBytes::from_static(b"changed"),
+        bytes::Bytes::from_static(b"changed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5205,7 +5205,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     poll_ready(final_writer.write_file(
         file,
         96,
-        OwnedBytes::from_static(b"different"),
+        bytes::Bytes::from_static(b"different"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5254,7 +5254,7 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
     .value;
     poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 256]),
+        bytes::Bytes::from(vec![b'a'; 256]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5420,7 +5420,7 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
     .value;
     let file_id = poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"abc"),
+        bytes::Bytes::from_static(b"abc"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5462,7 +5462,7 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
     poll_ready(writer.write_file(
         file,
         3,
-        OwnedBytes::from_static(b"d"),
+        bytes::Bytes::from_static(b"d"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5522,7 +5522,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     .value;
     poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5553,7 +5553,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     poll_ready(local.write_file(
         file.clone(),
         0,
-        OwnedBytes::from_static(b"LOCAL"),
+        bytes::Bytes::from_static(b"LOCAL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5561,7 +5561,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     poll_ready(remote.write_file(
         file.clone(),
         64,
-        OwnedBytes::from_static(b"REMOTE"),
+        bytes::Bytes::from_static(b"REMOTE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5638,7 +5638,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     poll_ready(overlapping_local.write_file(
         file.clone(),
         10,
-        OwnedBytes::from_static(b"local"),
+        bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5646,7 +5646,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     poll_ready(overlapping_remote.write_file(
         file,
         12,
-        OwnedBytes::from_static(b"remote"),
+        bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5718,7 +5718,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     .value;
     let file_id = poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5750,7 +5750,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     poll_ready(local.write_file_by_id(
         file_id,
         0,
-        OwnedBytes::from_static(b"LOCAL"),
+        bytes::Bytes::from_static(b"LOCAL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5758,7 +5758,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     poll_ready(remote.write_file(
         file.clone(),
         64,
-        OwnedBytes::from_static(b"REMOTE"),
+        bytes::Bytes::from_static(b"REMOTE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5816,7 +5816,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     poll_ready(overlapping_local.write_file_by_id(
         file_id,
         10,
-        OwnedBytes::from_static(b"local"),
+        bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5824,7 +5824,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     poll_ready(overlapping_remote.write_file(
         file,
         12,
-        OwnedBytes::from_static(b"remote"),
+        bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5858,7 +5858,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     poll_ready(extending.write_file_by_id(
         file_id,
         128,
-        OwnedBytes::from_static(b"TAIL"),
+        bytes::Bytes::from_static(b"TAIL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -5913,7 +5913,7 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
     .value;
     let file_id = poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"abc"),
+        bytes::Bytes::from_static(b"abc"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6014,11 +6014,11 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let left = seed.create_file(
-        path("left")?, OwnedBytes::from_static(b"left real source"),
+        path("left")?, bytes::Bytes::from_static(b"left real source"),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let right = seed.create_file(
-        path("right")?, OwnedBytes::from_static(b"distinct right real source"),
+        path("right")?, bytes::Bytes::from_static(b"distinct right real source"),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     seed.commit(OperationId::from_bytes([210; 16]), WorkBudget::UNBOUNDED, &cancellation).await?;
@@ -6130,7 +6130,7 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
     .value;
     poll_ready(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6159,13 +6159,13 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
     .ok_or("second live checkout blocked")??
     .value;
     let first_blob = poll_ready(first.stage_blob(
-        OwnedBytes::from_static(b"FIRST"),
+        bytes::Bytes::from_static(b"FIRST"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("first blob blocked")??;
     let second_blob = poll_ready(second.stage_blob(
-        OwnedBytes::from_static(b"SECOND"),
+        bytes::Bytes::from_static(b"SECOND"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6226,13 +6226,13 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
     .ok_or("racing checkout blocked")??
     .value;
     let overlap_blob = poll_ready(overlapping.stage_blob(
-        OwnedBytes::from_static(b"OVERLAP"),
+        bytes::Bytes::from_static(b"OVERLAP"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("overlap blob blocked")??;
     let racing_blob = poll_ready(racing.stage_blob(
-        OwnedBytes::from_static(b"RACING"),
+        bytes::Bytes::from_static(b"RACING"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6306,7 +6306,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
     .value;
     ready!(seed.create_file(
         file.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6349,7 +6349,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
     ready!(disjoint.write_file(
         file.clone(),
         64,
-        OwnedBytes::from_static(b"SAFE"),
+        bytes::Bytes::from_static(b"SAFE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6394,7 +6394,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
     ready!(overlapping.write_file(
         file,
         0,
-        OwnedBytes::from_static(b"RACE"),
+        bytes::Bytes::from_static(b"RACE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6473,7 +6473,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     .value;
     ready!(winner.create_file(
         path("winner")?,
-        OwnedBytes::from_static(b"winner"),
+        bytes::Bytes::from_static(b"winner"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6487,7 +6487,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
 
     ready!(retrying.create_file(
         path("retrying")?,
-        OwnedBytes::from_static(b"retrying"),
+        bytes::Bytes::from_static(b"retrying"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6501,7 +6501,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     assert!(retrying.has_pending_mutations());
     let mutation_while_unresolved = poll_ready(retrying.create_file(
         path("must-remain-fenced")?,
-        OwnedBytes::from_static(b"blocked"),
+        bytes::Bytes::from_static(b"blocked"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6590,7 +6590,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     .value;
     ready!(pending_guard.create_file(
         path("pending-guard")?,
-        OwnedBytes::from_static(b"pending"),
+        bytes::Bytes::from_static(b"pending"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6697,7 +6697,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     .value;
     ready!(conflicting_retry.create_file(
         path("different-operation")?,
-        OwnedBytes::from_static(b"different"),
+        bytes::Bytes::from_static(b"different"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6723,7 +6723,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     .value;
     ready!(fenced.create_file(
         path("fenced")?,
-        OwnedBytes::from_static(b"fenced"),
+        bytes::Bytes::from_static(b"fenced"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -6807,7 +6807,7 @@ fn high_level_operations_stage_one_explicit_direct_live_transaction()
     let file = path("live.txt")?;
     poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"initial"),
+        bytes::Bytes::from_static(b"initial"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6815,7 +6815,7 @@ fn high_level_operations_stage_one_explicit_direct_live_transaction()
     poll_ready(checkout.write_file(
         file.clone(),
         7,
-        OwnedBytes::from_static(b"-published"),
+        bytes::Bytes::from_static(b"-published"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -6875,13 +6875,13 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
         vec![
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: OwnedBytes::from_static(b"initial"),
+                bytes: bytes::Bytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
                 offset: 7,
-                bytes: OwnedBytes::from_static(b"-published"),
+                bytes: bytes::Bytes::from_static(b"-published"),
             },
         ],
         OperationId::from_bytes([118; 16]),
@@ -6944,7 +6944,7 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
             },
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: OwnedBytes::from_static(b"initial"),
+                bytes: bytes::Bytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
@@ -7060,7 +7060,7 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
             },
             AuthoredMutation::CreateFile {
                 path: path("bulk0")?,
-                bytes: OwnedBytes::from_static(b"duplicate"),
+                bytes: bytes::Bytes::from_static(b"duplicate"),
                 metadata: empty_metadata(),
             },
         ],
@@ -7170,7 +7170,7 @@ fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchange
     assert_eq!(failed.work.allocation_operations, 1);
     assert!(failed.work.peak_allocation_bytes >= size_of::<Mutation>() as u64);
     assert_eq!(failed.work.bytes_copied, 0);
-    assert!(checkout.root == original_root);
+    assert!(*checkout.root == original_root);
 
     // A real released candidate provides a vacant registration slot, so the
     // next candidate does not need to copy a growing global root table.
@@ -7187,7 +7187,7 @@ fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchange
     assert!(matches!(failed.error, FsError::Work(_)));
     assert!(failed.work.allocation_operations >= 2);
     assert_eq!(failed.work.bytes_copied, size_of::<Proof>() as u64);
-    assert!(checkout.root == original_root);
+    assert!(*checkout.root == original_root);
     assert!(poll_ready(checkout.lookup_no_follow(
         &path("not-created")?, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("unchanged checkout lookup blocked")??.value.record.is_none());
@@ -7224,8 +7224,8 @@ fn authored_transaction_reuses_a_staged_file_metadata_object()
     let mut staged_metadata = AuthoredMetadataCache::new();
     let mut writes_after_create = 0;
     for (index, authored) in [
-        AuthoredMutation::CreateFile { path: file.clone(), bytes: OwnedBytes::new(), metadata, },
-        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: OwnedBytes::new(), metadata, },
+        AuthoredMutation::CreateFile { path: file.clone(), bytes: bytes::Bytes::new(), metadata, },
+        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: bytes::Bytes::new(), metadata, },
         AuthoredMutation::SetMetadata { path: file.clone(), metadata },
     ].into_iter().enumerate() {
         let bytes = authored.logical_owned_bytes();
@@ -7922,7 +7922,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         (&destination, b"destination body".as_slice()),
         (&removed, b"removed body".as_slice()),
     ] {
-        checkout.create_file(requested.clone(), OwnedBytes::copy_from_slice(body), WorkBudget::UNBOUNDED, &cancellation).await?;
+        checkout.create_file(requested.clone(), bytes::Bytes::copy_from_slice(body), WorkBudget::UNBOUNDED, &cancellation).await?;
     }
     let mut metadata = checkout.lookup_no_follow_with_metadata(
         &source, WorkBudget::UNBOUNDED, &cancellation,
@@ -8042,12 +8042,12 @@ fn public_authored_transaction_reuses_metadata_across_paths()
             vec![
                 AuthoredMutation::CreateFile {
                     path: first.clone(),
-                    bytes: OwnedBytes::new(),
+                    bytes: bytes::Bytes::new(),
                     metadata: shared,
                 },
                 AuthoredMutation::CreateFile {
                     path: second.clone(),
-                    bytes: OwnedBytes::new(),
+                    bytes: bytes::Bytes::new(),
                     metadata: second_metadata,
                 },
                 AuthoredMutation::SetMetadata {
@@ -8106,7 +8106,7 @@ fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
     let transient = path("transient")?;
     poll_ready(checkout.create_file(
         transient.clone(),
-        OwnedBytes::from_static(b"temporary"),
+        bytes::Bytes::from_static(b"temporary"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8147,7 +8147,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("absent")?,
             offset: 0,
-            bytes: OwnedBytes::new(),
+            bytes: bytes::Bytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8183,11 +8183,11 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             AuthoredMutation::Write {
                 path: path("ordered")?,
                 offset: 0,
-                bytes: OwnedBytes::new(),
+                bytes: bytes::Bytes::new(),
             },
             AuthoredMutation::CreateFile {
                 path: path("ordered")?,
-                bytes: OwnedBytes::new(),
+                bytes: bytes::Bytes::new(),
                 metadata: empty_metadata(),
             },
         ],
@@ -8216,7 +8216,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let direct_missing = poll_ready(noop_checkout.write_file(
         path("missing")?,
         0,
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8231,7 +8231,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let created = poll_ready(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
-            bytes: OwnedBytes::new(),
+            bytes: bytes::Bytes::new(),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -8253,7 +8253,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("present")?,
             offset: 0,
-            bytes: OwnedBytes::new(),
+            bytes: bytes::Bytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8288,7 +8288,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let direct = poll_ready(noop_checkout.write_file(
         path("present")?,
         u64::MAX,
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8298,7 +8298,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let identity = poll_ready(noop_checkout.write_file_by_id(
         file_id,
         u64::MAX,
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8351,9 +8351,9 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     .ok_or("byte-limited checkout blocked")??
     .value;
     for mutation in [
-        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
         AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
-        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
     ] {
         let failure = poll_ready(checkout.apply_authored_transaction(
             vec![mutation],
@@ -8371,7 +8371,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     }
     let direct = poll_ready(checkout.create_symbolic_link(
         path("direct-link")?,
-        OwnedBytes::from_static(b"xx"),
+        bytes::Bytes::from_static(b"xx"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8535,7 +8535,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             },
             AuthoredMutation::CreateFile {
                 path: source.clone(),
-                bytes: OwnedBytes::from_static(b"abcdefgh"),
+                bytes: bytes::Bytes::from_static(b"abcdefgh"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
@@ -8562,7 +8562,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             AuthoredMutation::Write {
                 path: source.clone(),
                 offset: 0,
-                bytes: OwnedBytes::new(),
+                bytes: bytes::Bytes::new(),
             },
             AuthoredMutation::Write {
                 path: source.clone(),
@@ -8731,7 +8731,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     let destination = path("destination-path")?;
     let source_id = poll_ready(checkout.create_file(
         source.clone(),
-        OwnedBytes::from(vec![b's'; 128]),
+        bytes::Bytes::from(vec![b's'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -8739,7 +8739,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     .value;
     poll_ready(checkout.create_file(
         destination.clone(),
-        OwnedBytes::from(vec![b'd'; 128]),
+        bytes::Bytes::from(vec![b'd'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9005,7 +9005,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     let missing = path("missing")?;
     let file_id = poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"data"),
+        bytes::Bytes::from_static(b"data"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9176,7 +9176,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     let missing_replace = poll_ready(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -9188,7 +9188,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     poll_ready(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -9197,7 +9197,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     let duplicate_create = poll_ready(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -9520,7 +9520,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         poll_ready(checkout.write_file_by_id(
             directory_id,
             0,
-            OwnedBytes::from_static(b"x"),
+            bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -9583,7 +9583,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     let file = path("bounded")?;
     let failure = poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"12345"),
+        bytes::Bytes::from_static(b"12345"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9598,7 +9598,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 
     let file_id = poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"1234"),
+        bytes::Bytes::from_static(b"1234"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9608,7 +9608,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         poll_ready(checkout.write_file(
             file.clone(),
             0,
-            OwnedBytes::from_static(b"12345"),
+            bytes::Bytes::from_static(b"12345"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -9618,7 +9618,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         poll_ready(checkout.write_file_by_id(
             file_id,
             0,
-            OwnedBytes::from_static(b"12345"),
+            bytes::Bytes::from_static(b"12345"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -9636,7 +9636,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     poll_ready(checkout.write_file_by_id(
         file_id,
         4,
-        OwnedBytes::from_static(b"5"),
+        bytes::Bytes::from_static(b"5"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9710,7 +9710,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 
     let symbolic = poll_ready(checkout.create_symbolic_link(
         path("link")?,
-        OwnedBytes::from_static(b"12345"),
+        bytes::Bytes::from_static(b"12345"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -9942,7 +9942,7 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     .value;
     poll_ready(manual_checkout.create_file(
         path("dirty")?,
-        OwnedBytes::from_static(b"dirty"),
+        bytes::Bytes::from_static(b"dirty"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -10130,7 +10130,7 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
     .value;
     poll_ready(checkout.create_file(
         path("file")?,
-        OwnedBytes::from(vec![42; 4096]),
+        bytes::Bytes::from(vec![42; 4096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -10315,7 +10315,7 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     let empty_reparse = path("empty-reparse")?;
     poll_ready(checkout.create_reparse_point(
         empty_reparse.clone(),
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -10331,7 +10331,7 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     let empty_link = path("empty-link")?;
     poll_ready(checkout.create_symbolic_link(
         empty_link.clone(),
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -10651,7 +10651,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
     let file = path("cancelled-file")?;
     let file_id = poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"abcdefgh"),
+        bytes::Bytes::from_static(b"abcdefgh"),
         WorkBudget::UNBOUNDED,
         &active,
     ))
@@ -10742,7 +10742,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         checkout.write_file(
             file.clone(),
             0,
-            OwnedBytes::from_static(b"x"),
+            bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancelled_token,
         ),
@@ -10751,7 +10751,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
     cancelled!(
         checkout.create_file(
             path("cancelled-new-file")?,
-            OwnedBytes::from_static(b"must-not-be-encoded"),
+            bytes::Bytes::from_static(b"must-not-be-encoded"),
             WorkBudget::UNBOUNDED,
             &cancelled_token,
         ),
@@ -11023,7 +11023,7 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     .value;
     poll_ready(displaced.create_file(
         path("displaced")?,
-        OwnedBytes::from_static(b"stale"),
+        bytes::Bytes::from_static(b"stale"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -11040,7 +11040,7 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     ));
     poll_ready(owner.create_file(
         path("owner")?,
-        OwnedBytes::from_static(b"current"),
+        bytes::Bytes::from_static(b"current"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -11346,7 +11346,7 @@ fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     for index in 0..20 {
         poll_ready(local.create_file(
             path(&format!("local{index}"))?,
-            OwnedBytes::from_static(b"local"),
+            bytes::Bytes::from_static(b"local"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -11354,7 +11354,7 @@ fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     }
     poll_ready(remote.create_file(
         path("remote")?,
-        OwnedBytes::from_static(b"remote"),
+        bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -11706,14 +11706,14 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     let clone = path("clone.bin")?;
     let file_id = ready!(checkout.value.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"abcdefgh"),
+        bytes::Bytes::from_static(b"abcdefgh"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .value;
     let clone_id = ready!(checkout.value.create_file(
         clone.clone(),
-        OwnedBytes::from_static(b"........"),
+        bytes::Bytes::from_static(b"........"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -11860,7 +11860,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ready!(checkout.value.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -11892,7 +11892,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ready!(checkout.value.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -11922,7 +11922,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ready!(checkout.value.write_file_by_id(
         file_id,
         8,
-        OwnedBytes::from_static(b"tail"),
+        bytes::Bytes::from_static(b"tail"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -12142,7 +12142,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .create_file(
             file.clone(),
-            OwnedBytes::from_static(b"retained"),
+            bytes::Bytes::from_static(b"retained"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -12160,7 +12160,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .create_file(
             pending.clone(),
-            OwnedBytes::from(vec![b'p'; 256 * 1_024]),
+            bytes::Bytes::from(vec![b'p'; 256 * 1_024]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -12345,7 +12345,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let path = path("attributes.bin")?;
     ready!(checkout.value.create_file(
         path.clone(),
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -12386,7 +12386,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let absent_replace = poll_ready(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
-        OwnedBytes::from_static(b"replacement"),
+        bytes::Bytes::from_static(b"replacement"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -12398,7 +12398,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ready!(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -12406,7 +12406,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let duplicate_create = poll_ready(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
-        OwnedBytes::from_static(b"duplicate"),
+        bytes::Bytes::from_static(b"duplicate"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -12439,7 +12439,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ready!(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -12499,7 +12499,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     let initial = checkout.generation_id();
     ready!(checkout.create_file(
         path("changed")?,
-        OwnedBytes::from_static(b"one"),
+        bytes::Bytes::from_static(b"one"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -12525,7 +12525,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     ready!(checkout.write_file(
         path("changed")?,
         0,
-        OwnedBytes::from_static(b"two"),
+        bytes::Bytes::from_static(b"two"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -12726,13 +12726,13 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     .value;
     ready!(ours.create_file(
         path("ours")?,
-        OwnedBytes::from_static(b"ours"),
+        bytes::Bytes::from_static(b"ours"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
     ready!(theirs.create_file(
         path("theirs")?,
-        OwnedBytes::from_static(b"theirs"),
+        bytes::Bytes::from_static(b"theirs"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -12914,7 +12914,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     let file = path("conflict.txt")?;
     let file_id = ready!(seed.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"base"),
+        bytes::Bytes::from_static(b"base"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -12922,7 +12922,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     let second_file = path("second-conflict.txt")?;
     let second_file_id = ready!(seed.create_file(
         second_file.clone(),
-        OwnedBytes::from_static(b"base-two"),
+        bytes::Bytes::from_static(b"base-two"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -12986,28 +12986,28 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     ready!(ours.write_file(
         file.clone(),
         0,
-        OwnedBytes::from_static(b"ours"),
+        bytes::Bytes::from_static(b"ours"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
     ready!(ours.write_file(
         second_file.clone(),
         0,
-        OwnedBytes::from_static(b"ours-two"),
+        bytes::Bytes::from_static(b"ours-two"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
     ready!(theirs.write_file(
         file,
         0,
-        OwnedBytes::from_static(b"them"),
+        bytes::Bytes::from_static(b"them"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
     ready!(theirs.write_file(
         second_file,
         0,
-        OwnedBytes::from_static(b"them-two"),
+        bytes::Bytes::from_static(b"them-two"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
@@ -13448,7 +13448,7 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
     .value;
     poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::from_static(b"abc"),
+        bytes::Bytes::from_static(b"abc"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -13593,7 +13593,7 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
     ));
     assert!(matches!(
         poll_ready(checkout.stage_blob(
-            OwnedBytes::from_static(b"xx"),
+            bytes::Bytes::from_static(b"xx"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -13658,7 +13658,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
             bytes.extend_from_slice(&wrong_volume.into_bytes());
             bytes.push(generation_root.kind.canonical_tag());
             bytes.extend_from_slice(generation_root.digest.as_bytes());
-            OwnedBytes::from(bytes)
+            bytes::Bytes::from(bytes)
         },
         ..creation
     };
@@ -13760,7 +13760,7 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
     .value;
     poll_ready(checkout.create_file(
         file.clone(),
-        OwnedBytes::new(),
+        bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -13773,7 +13773,7 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
     poll_ready(checkout.write_named_attribute(
         file.clone(),
         attribute.clone(),
-        OwnedBytes::from_static(b"xx"),
+        bytes::Bytes::from_static(b"xx"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -13796,7 +13796,7 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
     ));
     assert!(matches!(
         poll_ready(detached.stage_blob(
-            OwnedBytes::from_static(b"xx"),
+            bytes::Bytes::from_static(b"xx"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -13886,14 +13886,14 @@ fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn st
     .value;
     poll_ready(checkout.create_file(
         path("Foo")?,
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("first create blocked")??;
     let collision = poll_ready(checkout.create_file(
         path("foo")?,
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -13937,14 +13937,14 @@ fn profile_folded_admission_covers_directories_links_and_renames()
 
     poll_ready(checkout.create_symbolic_link(
         path("Link")?,
-        OwnedBytes::from_static(b"target"),
+        bytes::Bytes::from_static(b"target"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("link create blocked")??;
     let link_collision = poll_ready(checkout.create_symbolic_link(
         path("link")?,
-        OwnedBytes::from_static(b"other"),
+        bytes::Bytes::from_static(b"other"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -13955,7 +13955,7 @@ fn profile_folded_admission_covers_directories_links_and_renames()
 
     let source = poll_ready(checkout.create_file(
         path("Source")?,
-        OwnedBytes::from_static(b"body"),
+        bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -13982,7 +13982,7 @@ fn profile_folded_admission_covers_directories_links_and_renames()
 
     poll_ready(checkout.create_file(
         path("Other")?,
-        OwnedBytes::from_static(b"other"),
+        bytes::Bytes::from_static(b"other"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14015,7 +14015,7 @@ fn profile_folded_admission_covers_directories_links_and_renames()
 
     poll_ready(checkout.create_file(
         path("Removed")?,
-        OwnedBytes::from_static(b"removed"),
+        bytes::Bytes::from_static(b"removed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14024,7 +14024,7 @@ fn profile_folded_admission_covers_directories_links_and_renames()
         .ok_or("removed delete blocked")??;
     poll_ready(checkout.create_file(
         path("removed")?,
-        OwnedBytes::from_static(b"reused"),
+        bytes::Bytes::from_static(b"reused"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14057,7 +14057,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
             },
             AuthoredMutation::CreateFile {
                 path: path("batch")?,
-                bytes: OwnedBytes::from_static(b"body"),
+                bytes: bytes::Bytes::from_static(b"body"),
                 metadata: empty_metadata(),
             },
         ],
@@ -14154,14 +14154,14 @@ fn sensitive_volume_still_permits_case_distinct_siblings() -> Result<(), Box<dyn
     .value;
     poll_ready(checkout.create_file(
         path("Foo")?,
-        OwnedBytes::from_static(b"first"),
+        bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("first create blocked")??;
     poll_ready(checkout.create_file(
         path("foo")?,
-        OwnedBytes::from_static(b"second"),
+        bytes::Bytes::from_static(b"second"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14188,7 +14188,7 @@ fn profile_folded_volume_resolves_case_insensitive_lookups()
     .value;
     let created = poll_ready(checkout.create_file(
         path("foo")?,
-        OwnedBytes::from_static(b"body"),
+        bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14228,7 +14228,7 @@ fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::
     .value;
     let rejected = poll_ready(checkout.create_file(
         path(decomposed)?,
-        OwnedBytes::from_static(b"body"),
+        bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14239,7 +14239,7 @@ fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::
     );
     poll_ready(checkout.create_file(
         path(precomposed)?,
-        OwnedBytes::from_static(b"body"),
+        bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14272,7 +14272,7 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     .value;
     let file_id = poll_ready(seed.create_file(
         timed.clone(),
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14280,7 +14280,7 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     .value;
     poll_ready(seed.create_file(
         untimed.clone(),
-        OwnedBytes::from(vec![b'b'; 128]),
+        bytes::Bytes::from(vec![b'b'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14327,7 +14327,7 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     poll_ready(separate.write_file_by_id(
         file_id,
         4,
-        OwnedBytes::from_static(b"STAMP"),
+        bytes::Bytes::from_static(b"STAMP"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14418,7 +14418,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     .value;
     let existing = poll_ready(checkout.create_file(
         path("existing")?,
-        OwnedBytes::from(vec![b'a'; 128]),
+        bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14434,7 +14434,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
             path: path(name)?,
             metadata: Box::new(FileMetadata::default()),
             file_id: FileId::new(),
-            bytes: OwnedBytes::new(),
+            bytes: bytes::Bytes::new(),
         })
     };
 
@@ -14583,7 +14583,7 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
     .value;
     poll_ready(local.create_file(
         path("authored")?,
-        OwnedBytes::from_static(b"local"),
+        bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14618,7 +14618,7 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
     // The observation absorbed once still fences a racing binding.
     poll_ready(remote.create_file(
         observed,
-        OwnedBytes::from_static(b"remote"),
+        bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -14670,7 +14670,7 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
         if authored {
             poll_ready(local.create_file(
                 path("authored")?,
-                OwnedBytes::from_static(b"local"),
+                bytes::Bytes::from_static(b"local"),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             ))
@@ -14694,7 +14694,7 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
 
         poll_ready(remote.create_file(
             path("second")?,
-            OwnedBytes::from_static(b"remote"),
+            bytes::Bytes::from_static(b"remote"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -14736,7 +14736,7 @@ fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::
     for name in ["a", "b"] {
         poll_ready(writer.create_file(
             path(name)?,
-            OwnedBytes::from_static(b"x"),
+            bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
@@ -14789,7 +14789,7 @@ fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Er
     for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
         let file_id = poll_ready(checkout.create_file(
             path(name)?,
-            OwnedBytes::from(vec![u8::try_from(index)?; 16]),
+            bytes::Bytes::from(vec![u8::try_from(index)?; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))

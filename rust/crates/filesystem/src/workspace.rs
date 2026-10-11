@@ -1984,10 +1984,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
-        self.fork_measured_inner::<
-            fn(crate::WorkBudget) -> std::future::Ready<crate::facade::FsResult<()>>,
-            std::future::Ready<crate::facade::FsResult<()>>,
-        >(destination, options, crate::PublicationPermit::Unrestricted, budget, cancellation, None).await
+        crate::heap_future::in_heap_measured(
+            |budget| self.fork_measured_inner::<
+                fn(crate::WorkBudget) -> std::future::Ready<crate::facade::FsResult<()>>,
+                std::future::Ready<crate::facade::FsResult<()>>,
+            >(destination, options, crate::PublicationPermit::Unrestricted, budget, cancellation, None),
+            budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None,
+        ).await
     }
 
     /// Forks the supplied exact generation with the original owner guard at each destination seal.
@@ -2001,7 +2004,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         F: FnMut(crate::WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::facade::FsResult<()>> + Send,
     {
-        self.fork_measured_inner(destination, options, permit, budget, cancellation, Some(&mut guard)).await
+        crate::heap_future::in_heap_measured(
+            |budget| self.fork_measured_inner(destination, options, permit, budget, cancellation, Some(&mut guard)),
+            budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None,
+        ).await
     }
 
     async fn fork_measured_inner<F, Fut>(

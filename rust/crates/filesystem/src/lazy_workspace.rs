@@ -20316,8 +20316,8 @@ mod tests {
             root.workspace()
                 .read("/deep/file.txt", bytes.len() as u64)
                 .await
-                .expect("authored content"),
-            bytes
+                .expect("authored content").as_ref(),
+            bytes.as_ref()
         );
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 2);
@@ -23606,7 +23606,7 @@ mod tests {
         let parent = root.state().await.expect("parent binding");
         let snapshot = root.snapshot().await.expect("original snapshot");
         let prepared = memory_prepared_origin(
-            snapshot, root.workspace().config(), WorkspaceId::from_bytes([0xc1; 16]),
+            snapshot, root.workspace().volume_config(), WorkspaceId::from_bytes([0xc1; 16]),
         );
         let cancellation = CancellationToken::new();
         let missing = MemoryLazyWorkspaceStore::default().compare_and_swap_lazy_workspace_measured(
@@ -23680,7 +23680,7 @@ mod tests {
         let refreshed_snapshot = LazySnapshotRef::new(
             updated.workspace_id, snapshot.authored_generation, updated.source, updated.overlay, updated.shadows,
         );
-        let refreshed = memory_prepared_origin(refreshed_snapshot, root.workspace().config(), prepared.workspace_id);
+        let refreshed = memory_prepared_origin(refreshed_snapshot, root.workspace().volume_config(), prepared.workspace_id);
         assert!(store.compare_and_swap_lazy_workspace(
             refreshed.workspace_id, 0, refreshed,
         ).await.expect("current source binding"));
@@ -23696,7 +23696,7 @@ mod tests {
         let parent = root.state().await.expect("parent state");
         let snapshot = root.snapshot().await.expect("original snapshot");
         let child_workspace = fs.create_workspace("prepared-origin-child").await.expect("child workspace");
-        let prepared = memory_prepared_origin(snapshot, root.workspace().config(), child_workspace.id());
+        let prepared = memory_prepared_origin(snapshot, root.workspace().volume_config(), child_workspace.id());
         let revision_only = LazyWorkspaceState { revision: parent.revision + 1, ..parent.clone() };
         assert!(store.compare_and_swap_lazy_workspace(
             parent.workspace_id, parent.revision, revision_only.clone(),
@@ -23714,7 +23714,7 @@ mod tests {
             prepared.source, prepared.overlay, prepared.shadows,
         );
         let descendant = memory_prepared_origin(
-            descendant_snapshot, child_workspace.config(), WorkspaceId::from_bytes([0xc5; 16]),
+            descendant_snapshot, child_workspace.volume_config(), WorkspaceId::from_bytes([0xc5; 16]),
         );
         assert!(!store.compare_and_swap_lazy_workspace(
             descendant.workspace_id, 0, descendant,

@@ -154,11 +154,11 @@ impl<'a> PublicationAccounting<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NativePublicationPayload {
-    bytes: Vec<u8>,
-    _original_evidence: Option<acyclic_stream::OwnedBytes>,
-    _allocation: crate::NativeAllocation,
-    _control: crate::NativeAllocation,
+pub(crate) struct NativePublicationPayload {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) _original_evidence: Option<acyclic_stream::OwnedBytes>,
+    pub(crate) _allocation: crate::NativeAllocation,
+    pub(crate) _control: crate::NativeAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

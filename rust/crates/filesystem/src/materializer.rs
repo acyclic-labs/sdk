@@ -5987,7 +5987,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         // This prepaid cause slot outlives every physically owned frame.
         let failure_slot = NativeStageFailureSlot::<E>::new(&original)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let state = std::sync::Mutex::new(Some(NativeStageJournal::Journal(journal)));
+        let state = std::sync::Mutex::new(Some(NativeStageJournal::<S::ActionCompletion<'_>>::Journal(journal)));
         let reader = generation.workspace().readonly_pinned_reader_with_native_work(
             generation.id(), &original, original.cancellation(),
         ).await.map_err(E::from)?;
@@ -13397,12 +13397,12 @@ mod tests {
         std::fs::rename(service.join("task/scratch"), &moved).expect("replace scratch binding");
         std::fs::create_dir(service.join("task/scratch")).expect("replacement user root");
         std::fs::write(service.join("task/scratch/user"), b"never adopt").expect("replacement data");
-        let error = work.release_owned_directory_guarded(&service, service_id, Path::new("task/scratch"), scratch_id, || std::future::ready(Ok(()))).await.expect_err("cannot adopt replacement");
+        let error = work.release_owned_directory_guarded(&service, service_id, Path::new("task/scratch"), scratch_id, || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect_err("cannot adopt replacement");
         assert!(matches!(error, NativeTreeMaterializationError::AllocationChanged { expected, .. } if expected == scratch_id));
         assert_eq!(std::fs::read(service.join("task/scratch/user")).expect("replacement untouched"), b"never adopt");
         std::fs::remove_dir_all(service.join("task/scratch")).expect("remove fixture replacement");
         std::fs::rename(moved, service.join("task/scratch")).expect("original allocation returns");
-        work.release_owned_directory_guarded(&service, service_id, Path::new("task/scratch"), scratch_id, || std::future::ready(Ok(()))).await.expect("changed original private contents can be disposed");
+        work.release_owned_directory_guarded(&service, service_id, Path::new("task/scratch"), scratch_id, || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("changed original private contents can be disposed");
         assert!(!service.join("task/scratch").exists());
         work.receipt().verify(budget).expect("complete disposal work");
     }
@@ -13457,7 +13457,7 @@ mod tests {
         work.receipt().verify(budget).expect("actual cancellation prefix retained");
         let resumed = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("restart meter");
         assert_eq!(resumed.root_identity(&service.join("scratch")).expect("original incomplete physical allocation"), scratch_id);
-        resumed.release_owned_directory_guarded(&service, service_id, Path::new("scratch"), scratch_id, || std::future::ready(Ok(()))).await.expect("resume same original allocation disposal");
+        resumed.release_owned_directory_guarded(&service, service_id, Path::new("scratch"), scratch_id, || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("resume same original allocation disposal");
         assert!(!service.join("scratch").exists());
     }
 
