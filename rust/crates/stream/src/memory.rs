@@ -170,7 +170,8 @@ impl MemoryObserver {
         if let Some(meter) = &self.meter {
             // The boundary is this SDK call, not an opaque transport/syscall.
             let mut operation = NativeOperationReservation::new(meter.as_ref(), NativeOperationKind::Read, 1)?;
-            operation.record()?;
+            let ((), recorded) = operation.attempt(|| ());
+            recorded?;
         }
         Ok(())
     }
@@ -189,7 +190,10 @@ impl MemoryObserver {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = &self.meter {
             let mut operation = NativeOperationReservation::new(meter.as_ref(), NativeOperationKind::Write, 1)?;
-            operation.record()?;
+            // Entry into this SDK call is the observable operation, not a
+            // claim that an opaque native transport/syscall was performed.
+            let ((), recorded) = operation.attempt(|| ());
+            recorded?;
         }
         Ok(())
     }
