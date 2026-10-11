@@ -308,14 +308,6 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         native_mailbox::verify_read_access(self, scope, work)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_received_for_model_with_native_work<'a>(
-        &'a self, scope: &'a RuntimeScope, volume: &'a VolumeRef,
-        model: OperationId, receive: OperationId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (acyclic_stream::OwnedBytes, crate::runtime::ReceivedCopyReadWitness<'a>)>> {
-        native_mailbox::read_received_for_model(self, scope, volume, model, receive, work)
-    }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.borrowed().task_binding()
     }
@@ -759,8 +751,6 @@ where
             native_configuration_custody,
         })
     }
-
-
 
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn original_lease_fence_with_io(
@@ -1345,21 +1335,6 @@ where
         self.task_context_for_original_owner_with_native_work(task, fence, false, work).await
     }
 
-    /// Observes the original readonly reservation and issues its actual READ context without claiming a lease or creating a dispatch mailbox.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn readonly_task_context_with_native_work(
-        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Arc<crate::durable_host::TaskJournalOwner<P>>, Arc<crate::NativeTaskContext>)> {
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-            .into_native_shared(work)?;
-        let mailbox = self.task_mailbox_with_native_work(Arc::clone(&owner), work)?;
-        let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-            task, OperationId::from_bytes(task.into_bytes()), mailbox, work,
-        ).await?;
-        let context = context.into_native_shared(custody, work)?;
-        Ok((owner, context))
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn readonly_fork_preparation_with_native_work(
         &self, task: TaskId, query: &Arc<crate::NativeTaskContext>,
@@ -1661,22 +1636,6 @@ where
         self.run_operation_observed(worker, task, commands, maximum_transitions, None).await
     }
 
-    /// Runs the original finite worker on its caller's original work ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn run_operation_with_native_work(
-        &self,
-        worker: &crate::distributed::Worker,
-        task: TaskId,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<TaskWorkerAttempt>, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let value = self.run_operation_observed(worker, task, commands, maximum_transitions, Some(&io)).await?;
-        let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok((value, custody))
-    }
-
     async fn run_operation_observed(
         &self,
         worker: &crate::distributed::Worker,
@@ -1815,57 +1774,9 @@ where
         })
     }
 
-    /// Reads the exact suspended workflow checkpoint under this runtime's protected service scope.
-    pub async fn observe_workflow_checkpoint(
-        &self,
-        task: TaskId,
-    ) -> Result<crate::workflow::MachineCheckpoint> {
-        use crate::workflow::WorkflowJournal as _;
-        let slot = self.host.workflow_suspension(task).await?
-            .ok_or_else(|| Error::Conflict("workflow is not passively suspended".into()))?;
-        let admission = self.host.observe_admission(task).await?;
-        let journal = FilesystemWorkflowJournal::new(
-            self.host.workflow_stream(),
-            self.filesystem.clone(),
-            &admission.operation_id.to_string(),
-            self.volume.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
-        )?;
-        let retained = journal.admission().await?
-            .ok_or_else(|| Error::Storage("suspended workflow admission is absent".into()))?;
-        if retained.operation_id != admission.operation_id
-            || retained.request_digest != crate::contract::canonical_json_digest(&admission)?
-            || retained.initial.machine != admission.machine
-        {
-            return Err(Error::Unauthorized("observed workflow differs from admitted task".into()));
-        }
-        let record = journal.observe_transition(slot.revision).await?;
-        if record.next.revision != slot.revision
-            || record.next.machine != admission.machine
-            || !matches!(record.transition.status, MachineStatus::Suspended)
-        {
-            return Err(Error::Conflict("observed checkpoint differs from suspension".into()));
-        }
-        if self.host.workflow_suspension(task).await?.as_ref() != Some(&slot) {
-            return Err(Error::Conflict("workflow suspension changed during observation".into()));
-        }
-        Ok(record.next)
-    }
-
     /// Polls one durable passive wait and fills its existing authenticated wake slot when ready.
     pub async fn poll_task_wake(&self, task: TaskId) -> Result<bool> {
         self.poll_task_wake_observed(task, None).await
-    }
-
-    /// Polls only the original passive wait, using authenticated history custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn poll_task_wake_with_native_work(
-        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        self.poll_task_wake_observed(task, Some(&io)).await
     }
 
     async fn poll_task_wake_observed(
@@ -2260,9 +2171,7 @@ where
                 custody: Some(primary), additional_custody, ..
             }) = command_input.as_mut() {
                 for incoming in additional_custody {
-                    primary.absorb(incoming).map_err(|cause| Error::NativeWork {
-                        cause, custody: None,
-                    })?;
+                    primary.absorb(incoming).map_err(Error::from)?;
                 }
                 let key = native_step_key_with_custody(revision, primary)?;
                 Some(key)
@@ -2604,7 +2513,7 @@ pub(super) fn execution_operation_with_native_work(
     work.charge(acyclic_fs::WorkCounters {
         bytes_hashed: b"harness/v2/task-execution\0".len() as u64 + 32,
         ..Default::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    }).map_err(Error::from)?;
     Ok(execution_operation(task, turn))
 }
 

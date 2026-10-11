@@ -314,22 +314,6 @@ impl NativeProcessRequest {
         exchange.decode_response(&result.stdout)
     }
 
-    /// Decodes the same complete receipt using the original work ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn mcp_response_with_native_work(
-        &self,
-        result: &NativeProcessResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(serde_json::Value, acyclic_fs::NativeAllocation)> {
-        let exchange = self.mcp_stdio.as_ref().ok_or(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native request has no MCP exchange",
-        })?;
-        if result.stop.is_some() {
-            return Err(crate::Error::Indeterminate(exchange.operation));
-        }
-        exchange.decode_response_with_native_work(&result.stdout, work)
-    }
 }
 
 /// Bounded bytes from a completed process. Bytes preserve non-UTF-8 output.

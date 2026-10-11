@@ -307,32 +307,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .map_err(|_| Error::Conflict("configured source project policy was already bound".into()))
     }
 
-    /// Installs one genuine native policy with metadata copied from the original held issuer, retaining its original allowance through the immutable slot.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_project_source_policy_with_native_work(
-        &self, issuer: &AuthorityIssuer, provider: Arc<dyn RootProjectSourceProvider>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if self.project_policy.get().is_some() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "configured source project policy was already bound" });
-        }
-        if !provider.supports_native_source() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "configured Project policy has no genuine native verifier" });
-        }
-        let mut custody = work.retain_owned(std::mem::size_of::<BoundProjectSourcePolicy>() as u64)?;
-        let copied = issuer.clone_with_native_work(work)?;
-        let mut binding = BoundProjectSourcePolicy { issuer: copied.0, provider, custody: Some(copied.1) };
-        if let Some(incoming) = binding.custody.as_mut() { custody.absorb(incoming)?; }
-        binding.custody = Some(custody);
-        self.project_policy.set(binding).map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
-            reason: "configured source project policy was already bound",
-        })
-    }
-
     /// Builds the real portable file and recursive durable tools over this source.
     pub fn tools(self: &Arc<Self>, maximum_bytes: u64) -> Result<RecursiveDefaultToolset> {
         recursive_default_tools(self.clone(), maximum_bytes)

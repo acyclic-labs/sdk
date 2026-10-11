@@ -782,27 +782,8 @@ impl ForkPreparationMachine {
         let schema;
         (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA)?.into_native_parts()?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
-        custody.absorb(&mut metadata).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
-    }
-
-    /// Uses the existing native registered-definition and requirement engines.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn definition_with_native_work(
-        self: &Arc<Self>, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskDefinition<ResourcePreparationRequest, ForkReport>, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let mut schema_custody;
-        let mut output_custody;
-        let input;
-        let output;
-        (input, schema_custody) = io.decode_preparation::<Value>(PREPARATION_INPUT_SCHEMA)?.into_native_parts()?;
-        (output, output_custody) = io.decode_preparation::<Value>(PREPARATION_OUTPUT_SCHEMA)?.into_native_parts()?;
-        schema_custody.absorb(&mut output_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (definition, metadata) = TaskDefinition::resumable_with_native_work(
-            Arc::clone(self) as Arc<dyn ResumableMachine>, input, output, schema_custody, work,
-        )?;
-        definition.requires_with_native_work("host", metadata, work)
     }
 
     /// The exact request is ordinary task input, not an out-of-band authority bag.
@@ -839,7 +820,7 @@ impl ResumableMachine for ForkPreparationMachine {
         &'a self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&'a MachineIdentity> {
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(&self.identity)
     }
     #[cfg(not(target_arch = "wasm32"))]

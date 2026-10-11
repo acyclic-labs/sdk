@@ -189,11 +189,6 @@ macro_rules! preparation_journal_records {
 }
 preparation_journal_records!(AllocationClaim, SeedBinding, CaptureAttempt, CaptureResult);
 
-#[derive(Serialize)]
-struct CaptureResultRef<'a> {
-    selection: &'a ForkSelection,
-    capture: &'a Capture,
-}
 /// Idempotent local capture of an exact Stream-backed parent snapshot and its Filesystem project/private resources.
 pub struct FilesystemForkPreparer<A, O> {
     host: Arc<FilesystemHost<A, O>>,
@@ -374,7 +369,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork project belongs to another provider"));
         }
         let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let history = this.history.as_ref().expect("native constructor owns prepared history");
         history.verify_with_work(&this.verifier, &mut Some(&mut io))?;
         if history.parent() != this.parent.authority()
@@ -398,7 +393,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
                 reason: "fork preparer belongs to another original resource" });
         }
         let mut header = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         self.native_custody.as_mut().expect("native custody was checked").absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
         Ok(Arc::new(self))
@@ -446,53 +441,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             selection, journal, source: Box::new(OriginalSummaryHistory { scope, history, cursor }),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
-        });
-        Ok(self)
-    }
-
-    /// Moves the original summary source and its paid payload custody together.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original summary source and its custody are explicit")]
-    pub fn with_summary_history_with_native_work<P: StreamProvider + 'static>(
-        mut self,
-        selection: SummaryForkSelection,
-        journal: Arc<dyn crate::executor::ExecutionJournal>,
-        scope: RuntimeScope,
-        history: HistoryReader<P>,
-        cursor: HistoryCursor,
-        custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        let mut registration = (
-            selection, journal, OriginalSummaryHistory { scope, history, cursor }, custody,
-        );
-        self.require_native_projection_work(work)?;
-        if !registration.3.matches_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "summary source custody belongs to another original resource" });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        let mut observer = io.history_io();
-        registration.0.validate_with_work(&mut Some(&mut observer))?;
-        drop(observer);
-        if registration.2.cursor.authority != *self.parent.authority()
-            || registration.2.cursor.through_revision != self.parent.revision()
-            || registration.1.canonical_authority() != Some(self.parent.authority())
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "summary history differs from this original parent" });
-        }
-        let mut header = work.claim(std::mem::size_of::<OriginalSummaryHistory<P>>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        registration.3.absorb(&mut header)
-            .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
-        let (selection, journal, source, custody) = registration;
-        self.summary = Some(BoundSummary {
-            selection, journal, source: Box::new(source), native_custody: Some(custody),
         });
         Ok(self)
     }
@@ -684,21 +632,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         Ok((resources.values, custody))
     }
 
-    /// Actual Filesystem operation that created the child project, not the enclosing Harness operation.
-    pub fn project_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
-        request.validate()?;
-        self.creation_operation(request, ForkAllocationRole::Project)
-    }
-
-    /// Actual Filesystem operation that created the optional unmounted result slot.
-    pub fn result_creation_operation(&self, request: &ForkRequest) -> Result<acyclic_fs::OperationId> {
-        request.validate()?;
-        if request.preparation.child_result_volume.is_none() {
-            return Err(Error::Invalid("fork has no result allocation".into()));
-        }
-        self.creation_operation(request, ForkAllocationRole::Result)
-    }
-
     fn creation_operation(&self, request: &ForkRequest, role: ForkAllocationRole) -> Result<acyclic_fs::OperationId> {
         struct DigestWriter { hash: blake3::Hasher, length: u64, maximum: u64 }
         impl std::io::Write for DigestWriter {
@@ -779,7 +712,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn require_native_projection_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         if !self.native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "fork projection belongs to another original resource" });
@@ -2296,14 +2229,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
-    pub(crate) async fn verify_fork_allocation(
-        &self,
-        seed: &ForkSeed,
-        volume: &VolumeRef,
-    ) -> Result<()> {
-        self.verify_fork_allocation_io(seed,volume,None).await
-    }
-
     pub(crate) async fn verify_fork_allocation_io(
         &self, seed: &ForkSeed, volume: &VolumeRef, io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -2588,7 +2513,7 @@ fn native_projection_vec<T>(
         work.retain_owned(0)
     } else {
         work.claim(bytes)
-    }.map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    }.map_err(Error::from)?;
     let mut values = Vec::new();
     if let Err(source) = values.try_reserve_exact(count) {
         return Err(Error::NativeWork {
@@ -2636,11 +2561,11 @@ fn allocation_ref_io(provider: &ProviderRef, volume: &VolumeRef, io: Option<&Pre
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "allocation journal name overflows" })?;
         let copy = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
-        work.admit(copy).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.admit(copy).map_err(Error::from)?;
         let mut key = native_projection_vec::<u8>(length, work)?;
         key.values.extend_from_slice(b"fork-allocation-");
         key.values.extend_from_slice(volume_name.as_bytes());
-        work.spent(copy).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.spent(copy).map_err(Error::from)?;
         drop(volume_name);
         drop(volume_hold);
         io.absorb_native_custody(key.custody)?;

@@ -70,7 +70,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
     require_family(view.original_native_work(), work)?;
     view.operation_cancellation().check()
         .map_err(acyclic_fs::NativeTreeMaterializationError::from)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })
+        .map_err(Error::from)
 }
 
 pub(super) fn copy_plan_with_io(

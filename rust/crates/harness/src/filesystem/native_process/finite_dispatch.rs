@@ -108,7 +108,7 @@ fn check(work: Option<&NativeMaterializationWork>) -> NativeResult<()> {
 
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     let remaining = work.remaining()
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     if !remaining.has_finite_allowances() {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -459,7 +459,7 @@ async fn append_receipt_original<P: StreamProvider>(
                             .and_then(|bytes| guard.resize_retained(bytes)),
                         JsonCodecCharge::Release { bytes } => guard.release(bytes),
                     };
-                    result.map_err(|cause| Error::NativeWork { cause, custody: None })
+                    result.map_err(Error::from)
                 }).map_err(|source| codec_slot.retain(source, custody.take()))?
         }
         None => crate::contract::canonical_json_bytes(receipt)?,

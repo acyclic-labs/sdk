@@ -209,7 +209,7 @@ pub(super) fn decode(
             JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
             _ => work.remaining().map(|_| ()),
         };
-        result.map_err(|cause| Error::NativeWork { cause, custody: None })
+        result.map_err(Error::from)
     }).map_err(|source| codec_slot.retain(source, custody.take()))?;
     custody.as_mut().ok_or(NativeReceiptError::Record("native receipt custody is missing"))?
         .substitute(previous)?;
@@ -366,7 +366,7 @@ fn effect_identity(
                     }
                 },
             })();
-            result.map_err(|cause| Error::NativeWork { cause, custody: None })
+            result.map_err(Error::from)
         },
     );
     let bytes = match encoded {

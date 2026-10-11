@@ -821,14 +821,14 @@ where
             }
             let cursor_header = work.retain_owned(
                 if after.is_some() { std::mem::size_of::<LogicalName>() as u64 } else { 0 },
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            ).map_err(Error::from)?;
             let cursor_custody;
             let cursor = if let Some(name) = after {
                 work.charge(acyclic_fs::WorkCounters {
                     items_examined: name.len() as u64 + 1, ..Default::default()
-                }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                }).map_err(Error::from)?;
                 let (bytes, custody) = work.copy_bytes(name.as_bytes())
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 cursor_custody = Some(custody);
                 Some(LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX)
                     .map_err(|_| Error::NativeBoundary {
@@ -993,7 +993,7 @@ impl NativeFilesystemVerificationBinding {
     ) -> Result<Self> {
         verifier.verify_with_native_work(scope, work)?;
         let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let verifier = verifier.clone_with_work(&mut Some(&mut observer))?;
         let scope = scope.clone_with_work(&mut Some(&mut observer))?;
         Ok(Self { verifier, scope, custody: observer.into_custody() })
@@ -1315,7 +1315,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
         binding.authenticate(work)?;
         let mut header = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         binding.custody.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
         Ok(Arc::new(self))
@@ -1821,7 +1821,7 @@ where
             let header;
             let mut guard = {
                 header = work.claim(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 Box::new(FilesystemForkPublicationGuard {
                     workspace, reservation: None, native_work: Some(work.clone()),
                     native_binding: Some(native_binding),
@@ -2105,14 +2105,14 @@ impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
 fn native_project_join_key(operation: crate::OperationId, work: &acyclic_fs::NativeMaterializationWork) -> Result<FilesystemKey> {
     use std::io::Write as _;
     work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     let mut buffer = [0_u8; 64];
     let mut output = buffer.as_mut_slice();
     write!(&mut output, "project-join:{operation}").map_err(|_| Error::NativeBoundary {
         code: crate::wire::ErrorCode::Invalid, reason: "project join retry key exceeds its fixed encoding" })?;
     let length = 64 - output.len();
     work.charge(acyclic_fs::WorkCounters { bytes_hashed: length as u64, ..Default::default() })
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     let digest = blake3::hash(&buffer[..length]);
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
@@ -2153,7 +2153,7 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
             code: crate::wire::ErrorCode::Unauthorized, reason: "merge verifier has no native authority" })?;
         binding.authenticate(work)?;
         let mut header = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         binding.custody.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
         Ok(Arc::new(self))
@@ -3523,27 +3523,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .map_err(map_error)
     }
 
-    /// Resolves conflicts with registered immutable-input drivers under parent authority.
-    pub async fn apply_project_merge_with_drivers<C: MergeResolutionCache>(
-        &self,
-        plan: &ParentMergePlan<A, O>,
-        operation_id: crate::OperationId,
-        registry: &MergeDriverRegistry,
-        cache: &mut C,
-        replanning: bool,
-    ) -> Result<JoinOutcome<A, O>> {
-        self.require_merge_plan(plan)?;
-        plan.plan
-            .apply_with_drivers(
-                Self::merge_options(plan, project_join_key(operation_id)?),
-                registry,
-                cache,
-                replanning,
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))
-    }
-
     /// Applies an explicit, exact conflict-side selection under parent authority.
     pub async fn apply_project_merge_sides(
         &self,
@@ -3609,7 +3588,7 @@ impl<A, O> FilesystemHost<A, O> {
         }
         let io = PreparationIo::from_native_work(work)?;
         let header = work.claim_allocation(std::mem::size_of::<Self>() as u64, 0)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         io.absorb_native_custody(header)?;
         let provider = provider.clone_with_io(&io)?;
         let retained = io.owned_bytes()?;
@@ -3625,7 +3604,7 @@ impl<A, O> FilesystemHost<A, O> {
                 reason: "Filesystem host belongs to another original native resource" });
         }
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(Arc::new(self))
     }
 }
@@ -3894,14 +3873,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let retained = file.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok(Some((file, custody)))
-    }
-
-    /// Unmeasured convenience over the same original-publication engine.
-    pub async fn observe_content_publication(
-        &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
-        maximum_bytes: u64,
-    ) -> Result<Option<FileRef>> {
-        self.content_for_operation_impl(volume, grant, key, None, maximum_bytes, None).await
     }
 
     async fn content_for_operation_impl(
@@ -4569,7 +4540,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer_io::retain(self, &generation, &scratch).await?;
         guard().await?;
         let (requested, requested_custody) = work.display(&format_args!("/{path}"))
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         scratch.absorb_native_custody(requested_custody)?;
         let page_custody;
         let mut page;
@@ -4582,7 +4553,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if path.is_empty() {
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: page.entries.len() as u64, ..Default::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            }).map_err(Error::from)?;
             let mut removed_bytes = 0;
             page.entries.retain(|entry| {
                 let name = &entry.name;
