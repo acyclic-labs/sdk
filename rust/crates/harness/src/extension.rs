@@ -827,7 +827,9 @@ impl ExtensionRuntime {
             for selected in admission.selected() {
                 let mut found = false;
                 for linked in &self.selected {
-                    if let Some(io) = work.as_deref_mut() { io.items(1)?; }
+                    if let Some(io) = work.as_deref_mut() {
+                        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    }
                     if matches(selected, linked) { found = true; break; }
                 }
                 if !found {
@@ -840,7 +842,9 @@ impl ExtensionRuntime {
             for linked in &self.selected {
                 let mut found = false;
                 for selected in admission.selected() {
-                    if let Some(io) = work.as_deref_mut() { io.items(1)?; }
+                    if let Some(io) = work.as_deref_mut() {
+                        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    }
                     if matches(selected, linked) { found = true; break; }
                 }
                 if !found {
