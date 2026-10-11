@@ -7530,7 +7530,7 @@ where
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
         self.source_watch.as_ref().map_or(Ok(()), |watch| {
-            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
+            watch.fence(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| lazy_error(failure.error.into()))
         })
     }
 
