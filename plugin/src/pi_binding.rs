@@ -79,7 +79,23 @@ pub(crate) struct PiScratchCreation {
 
 impl PiScratchCreation {
     pub(crate) fn validate(&self, volume: &VolumeRef) -> acyclic_harness::Result<()> {
-        self.generation.validate()?;
+        self.validate_inner(volume, None)
+    }
+
+    pub(crate) fn validate_with_native_work(
+        &self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<()> {
+        self.validate_inner(volume, Some(work))
+    }
+
+    fn validate_inner(&self, volume: &VolumeRef,
+        work: Option<&acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<()> {
+        binding_validation_step(work, 1)?;
+        match work {
+            Some(work) => self.generation.validate_with_native_work(work)?,
+            None => self.generation.validate()?,
+        }
         if self.workspace_id == [0; 16]
             || self.generation.as_resource().provider() != volume.provider()
             || self.generation.as_resource().key().len() != 32
@@ -95,80 +111,102 @@ impl PiScratchCreation {
 /// checks references only; dispatch still needs the admitted task owner and its
 /// exact grants, and workspace IDs must be verified against the owning store.
 pub(crate) fn validate_pi_bindings(state: &AdapterState) -> Result<(), String> {
+    validate_pi_bindings_inner(state, None).map_err(|error| match error {
+        acyclic_harness::Error::NativeBoundary { reason, .. } => reason.to_owned(),
+        error => display(error),
+    })
+}
+
+pub(crate) fn validate_pi_bindings_with_native_work(
+    state: &AdapterState, work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<()> {
+    validate_pi_bindings_inner(state, Some(work))
+}
+
+fn validate_pi_bindings_inner<'s>(
+    state: &'s AdapterState, work: Option<&acyclic_fs::NativeMaterializationWork>,
+) -> acyclic_harness::Result<()> {
+    binding_validation_step(work, 1)?;
     if matches!(state.task_binding, PluginTaskBinding::HostManaged) {
-        return if state
-            .routes
-            .values()
-            .any(|route| matches!(route.task_binding, PluginTaskBinding::Pi(_)))
-            || state
-                .pending
-                .iter()
-                .any(|pending| matches!(pending.task_binding, PluginTaskBinding::Pi(_)))
-        {
-            Err("host-managed session contains a Pi task binding".to_owned())
-        } else {
-            Ok(())
-        };
+        for route in state.routes.values() {
+            binding_validation_step(work, 1)?;
+            if matches!(route.task_binding, PluginTaskBinding::Pi(_)) {
+                return Err(invalid_binding("host-managed session contains a Pi task binding"));
+            }
+        }
+        for pending in &state.pending {
+            binding_validation_step(work, 1)?;
+            if matches!(pending.task_binding, PluginTaskBinding::Pi(_)) {
+                return Err(invalid_binding("host-managed session contains a Pi task binding"));
+            }
+        }
+        return Ok(());
     }
+    // Borrowed keys preserve the original indexed duplicate checks without
+    // cloning sessions. Known key payloads are resident before insertion;
+    // opaque standard-library tree nodes are not physical-allocation evidence.
+    let count = state.routes.len().checked_add(state.pending.len())
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(|| invalid_binding("Pi binding validation size overflow"))?;
+    let key_bytes = 2 * std::mem::size_of::<[u8; 16]>() + 2 * std::mem::size_of::<&str>();
+    let known_bytes = count.checked_mul(key_bytes)
+        .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<&str>()))
+        .ok_or_else(|| invalid_binding("Pi binding validation size overflow"))?;
+    let _keys_custody = work.map(|work| work.retain_owned(known_bytes as u64)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })).transpose()?;
     let mut tasks = BTreeSet::new();
     let mut agents = BTreeSet::new();
     let mut sessions = BTreeSet::new();
-    let mut validate = |binding: &PluginTaskBinding,
-                        session: Option<&str>,
-                        roots: Vec<&str>,
-                        preparing: bool|
-     -> Result<(), String> {
+    let mut validate = |binding: &'s PluginTaskBinding,
+                        roots: &dyn Fn(&PiTaskBinding) -> acyclic_harness::Result<()>|
+     -> acyclic_harness::Result<()> {
+        binding_validation_step(work, 1)?;
         let PluginTaskBinding::Pi(binding) = binding else {
-            return Err("Pi session contains a host-managed task binding".to_owned());
+            return Err(invalid_binding("Pi session contains a host-managed task binding"));
         };
-        binding.validate(session, roots, preparing).map_err(display)?;
+        roots(binding)?;
         if !tasks.insert(binding.task_id.into_bytes())
             || !agents.insert(binding.agent_id.into_bytes())
-            || !sessions.insert(binding.native_session_id.clone())
+            || !sessions.insert(binding.native_session_id.as_str())
         {
-            return Err("Pi task, agent or native session identity is duplicated".to_owned());
+            return Err(invalid_binding("Pi task, agent or native session identity is duplicated"));
         }
         Ok(())
     };
     validate(
         &state.task_binding,
-        Some(&state.root_session_id),
-        state.roots.keys().map(String::as_str).collect(),
-        state.pending_root_registration,
+        &|binding| binding.validate_inner(Some(&state.root_session_id),
+            state.roots.keys().map(String::as_str), state.pending_root_registration, work),
     )?;
     let mut aliases = BTreeSet::from(["root", state.root_agent_id.as_str(), state.root_session_id.as_str()]);
     for (key, route) in &state.routes {
+        binding_validation_step(work, 1)?;
         if key != &route.agent_id || !aliases.insert(key.as_str()) {
-            return Err("Pi route key differs from its original alias or collides with another route".to_owned());
+            return Err(invalid_binding("Pi route key differs from its original alias or collides with another route"));
         }
-        validate(
-            &route.task_binding,
-            None,
-            route.roots.keys().map(String::as_str).collect(),
-            false,
-        )?;
+        validate(&route.task_binding,
+            &|binding| binding.validate_inner(None, route.roots.keys().map(String::as_str), false, work))?;
     }
     for pending in &state.pending {
         let alias = pending.agent_id.as_deref()
-            .ok_or_else(|| "Pi pending spawn has no original agent alias".to_owned())?;
+            .ok_or_else(|| invalid_binding("Pi pending spawn has no original agent alias"))?;
+        binding_validation_step(work, alias.len() as u64 + 1)?;
         if alias.is_empty() || alias.len() > 128 || !aliases.insert(alias)
             || !alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         {
-            return Err("Pi pending agent alias is invalid or duplicated".to_owned());
+            return Err(invalid_binding("Pi pending agent alias is invalid or duplicated"));
         }
         let preparing = matches!(
             pending.lifecycle,
             PendingSpawnLifecycle::Preparing | PendingSpawnLifecycle::Discarding
         ) && pending.roots.is_empty();
-        let roots = if preparing {
-            let PluginTaskBinding::Pi(binding) = &pending.task_binding else {
-                return Err("Pi pending has no actual planned task binding".to_owned());
-            };
-            binding.project_volumes.keys().map(String::as_str).collect()
-        } else {
-            pending.roots.keys().map(String::as_str).collect()
-        };
-        validate(&pending.task_binding, None, roots, preparing)?;
+        validate(&pending.task_binding, &|binding| {
+            if preparing {
+                binding.validate_inner(None, binding.project_volumes.keys().map(String::as_str), preparing, work)
+            } else {
+                binding.validate_inner(None, pending.roots.keys().map(String::as_str), preparing, work)
+            }
+        })?;
     }
     Ok(())
 }
@@ -180,6 +218,21 @@ impl PiTaskBinding {
         roots: impl IntoIterator<Item = &'a str>,
         preparing: bool,
     ) -> acyclic_harness::Result<()> {
+        self.validate_inner(session, roots, preparing, None)
+    }
+
+    pub(crate) fn validate_with_native_work<'a>(
+        &self, session: Option<&str>, roots: impl IntoIterator<Item = &'a str>,
+        preparing: bool, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<()> {
+        self.validate_inner(session, roots, preparing, Some(work))
+    }
+
+    fn validate_inner<'a>(
+        &self, session: Option<&str>, roots: impl IntoIterator<Item = &'a str>,
+        preparing: bool, work: Option<&acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<()> {
+        binding_validation_step(work, self.native_session_id.len() as u64 + 1)?;
         let id = self.native_session_id.as_bytes();
         if id.is_empty()
             || id.len() > 256
@@ -196,19 +249,21 @@ impl PiTaskBinding {
                 "Pi binding has an invalid task, agent or native session identity",
             ));
         }
+        binding_validation_step(work, self.project_volumes.len() as u64)?;
         if self.project_volumes.len() > MAXIMUM_ADAPTER_ROOTS
             || !self.project_volumes.keys().map(String::as_str).eq(roots)
         {
             return Err(invalid_binding("Pi project selection differs from its retained root map"));
         }
         let scratch = &self.scratch.volume;
-        validate_pi_provider(scratch.provider())?;
+        validate_pi_provider(scratch.provider(), work)?;
         if scratch.class() != VolumeClass::AgentPrivate
             || scratch.owner() != &VolumeOwner::Agent(self.agent_id)
         {
             return Err(invalid_binding("Pi scratch is not private to its admitted agent"));
         }
         for (index, volume) in self.project_volumes.values().enumerate() {
+            binding_validation_step(work, index as u64 + 1)?;
             if volume.class() != VolumeClass::Project
                 || !matches!(volume.owner(), VolumeOwner::Project(_))
                 || volume.provider() != scratch.provider()
@@ -220,7 +275,7 @@ impl PiTaskBinding {
             }
         }
         match &self.scratch.allocation {
-            PiScratchAllocation::Created(creation) => creation.validate(scratch)?,
+            PiScratchAllocation::Created(creation) => creation.validate_inner(scratch, work)?,
             PiScratchAllocation::Preparing if preparing => {}
             _ => return Err(invalid_binding("Pi scratch creation is missing or invalid")),
         }
@@ -234,7 +289,7 @@ impl PiTaskBinding {
                 return Err(invalid_binding("Pi result storage must be distinct and private to its admitted agent"));
             }
             match &results.allocation {
-                PiScratchAllocation::Created(creation) => creation.validate(&results.volume)?,
+                PiScratchAllocation::Created(creation) => creation.validate_inner(&results.volume, work)?,
                 PiScratchAllocation::Preparing if preparing => {}
                 _ => return Err(invalid_binding("Pi result storage has no authenticated creation")),
             }
@@ -243,14 +298,29 @@ impl PiTaskBinding {
     }
 }
 
-fn validate_pi_provider(provider: &ProviderRef) -> acyclic_harness::Result<()> {
-    provider.validate()?;
+fn validate_pi_provider(provider: &ProviderRef,
+    work: Option<&acyclic_fs::NativeMaterializationWork>,
+) -> acyclic_harness::Result<()> {
+    match work {
+        Some(work) => provider.validate_with_native_work(work)?,
+        None => provider.validate()?,
+    }
     if [provider.namespace(), provider.family(), provider.version()]
         .iter()
         .any(|part| part.len() > 256)
         || provider.family() != "filesystem"
     {
         return Err(invalid_binding("Pi volume provider is invalid or exceeds its identity bound"));
+    }
+    Ok(())
+}
+
+fn binding_validation_step(work: Option<&acyclic_fs::NativeMaterializationWork>, items: u64)
+    -> acyclic_harness::Result<()> {
+    if let Some(work) = work {
+        work.admit(acyclic_fs::WorkCounters { items_examined: items,
+            ..acyclic_fs::WorkCounters::UNCHARGED })
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     }
     Ok(())
 }
