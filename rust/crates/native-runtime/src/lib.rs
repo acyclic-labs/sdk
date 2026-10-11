@@ -649,6 +649,66 @@ impl NativeFile {
         self.read_bounded_async_inner(offset, length, meter, true)
     }
 
+    /// Reads into caller-prepared fixed, initialized storage on this file's
+    /// existing queue. `storage.as_mut()` must expose the same writable slice
+    /// without allocating. The caller retains its allocation custody in `B`;
+    /// success returns that identical owner and its actual initialized prefix.
+    /// All completion storage is admitted with the original meter before IO.
+    /// Dropping an accepted observer does not cancel its physical operation.
+    pub fn read_prepared_bounded_async<B>(
+        &self, offset: u64, mut storage: B, length: usize, require_full: bool,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<NativeCompletion<(B, usize)>>
+    where B: AsMut<[u8]> + Send + 'static {
+        meter.check()?;
+        meter.admit_bytes(length)?;
+        if storage.as_mut().len() < length {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        validate_prepared_read_range(offset, length)?;
+        let allocation = ReadAllocation::new(
+            &meter, arc_allocation_bytes::<Mutex<CompletionState<(B, usize)>>>(),
+        )?;
+        let state = Arc::new(Mutex::new(CompletionState {
+            result: None, panic: None, waker: None, _allocation: Some(allocation),
+        }));
+        let output = Arc::clone(&state);
+        #[cfg(windows)]
+        let overlapped = self.overlapped;
+        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>,
+                              completion: Option<Arc<OperationFence>>| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let destination = storage.as_mut().get_mut(..length)
+                    .ok_or(io::ErrorKind::InvalidInput)?;
+                read_prepared_in_place(
+                    &file, offset, destination, require_full, meter.as_ref(),
+                    #[cfg(windows)]
+                    overlapped,
+                ).map(|filled| (storage, filled))
+            }));
+            // Retire invocation and handle aliases before exposing a terminal
+            // result. Only caller-owned allocation custody travels with `B`.
+            drop(file);
+            drop(meter);
+            match result {
+                Ok(result) => finish_job(&output, result, completion),
+                Err(payload) => finish_panicked_job(&output, payload, completion),
+            }
+        };
+        let allocation = ReadAllocation::new(&meter, std::mem::size_of_val(&operation))?;
+        Ok(NativeCompletion {
+            pending: Some(NativeJob::PreparedRead {
+                file: Arc::clone(&self.file), operation: Box::new(operation),
+                meter, completion: None, _allocation: allocation,
+                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+                _health: Some(Arc::clone(&self._health)),
+            }),
+            state, waiter: None, sequencer: Some(Arc::clone(&self.tail)),
+            uncertain: Some(Arc::clone(&self.uncertain)), predecessor: None,
+            completion: None, terminated: false,
+        })
+    }
+
     fn read_bounded_async_inner(
         &self, offset: u64, length: usize, meter: Arc<dyn NativeReadMeter>,
         require_full: bool,
@@ -765,14 +825,14 @@ impl NativeFile {
     /// this method does not adopt `bytes.len()` or guess its owned capacity.
     /// The existing measured control closure owns both values. Physical data
     /// drops before custody, even if the observer is cancelled or dropped.
-    pub fn write_bounded_async_with_custody<C: Send + 'static>(
-        &self, offset: u64, bytes: Bytes,
+    pub fn write_bounded_async_with_custody<B: AsRef<[u8]> + Send + 'static, C: Send + 'static>(
+        &self, offset: u64, bytes: B,
         meter: Arc<dyn NativeReadMeter>, custody: C,
     ) -> io::Result<UnitCompletion> {
         let owned = NativeOwnedWrite { bytes, _custody: custody };
-        self.validate_bounded_write(offset, owned.bytes.len(), meter.as_ref())?;
+        self.validate_bounded_write(offset, owned.bytes.as_ref().len(), meter.as_ref())?;
         self.control_bounded_async(move |file, meter| {
-            let result = write_bounded_in_place(file, offset, &owned.bytes, meter);
+            let result = write_bounded_in_place(file, offset, owned.bytes.as_ref(), meter);
             drop(owned);
             result
         }, meter)
@@ -2448,6 +2508,17 @@ enum NativeJob {
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         _health: Option<Arc<FileHealth>>,
     },
+    PreparedRead {
+        file: Arc<NativeFilePayload>,
+        operation: Box<dyn FnOnce(
+            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>, Option<Arc<OperationFence>>,
+        ) -> Option<Waker> + Send>,
+        meter: Arc<dyn NativeReadMeter>,
+        completion: Option<Arc<OperationFence>>,
+        _allocation: ReadAllocation,
+        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+        _health: Option<Arc<FileHealth>>,
+    },
     BoundedUnit {
         file: Arc<NativeFilePayload>,
         operation: NativeBoundedUnitOperation,
@@ -2489,8 +2560,8 @@ enum NativeUnitOperation {
 type FileControl = Box<dyn FnOnce(&File) -> io::Result<()> + Send>;
 
 // Field order is the physical payload-before-original-ledger-custody contract.
-struct NativeOwnedWrite<C> {
-    bytes: Bytes,
+struct NativeOwnedWrite<B, C> {
+    bytes: B,
     _custody: C,
 }
 
@@ -2508,7 +2579,8 @@ impl NativeJob {
     fn set_completion(&mut self, fence: Arc<OperationFence>) {
         match self {
             Self::Read { completion, .. } | Self::BoundedRead { completion, .. }
-            | Self::BoundedUnit { completion, .. } | Self::Unit { completion, .. } => {
+            | Self::PreparedRead { completion, .. } | Self::BoundedUnit { completion, .. }
+            | Self::Unit { completion, .. } => {
                 *completion = Some(fence);
             }
             Self::Task { .. } => unreachable!("blocking tasks are not file-sequenced"),
@@ -2517,7 +2589,8 @@ impl NativeJob {
 
     fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
-            Self::BoundedRead { meter, .. } | Self::BoundedUnit { meter, .. } => Some(meter),
+            Self::BoundedRead { meter, .. } | Self::PreparedRead { meter, .. }
+            | Self::BoundedUnit { meter, .. } => Some(meter),
             Self::Task { meter, .. } => meter.as_ref(),
             _ => None,
         }
@@ -2533,7 +2606,7 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
-            } | Self::BoundedRead { .. } | Self::BoundedUnit { .. } | Self::Unit {
+            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::BoundedUnit { .. } | Self::Unit {
                 overlapped: true,
                 operation: NativeUnitOperation::Write(_),
                 ..
@@ -2586,6 +2659,16 @@ impl NativeJob {
 
     fn run(self) -> Option<Waker> {
         match self {
+            Self::PreparedRead { file, operation, meter, completion, _allocation,
+                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+                _health,
+            } => {
+                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+                let _held_health = _health;
+                let wake = operation(file, meter, completion);
+                drop(_allocation);
+                wake
+            }
             Self::BoundedRead { file, offset, length, require_full, meter, state, completion,
                 #[cfg(windows)]
                 overlapped,
@@ -2992,7 +3075,8 @@ fn reserve_if_needed(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
-        Some(NativeJob::BoundedRead { meter, .. } | NativeJob::BoundedUnit { meter, .. }) => Some(ReadAllocation::new(
+        Some(NativeJob::BoundedRead { meter, .. } | NativeJob::PreparedRead { meter, .. }
+            | NativeJob::BoundedUnit { meter, .. }) => Some(ReadAllocation::new(
             meter, arc_allocation_bytes::<OperationFence>(),
         )?),
         _ => None,
@@ -3560,6 +3644,23 @@ pub fn sync_file_measured(
     }
 }
 
+/// Writes positionally through the same held completion engine, admitting any
+/// Windows mode query and private overlapped reopen before their actual calls.
+pub fn write_all_at_measured(
+    file: &File, offset: u64, bytes: &[u8], meter: &dyn NativeReadMeter,
+) -> io::Result<()> {
+    offset.checked_add(bytes.len() as u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
+    #[cfg(windows)]
+    {
+        windows::with_overlapped_measured(file, 0x0012_0116, false, meter, |file| {
+            write_bounded_in_place(file, offset, bytes, meter)
+        })
+    }
+    #[cfg(not(windows))]
+    { write_bounded_in_place(file, offset, bytes, meter) }
+}
+
 /// Writes through an already-held positional handle in its admitted file scope.
 /// On Windows the caller must have admitted the handle as overlapped.
 pub fn write_all_at_measured_held(
@@ -3621,33 +3722,7 @@ fn read_bounded_in_place(
     data.try_reserve_exact(length).map_err(|error| meter.allocation_failed(error))?;
     allocation.reconcile_capacity(data.capacity())?;
     data.resize(length, 0);
-    let mut filled = 0;
-    while filled < length {
-        meter.check()?;
-        let destination = &mut data[filled..];
-        #[cfg(windows)]
-        let result = windows::read_at_known_overlapped(
-            file, offset + filled as u64, destination, meter.as_ref(),
-        );
-        #[cfg(unix)]
-        let result = read_declared_source_bytes(file, offset + filled as u64, destination, meter.as_ref());
-        let count = match result {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        meter.check()?;
-        if count == 0 {
-            break;
-        }
-        filled = filled.checked_add(count)
-            .filter(|count| *count <= length)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
-    }
-    meter.finish_read(length, filled)?;
-    if require_full && filled != length {
-        return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-    }
+    let filled = read_bounded_slice(file, offset, &mut data, require_full, meter.as_ref())?;
     if filled == 0 {
         return Ok(NativeReadResult { bytes: Bytes::new(), buffer_capacity: 0, _allocation: None });
     }
@@ -3670,6 +3745,78 @@ fn read_bounded_in_place(
     }
     #[cfg(not(windows))]
     read(file)
+}
+
+fn validate_prepared_read_range(offset: u64, length: usize) -> io::Result<()> {
+    let end = offset.checked_add(length as u64).ok_or(io::ErrorKind::InvalidInput)?;
+    #[cfg(windows)]
+    if length != 0 && (length > u32::MAX as usize || offset == u64::MAX) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(unix)]
+    if length != 0 && (offset > i64::MAX as u64 || end > i64::MAX as u64) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(not(unix))]
+    let _ = end;
+    Ok(())
+}
+
+fn read_prepared_in_place(
+    file: &File, offset: u64, destination: &mut [u8], require_full: bool,
+    meter: &dyn NativeReadMeter,
+    #[cfg(windows)]
+    known_overlapped: bool,
+) -> io::Result<usize> {
+    meter.check()?;
+    meter.admit_bytes(destination.len())?;
+    validate_prepared_read_range(offset, destination.len())?;
+    if destination.is_empty() { return Ok(0); }
+    #[cfg(windows)]
+    {
+        windows::with_overlapped_measured(
+            file, windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+            known_overlapped, meter,
+            |file| read_bounded_slice(file, offset, destination, require_full, meter),
+        )
+    }
+    #[cfg(not(windows))]
+    read_bounded_slice(file, offset, destination, require_full, meter)
+}
+
+// The sole positional bounded-read loop. Both allocating and prepared owners
+// use these same retries, byte/operation reservations and EOF accounting.
+fn read_bounded_slice(
+    file: &File, offset: u64, data: &mut [u8], require_full: bool,
+    meter: &dyn NativeReadMeter,
+) -> io::Result<usize> {
+    let length = data.len();
+    let mut filled = 0;
+    while filled < length {
+        meter.check()?;
+        let destination = &mut data[filled..];
+        #[cfg(windows)]
+        let result = windows::read_at_known_overlapped(
+            file, offset + filled as u64, destination, meter,
+        );
+        #[cfg(unix)]
+        let result = read_declared_source_bytes(file, offset + filled as u64, destination, meter);
+        let count = match result {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        meter.check()?;
+        if count == 0 { break; }
+        filled = filled.checked_add(count)
+            .filter(|count| *count <= length)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+    }
+    meter.finish_read(length, filled)?;
+    if require_full && filled != length {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(filled)
 }
 
 /// Bounded asynchronous positional source for one range of a native file,
@@ -3924,99 +4071,208 @@ fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     sync_file(&directory, durability)
 }
 
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code, reason = "renameat2 receives two live C paths")]
-fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let from_path = std::ffi::CString::new(from.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
-    let to_path = std::ffi::CString::new(to.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
-    let flags = match mode {
-        RenameMode::NoReplace => libc::RENAME_NOREPLACE,
-        RenameMode::Replace => 0,
-    };
-    // SAFETY: both paths are NUL-terminated `CString`s that outlive the syscall.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            from_path.as_ptr(),
-            libc::AT_FDCWD,
-            to_path.as_ptr(),
-            flags,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    sync_rename_parents(from, to)
+#[cfg(unix)]
+type NamespacePathUnit = u8;
+#[cfg(windows)]
+type NamespacePathUnit = u16;
+
+/// Buffer storage precedes its claim in drop order, including failed effects.
+#[cfg(any(unix, windows))]
+struct NamespacePath {
+    buffer: Vec<NamespacePathUnit>,
+    _allocation: Option<ReadAllocation>,
 }
 
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code, reason = "renamex_np receives two live C paths")]
-fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let from_path = std::ffi::CString::new(from.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
-    let to_path = std::ffi::CString::new(to.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path contains NUL"))?;
-    let flags = match mode {
-        RenameMode::NoReplace => libc::RENAME_EXCL,
-        RenameMode::Replace => 0,
-    };
-    // SAFETY: both paths are NUL-terminated `CString`s that outlive the call.
-    if unsafe { libc::renamex_np(from_path.as_ptr(), to_path.as_ptr(), flags) } != 0 {
-        return Err(io::Error::last_os_error());
+#[cfg(any(unix, windows))]
+fn namespace_path(path: &Path, meter: Option<&Arc<dyn NativeReadMeter>>) -> io::Result<NamespacePath> {
+    if let Some(meter) = meter {
+        meter.check()?;
+        meter.admit_examination(1, 0)?;
     }
-    sync_rename_parents(from, to)
+    #[cfg(unix)]
+    let length = {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bytes = path.as_os_str().as_bytes();
+        if bytes.contains(&0) { return Err(io::ErrorKind::InvalidInput.into()); }
+        bytes.len()
+    };
+    #[cfg(windows)]
+    let length = {
+        use std::os::windows::ffi::OsStrExt as _;
+        let mut length = 0_usize;
+        for unit in path.as_os_str().encode_wide() {
+            if unit == 0 { return Err(io::ErrorKind::InvalidInput.into()); }
+            length = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+        }
+        length
+    };
+    if let Some(meter) = meter { meter.record_examination(1, 0)?; }
+    let capacity = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    let bytes = capacity.checked_mul(std::mem::size_of::<NamespacePathUnit>())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let mut allocation = meter.map(|meter| ReadAllocation::new(meter, bytes)).transpose()?;
+    let mut buffer = Vec::new();
+    if let Err(error) = buffer.try_reserve_exact(capacity) {
+        return Err(match meter {
+            Some(meter) => meter.allocation_failed(error),
+            None => io::ErrorKind::OutOfMemory.into(),
+        });
+    }
+    if let Some(allocation) = &mut allocation {
+        allocation.reconcile_capacity(buffer.capacity() * std::mem::size_of::<NamespacePathUnit>())?;
+    }
+    #[cfg(unix)]
+    let (encoded, copied) = (0, length);
+    #[cfg(windows)]
+    let (encoded, copied) = (length * 2, 0);
+    if let Some(meter) = meter { meter.admit_codec(encoded as u64, copied as u64, 0)?; }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        buffer.extend_from_slice(path.as_os_str().as_bytes());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        buffer.extend(path.as_os_str().encode_wide());
+    }
+    buffer.push(0);
+    if let Some(meter) = meter { meter.record_codec(encoded as u64, copied as u64, 0)?; }
+    Ok(NamespacePath { buffer, _allocation: allocation })
+}
+
+/// Publishes a new entry without replacing an existing one.
+pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
+    publish_new_engine(from, to, None)
+}
+
+/// Uses the ordinary no-replace namespace engine with original path custody.
+pub fn publish_new_measured(
+    from: &Path, to: &Path, meter: &Arc<dyn NativeReadMeter>,
+) -> io::Result<()> {
+    publish_new_engine(from, to, Some(meter))
+}
+
+#[allow(unsafe_code, reason = "native links borrow two retained terminated pathname buffers")]
+fn publish_new_engine(
+    from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
+    #[cfg(any(unix, windows))]
+    {
+        let from_path = namespace_path(from, meter)?;
+        let to_path = namespace_path(to, meter)?;
+        loop {
+            if let Some(meter) = meter { meter.check()?; meter.admit_write(0)?; }
+            #[cfg(unix)]
+            let failed = unsafe {
+                libc::link(from_path.buffer.as_ptr().cast(), to_path.buffer.as_ptr().cast())
+            } != 0;
+            #[cfg(windows)]
+            let failed = unsafe {
+                windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
+                    to_path.buffer.as_ptr(), from_path.buffer.as_ptr(), std::ptr::null(),
+                )
+            } == 0;
+            if failed {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted { continue; }
+                return Err(error);
+            }
+            return Ok(());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        if let Some(meter) = meter { meter.check()?; meter.admit_write(0)?; }
+        std::fs::hard_link(from, to)
+    }
+}
+
+fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
+    durable_rename_engine(from, to, mode, None)
+}
+
+/// Retains the actual platform pathname controls through durable publication.
+pub fn durable_rename_measured(
+    from: &Path, to: &Path, mode: RenameMode, meter: &Arc<dyn NativeReadMeter>,
+) -> io::Result<()> {
+    durable_rename_engine(from, to, mode, Some(meter))
+}
+
+#[allow(unsafe_code, reason = "rename borrows live retained native path buffers")]
+fn durable_rename_engine(
+    from: &Path, to: &Path, mode: RenameMode, meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        let from_path = namespace_path(from, meter)?;
+        let to_path = namespace_path(to, meter)?;
+        loop {
+            if let Some(meter) = meter {
+                meter.check()?;
+                meter.admit_write(0)?;
+                #[cfg(windows)]
+                meter.admit_durability()?;
+            }
+            #[cfg(target_os = "linux")]
+            let failed = unsafe {
+                libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, from_path.buffer.as_ptr(),
+                    libc::AT_FDCWD, to_path.buffer.as_ptr(),
+                    if mode == RenameMode::NoReplace { libc::RENAME_NOREPLACE } else { 0 })
+            } != 0;
+            #[cfg(target_os = "macos")]
+            let failed = unsafe {
+                libc::renamex_np(from_path.buffer.as_ptr().cast(), to_path.buffer.as_ptr().cast(),
+                    if mode == RenameMode::NoReplace { libc::RENAME_EXCL } else { 0 })
+            } != 0;
+            #[cfg(windows)]
+            let failed = unsafe {
+                use windows_sys::Win32::Storage::FileSystem::{
+                    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+                };
+                MoveFileExW(from_path.buffer.as_ptr(), to_path.buffer.as_ptr(),
+                    MOVEFILE_WRITE_THROUGH | if mode == RenameMode::Replace {
+                        MOVEFILE_REPLACE_EXISTING
+                    } else { 0 })
+            } == 0;
+            if !failed { break; }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+        }
+        #[cfg(unix)]
+        sync_rename_parents(from, to, meter)?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (from, to, mode, meter);
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 #[cfg(unix)]
-fn sync_rename_parents(from: &Path, to: &Path) -> io::Result<()> {
+fn sync_rename_parents(
+    from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
     fn namespace_parent(path: &Path) -> &Path {
-        path.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
+        path.parent().filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
     }
-    let to_parent = namespace_parent(to);
-    sync_parent(to_parent, Durability::Full)?;
-    let from_parent = namespace_parent(from);
-    if from_parent != to_parent {
-        sync_parent(from_parent, Durability::Full)?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code, reason = "MoveFileExW receives terminated UTF-16 paths")]
-fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-    let mut from: Vec<u16> = from.as_os_str().encode_wide().collect();
-    let mut to: Vec<u16> = to.as_os_str().encode_wide().collect();
-    if from.contains(&0) || to.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "rename path contains NUL",
-        ));
-    }
-    from.push(0);
-    to.push(0);
-    let flags = MOVEFILE_WRITE_THROUGH
-        | if mode == RenameMode::Replace {
-            MOVEFILE_REPLACE_EXISTING
+    let synchronize = |parent: &Path| -> io::Result<()> {
+        if let Some(meter) = meter {
+            meter.check()?;
+            meter.admit_read(0)?;
+            let directory = File::open(parent)?;
+            sync_file_measured(&directory, Durability::Full, meter.as_ref())
         } else {
-            0
-        };
-    // SAFETY: both arguments are live, NUL-terminated UTF-16 path buffers.
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+            sync_parent(parent, Durability::Full)
+        }
+    };
+    let to_parent = namespace_parent(to);
+    synchronize(to_parent)?;
+    let from_parent = namespace_parent(from);
+    if from_parent != to_parent { synchronize(from_parent)?; }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4392,6 +4648,18 @@ mod tests {
             ));
         };
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(publish_new(&source, &destination).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        let mut limits = ReadBudgetMeter::new(0, 0);
+        limits.memory_limit = 0;
+        let observer = Arc::new(limits);
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        assert_eq!(publish_new_measured(&source, &destination, &meter).unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(durable_rename_measured(
+            &source, &destination, RenameMode::Replace, &meter,
+        ).unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(observer.operations.load(Ordering::Acquire), 0);
+        assert_eq!(observer.allocations.load(Ordering::Acquire), 0);
+        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::read(source)?, b"source");
         assert_eq!(std::fs::read(destination)?, b"destination");
         Ok(())
@@ -4463,6 +4731,7 @@ mod tests {
         memory_limit: u64,
         cancelled: AtomicBool,
         cancel_after_read: bool,
+        panic_after_read: bool,
         allocation_failure: parking_lot::Mutex<Option<std::collections::TryReserveError>>,
     }
 
@@ -4476,6 +4745,7 @@ mod tests {
                 memory: AtomicU64::new(0), peak: AtomicU64::new(0),
                 operation_limit, byte_limit, memory_limit: 1024 * 1024,
                 cancelled: AtomicBool::new(false), cancel_after_read: false,
+                panic_after_read: false,
                 allocation_failure: parking_lot::Mutex::new(None),
             }
         }
@@ -4634,6 +4904,12 @@ mod tests {
                 self.cancelled.store(true, Ordering::Release);
             }
             Ok(())
+        }
+        fn finish_read(&self, _: usize, completed: usize) -> io::Result<()> {
+            if self.panic_after_read && completed != 0 {
+                std::panic::panic_any(0x7072_6570_6172_6564_u64);
+            }
+            self.check()
         }
         fn admit_write(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
         fn record_write(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
@@ -5054,6 +5330,189 @@ mod tests {
         assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 3 } else { 2 });
         drop(result);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("prepared-prefix");
+        std::fs::write(&path, b"abc")?;
+        let file = bounded_write_file(&path, false)?;
+        for (offset, expected) in [(0, 3), (3, 0)] {
+            let meter = Arc::new(ReadBudgetMeter::new(8, 8));
+            let storage = vec![0x55; 8];
+            let identity = storage.as_ptr();
+            let read = file.read_prepared_bounded_async(offset, storage, 8, false, meter.clone())?;
+            let (storage, filled) = {
+                let _blocking = InlineBlocking::enter();
+                complete_measured(read)
+            }?;
+            assert_eq!(filled, expected);
+            assert_eq!(storage.as_ptr(), identity);
+            assert_eq!(&storage[..filled], &b"abc"[..expected]);
+            assert!(storage[filled..].iter().all(|byte| *byte == 0x55));
+            assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
+            assert_eq!(meter.headers.load(Ordering::Acquire), 0);
+            assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+            let weak = Arc::downgrade(&meter);
+            drop(meter);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while weak.upgrade().is_some() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(weak.upgrade().is_none(), "returned owner must not retain invocation custody");
+            drop(storage);
+        }
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("prepared-refusal");
+        std::fs::write(&path, b"abc")?;
+        let file = bounded_write_file(&path, false)?;
+        for late_cancel in [false, true] {
+            let mut limits = ReadBudgetMeter::new(8, 8);
+            limits.cancel_after_read = late_cancel;
+            let meter = Arc::new(limits);
+            let read = file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?;
+            let error = {
+                let _blocking = InlineBlocking::enter();
+                complete_measured(read)
+            }.unwrap_err();
+            assert_eq!(error.kind(), if late_cancel {
+                io::ErrorKind::Interrupted
+            } else { io::ErrorKind::UnexpectedEof });
+            assert_eq!(meter.read.load(Ordering::Acquire), 3);
+            assert_eq!(meter.operations.load(Ordering::Acquire),
+                if late_cancel { if cfg!(windows) { 2 } else { 1 } }
+                else if cfg!(windows) { 3 } else { 2 });
+            assert_eq!(meter.headers.load(Ordering::Acquire), 0);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        }
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("prepared-panic");
+        std::fs::write(&path, b"abc")?;
+        let file = bounded_write_file(&path, false)?;
+        let mut limits = ReadBudgetMeter::new(8, 3);
+        limits.panic_after_read = true;
+        let meter = Arc::new(limits);
+        let mut read = file.read_prepared_bounded_async(0, [0; 3], 3, true, meter.clone())?;
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _blocking = InlineBlocking::enter();
+            complete_measured(&mut read)
+        })).expect_err("prepared observer resumes original terminal panic");
+        assert_eq!(payload.downcast_ref::<u64>(), Some(&0x7072_6570_6172_6564_u64));
+        assert!(read.terminated);
+        assert!(!read.state.is_poisoned());
+        assert!(read.state.try_lock().expect("observer released state").panic.is_none());
+        assert_eq!(meter.read.load(Ordering::Acquire), 3);
+        assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 2 } else { 1 });
+        assert_eq!(meter.headers.load(Ordering::Acquire), 0);
+        drop(payload);
+        drop(read);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn prepared_read_bounds_and_header_denial_precede_io() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("prepared-bounds");
+        std::fs::write(&path, b"abc")?;
+        let file = bounded_write_file(&path, false)?;
+        for (offset, length) in [(0, 9), (u64::MAX, 1)] {
+            let meter = Arc::new(ReadBudgetMeter::new(8, 9));
+            assert!(file.read_prepared_bounded_async(offset, [0; 8], length, false, meter.clone()).is_err());
+            assert_eq!(meter.operations.load(Ordering::Acquire), 0);
+            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
+        }
+        let mut limits = ReadBudgetMeter::new(8, 8);
+        limits.memory_limit = 0;
+        let meter = Arc::new(limits);
+        assert!(file.read_prepared_bounded_async(0, [0; 8], 8, false, meter.clone()).is_err());
+        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
+        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn prepared_read_dropped_accepted_observer_keeps_original_meter_until_terminal() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("prepared-observer-drop");
+        std::fs::write(&path, b"abc")?;
+        let file = bounded_write_file(&path, false)?;
+        struct PreparedProbe {
+            data: [u8; 3],
+            calls: usize,
+            started: mpsc::SyncSender<()>,
+            released: mpsc::Receiver<()>,
+            dropped_prefix: Arc<AtomicBool>,
+        }
+        impl AsMut<[u8]> for PreparedProbe {
+            fn as_mut(&mut self) -> &mut [u8] {
+                self.calls += 1;
+                if self.calls == 2 {
+                    self.started.send(()).expect("observer receives accepted job");
+                    self.released.recv().expect("observer releases accepted job");
+                }
+                &mut self.data
+            }
+        }
+        impl Drop for PreparedProbe {
+            fn drop(&mut self) {
+                self.dropped_prefix.store(self.data == *b"abc", Ordering::Release);
+            }
+        }
+        let (started, start) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let dropped_prefix = Arc::new(AtomicBool::new(false));
+        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
+        let weak = Arc::downgrade(&meter);
+        let storage = PreparedProbe { data: [0; 3], calls: 0, started, released,
+            dropped_prefix: Arc::clone(&dropped_prefix) };
+        let mut read = file.read_prepared_bounded_async(0, storage, 3, true, meter.clone())?;
+        let waker = completion_waker();
+        assert!(Pin::new(&mut read).poll(&mut Context::from_waker(&waker)).is_pending());
+        start.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
+        drop(read);
+        drop(meter);
+        assert!(weak.upgrade().is_some());
+        assert!(!dropped_prefix.load(Ordering::Acquire));
+        release.send(()).map_err(io::Error::other)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while weak.upgrade().is_some() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(weak.upgrade().is_none());
+        assert!(dropped_prefix.load(Ordering::Acquire));
+        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
         Ok(())
     }
 
