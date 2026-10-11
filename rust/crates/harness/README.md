@@ -227,6 +227,9 @@ actual private field capacities. Narrowing consumes already-paid child grants;
 immutable configured registries and authenticated created access share existing
 Arcs without minting authority or a created-resource seal. Ordinary `Clone`
 preserves policy but does not propagate native metadata origin.
+Borrowed native narrowing/run-limit validators apply those same attenuation
+checks without cloning a context; metadata custody and extension pinning are not
+issuer authentication.
 
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 

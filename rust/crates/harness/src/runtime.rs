@@ -2283,7 +2283,18 @@ impl RuntimeScope {
         limits: TaskRunLimits,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        Self::validate_run_limits_with_native_work(&limits, work)?;
+        self.validate_run_limit_attenuation_with_native_work(&limits, work)?;
+        self.run_limits = limits;
+        Ok(self)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_run_limit_attenuation_with_native_work(
+        &self,
+        limits: &TaskRunLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Self::validate_run_limits_with_native_work(limits, work)?;
         for (ancestor, descendant) in [
             (self.run_limits.concurrency.map(|value| value as u64),
                 limits.concurrency.map(|value| value as u64)),
@@ -2298,8 +2309,7 @@ impl RuntimeScope {
                 });
             }
         }
-        self.run_limits = limits;
-        Ok(self)
+        Ok(())
     }
 
     /// Checks task scalar wire bounds with cancellation and static denials.
