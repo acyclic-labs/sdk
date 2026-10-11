@@ -383,7 +383,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 
     /// Reopens only an original protected receipt.
-    pub async fn recover_with_native_work(
+    pub async fn recover(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &TaskEffectPlan,
         approval: InteractionId, authority: NativeProcessAuthority,
         work: &NativeMaterializationWork,
@@ -435,7 +435,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         })?.await?
     }
     /// Observe the original attempt on the caller's original native work ledger.
-    pub async fn receipt_with_native_work(
+    pub async fn receipt(
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
         crate::NativeFutureBundle::new(work, || async move {

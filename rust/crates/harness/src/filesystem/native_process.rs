@@ -10,7 +10,7 @@ use crate::{
     core::{AuthorityVerifier, EffectGuarantee, EffectStatus},
     distributed::JournalWrite,
     durable_host::TaskJournalOwner,
-    effect_host::{TaskEffectPlan, task_effect_id},
+    effect_host::TaskEffectPlan,
     effects::{EffectDispatch, EffectObservation, EffectProvider},
     store::{HistoryReadLimits, HistoryReader},
     tool::ToolApprovalVerifier,
@@ -485,7 +485,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async { Ok(async {
             let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, None).await?;
-            let receipt = self.receipt_with_native_work(attempt, work).await?
+            let receipt = self.receipt(attempt, work).await?
                 .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
                 return Err(receipt_error("original supervisor completion has no durable observed receipt"));
@@ -535,28 +535,20 @@ where
         }
     }
 
-    /// Queries the same fenced launch/observation journal used by reconciliation.
-    pub async fn receipt(
-        &self,
-        attempt: crate::EffectAttemptId,
-    ) -> Result<Option<NativeProcessReceipt>> {
-        self.receipt_original(attempt, None, None).await
-    }
-
     /// Reads retained output after authenticating this exact attempt.
     pub async fn output(
         &self,
-        attempt: crate::EffectAttemptId,
+        attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<crate::conversation::FileRef>> {
         let (request, result_schema, _) = self.executable_admission()?;
-        let Some(receipt) = self.receipt(attempt).await? else { return Ok(None); };
+        let Some(receipt) = self.receipt(attempt, work).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
         let reference = match receipt.effect.status {
             EffectStatus::Succeeded { result } => Some(result),
             _ => receipt.diagnostic,
         };
         if let Some(reference) = &reference {
-            self.owner.validate_input_file(reference)?;
+            self.owner.validate_input_file_with_native_work(reference, work)?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)
@@ -565,45 +557,18 @@ where
                     "native output differs from admitted result owner or bound".into(),
                 ));
             }
-            crate::effects::validate_result_bytes(
-                result_schema,
-                reference,
-                &self.authority.result_content.read(reference).await?,
-            )?;
+            let bytes = self.authority.result_content.read_with_native_work(
+                reference, u64::from(request.maximum_result_bytes), work)?.await?;
+            let io = super::PreparationIo::from_native_work(work)?;
+            let value = io.decode_preparation_with_code::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
+            crate::contract::validate_json_schema_value_with_io(result_schema, &value.value,
+                "native process result", Some(&io))?;
         }
         Ok(reference)
     }
 
-    /// Loads the pinned request/schema and verifies exact approval and task grants.
-    pub async fn new(
-        owner: Arc<TaskJournalOwner<P>>,
-        command: OperationId,
-        plan: TaskEffectPlan,
-        view: Arc<dyn NativeProcessView<P>>,
-        approval: InteractionId,
-        authority: NativeProcessAuthority,
-    ) -> Result<Self> {
-        owner.verify(false).await?;
-        finite_binding::bind_original(
-            owner, command, Cow::Owned(plan), Some(view), approval, authority, None,
-        ).await
-    }
-
-    /// Reopens receipt observation after provider drop or host restart, including cancellation.
-    pub async fn recover(
-        owner: Arc<TaskJournalOwner<P>>,
-        command: OperationId,
-        plan: TaskEffectPlan,
-        approval: InteractionId,
-        authority: NativeProcessAuthority,
-    ) -> Result<Self> {
-        finite_binding::bind_original(
-            owner, command, Cow::Owned(plan), None, approval, authority, None,
-        ).await
-    }
-
     /// Binds this exact prepared namespace to its original finite work family.
-    pub fn new_with_native_work<'a>(
+    pub fn new<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
         view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
         authority: NativeProcessAuthority, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -611,8 +576,8 @@ where
         finite_dispatch::require_finite(work)?;
         finite_binding::require_view_family(view.as_ref(), work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            finite_binding::bind_original(
-                owner, command, Cow::Borrowed(plan), Some(view), approval, authority, Some(work),
+            finite_binding::bind(
+                owner, command, plan, view, approval, authority, work,
             ).await
         })
     }
@@ -668,27 +633,11 @@ where
     fn linearizable_reconciliation(&self) -> bool {
         false
     }
-    fn dispatch<'a>(
-        &'a self,
-        request: EffectDispatch,
-    ) -> BoxProviderFuture<'a, Result<EffectObservation>> {
-        Box::pin(async move {
-            let payload = finite_dispatch::dispatch_payload(request, None)
-                ?;
-            self.launch_original(payload, None).await
-                .map(|(effect, _)| effect)
-                
-        })
+    fn dispatch<'a>(&'a self, _request: EffectDispatch) -> BoxProviderFuture<'a, Result<EffectObservation>> {
+        Box::pin(std::future::ready(Err(receipt_error("native dispatch requires its original work ledger"))))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: crate::EffectAttemptId,
-    ) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
-        Box::pin(async move {
-            self.receipt_original(attempt, None, None).await
-                .map(|receipt| receipt.map(|receipt| receipt.effect))
-                
-        })
+    fn reconcile<'a>(&'a self, _attempt: crate::EffectAttemptId) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
+        Box::pin(std::future::ready(Err(receipt_error("native reconciliation requires its original work ledger"))))
     }
     fn dispatch_with_native_work<'a>(
         &'a self, request: EffectDispatch,
@@ -729,138 +678,5 @@ where
                 .transpose()
         })
     }
-}
-
-fn require_view_grants<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>,
-    manifest: &NativeViewManifest,
-) -> Result<()> {
-    manifest.validate()?;
-    for mapping in &manifest.volumes {
-        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read)?;
-        if mapping.writable {
-            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write)?;
-        }
-    }
-    Ok(())
-}
-
-async fn publish_view<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>,
-    view: &dyn NativeProcessView<P>,
-    admitted: &NativeViewManifest,
-    slot: &mut finite_execution::NativePublicationSlot,
-) -> std::result::Result<
-    super::native_execution::NativeViewPublicationReceipt,
-    super::native_execution::NativeViewPublicationError,
-> {
-    owner.verify(false).await
-        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    if view.manifest() != admitted {
-        return Err(slot.original_failure(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict, reason: "native publication view changed",
-        }, acyclic_fs::WorkCounters::UNCHARGED));
-    }
-    require_view_grants(owner, admitted)
-        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    let budget = view.manifest().validation_budget()
-        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    let meter = acyclic_fs::NativeMaterializationWork::new(budget, view.operation_cancellation())
-        .map_err(|(cause, work)| slot.original_failure(Error::NativeConstruction { cause, work }, work))?;
-    let future = view.publish(owner, &meter)
-        .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
-    slot.retain_failure_work(&meter)
-        .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
-    let receipt = future.await
-        .map_err(|cause| slot.original_failure(cause, meter.receipt()))??;
-    let checked = async {
-        if view.manifest() != admitted {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "native publication view changed after publication",
-            });
-        }
-        owner.verify(false).await
-    }.await;
-    match checked {
-        Ok(()) => Ok(receipt),
-        Err(cause) => Err(super::native_execution::NativeViewPublicationError {
-            cause, accounting_failure: None, work: receipt.work,
-            destination: None, completed: receipt.completed, published: receipt.published,
-            diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
-        }),
-    }
-}
-
-fn native_work_error(error: acyclic_fs::WorkError) -> Error {
-    Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Work(error), custody: None,
-    }
-}
-
-fn merge_execution_work(
-    work: &mut acyclic_fs::WorkCounters,
-    spent: acyclic_fs::WorkCounters,
-    frame_bytes: u64,
-) -> Result<()> {
-    let overlap = frame_bytes.checked_add(spent.peak_allocation_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
-    *work = work.checked_add(spent).map_err(native_work_error)?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(overlap);
-    Ok(())
-}
-
-fn execution_remaining(
-    work: acyclic_fs::WorkCounters,
-    budget: acyclic_fs::WorkBudget,
-    frame_bytes: u64,
-) -> Result<acyclic_fs::WorkBudget> {
-    let mut remaining = work.remaining(budget).map_err(native_work_error)?;
-    remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(frame_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
-    Ok(remaining)
-}
-
-fn invocation_failure(error: Error, work: acyclic_fs::WorkCounters) -> NativeExecution {
-    NativeExecution {
-        status: EffectStatus::Indeterminate,
-        diagnostic: None,
-        publication_failure: None,
-        invocation_failure: Some(error.to_string()),
-        published: Vec::new(),
-        work,
-    }
-}
-
-#[inline(never)]
-fn box_execution<F: Future>(
-    build: impl FnOnce(acyclic_fs::WorkCounters) -> F,
-    budget: acyclic_fs::WorkBudget,
-    cancellation: &acyclic_fs::CancellationToken,
-) -> std::result::Result<std::pin::Pin<Box<F>>, NativeExecution> {
-    let mut work = acyclic_fs::WorkCounters::default();
-    if let Err(error) = cancellation.check() {
-        return Err(invocation_failure(Error::Storage(error.to_string()), work));
-    }
-    let bytes = std::mem::size_of::<F>() as u64;
-    if let Err(error) = work.charge_allocation(u64::from(bytes != 0), bytes, &budget) {
-        return Err(invocation_failure(native_work_error(error), work));
-    }
-    Ok(Box::pin(build(work)))
-}
-
-fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
-    use std::fmt::Write as _;
-    let mut path = String::new();
-    path.try_reserve_exact("harness/v2/native-process/".len() + 36)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
-        .map_err(Error::from)?;
-    write!(&mut path, "harness/v2/native-process/{attempt}")
-        .map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage, reason: "native receipt path formatting failed",
-        })?;
-    StreamPath::new(path).map_err(|source| Error::NativeStream {
-        code: crate::wire::ErrorCode::Storage, source, custody: None,
-    })
 }
 
