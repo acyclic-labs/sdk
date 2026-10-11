@@ -287,6 +287,27 @@ struct Observation {
 
 impl PreparationRecord for Observation {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
+    fn diagnostic_label_bytes() -> u64 {
+        const PRIVATE_LABEL_BYTES: u64 = {
+            let labels = [
+                "Observation", "version", "operation_id", "turn_operation", "retry_digest", "event",
+                "ExecutionEvent", "kind", "started", "context_prepared", "context_compacted",
+                "model_started", "model", "tool_started", "tool_completed", "tool_failed",
+                "request_digest", "step", "projection", "accounting", "compaction", "purpose",
+                "request", "call_id", "invocation", "result", "reason", "ModelPurpose", "response",
+                "summary", "ToolFailureKind", "executor_rejected", "invalid_output",
+                "projection_rejected", "publication_rejected",
+            ];
+            let mut bytes = 0;
+            let mut index = 0;
+            while index < labels.len() {
+                bytes += labels[index].len() as u64 + 4;
+                index += 1;
+            }
+            bytes
+        };
+        crate::contract::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
+    }
 }
 
 struct TaskExecutionIdentity {
@@ -316,6 +337,13 @@ pub struct FilesystemExecutionJournal<P, A, O> {
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn original_native_execution_work_matches(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> bool {
+        self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work()))
+    }
+
     /// Compares existing private bindings; it grants no lease or authority and
     /// performs no I/O, allocation, copying, or scope construction.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1647,19 +1675,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(aggregate)
     }
 
-    async fn stage_with_io(
-        &self, operation_id: OperationId, idempotency_key: &str, bytes: &[u8],
-        media_type: &'static str, io: Option<&PreparationIo>,
-    ) -> Result<FileRef>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        if self.owner.as_ref().is_some_and(|(_, bound)| *bound != operation_id) {
-            return Err(Self::journal_read_boundary(io, crate::wire::ErrorCode::Unauthorized,
-                "journal belongs to another task execution"));
-        }
-        if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(super::fork_preparer_io::invalid(io, "execution journal payload exceeds limit"));
-        }
+    fn stage_identity_with_io(
+        &self, operation_id: OperationId, idempotency_key: &str,
+        io: Option<&PreparationIo>,
+    ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
             let input = crate::contract::preparation_format(
@@ -1672,14 +1691,30 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             blake3::hash(input.as_bytes())
         };
-        let _key_hold;
-        let key = crate::contract::preparation_format(format_args!("journal-{}", digest.to_hex()), io)?;
-        _key_hold = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
-        let key = IdempotencyKey::new(key)?;
-        let _path_hold;
+        let key = IdempotencyKey::new(crate::contract::preparation_format(
+            format_args!("journal-{}", digest.to_hex()), io)?)?;
         let path = crate::contract::preparation_format(
             format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), io)?;
-        _path_hold = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
+        Ok((key, path))
+    }
+
+    async fn stage_with_io(
+        &self, operation_id: OperationId, idempotency_key: &str, bytes: &[u8],
+        media_type: &'static str, io: Option<&PreparationIo>,
+    ) -> Result<FileRef>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        if bytes.len() as u64 > self.maximum_payload_bytes {
+            return Err(super::fork_preparer_io::invalid(io, "execution journal payload exceeds limit"));
+        }
+        let _identity_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
+        _identity_hold = io.map(|io| {
+            let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(||
+                super::fork_preparer_io::invalid(Some(io), "staging identity ownership underflow"))?;
+            io.guard_owned(retained)
+        }).transpose()?;
         match io {
             Some(io) => self.host.put_internal_content_original_with_io(
                 &self.volume, &self.verifier, &self.scope, &path, bytes, media_type,
@@ -2120,6 +2155,30 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 }
 
+impl<P, A, O> FilesystemExecutionJournal<P, A, O>
+where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+{
+    async fn verify_tool_approval_with_io(
+        &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        self.require_operation_with_io(operation, io)?;
+        let host = self.interactions.as_ref().ok_or_else(||
+            super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Unsupported,
+                "task execution has no conversation interaction owner"))?;
+        let mut borrowed = io.map(PreparationIo::history_io);
+        let mut work = borrowed.as_mut().map(
+            |work| work as &mut dyn crate::store::history::HistoryIo);
+        if let Some((owner, _)) = &self.owner {
+            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.verify_with_work(true, &mut work).await?;
+        }
+        host.verify_approval_with_io(id, operation, digest, io).await?;
+        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        Ok(())
+    }
+}
+
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -2132,9 +2191,7 @@ where
         operation: OperationId,
         digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.interactions()?.verify_approval(id, operation, digest, None).await
-        })
+        Box::pin(self.verify_tool_approval_with_io(id, operation, digest, None))
     }
 
     fn verify_measured<'a>(
@@ -2144,18 +2201,22 @@ where
         Box::pin(async move {
             let io = super::fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
                 .map_err(|error| acyclic_fs::OperationFailure::new(error, Default::default()))?;
-            let result = async {
-                if let Some((owner, _)) = &self.owner {
-                    io.receive_content(owner.require_interaction_grant_measured(io.remaining()?, cancellation))?;
-                }
-                self.interactions()?.verify_approval(id, operation, digest, Some(&io)).await?;
-                io.remaining()?;
-                Ok(())
-            }.await;
+            let result = self.verify_tool_approval_with_io(id, operation, digest, Some(&io)).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(
+        &'a self, id: InteractionId, operation: OperationId, digest: [u8; 32],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            self.verify_tool_approval_with_io(id, operation, digest, Some(&io)).await
         })
     }
 }
@@ -2208,10 +2269,54 @@ where
         &'a self, operation_id: OperationId, idempotency_key: &'a str, bytes: &'a [u8],
         media_type: &'static str, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native staging requires an original dispatch owner",
+        })?;
+        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
+            owner.verify_with_native_work(false, work).await?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, media_type, Some(&io)).await?;
+            owner.verify_with_native_work(false, work).await?;
+            let retained = file.logical_owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((file, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn staged_ref_with_native_work<'a>(
+        &'a self, operation_id: OperationId, idempotency_key: &'a str,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "original staged-payload observation requires a task-owned journal",
+        })?;
+        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let file = {
+                owner.verify_read_access_with_native_work(work).await?;
+                let _identity_hold;
+                let before = io.owned_bytes()?;
+                let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
+                let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(||
+                    super::fork_preparer_io::invalid(Some(&io), "staging identity ownership underflow"))?;
+                _identity_hold = io.guard_owned(retained)?;
+                let file = self.host.original_internal_content_for_operation_with_io(
+                    &self.volume, &self.verifier, &self.scope, &key, &path,
+                    self.maximum_payload_bytes, InternalContentClass::Execution, &io,
+                ).await?.ok_or_else(|| Self::journal_read_boundary(
+                    Some(&io), crate::wire::ErrorCode::NotFound,
+                    "original staged payload was not published"))?;
+                owner.verify_read_access_with_native_work(work).await?;
+                file
+            };
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))

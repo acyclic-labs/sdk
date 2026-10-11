@@ -46,6 +46,14 @@ impl crate::filesystem::PreparationRecord for ProjectedToolInvocation {
         <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(std::mem::size_of::<Self>() as u64)
     }
+    fn diagnostic_label_bytes() -> u64 {
+        const PRIVATE_LABEL_BYTES: u64 =
+            concat!("ProjectedToolInvocation", "call_id", "name", "arguments").len() as u64 + 4 * 4;
+        crate::contract::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
+    }
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ProjectedToolInvocation
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -53,6 +61,12 @@ impl crate::filesystem::PreparationRecord for crate::model::ToolResultContent {
     fn maximum_slot_bytes() -> u64 {
         <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
             .max(std::mem::size_of::<Self>() as u64)
+    }
+    fn diagnostic_label_bytes() -> u64 {
+        crate::contract::preparation_serde_diagnostic_label_bytes()
+    }
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ToolResultContent
     }
 }
 

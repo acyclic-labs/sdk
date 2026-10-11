@@ -344,6 +344,18 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         media_type: &'static str,
     ) -> BoxFuture<'a, Result<FileRef>>;
 
+    /// Observes an already staged immutable payload by its original operation
+    /// and retry key. This never stages bytes or consults a mutable head.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn staged_ref_with_native_work<'a>(
+        &'a self, _operation_id: OperationId, _idempotency_key: &'a str,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "native original staged-payload observation is unavailable" })
+    }
+
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
     fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>>;
 

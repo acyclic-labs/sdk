@@ -1442,6 +1442,15 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     impl super::super::PreparationRecord for AuditedNativeDecodeRecord {
+        fn diagnostic_label_bytes() -> u64 {
+            // The renamed field, derive's struct expectation, and String's
+            // type expectation are the complete closed visitor inventory.
+            [
+                NATIVE_DECODE_FIELD,
+                "AuditedNativeDecodeRecord",
+                "string",
+            ].iter().map(|label| label.len() as u64 + 4).sum()
+        }
         fn maximum_slot_bytes() -> u64 {
             // Closed single-String DTO: no flatten, ignored field, or Value tree.
             std::mem::size_of::<Self>() as u64

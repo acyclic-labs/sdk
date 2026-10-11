@@ -1,7 +1,7 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
-use super::fork_preparer_io::{PreparationIo, PreparationRecord, UploadRecord, preparation_slot_bytes};
+use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
 use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::{
@@ -36,47 +36,32 @@ pub struct FilesystemInteractionHost<P, A, O> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-// Decode only the closed approval wire, never an arbitrary request's JSON
-// schema. These are the existing approval enum's exact serialized fields.
-#[derive(serde::Deserialize)]
-enum ApprovalTag {
-    #[serde(rename = "approval")]
-    Approval,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApprovalRequestWire {
-    #[serde(rename = "type")]
-    _kind: ApprovalTag,
-    prompt: String,
-    operation_id: OperationId,
-    action_digest: [u8; 32],
-}
-
-impl UploadRecord for ApprovalRequestWire {
-    fn logical_owned_bytes(&self) -> Result<u64> { Ok(self.prompt.capacity() as u64) }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApprovalResponseWire {
-    #[serde(rename = "type")]
-    _kind: ApprovalTag,
-    approved: bool,
-    reason: Option<String>,
-}
-
-impl UploadRecord for ApprovalResponseWire {
-    fn logical_owned_bytes(&self) -> Result<u64> {
-        Ok(self.reason.as_ref().map_or(0, String::capacity) as u64)
+// Literal schema closure of the two actual participant DTOs below. It adds
+// no custom callback/validator diagnostics to the trusted Serde allowance.
+const INTERACTION_DIAGNOSTIC_LABEL_BYTES: u64 = {
+    let labels = [
+        "Interaction", "InteractionResponse", "ChoiceOption", "type", "question", "choice",
+        "form", "approval", "prompt", "response_schema", "options", "min_selections",
+        "max_selections", "title", "schema", "operation_id", "action_digest",
+        "id", "label", "description", "value", "option_ids", "approved", "reason",
+    ];
+    let mut bytes = 0;
+    let mut index = 0;
+    while index < labels.len() {
+        bytes += labels[index].len() as u64 + 4;
+        index += 1;
     }
-}
+    bytes
+};
+
 
 impl PreparationRecord for Interaction {
     fn maximum_slot_bytes() -> u64 {
         preparation_slot_bytes::<Self>()
             .max(std::mem::size_of::<crate::interaction::ChoiceOption>() as u64)
+    }
+    fn diagnostic_label_bytes() -> u64 {
+        crate::contract::preparation_serde_diagnostic_label_bytes() + INTERACTION_DIAGNOSTIC_LABEL_BYTES
     }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::Interaction
@@ -85,6 +70,9 @@ impl PreparationRecord for Interaction {
 
 impl PreparationRecord for InteractionResponse {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
+    fn diagnostic_label_bytes() -> u64 {
+        crate::contract::preparation_serde_diagnostic_label_bytes() + INTERACTION_DIAGNOSTIC_LABEL_BYTES
+    }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::InteractionResponse
     }
@@ -462,16 +450,10 @@ where
     }
 
     fn clone_scope_with_io(&self, scope: &Scope, io: Option<&PreparationIo>) -> Result<Scope> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| interaction_boundary(
-                Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction IO has no original native work"))?;
-            let (scope, custody) = scope.clone_with_native_work(work)?;
-            io.absorb_native_custody(custody)?;
-            return Ok(scope);
-        }
-        Ok(scope.clone())
+        let mut borrowed = io.map(PreparationIo::history_io);
+        let mut work = borrowed.as_mut().map(
+            |work| work as &mut dyn crate::store::history::HistoryIo);
+        scope.clone_with_work(&mut work)
     }
 
     /// Resolves only with the exact interaction responder grant and current version.
@@ -834,81 +816,98 @@ where
         result
     }
 
-    pub(super) async fn verify_approval(
+    pub(super) async fn verify_approval_with_io(
         &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        // Declared before the aggregate: its conservative logical allowance
-        // is released only after the borrowed replay result has been dropped.
-        let _replay_hold;
-        let aggregate = if let Some(io) = io {
-            io.claim(self.authority.id.len() as u64)?;
-            let verifier = self.verifier.clone_for_preparation(io)?;
-            let result = StreamAggregate::open_measured(
-                &self.stream, self.authority.clone(), verifier, self.schemas.clone(),
-                io.remaining()?, &io.cancellation,
-            ).await;
-            let peak = result.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-            let aggregate = io.receive_content(result)?;
-            // The original replay decoder already admitted this bounded result.
-            // Transfer its logical high-water allowance while borrowing it,
-            // not an invented Reducer/RSS/allocator-node footprint.
-            _replay_hold = Some(io.reserve_decode(peak)?);
-            aggregate
-        } else {
-            _replay_hold = None;
-            self.aggregate().await?
-        };
-        let agent = aggregate.reducer().conversation()
-            .and_then(|conversation| conversation.agent)
-            .ok_or_else(|| Error::Conflict("interaction conversation is not bound to an agent".into()))?;
-        if self.private_volume.owner() != &VolumeOwner::Agent(agent) {
-            return Err(Error::Unauthorized("interaction private volume belongs to another agent".into()));
-        }
+        let replay_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let aggregate = self.aggregate_with_io(io).await?;
+        replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "approval replay custody underflows"))?)).transpose()?;
         let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(interaction_uuid(id)?) else {
-            return Err(Error::Unauthorized("tool installation lacks a resolved approval".into()));
+            return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "tool installation lacks a resolved approval"));
         };
         if !matches!(&resolution.outcome, InteractionOutcome::Approved)
             || !ticket.approval.as_ref().is_some_and(|binding|
                 binding.operation_id == operation && binding.action_digest == digest) {
-            return Err(Error::Unauthorized("approval does not authorize this tool definition".into()));
+            return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "approval does not authorize this tool definition"));
         }
-        let bytes = self.read_approval_artifact(&ticket.request, io).await?;
-        let request = if let Some(io) = io {
-            let wire: ApprovalRequestWire = io.decode_json(&bytes)?;
-            let request = Interaction::Approval {
-                prompt: wire.prompt, operation_id: wire.operation_id, action_digest: wire.action_digest,
-            };
-            ticket.validate_decoded_request(&request)?;
-            request
-        } else { ticket.validate_request_bytes(&bytes)? };
+        let mut borrowed = io.map(PreparationIo::history_io);
+        let mut work = borrowed.as_mut().map(
+            |work| work as &mut dyn crate::store::history::HistoryIo);
+        let bytes_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let buffered = match io {
+            Some(io) => Some(self.read_resolution_content_with_io(&ticket.request, Some(io)).await?),
+            None => None,
+        };
+        let direct = if io.is_none() {
+            let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
+                ticket.request.volume(), VolumeOperation::Read)?;
+            self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?
+        } else { bytes::Bytes::new() };
+        let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+        bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "approval request bytes custody underflows"))?)).transpose()?;
+        let request_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let request = match io {
+            Some(io) => {
+                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                ticket.validate_decoded_request_with_work(&request, &mut work)?;
+                request.into_retained()
+            }
+            None => ticket.validate_request_bytes(&bytes)?,
+        };
+        request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "approval request custody underflows"))?)).transpose()?;
+        drop(buffered);
+        drop(direct);
+        drop(bytes_hold);
         if let Some(detail) = &resolution.detail {
             if detail.descriptor().media_type() != "application/json" {
-                return Err(Error::Invalid("approval decision artifact is invalid".into()));
+                return Err(interaction_boundary(io, crate::wire::ErrorCode::Invalid,
+                    "approval decision artifact is invalid"));
             }
-            let bytes = self.read_approval_artifact(detail, io).await?;
-            if let Some(io) = io {
-                let wire: ApprovalResponseWire = io.decode_json(&bytes)?;
-                let response = InteractionResponse::Approval { approved: wire.approved, reason: wire.reason };
-                ticket.validate_decoded_decision(&request, &resolution.outcome, &response)?;
-            } else { ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &bytes)?; }
+            let detail_bytes_hold;
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let buffered = match io {
+                Some(io) => Some(self.read_resolution_content_with_io(detail, Some(io)).await?),
+                None => None,
+            };
+            let direct = if io.is_none() {
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
+                    detail.volume(), VolumeOperation::Read)?;
+                self.host.read_content(detail, &grant, self.maximum_bytes).await?
+            } else { bytes::Bytes::new() };
+            let bytes = buffered.as_deref().unwrap_or(direct.as_ref());
+            detail_bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                    "approval decision bytes custody underflows"))?)).transpose()?;
+            match io {
+                Some(io) => {
+                    let response = io.decode_preparation::<InteractionResponse>(&bytes)?;
+                    ticket.validate_decoded_decision_with_work(
+                        &request, &resolution.outcome, detail, &response, &mut work)?;
+                }
+                None => ticket.validate_decision_bytes(
+                    &request, &resolution.outcome, detail, &bytes)?,
+            }
+            drop(buffered);
+            drop(direct);
+            drop(detail_bytes_hold);
         }
-        if let Some(io) = io { io.remaining()?; }
+        drop(request);
+        drop(request_hold);
+        drop(aggregate);
+        drop(replay_hold);
         Ok(())
-    }
-
-    async fn read_approval_artifact(
-        &self, reference: &FileRef, io: Option<&PreparationIo>,
-    ) -> Result<bytes::Bytes> {
-        if let Some(io) = io {
-            ContentGrant::verify_original_volume_with_io(
-                &self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, io)?;
-            self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
-        } else {
-            let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                reference.volume(), VolumeOperation::Read)?;
-            Ok(self.host.read_content(reference, &grant, self.maximum_bytes).await?.into())
-        }
     }
 
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
@@ -919,34 +918,21 @@ where
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        let (authority, aggregate_verifier, content_verifier) = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let original = io.original_native_work().ok_or_else(|| interaction_boundary(
-                    Some(io), crate::wire::ErrorCode::Invalid,
-                    "interaction IO has no original native work"))?;
-                let authority = work.as_deref_mut().expect("borrowed interaction observer")
-                    .clone_authority(&self.authority)?;
-                let (aggregate_verifier, custody) = self.verifier.clone_with_native_work(original)?;
-                io.absorb_native_custody(custody)?;
-                let (content_authority, custody) = self.verifier.clone_with_native_work(original)?;
-                io.absorb_native_custody(custody)?;
-                let (scope, custody) = self.owner_scope.clone_with_native_work(original)?;
-                io.absorb_native_custody(custody)?;
-                content_authority.verify_with_work(&scope, &mut work)?;
-                io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
-                io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
-                let content_verifier = FilesystemContentVerifier {
-                    host: Arc::clone(&self.host), verifier: content_authority,
-                    scope, maximum_bytes: self.maximum_bytes,
-                };
-                (authority, aggregate_verifier, content_verifier)
-            }
-            _ => (
-                self.authority.clone(), self.verifier.clone(),
-                FilesystemContentVerifier::new(Arc::clone(&self.host),
-                    self.verifier.clone(), self.owner_scope.clone(), self.maximum_bytes)?,
-            ),
+        let authority = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(&self.authority)?,
+            None => self.authority.clone(),
+        };
+        let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
+        let content_authority = self.verifier.clone_with_work(&mut work)?;
+        let scope = self.owner_scope.clone_with_work(&mut work)?;
+        content_authority.verify_with_work(&scope, &mut work)?;
+        if let Some(io) = io {
+            io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
+        }
+        let content_verifier = FilesystemContentVerifier {
+            host: Arc::clone(&self.host), verifier: content_authority,
+            scope, maximum_bytes: self.maximum_bytes,
         };
         let content_verifier = Arc::new(content_verifier);
         let aggregate = StreamAggregate::open_with_work(

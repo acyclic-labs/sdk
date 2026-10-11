@@ -2858,6 +2858,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_path: Option<&str>, maximum_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         grant.require_with_io(volume, VolumeOperation::Write, io)?;
+        self.content_for_operation_record_io(
+            volume, key, expected_path, maximum_bytes, None, io).await
+    }
+
+    pub(super) async fn original_internal_content_for_operation_with_io(
+        &self, volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        key: &IdempotencyKey, path: &str, maximum_bytes: u64,
+        class: InternalContentClass, io: &PreparationIo,
+    ) -> Result<Option<FileRef>> {
+        ContentGrant::verify_original_volume_with_io(
+            verifier, scope, volume, VolumeOperation::Read, io)?;
+        self.content_for_operation_record_io(
+            volume, key, Some(path), maximum_bytes, Some(class), Some(io)).await
+    }
+
+    // Both callers authenticate their original authority before entering this
+    // one receipt/generation engine. Internal observation grants no write.
+    async fn content_for_operation_record_io(
+        &self, volume: &VolumeRef, key: &IdempotencyKey,
+        expected_path: Option<&str>, maximum_bytes: u64,
+        internal_class: Option<InternalContentClass>, io: Option<&PreparationIo>,
+    ) -> Result<Option<FileRef>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             volume.validate_with_native_work(work)?;
@@ -2871,9 +2893,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         if let Some(path) = expected_path {
             fork_preparer_io::validate_content_path(path, io)?;
-            if path == ".system" || path.starts_with(".system/")
-                || path == "turns/.canonical" || path.starts_with("turns/.canonical/") {
-                return Err(fork_preparer_io::invalid(io, "internal storage paths are reserved"));
+            if internal_class.is_some_and(|class| !path.starts_with(class.prefix()))
+                || (internal_class.is_none() && (path == ".system" || path.starts_with(".system/")
+                    || path == "turns/.canonical" || path.starts_with("turns/.canonical/"))) {
+                return Err(fork_preparer_io::invalid(io, if internal_class.is_some() {
+                    "content path is outside its authorized storage class"
+                } else { "internal storage paths are reserved" }));
             }
         }
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
@@ -2908,9 +2933,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             || expected_path.is_some_and(|path| path != recorded.path()) {
             return Err(fork_preparer_io::conflict(io, "original upload metadata differs from requested identity"));
         }
-        if recorded.path() == ".system" || recorded.path().starts_with(".system/")
-            || recorded.path() == "turns/.canonical" || recorded.path().starts_with("turns/.canonical/") {
-            return Err(fork_preparer_io::invalid(io, "internal storage paths are reserved"));
+        if internal_class.is_some_and(|class| !recorded.path().starts_with(class.prefix()))
+            || (internal_class.is_none() && (recorded.path() == ".system" || recorded.path().starts_with(".system/")
+                || recorded.path() == "turns/.canonical" || recorded.path().starts_with("turns/.canonical/"))) {
+            return Err(fork_preparer_io::invalid(io, if internal_class.is_some() {
+                "original content is outside its authorized storage class"
+            } else { "internal storage paths are reserved" }));
         }
         let canonical = match io {
             Some(io) => io.encode_json(&(&recorded, expected.as_ref()), RECORD_BYTES, true)?,

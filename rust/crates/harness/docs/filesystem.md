@@ -85,6 +85,14 @@ The peak counter includes that **actual logical reservation**, not measured
 heap/RSS or opaque allocator calls. Borrowed caller authority and shared,
 immutable schema configuration are not newly owned request memory; registry
 mutation retains ordinary copy-on-write value semantics.
+Closed typed records also reserve their audited Serde diagnostic capacity before
+the visitor: source interpolation, both formatter buffers, geometric String
+capacity, and the actual field/type/discriminator/static-label inventory.
+Successful decoding releases this diagnostic reservation; failure moves the
+same prepaid custody with the original error. Raw `Value` does not acquire a
+second typed diagnostic allowance. Private containing DTOs supply their real
+literal inventory; the stock catalog is not a generic `Deserialize` guarantee.
+
 
 Finite content and approval providers opt into genuine measured capabilities.
 Custom providers without that engine return `Unsupported` before I/O; static
@@ -298,6 +306,25 @@ Coordinator admission selects one candidate directly from the existing reducer r
 `FilesystemTaskRuntime::open_with_policy_and_clock` binds one existing `ToolPolicy` to the coordinator task host, `AgentHarness` and stock model executor. Its exact implementation identity is retained in task admission and verified after reopening. Stock tool commands use the existing `DurableToolRunner` and task context authorization before its journaled dispatch boundary; model commands pass the same policy to `StockExecutor`, whose request digest pins it and whose existing tool loop evaluates it. The local restart policy regression denies a command before provider execution, then permits the original command, retains uncertainty across dropping all store/runtime handles and reconciles once. Reopening with a different digest cannot observe the retained admission. The separate model-binding restart fixture recovers its interrupted stock turn with the same pinned policy and checks one generate/one reconcile; it does not qualify policy-triggered model tool calls. Policy approval decisions still require an interaction journal/router binding; this constructor does not compose that service. Execution routes and admitted deadlines remain unsupported, and native extension/provider fault/cold-projection/final platform gates remain open.
 
 `FilesystemExecutionJournal::with_interaction_owner` binds task approval/question requests to an existing conversation verifier, signed owner scope, schema registry and private volume on the same Stream/Filesystem providers. It grants no responder rights. A task-owned journal requires its retained `interaction:route` grant and current lease before/after request and outcome observations. Fresh request admission reuses the conversation reducer/content validation and appends through `TaskJournalOwner`, comparing the uncancelled task lease and conversation tail atomically. Exact requests replay; changed requests conflict. Lease replacement rejects the old journal even on cached requests. Cancellation forbids request publication/replay, while the same retained lease can observe outcomes for ordered settlement. The `MemoryStream` and `LocalStream` owner-guard fixtures cover these checks and preflight transactions losing to replacement/cancellation. The `LocalStream` fixture uses in-memory Filesystem payloads and therefore does not qualify full approval-store restart. The stock runtime composition below supplies the conversation binding. The stock runtime below composes passive approval waits/wakes, including response arrival after full store reopen. Broader provider-fault qualification and final platform gates remain open.
+
+Native approval verification uses the same original interaction request,
+decision and detail journal, operation identity and tool-definition digest.
+The callback's `NativeFutureBundle` is admitted before constructing its future;
+replay and content reads use the original ledger, not a replacement budget.
+Native tool routing separately compares the private task/fence/execution/turn
+and coordinator bindings and original metadata ledger. Capability availability
+alone is not that binding proof.
+
+`ExecutionJournal::staged_ref_with_native_work(operation, key, work)` observes
+the original protected publication using the staging engine's exact operation,
+path and retry-key derivation. Payload suboperations remain distinct from the
+journal's execution identity; append/replay retain their strict execution
+binding. Observation authenticates the original private-volume READ grant and
+current or protected historical owner before and after immutable receipt,
+metadata and content verification. Proven absence is `NotFound`; backend
+uncertainty propagates without staging, appending or repairing anything.
+Native staging instead requires the original WRITE grant and current dispatch
+owner; a historical READ owner cannot stage even with a retained RW scope.
 
 `FilesystemTaskRuntime::with_interaction_owner` installs that conversation verifier, schema registry, signed request-owner scope and private volume on the existing runtime providers. The scope must include `interaction:open`; response rights remain with the separately signed participant. Stock model journals use the binding when the admission includes `interaction:route`. Stock tool commands additionally bind their exact task context to the same leased journal through the existing `InteractionRouter` seam, reusing the host's task/operation ticket identity. A cloned context retains this exact journal fence; it cannot select another owner or bypass the task grant. Tasks without an interaction grant can still execute commands that need no approval. The durable-local policy regression retries one pending approval before provider dispatch, rejects resolution by the request owner, resolves with the ticket's exact responder grant, then drops all runtime/Filesystem/Stream handles and reconciles the approved tool once after reopening. It qualifies recovery of a resolved approval with an uncertain tool call. Confirmed pending approvals release the worker slot only after the execution-journal quiescence proof and atomic coordinator comparison. Passive readiness authenticates the retained command and exact approval without policy/model/tool callbacks. Real-store reopen controls cover typed and model-triggered approval, declined model approval without tool dispatch, cancelled waits without stale wake, and one tool dispatch followed by lost-result reconciliation. An uncertain tool execution retains its reservation. Broader provider acknowledgement faults and platform gates remain open. No protocol DTO changed.
 
