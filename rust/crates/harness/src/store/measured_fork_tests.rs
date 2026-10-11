@@ -501,3 +501,299 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     drop(owner);
     Ok(())
 }
+
+fn projection_codec_budget() -> WorkBudget {
+    WorkBudget {
+        items_examined: 1_048_576,
+        allocation_operations: 1_048_576,
+        peak_allocation_bytes: 16 * 1_048_576,
+        bytes_copied: 16 * 1_048_576,
+        bytes_encoded: 16 * 1_048_576,
+        bytes_hashed: 16 * 1_048_576,
+        output_bytes: 16 * 1_048_576,
+        ..publication_budget()
+    }
+}
+
+#[test]
+fn projection_locator_owned_engine_preserves_capacity_and_ordinary_schema() -> Result<()> {
+    for count in [0, 1, 5, 17] {
+        let location = checkpoints::ProjectionLocation {
+            authority: authority(), revision: 64, bytes: 1, digest: [4; 32],
+            chunks: (0..count).map(|_| checkpoints::ProjectionChunk { digest: [3; 32], bytes: 1 }).collect(),
+        };
+        let bytes = crate::contract::canonical_json_bytes(&location)?;
+        let cancellation = CancellationToken::new();
+        let mut io = history::HistoryWork::new(projection_codec_budget(), &cancellation);
+        let (decoded, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))?;
+        assert_eq!(decoded.chunks.len(), count);
+        assert_eq!(retained, decoded.authority.id.capacity() as u64
+            + decoded.chunks.capacity() as u64 * std::mem::size_of::<checkpoints::ProjectionChunk>() as u64
+            + std::mem::size_of::<checkpoints::ProjectionLocation>() as u64);
+        assert_eq!(crate::contract::canonical_json_bytes(&decoded)?, bytes);
+        drop(decoded);
+        history::HistoryIo::release_owned(&mut io, retained)?;
+        let (ordinary, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut None)?;
+        assert_eq!(retained, 0);
+        assert_eq!(ordinary.chunks.len(), count);
+        let mut denied = history::HistoryWork::new(
+            WorkBudget { peak_allocation_bytes: 1, ..projection_codec_budget() }, &cancellation);
+        assert!(checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut denied)).is_err());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            let native = acyclic_fs::NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+                .expect("original Chunk Vec capacity ledger");
+            let mut io = history::native_work_io(&native).expect("original Chunk Vec custody");
+            let (decoded, retained) = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))?;
+            assert_eq!(decoded.chunks.len(), count);
+            assert_eq!(retained, decoded.authority.id.capacity() as u64
+                + decoded.chunks.capacity() as u64 * std::mem::size_of::<checkpoints::ProjectionChunk>() as u64
+                + std::mem::size_of::<checkpoints::ProjectionLocation>() as u64);
+            drop(decoded);
+            history::HistoryIo::release_owned(&mut io, retained)?;
+            assert_eq!(io.into_custody().bytes(), 0);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn projection_locator_original_serde_cause_and_predecode_denials() -> Result<()> {
+    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+    let location = checkpoints::ProjectionLocation {
+        authority: authority(), revision: 64, bytes: 1, digest: [4; 32],
+        chunks: vec![checkpoints::ProjectionChunk { digest: [3; 32], bytes: 1 }],
+    };
+    let original = crate::contract::canonical_json_bytes(&location)?;
+    let mut mutations = Vec::new();
+    let mut duplicate = b"{\"revision\":64,".to_vec();
+    duplicate.extend_from_slice(&original[1..]);
+    mutations.push(duplicate);
+    for field in ["authority", "revision", "bytes", "digest", "chunks"] {
+        let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+        value[field] = serde_json::json!("wrong field type");
+        mutations.push(crate::contract::canonical_json_bytes(&value)?);
+    }
+    let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+    value["chunks"][0]["digest"] = serde_json::json!([3]);
+    mutations.push(crate::contract::canonical_json_bytes(&value)?);
+    mutations.push(br#"{"authority":{},"revision":64,"bytes":1,"digest":[0],"chunks":[],"extra":true}"#.to_vec());
+    for bytes in mutations {
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+            .expect("finite original typed projection decoder");
+        let mut io = history::native_work_io(&native).expect("original projection source guard");
+        let error = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))
+            .err().expect("concrete projection schema mutation rejects");
+        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+            panic!("schema errors retain the original typed serde diagnostic");
+        };
+        assert_eq!(code, crate::wire::ErrorCode::Storage);
+        assert!(source.is_data());
+        assert!(source.line() > 0 && source.column() > 0);
+        assert!(native.shares_ledger(custody.work()));
+        assert!(custody.bytes() > 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(source);
+        drop(custody);
+        native.admit_retained(projection_codec_budget().peak_allocation_bytes
+            - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    }
+    // This would reach a real typed serde failure if admission were skipped.
+    let malformed_schema = br#"{"authority":[]}"#;
+    let cancellation = CancellationToken::new();
+    let denied = NativeMaterializationWork::new(WorkBudget {
+        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
+        ..projection_codec_budget()
+    }, &cancellation).expect("ledger with no DTO allowance");
+    let mut io = history::native_work_io(&denied).expect("original denied projection guard");
+    assert!(matches!(checkpoints::decode_projection_location_with_work(malformed_schema, &mut Some(&mut io)),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }), .. })));
+    assert_eq!(io.into_custody().bytes(), 0);
+    let denied = NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..projection_codec_budget() }, &cancellation)
+        .expect("original no-copy projection ledger");
+    let mut io = history::native_work_io(&denied).expect("original no-copy source guard");
+    assert!(matches!(checkpoints::decode_projection_location_with_work(malformed_schema, &mut Some(&mut io)),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
+    assert_eq!(denied.receipt().bytes_copied, 0);
+    assert_eq!(io.into_custody().bytes(), 0);
+    let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+        .expect("original lexical controls");
+    let mut io = history::native_work_io(&native).expect("original lexical guard");
+    for bytes in [b"{".to_vec(), vec![b' '; acyclic_stream::MAX_RECORD_BYTES + 1]] {
+        assert!(matches!(checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io)),
+            Err(Error::NativeBoundary { .. })));
+    }
+    assert_eq!(io.into_custody().bytes(), 0);
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+        .expect("original cancellable projection ledger");
+    let mut io = history::native_work_io(&native).expect("original cancelled source guard");
+    cancellation.cancel();
+    assert!(matches!(checkpoints::decode_projection_location_with_work(&original, &mut Some(&mut io)),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(native.receipt().items_examined, 0);
+    assert_eq!(io.into_custody().bytes(), 0);
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn projection_location_mutations_never_read_chunks_and_release_original_guards() -> Result<()> {
+    use acyclic_fs::NativeMaterializationWork;
+    use acyclic_stream::CommitMutation;
+    for mode in 0..9 {
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let mut aggregate = with_content(StreamAggregate::open(
+            &client, authority(), issuer().verifier(), schemas()).await?);
+        for identity in 1..64 {
+            let mut next = command(identity)?;
+            next.expected_revision = aggregate.reducer().revision();
+            aggregate.execute(next).await?;
+        }
+        let mut next = command(64)?;
+        next.expected_revision = 63;
+        let ApplyResult::Applied { mut event } = aggregate.reducer().plan(&next)? else {
+            panic!("fixture must issue original canonical event 64");
+        };
+        let publication = checkpoints::publication(&client, aggregate.reducer(), &event).await?;
+        let mut request = publication.request(
+            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?).await?;
+        let canonical_path = authority().stream_path()?;
+        let suffix = canonical_path.strip_prefix("harness/v2/").expect("original canonical authority prefix");
+        let head = format!("harness/v3/projection-checkpoints/{suffix}");
+        for mutation in &mut request.mutations {
+            let CommitMutation::Append { path, records } = mutation else { continue; };
+            if path.as_str() == head {
+                let mut location: serde_json::Value = crate::contract::json_from_slice(&records[0])?;
+                match mode {
+                    0 => location["authority"]["id"] = serde_json::json!("another-authority"),
+                    1 => location["revision"] = serde_json::json!(63),
+                    2 => location["bytes"] = serde_json::json!(0),
+                    3 => location["digest"] = serde_json::json!([4]),
+                    4 => location["chunks"] = serde_json::json!("not a Vec"),
+                    5 => location["chunks"][0]["bytes"] = serde_json::json!(0),
+                    6 => {
+                        let mut duplicate = b"{\"revision\":64,".to_vec();
+                        duplicate.extend_from_slice(&records[0][1..]);
+                        records[0] = Bytes::from(duplicate);
+                        continue;
+                    }
+                    _ => {}
+                }
+                records[0] = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+            } else if mode == 7 && path.as_str() == authority().stream_path()? {
+                event.attestation[0] ^= 1;
+                records[0] = Bytes::from(crate::wire_codec::encode_event(&authority(), &event)?);
+            }
+        }
+        let detached = if mode == 8 {
+            let index = request.mutations.iter().position(|mutation| {
+                matches!(mutation, CommitMutation::Append { path, .. } if path.as_str() == head)
+            }).expect("original atomic projection mutation");
+            let CommitMutation::Append { mut records, .. } = request.mutations.remove(index) else {
+                unreachable!("selected original Append")
+            };
+            Some(records.remove(0))
+        } else { None };
+        client.commit(request).await?;
+        if let Some(bytes) = detached {
+            // The real canonical anchor and checkpoint have different durable
+            // commit identities despite matching every payload field.
+            client.stream(&head)?.append_at(bytes, 0).await?;
+        }
+        let before = provider.io_snapshot();
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+            .expect("original finite cold projection ledger");
+        let mut io = history::native_work_io(&native).expect("original cold projection guard");
+        let error = checkpoints::load_with_work(
+            &client, &authority(), &issuer().verifier(), checkpoints::default_projection_read_limits(),
+            Some(64), &mut Some(&mut io)).await.err().expect("original projection mutation rejects");
+        let after = provider.io_snapshot();
+        let anchor_reads = u64::from(matches!(mode, 5 | 7 | 8));
+        assert_eq!(native.receipt().authority_records_read, 1 + anchor_reads);
+        assert_eq!(after.reads - before.reads, 1 + anchor_reads);
+        assert_eq!(after.writes, before.writes);
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(error);
+        native.admit_retained(projection_codec_budget().peak_allocation_bytes
+            - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn cold_projection_original_cut_and_anchor_survive_later_checkpoint() -> Result<()> {
+    use acyclic_fs::NativeMaterializationWork;
+    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let mut aggregate = with_content(StreamAggregate::open(
+        &client, authority(), issuer().verifier(), schemas()).await?);
+    for identity in 1..=128 {
+        let mut next = command(identity)?;
+        next.expected_revision = aggregate.reducer().revision();
+        aggregate.execute(next).await?;
+    }
+    let original = checkpoints::load_with_work(
+        &client, &authority(), &issuer().verifier(), checkpoints::default_projection_read_limits(),
+        Some(64), &mut None).await?;
+    assert_eq!(original.through_revision, 64);
+    let original = original.snapshot.expect("the selected checkpoint exists");
+    assert_eq!(original.revision, 64);
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+        .expect("original finite historical projection ledger");
+    let mut io = history::native_work_io(&native).expect("original historical projection guard");
+    let loaded = checkpoints::load_with_work(
+        &client, &authority(), &issuer().verifier(), checkpoints::default_projection_read_limits(),
+        Some(64), &mut Some(&mut io)).await?;
+    assert_eq!(loaded.through_revision, 64);
+    let snapshot = loaded.snapshot.expect("native selected checkpoint exists");
+    assert_eq!(snapshot, original);
+    assert_eq!(snapshot.events.last(), original.events.last());
+    drop(snapshot);
+    assert_eq!(io.into_custody().bytes(), 0);
+    native.admit_retained(projection_codec_budget().peak_allocation_bytes
+        - NativeMaterializationWork::accounting_state_bytes())
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn cold_projection_original_audience_and_cancellation_precede_sdk_reads() -> Result<()> {
+    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
+    let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+    let client = StreamClient::new(provider.clone());
+    for cancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)
+            .expect("original preflight ledger");
+        let mut io = history::native_work_io(&native).expect("original preflight custody");
+        if cancelled { cancellation.cancel(); }
+        let other = crate::core::AuthorityIssuer::new("other-projection", [9; 32],
+            Authority { kind: crate::core::AggregateKind::Task, id: "another-audience".into() });
+        let verifier = if cancelled { issuer().verifier() } else { other.verifier() };
+        let error = checkpoints::load_with_work(&client, &authority(), &verifier,
+            checkpoints::default_projection_read_limits(), Some(64), &mut Some(&mut io))
+            .await.err().expect("original audience/cancellation rejects before SDK");
+        if cancelled {
+            assert!(matches!(error, Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. }));
+        } else {
+            assert!(matches!(error, Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. }));
+        }
+        assert_eq!(native.receipt().authority_records_read, 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+    }
+    let sdk = provider.io_snapshot();
+    assert_eq!(sdk.reads + sdk.tails as u64 + sdk.writes + sdk.inspections + sdk.commit_reads, 0);
+    Ok(())
+}
