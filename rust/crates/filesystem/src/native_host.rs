@@ -1428,8 +1428,8 @@ impl HostRoot {
 
     /// Opens `path` with `access` and `options` by one `NtCreateFile`
     /// relative to the held root, which no reparse point may redirect.
-    /// `None` when the path names the root itself or redirection was
-    /// refused, which only the held walk may resolve.
+    /// `None` for unsupported names or refused redirection. An empty name
+    /// with directory-only options reopens the held directory itself.
     #[cfg(windows)]
     fn open_by_name(
         directory: &Dir,
@@ -1450,13 +1450,16 @@ impl HostRoot {
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
         const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
 
-        let Some((mut name, length)) = relative_kernel_name(path) else {
-            return Ok(None);
+        let (mut name, length) = match relative_kernel_name(path) {
+            Some(name) => name,
+            None if path.as_os_str().is_empty()
+                && options.0 & windows::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE.0 != 0 => (Vec::new(), 0),
+            None => return Ok(None),
         };
         let name = UNICODE_STRING {
             Length: length,
             MaximumLength: length,
-            Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+            Buffer: if length == 0 { windows::core::PWSTR::null() } else { windows::core::PWSTR(name.as_mut_ptr()) },
         };
         let attributes = OBJECT_ATTRIBUTES {
             Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
@@ -3794,23 +3797,20 @@ fn open_directory_held(mut current: Dir, path: &Path) -> io::Result<Dir> {
 
 #[cfg(windows)]
 fn reopen_windows_directory(directory: &Dir) -> io::Result<Dir> {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
     };
-    // A new file object gives each enumeration its own cursor without resolving a path.
-    let handle = unsafe {
-        ReOpenFile(
-            HANDLE(directory.as_handle().as_raw_handle()),
-            FILE_GENERIC_READ.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_FLAG_BACKUP_SEMANTICS,
-        )
-    }.map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
-    // SAFETY: ReOpenFile returned a new exclusively owned handle.
-    Ok(Dir::from_std_file(unsafe { File::from_raw_handle(handle.0) }))
+    use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    // A new NT file object gives each enumeration its own cursor. ReOpenFile
+    // denies these directory handles; an empty NT name keeps the original root.
+    let file = HostRoot::open_by_name(
+        directory,
+        Path::new(""),
+        FILE_GENERIC_READ,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_OPEN,
+    )?.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "held directory could not be reopened"))?;
+    Ok(Dir::from_std_file(file.into_std()))
 }
 
 #[cfg(windows)]
