@@ -372,7 +372,7 @@ where
     let allocation = NativePreparationRoot::witness(
         directory.path().to_path_buf(), preparation_directory.path().to_path_buf(),
         work_per_volume, &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+    ).await.map_err(|(error, _)| error)?.value;
     let mut selections = Vec::new();
     for (volume, path, writable) in [
         (&source, "source", false),
@@ -406,7 +406,7 @@ where
             &acyclic_fs::CancellationToken::new(),
         )
         .await
-        .map_err(|failure| Error::Storage(failure.to_string()))?
+        .map_err(|(cause, _)| cause)?
         .value,
     );
     let mut request = native_request(mcp, lost_response, view.manifest().clone())?;

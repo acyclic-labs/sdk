@@ -73,6 +73,20 @@ aliases retain it until their final physical drop without adopting the data twic
 These are logical SDK-owned payload/slot bounds, not allocator/RSS or opaque
 standard-library tree-node footprint claims.
 
+Concurrent checkout observers share the semantic proof, not allocation deltas.
+Each observer retains exact name/path DATA and known control claims; cancellation
+and unwinding preserve its own completed prefix. Copy-on-write claims precede
+copies, weak-only moves preserve DATA custody, and snapshots distinguish reused
+addresses using checked allocation generations. Custody metadata does not change
+semantic equality.
+
+Native stock reads use the original allocation/work carrier through Memory,
+Logical Objects, cache, staged storage and simulation. Logical Objects reserves
+bounded logical returned-payload quota before provider I/O, then reconciles the
+visible payload length. Opaque provider allocation/backing capacity is not an SDK
+allocator/RSS claim. Existing shared Memory/cache bytes are borrowed without
+readoption; new SDK vectors, request strings and copies are admitted separately.
+
 Mounted callback receipts include SDK-completed prefixes from ordinary lookup
 errors as well as successful callbacks. Expected misses do not poison the source.
 An owned first fatal callback diagnostic is taken once without resetting the
@@ -91,5 +105,10 @@ pending work, including unwind, without treating frames as retained proof DATA.
 Readonly list vectors and sealed candidate proof preparation are admitted before
 construction; adopting an already prepared candidate does not allocate.
 Inline tree control metadata and opaque BTree layout are not inferred as DATA.
+Immediate Authority preserves its existing HashMap lookup/idempotency engine.
+Its finite allowance covers SDK-known typed entries and owned strings/record
+buffers; standard-library bucket layout, allocator overhead and RSS are opaque
+and excluded, as with BTree nodes. A real growth reservation counts an SDK
+allocation attempt; public map capacity is not a physical bucket-byte witness.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.

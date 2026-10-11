@@ -153,6 +153,32 @@ Authenticated history effect queries use
 and finite read limits. Native process receipts expose queryable publication
 diagnostics, destination/completed state and measured work; a stopped invocation
 retains cleanup outcome and its original effect identity rather than launching again.
+`NativeProcessProvider::new_with_native_work` uses the ordinary binding engine with
+the prepared view's original ledger: request/schema reads, closed DTO decoding,
+schema validation, approvals and provider-owned Arc payloads retain that custody.
+Legacy views and different ledger families are rejected before binding I/O;
+ledger identity is membership, not a replacement for current owner or grants.
+`into_arc_with_native_work` keeps registry ownership in the provider's last guard.
+`EffectProvider::dispatch_with_native_work` admits the actual launch future before
+construction and threads the caller's original work ledger through authenticated
+history, protected receipt encoding/appends, and the original process/view engine.
+The supervisor retains that ledger and original cancellation after caller drop.
+Successful dispatch and `reconcile_with_native_work` move the complete effect payload
+with its existing allocation guard; reconciliation never creates a view or launches
+again. A denial after the launch receipt leaves that same attempt indeterminate.
+Counters describe observed SDK operations and logical owned payload custody, not
+provider-internal allocations, command/runtime heap internals, or process RSS.
+The shared boxed process engine admits concrete stdout, stderr and input buffers
+before spawning, polls the original held view cancellation and authenticated owner,
+and retains an unresolved original process tree for warm settlement.
+Actual mounted-source namespace scopes remain with that tree through terminal
+process and stdio quiescence, including caller-future drop; materialized-only views
+open no kernel mount scope. Namespace accounting does not classify callbacks by PID
+or thread and does not confer task, path, or volume authority.
+Cold receipts never adopt process control. Every finite publication failure retains
+the original typed cause and cleanup ownership, completed destinations and staged
+diagnostic in a preadmitted error context; formatting never replaces that cause.
+Unfunded observation stays pending or uncertain rather than claiming a recorded result.
 These adapters are not a sandbox and do not promise cross-volume atomic publication.
 OS cooperation is a liveness assumption: capture, observation and cleanup bounds are
 not a hard wall-clock guarantee for an unresponsive operating system.
