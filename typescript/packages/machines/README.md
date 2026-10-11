@@ -19,6 +19,10 @@ Use `HttpMachinesProvider` for an authenticated HTTPS service. Qualify an immuta
 
 The Cloud product API uses gRPC. In Node or Bun, import `createMachinesGrpcClient` from `@acyclic-labs/machines/grpc` and request types from `@acyclic-labs/machines/proto`. Its `machines` client accepts protobuf request fields and returns admissions with machine and operation identities. Inspect the retained operation to observe completion. Call `close()` to release the connection; RPC options accept an `AbortSignal` and per-call timeout.
 
+`machines.exec({ protocol, machine, argv, timeoutMs })` streams merged guest stdout/stderr bytes as `output.data` frames, followed by one terminal `output.exitCode` frame. Output is yielded as it arrives. Pass 1–64 arguments (at most 4,096 UTF-8 bytes each and 32,768 total) and a timeout of 1–60,000 milliseconds. There is no implicit shell evaluation. Execution has no lifecycle operation ID and is never automatically retried: a canceled, timed-out or lost reply does not prove that the command did not run. Missing exit codes, empty or oversized data frames and frames after the exit code fail the stream.
+
+`machines.readOutput({ protocol, machine, offset, limit })` reads live guest console bytes. Offsets use `bigint`; `MAX_OUTPUT_READ_BYTES` from the gRPC entry point is 65,536. Continue from the returned `offset + BigInt(data.length)`. A later returned offset exposes discarded console bytes; an empty read means no newer bytes are available now, rather than permanent EOF. The client rejects substituted machine identities, backward offsets, oversized data and offset overflow.
+
 ```ts
 import { createMachinesGrpcClient } from "@acyclic-labs/machines/grpc";
 
@@ -28,6 +32,14 @@ try {
   for await (const state of client.machines.watchOperation({
     protocol: { major: 1, minor: 1 }, operation: admission.operation,
   }, { timeoutMs: 0 })) console.log(state);
+  const protocol = { major: 1, minor: 1 };
+  for await (const frame of client.machines.exec({
+    protocol, machine: admission.machine, argv: ["/bin/echo", "hello"], timeoutMs: 1000,
+  })) console.log(frame.output);
+  const output = await client.machines.readOutput({
+    protocol, machine: admission.machine, offset: 0n, limit: 65536,
+  });
+  console.log(output.offset, output.data);
 } finally {
   client.close();
 }

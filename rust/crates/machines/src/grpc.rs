@@ -1783,6 +1783,20 @@ mod tests {
 
     #[tonic::async_trait]
     impl MachinesService for OperationService {
+        type ExecStream = Pin<Box<dyn Stream<Item = Result<wire::ExecOutput, Status>> + Send>>;
+
+        async fn exec(
+            &self,
+            _request: Request<wire::ExecRequest>,
+        ) -> Result<Response<Self::ExecStream>, Status> {
+            Err(Status::unimplemented("exec"))
+        }
+        async fn read_output(
+            &self,
+            _request: Request<wire::ReadOutputRequest>,
+        ) -> Result<Response<wire::MachineOutput>, Status> {
+            Err(Status::unimplemented("read_output"))
+        }
         async fn qualify_image(
             &self,
             _request: Request<wire::QualifyImageRequest>,

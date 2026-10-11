@@ -51,6 +51,8 @@ pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 /// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+/// Maximum bytes returned by one live guest console read.
+pub const MAX_OUTPUT_READ_BYTES: u32 = 65_536;
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
 /// Maximum events returned in one page.

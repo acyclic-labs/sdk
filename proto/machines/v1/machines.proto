@@ -365,7 +365,46 @@ message UsageReceipt {
   bytes receipt = 10;
 }
 
+// Executes once in the current admitted guest. A lost reply, cancellation or
+// timeout does not prove the command did not run; clients must not redispatch.
+message ExecRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  // 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
+  // argv[0] is nonempty. Shell evaluation requires an explicit shell program.
+  repeated string argv = 3;
+  // Command deadline in milliseconds, 1..60000.
+  uint32 timeout_ms = 4;
+}
+message ExecOutput {
+  MachineId machine = 1;
+  // Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+  // Exactly one exit-code frame terminates the stream; no frame follows it.
+  oneof output {
+    bytes data = 2;
+    int32 exit_code = 3;
+  }
+}
+// Reads the live retained guest console, without a lifecycle operation identity.
+message ReadOutputRequest {
+  ProtocolVersion protocol = 1;
+  MachineId machine = 2;
+  uint64 offset = 3;
+  // Maximum returned bytes, 1..65536.
+  uint32 limit = 4;
+}
+message MachineOutput {
+  MachineId machine = 1;
+  // At or after the requested offset; a later offset exposes discarded bytes.
+  // The next read starts at offset + data length, with overflow rejected.
+  uint64 offset = 2;
+  // Empty data means no newer bytes now, not permanent EOF.
+  bytes data = 3;
+}
+
 service MachinesService {
+  rpc Exec(ExecRequest) returns (stream ExecOutput);
+  rpc ReadOutput(ReadOutputRequest) returns (MachineOutput);
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification);
   rpc Create(CreateMachineRequest) returns (MachineAdmission);
   rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission);

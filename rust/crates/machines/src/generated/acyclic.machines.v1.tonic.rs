@@ -92,6 +92,55 @@ pub mod machines_service_client {
             self
         }
         ///
+        pub async fn exec(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExecRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::ExecOutput>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/acyclic.machines.v1.MachinesService/Exec",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("acyclic.machines.v1.MachinesService", "Exec"));
+            self.inner.server_streaming(req, path, codec).await
+        }
+        ///
+        pub async fn read_output(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReadOutputRequest>,
+        ) -> std::result::Result<tonic::Response<super::MachineOutput>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/acyclic.machines.v1.MachinesService/ReadOutput",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("acyclic.machines.v1.MachinesService", "ReadOutput"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        ///
         pub async fn qualify_image(
             &mut self,
             request: impl tonic::IntoRequest<super::QualifyImageRequest>,
@@ -619,6 +668,22 @@ pub mod machines_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with MachinesServiceServer.
     #[async_trait]
     pub trait MachinesService: std::marker::Send + std::marker::Sync + 'static {
+        /// Server streaming response type for the Exec method.
+        type ExecStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::ExecOutput, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        ///
+        async fn exec(
+            &self,
+            request: tonic::Request<super::ExecRequest>,
+        ) -> std::result::Result<tonic::Response<Self::ExecStream>, tonic::Status>;
+        ///
+        async fn read_output(
+            &self,
+            request: tonic::Request<super::ReadOutputRequest>,
+        ) -> std::result::Result<tonic::Response<super::MachineOutput>, tonic::Status>;
         ///
         async fn qualify_image(
             &self,
@@ -828,6 +893,97 @@ pub mod machines_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
+                "/acyclic.machines.v1.MachinesService/Exec" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExecSvc<T: MachinesService>(pub Arc<T>);
+                    impl<
+                        T: MachinesService,
+                    > tonic::server::ServerStreamingService<super::ExecRequest>
+                    for ExecSvc<T> {
+                        type Response = super::ExecOutput;
+                        type ResponseStream = T::ExecStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExecRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MachinesService>::exec(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExecSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/acyclic.machines.v1.MachinesService/ReadOutput" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReadOutputSvc<T: MachinesService>(pub Arc<T>);
+                    impl<
+                        T: MachinesService,
+                    > tonic::server::UnaryService<super::ReadOutputRequest>
+                    for ReadOutputSvc<T> {
+                        type Response = super::MachineOutput;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReadOutputRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MachinesService>::read_output(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReadOutputSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/acyclic.machines.v1.MachinesService/QualifyImage" => {
                     #[allow(non_camel_case_types)]
                     struct QualifyImageSvc<T: MachinesService>(pub Arc<T>);

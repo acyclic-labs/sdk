@@ -508,6 +508,68 @@ pub struct UsageReceipt {
     #[prost(bytes = "vec", tag = "10")]
     pub receipt: ::prost::alloc::vec::Vec<u8>,
 }
+/// Executes once in the current admitted guest. A lost reply, cancellation or
+/// timeout does not prove the command did not run; clients must not redispatch.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
+    /// argv\[0\] is nonempty. Shell evaluation requires an explicit shell program.
+    #[prost(string, repeated, tag = "3")]
+    pub argv: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Command deadline in milliseconds, 1..60000.
+    #[prost(uint32, tag = "4")]
+    pub timeout_ms: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecOutput {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+    /// Exactly one exit-code frame terminates the stream; no frame follows it.
+    #[prost(oneof = "exec_output::Output", tags = "2, 3")]
+    pub output: ::core::option::Option<exec_output::Output>,
+}
+/// Nested message and enum types in `ExecOutput`.
+pub mod exec_output {
+    /// Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+    /// Exactly one exit-code frame terminates the stream; no frame follows it.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Output {
+        #[prost(bytes, tag = "2")]
+        Data(::prost::alloc::vec::Vec<u8>),
+        #[prost(int32, tag = "3")]
+        ExitCode(i32),
+    }
+}
+/// Reads the live retained guest console, without a lifecycle operation identity.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadOutputRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "3")]
+    pub offset: u64,
+    /// Maximum returned bytes, 1..65536.
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineOutput {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// At or after the requested offset; a later offset exposes discarded bytes.
+    /// The next read starts at offset + data length, with overflow rejected.
+    #[prost(uint64, tag = "2")]
+    pub offset: u64,
+    /// Empty data means no newer bytes now, not permanent EOF.
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ImageKind {
