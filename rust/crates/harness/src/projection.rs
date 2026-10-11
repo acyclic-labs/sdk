@@ -1507,10 +1507,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
     resolver: &R,
     file: &FileRef,
     maximum_bytes: u64,
-    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<T> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
@@ -1518,30 +1515,11 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
             "tool artifact type or rendering limit is invalid".into(),
         ));
     }
-    #[cfg(feature = "filesystem")]
-    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
-    #[cfg(feature = "filesystem")]
-    let _bytes_hold;
     let bytes = resolver.read(file).await?;
-    #[cfg(feature = "filesystem")]
-    { _bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
         ));
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-        io.preflight(hash)?;
-        file.descriptor().verify(&bytes)?;
-        io.charge(hash)?;
-        let parsed = io.decode_preparation::<serde_json::Value>(&bytes)?;
-        validate_model_json_numbers_with_io(&parsed, Some(io))?;
-        let _encoded_hold;
-        let encoded = io.encode_json(&parsed.value, io.remaining()?.bytes_encoded, false)?;
-        _encoded_hold = io.guard_owned(encoded.len() as u64)?;
-        return Ok(io.decode_preparation::<T>(&encoded)?.into_retained());
     }
     file.descriptor().verify(&bytes)?;
     let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
@@ -1583,10 +1561,9 @@ async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(
     message: &ConversationMessage,
     resolver: &R,
     maximum_attachments: usize,
-    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<Attachment>> {
     let attachments = match &message.attachments {
-        ReferencedAttachments::Inline { items } => crate::executor::clone_preparation(items, io)?,
+        ReferencedAttachments::Inline { items } => items.clone(),
         ReferencedAttachments::Manifest {
             manifest,
             item_count,
