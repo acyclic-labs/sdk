@@ -1467,12 +1467,12 @@ fn native_registered_root_input(
     struct Input<'a> { payload: &'a str }
     let mut io = crate::store::history::native_work_io(work)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let value = crate::contract::json_value_bounded_native_trusted(
+    let value = crate::contract::json_value_bounded(
         &Input { payload: "original registered root" },
         crate::contract::JsonBounds {
             maximum_bytes: 4096, maximum_items: 64, maximum_depth: 8,
         },
-        crate::wire::ErrorCode::Invalid,
+        Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| io.codec_charge(charge),
     )?;
     Ok((value, io.into_custody()))

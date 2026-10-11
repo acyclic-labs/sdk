@@ -1103,7 +1103,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 &self.fence,crate::contract::JsonBounds {
                     maximum_bytes:remaining.bytes_encoded,maximum_items:remaining.items_examined,
                     maximum_depth:256,
-                },&mut |charge| crate::store::history::HistoryIo::codec_charge(&mut io,charge),
+                },None, &mut |charge| crate::store::history::HistoryIo::codec_charge(&mut io,charge),
             )?;
             crate::store::history::HistoryIo::hashed_bytes(&mut io,encoded.len() as u64)?;
             let digest = blake3::hash(&encoded);
@@ -2432,7 +2432,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 maximum_depth: 256,
             };
             let encoded = crate::contract::canonical_json_bytes_bounded(
-                &self.fence, bounds, &mut |charge| io.codec_charge(charge),
+                &self.fence, bounds, None, &mut |charge| io.codec_charge(charge),
             )?;
             io.retain_owned((encoded.capacity() - encoded.len()) as u64)?;
             encoded

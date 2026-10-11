@@ -477,8 +477,8 @@ fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) ->
             .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
         let mut custody = work.retain_owned(0).map_err(native_error)?;
         let mut quota = work.retain_owned(0).map_err(native_error)?;
-        let encoded = crate::json_bytes_bounded_trusted(value, bounds(maximum.saturating_sub(1)),
-            &mut |event| codec_charge(work, &mut custody, &mut quota, event));
+        let encoded = crate::json_bytes_bounded(value, bounds(maximum.saturating_sub(1)),
+            None, &mut |event| codec_charge(work, &mut custody, &mut quota, event));
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {

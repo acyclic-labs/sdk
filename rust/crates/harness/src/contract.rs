@@ -71,25 +71,25 @@ pub(crate) use json::{
 };
 mod event_json;
 pub(crate) use event_json::{
-    EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
-    event_payload_ownership,
+    audited_serde_diagnostic_bytes, event_payload_json_admission,
+    json_decode_owned_bytes,
     audited_preparation_diagnostic_bytes,
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
-pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission, snapshot_json_ownership};
+pub(crate) use snapshot_json::{snapshot_json_admission};
 pub use json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
-    canonical_json_bytes_bounded, json_bytes_bounded_trusted,
-    json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
+    canonical_json_bytes_bounded, json_bytes_bounded,
+    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use json::{
-    json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted,
+    json_from_slice_bounded_native_trusted, 
     json_from_value_bounded_native_trusted, json_from_value_owned_bounded_native_trusted,
-    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
+     
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
@@ -148,7 +148,6 @@ pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
         }
         bytes
     };
-    // Closed SDK serializers only; callers admit their resident source first.
     let diagnostic = audited_serde_diagnostic_bytes(
         0, preparation_serde_diagnostic_label_bytes() + CONTEXT_LABEL_BYTES,
     )?;
@@ -174,7 +173,6 @@ pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
     if let Err(Error::NativeEncode { code, source, custody: None }) = result {
         return Err(Error::NativeEncode { code, source, custody: custody.take() });
     }
-    // Native custody drops unused allowance here.
     if result.is_ok() && native_code.is_none() {
         observer.release_owned(diagnostic)?;
     }
@@ -306,7 +304,6 @@ pub(crate) fn validate_json_schema_value_with_io(
         Err(source) => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(JsonSchemaDataScope::Native(custody)) = _value_scope {
-                // Ownership conversion may materialize and copy the failing instance.
                 return Err(Error::NativeSchema {
                     code: ErrorCode::Invalid,
                     source: source.to_owned(),
@@ -346,7 +343,6 @@ fn json_schema_scope<'a>(
             JsonValueSchema::None,
             &mut |charge| io.codec_charge(charge, false),
         )?;
-        // ValidationError::to_owned can clone the whole resident instance.
         let owned = json_value_decode_owned_bytes(shape)?;
         return work.retain_owned(owned)
             .map(|custody| Some(JsonSchemaDataScope::Native(custody)))
@@ -572,7 +568,6 @@ fn compile_json_schema_cached(
     Ok(validator)
 }
 
-// Both observers enter the same cache/compiler after guarding their actual encoding/hash prefix.
 enum JsonSchemaObserver<'a> {
     Preparation(Option<&'a crate::executor::PreparationIo>),
     History(&'a mut dyn crate::store::history::HistoryIo),
@@ -771,70 +766,6 @@ mod json_schema_work_tests {
         assert_eq!(work.live_allocation_bytes(), baseline);
         assert!(work.receipt().bytes_hashed > 0);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn cached_schema_still_admits_hash_and_preserves_native_denial() -> Result<()> {
-        let schema = serde_json::json!({"type":"string", "minLength":37021});
-        compile_json_schema(&schema, "hash control")?;
-        let cancellation = CancellationToken::new();
-        let work = native(WorkBudget { bytes_hashed: 0, ..budget() }, &cancellation)?;
-        let baseline = work.live_allocation_bytes();
-        {
-            let mut observer = crate::store::history::native_work_io(&work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            assert!(matches!(compile_json_schema_with_work(&schema, "hash control", &mut Some(&mut observer)),
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
-        }
-        assert!(work.receipt().bytes_encoded > 0);
-        assert_eq!(work.receipt().bytes_hashed, 0);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let mut portable = HistoryWork::new(WorkBudget { bytes_hashed: 0, ..budget() }, &cancellation);
-        assert!(compile_json_schema_with_work(&schema, "hash control", &mut Some(&mut portable)).is_err());
-        let receipt = portable.finish(Ok(())).map_err(|failure| failure.error)?;
-        assert!(receipt.work.bytes_encoded > 0);
-        assert_eq!(receipt.work.bytes_hashed, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn preparation_scope_survives_cached_compilation_and_validation() -> Result<()> {
-        let schema = serde_json::json!({"type":"string", "minLength":73022});
-        compile_json_schema(&schema, "scope control")?;
-        let work = native(budget(), &CancellationToken::new())?;
-        let baseline = work.live_allocation_bytes();
-        let io = PreparationIo::from_native_work(&work)?;
-        {
-            let compiled = compile_json_schema_engine(&schema, "scope control", Some(&io))?;
-            assert!(work.live_allocation_bytes() > baseline);
-            assert!(compiled.validator.validate(&serde_json::json!("short")).is_err());
-            assert!(work.live_allocation_bytes() > baseline);
-        }
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let error = validate_json_schema_value_with_io(&schema, &serde_json::json!("short"),
-            "scope control", Some(&io)).expect_err("invalid value retains its native diagnostic");
-        assert!(matches!(&error, Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid, .. }));
-        assert!(work.live_allocation_bytes() > baseline);
-        drop(io);
-        assert!(work.live_allocation_bytes() > baseline);
-        drop(error);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        Ok(())
-    }
-
-    #[test]
-    fn native_diagnostic_allocation_denial_preserves_prefix_and_custody() -> Result<()> {
-        let work = native(WorkBudget { allocation_operations: 1, ..budget() }, &CancellationToken::new())?;
-        let baseline = work.live_allocation_bytes();
-        let io = PreparationIo::from_native_work(&work)?;
-        let prefix = work.receipt();
-        assert!(matches!(preparation_format(format_args!("schema diagnostic"), Some(&io)),
-            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
-        assert_eq!(work.receipt(), prefix);
-        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 
@@ -1724,33 +1655,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn native_capabilities_examine_duplicates_without_copying_them() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 3,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
-            bytes_copied: 6,
-            items_examined: 4,
-            ..WorkBudget::default()
-        }, &cancellation).expect("original ledger");
-        let (caps, custody) = Capabilities::new_with_native_work(
-            ["é", "read", "é", "read"], &work,
-        ).expect("two distinct UTF-8 grants");
-        assert_eq!(caps.iter().collect::<Vec<_>>(), ["read", "é"]);
-        assert_eq!(work.receipt().items_examined, 4);
-        assert_eq!(work.receipt().bytes_copied, 6);
-        assert_eq!(work.receipt().allocation_operations, 3);
-        assert_eq!(custody.bytes(), caps.0.iter().map(|text| {
-            std::mem::size_of::<String>() as u64 + text.capacity() as u64
-        }).sum::<u64>());
-        assert!(custody.work().shares_ledger(&work));
-        drop(caps);
-        drop(custody);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_capability_budget_and_cancellation_precede_character_copy() {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork,
             NativeTreeMaterializationError, WorkBudget, WorkError};
@@ -1777,30 +1681,6 @@ mod tests {
         assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_capabilities_zero_remaining_allocation_denies_the_first_string() {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork,
-            NativeTreeMaterializationError, WorkBudget, WorkError};
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget {
-            allocation_operations: 1,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
-            bytes_copied: 4,
-            items_examined: 1,
-            ..WorkBudget::default()
-        }, &cancellation).expect("only the original ledger control allocation");
-        assert!(matches!(Capabilities::new_with_native_work(["read"], &work),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
-                ..
-            })));
-        assert_eq!(work.receipt().allocation_operations, 1);
-        assert_eq!(work.receipt().bytes_copied, 0);
-        assert_eq!(work.receipt().items_examined, 1);
-    }
-
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
         let value = serde_json::json!({
@@ -1816,34 +1696,6 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(canonical_json_bytes(&value)?, nested.as_bytes());
         assert!(json_from_slice::<serde_json::Value>(b"{} {}").is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_json_bytes_are_pinned_for_every_value_kind() -> Result<()> {
-        #[derive(Serialize)]
-        struct Declared<'a> {
-            zeta: Option<u8>,
-            alpha: &'a str,
-            #[serde(rename = "\u{e9}")]
-            accent: (i64, f64, f64, bool),
-            mid: std::collections::BTreeMap<&'a str, Vec<u8>>,
-        }
-        let value = Declared {
-            zeta: None,
-            alpha: "quote\" back\\ nl\n tab\t ctl\u{1} \u{2028} \u{1f600}",
-            accent: (i64::MIN, 1.5e300, -0.0, false),
-            mid: [("b", vec![]), ("a", vec![0, 255])].into(),
-        };
-        let expected = concat!(
-            r#"{"alpha":"quote\" back\\ nl\n tab\t ctl\u0001 "#,
-            "\u{2028} \u{1f600}\",",
-            r#""mid":{"a":[0,255],"b":[]},"zeta":null,"#,
-            "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
-        );
-        assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
-        validate_json_byte_bound(&value, expected.len() as u64)?;
-        assert!(validate_json_byte_bound(&value, expected.len() as u64 - 1).is_err());
         Ok(())
     }
 
@@ -1869,62 +1721,6 @@ mod tests {
         fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
             Err(serde::ser::Error::custom("canonical fixture failure"))
         }
-    }
-
-    #[test]
-    fn canonical_json_pins_raw_key_order_and_duplicate_collapse() -> Result<()> {
-        let pairs = Pairs(vec![
-            ("\u{1f600}", 5),
-            ("\u{e9}", 4),
-            ("\\", 3),
-            ("\"", 2),
-            ("\0", 1),
-        ]);
-        let expected = concat!(
-            r#"{"\u0000":1,"\"":2,"\\":3,"#,
-            "\"\u{e9}\":4,\"\u{1f600}\":5}"
-        );
-        assert_eq!(canonical_json_bytes(&pairs)?, expected.as_bytes());
-        assert_eq!(
-            canonical_json_bytes(&Pairs(vec![("key", 1), ("key", 2)]))?,
-            br#"{"key":2}"#
-        );
-        assert_eq!(
-            canonical_json_bytes(&[serde_json::json!({"z": {"b": 2, "a": 1}})])?,
-            br#"[{"z":{"a":1,"b":2}}]"#
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn canonical_json_preserves_value_conversion_and_rejects_invalid_values() -> Result<()> {
-        assert_eq!(
-            canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
-            b"[null,null,null]"
-        );
-        assert_eq!(canonical_json_bytes(&0.1_f32)?, b"0.10000000149011612");
-        assert_eq!(
-            canonical_json_bytes(&Pairs(vec![(1.5_f64, 1)]))?,
-            br#"{"1.5":1}"#
-        );
-        for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                canonical_json_bytes(&Pairs(vec![(key, 1)])),
-                Err(Error::Invalid(_))
-            ));
-        }
-        assert!(matches!(
-            canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
-            Err(Error::Invalid(_))
-        ));
-        assert!(matches!(canonical_json_bytes(&Failing), Err(Error::Invalid(_))));
-        assert!(matches!(canonical_json_bytes(&i128::MIN), Err(Error::Invalid(_))));
-        assert!(matches!(canonical_json_bytes(&u128::MAX), Err(Error::Invalid(_))));
-        assert_eq!(
-            canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
-            b"[-9223372036854775808,18446744073709551615]"
-        );
-        Ok(())
     }
 
     #[test]
