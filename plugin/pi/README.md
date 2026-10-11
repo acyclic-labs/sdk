@@ -661,10 +661,12 @@ and malformed protected metadata returns a static typed boundary error.
 Runner construction borrows the staged plan; the original SDK provider owns its
 funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.
-Normal cleanup confirms the authenticated native process result and stops the
-actual project drivers, retaining SDK session scratch. Explicit scratch disposal
-requires the original opaque created-child Scratch proof, original native
-root/leaf/preparation identities and current-fenced WRITE on every deletion.
+Normal cleanup retains the SDK's whole process-and-mounted-view drain receipt,
+while preserving SDK session scratch. Explicit scratch disposal first validates
+that complete receipt against the same held view, original task/fence/command
+and original root work. It then releases the retained genuine creator packet
+with the original opaque Created-Scratch proof and fresh current-fenced WRITE
+before every deletion. A diagnostic result check never substitutes for either.
 Unknown pre-journal paths or replaced directories are preserved as uncertainty.
 Original preparation rollback is not post-execution session cleanup.
 Pinned process fixtures preserve the whole canonical reservation failure. Their
