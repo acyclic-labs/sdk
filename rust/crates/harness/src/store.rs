@@ -1350,24 +1350,70 @@ impl<P: StreamProvider> StreamAggregate<P> {
         effect: crate::EffectId,
         limits: HistoryReadLimits,
     ) -> Result<Option<crate::core::EffectState>> {
+        self.effect_with_work(effect, limits, &mut None).await
+            .map(|state| state.map(|(state, _)| state))
+    }
+
+    pub(crate) async fn effect_with_work(
+        &self,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<Option<(crate::core::EffectState, u64)>> {
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "effect read bounds must be positive",
+                });
+            }
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::validate_json_byte_bound(state, limits.maximum_bytes)?;
-            return Ok(Some(state.clone()));
+            crate::contract::validate_effect_json_byte_bound_with_work(state, limits.maximum_bytes, work)?;
+            return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
-        self.history_reader()?
-            .effect(
-                &HistoryCursor {
-                    authority: self.reducer.authority().clone(),
-                    after_revision: 0,
-                    through_revision: self.reducer.revision(),
-                },
-                effect,
-                limits,
-            )
-            .await
+        let reader = if work.is_some() {
+            let verifier = self.reducer.event_verifier_with_work(work)?;
+            HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, work)?
+        } else { self.history_reader()? };
+        let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
+        let authority = match work.as_deref_mut() {
+            Some(observer) => observer.clone_authority(self.reducer.authority()),
+            None => Ok(self.reducer.authority().clone()),
+        };
+        let authority = match authority {
+            Ok(authority) => authority,
+            Err(error) => {
+                drop(reader);
+                if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(reader_bytes); }
+                return Err(error);
+            },
+        };
+        let cursor = HistoryCursor {
+            authority,
+            after_revision: 0,
+            through_revision: self.reducer.revision(),
+        };
+        let cursor_bytes = if work.is_some() { cursor.authority.id.capacity() as u64 } else { 0 };
+        let result = reader.effect_with_retained_quota(
+            &cursor, effect, limits,
+            work.as_mut().map(|observer| &mut **observer as &mut dyn history::HistoryIo),
+        ).await;
+        drop(cursor);
+        drop(reader);
+        let released = match work.as_deref_mut() {
+            Some(observer) => observer.release_owned(cursor_bytes + reader_bytes),
+            None => Ok(()),
+        };
+        match result {
+            Ok(state) => { released?; Ok(state) },
+            Err(error) => {
+                let _ = released;
+                Err(error)
+            },
+        }
     }
 
     fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
