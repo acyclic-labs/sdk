@@ -118,6 +118,56 @@ impl CodecError {
     }
 }
 
+/// Closed SDK-generated encoder/Raw-Value diagnostic allowance only. Audited
+/// against serde_json 1.0.151 ErrorCode/Display and Rust 1.98.1 TryReserveError
+/// Display; upgrades require revisiting this inventory. Custom Serialize error
+/// messages and arbitrary typed Deserialize diagnostics are NOT bounded here.
+/// This is future logical quota (zero allocation observations), not RSS or
+/// serde_json's private ErrorImpl/allocator-node footprint. Native callback
+/// interruption is inline and needs none of this allowance.
+pub const fn sdk_json_diagnostic_bytes() -> u64 {
+    // Longest SDK/static-library label: all literal encoder/lexer labels and
+    // JSON syntax labels are shorter than this actual allocation-error text.
+    const CAPACITY_ERROR: &str = concat!("memory allocation failed",
+        " because the computed capacity exceeded the collection's maximum");
+    const SYNTAX_ERROR: &str =
+        "control character (\\u0000-\\u001F) found while parsing a string";
+    let largest = if CAPACITY_ERROR.len() > SYNTAX_ERROR.len() {
+        CAPACITY_ERROR.len() as u64
+    } else { SYNTAX_ERROR.len() as u64 };
+    // Raw lex errors may cross Root Invalid's Display prefix. ErrorImpl renders
+    // at most two usize positions; supported targets have <=64-bit usize.
+    let rendered = largest + "invalid request: ".len() as u64
+        + " at line ".len() as u64 + " column ".len() as u64
+        + 2 * (u64::MAX.ilog10() as u64 + 1);
+    // Two error-message buffers can overlap during ordinary conversions; each
+    // formatter's Vec capacity is <=2*max(length,8). Include known carrier ABI,
+    // but do not pretend to observe serde_json's hidden boxed ErrorImpl layout.
+    let wrappers = std::mem::size_of::<CodecError>() as u64
+        + std::mem::size_of::<serde_json::Error>() as u64
+        + std::mem::size_of::<std::io::Error>() as u64
+        + std::mem::size_of::<String>() as u64;
+    4 * rendered + 2 * wrappers
+}
+
+/// Conservative logical quota for the CLOSED serde_json::Value parser, derived
+/// from already admitted lexical byte/item counts. This factors RawValue's
+/// existing policy; it does not scan, parse, clone or allocate a Value.
+/// Includes array minimum/geometric slots, map-entry payloads, strings/parser
+/// scratch and closed SDK syntax diagnostics. Borrowed input, opaque allocator
+/// metadata/node footprint and RSS are excluded. A typed envelope must add its
+/// OWN audited tagged buffers/collections/boxes and dynamic serde diagnostics;
+/// this is not a generic DeserializeOwned maximum or allocation observation.
+pub fn json_value_decode_owned_bytes(input_bytes: u64, lexical_items: u64) -> Result<u64> {
+    lexical_items
+        .checked_mul((10 * std::mem::size_of::<Value>()
+            + std::mem::size_of::<(String, Value)>()) as u64)
+        .and_then(|nodes| input_bytes.max(8).checked_mul(4)
+            .and_then(|strings_and_scratch| nodes.checked_add(strings_and_scratch)))
+        .and_then(|owned| owned.checked_add(sdk_json_diagnostic_bytes()))
+        .ok_or_else(|| Error::Invalid("JSON owned bound overflow".into()))
+}
+
 struct Meter<'a, F: FnMut(JsonCodecCharge) -> Result<()>> {
     bounds: JsonBounds,
     items: u64,
@@ -589,7 +639,7 @@ pub fn json_value_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
 fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, meter: &mut Meter<'_, F>,
 ) -> Result<Value> {
-    let mut value = match value.serialize(Encoder { meter, depth: 0 }) {
+    let mut value = match value.serialize(Encoder { meter: &mut *meter, depth: 0 }) {
         Ok(value) => value,
         Err(error) => return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string()))),
     };
@@ -866,10 +916,8 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
         // doubling and up-to-eight initial slots per nonempty array; array
         // count and total element count each fit lexical items. Map entries
         // and geometric scratch are separate from these slots.
-        let maximum_owned_bytes = scan.items
-            .checked_mul((10 * std::mem::size_of::<Value>() + std::mem::size_of::<(String, Value)>()) as u64)
-            .and_then(|nodes| (value.len() as u64).max(8).checked_mul(4).and_then(|strings| nodes.checked_add(strings)))
-            .ok_or_else(|| Meter::<F>::error("JSON owned bound overflow"))?;
+        let maximum_owned_bytes = json_value_decode_owned_bytes(value.len() as u64, scan.items)
+            .map_err(Meter::<F>::error)?;
         meter.charge(JsonCodecCharge::Admission { maximum_owned_bytes })?;
         // Keep serde_json::to_value(RawValue)'s existing number/grammar/recursion
         // semantics, rather than treating its private token as an ordinary map.
@@ -913,6 +961,177 @@ mod tests {
             for (key, value) in &self.0 { map.serialize_entry(key, value)?; }
             map.end()
         }
+    }
+
+    #[test]
+    fn direct_value_preserves_canonical_semantics_and_only_actual_tree_custody() -> Result<()> {
+        let record = (Pairs(vec![("z".into(), u64::MAX), ("a".into(), 1), ("z".into(), 2)]),
+            vec![i64::MIN, i64::MAX], 0.1f32, -0.0f64, f64::NAN, "escape\n\"\\\u{1f600}");
+        let mut expected = serde_json::to_value(&record)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        expected.sort_all_objects();
+        let mut live = 0u64;
+        let mut peak = 0u64;
+        let value = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
+            match event {
+                JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
+                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("conserved quota"),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        assert_eq!(value, expected);
+        assert_eq!(live, owned_logical_bytes(&value));
+        assert!(peak >= live);
+        let retained = live;
+        drop(value);
+        live = live.checked_sub(retained).expect("caller releases returned-tree custody");
+        assert_eq!(live, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_value_all_cancellation_schedules_preserve_owned_cause_and_release() -> Result<()> {
+        let record = (Pairs(vec![("same".into(), 1), ("same".into(), 2)]),
+            vec!["escape\n\"\\", "another"], u64::MAX, 0.1f32);
+        let mut callbacks = 0;
+        let baseline = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
+            if !matches!(event, JsonCodecCharge::Release { .. }) { callbacks += 1; }
+            Ok(())
+        })?;
+        drop(baseline);
+        for cancel_at in 0..callbacks {
+            let operation = crate::OperationId::from_bytes((cancel_at as u128).to_le_bytes());
+            let mut cause = Some(Error::Indeterminate(operation));
+            let mut index = 0;
+            let mut live = 0u64;
+            let result = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
+                if let JsonCodecCharge::Release { bytes } = event {
+                    live = live.checked_sub(bytes).expect("cleanup remains allowed");
+                    return Ok(());
+                }
+                if index == cancel_at { return Err(cause.take().expect("one original owned cause")); }
+                index += 1;
+                if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
+                Ok(())
+            });
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+            assert_eq!(live, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn callback_interruption_is_inline_not_a_serde_custom_message() {
+        let operation = crate::OperationId::from_bytes([42; 16]);
+        let mut original = Some(Error::Indeterminate(operation));
+        let mut charge = |_| Err(original.take().expect("one cause"));
+        let mut meter = Meter { bounds: BOUNDS, items: 0, bytes: 0,
+            charge: &mut charge, failure: None, retained: 0 };
+        let interrupted = meter.item(0).unwrap_err();
+        assert!(matches!(interrupted, CodecError::Interrupted));
+        assert!(std::error::Error::source(&interrupted).is_none());
+        assert!(matches!(meter.failure.take(), Some(Error::Indeterminate(id)) if id == operation));
+        assert_eq!(interrupted.into_io().kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn direct_value_bounds_and_discarded_temporary_keys_conserve_custody() -> Result<()> {
+        struct ReplacedKey;
+        impl Serialize for ReplacedKey {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_key("discarded")?;
+                map.serialize_key("kept")?;
+                map.serialize_value(&u64::MAX)?;
+                map.end()
+            }
+        }
+        let mut live = 0u64;
+        let value = json_value_bounded_trusted(&ReplacedKey, BOUNDS, &mut |event| {
+            match event {
+                JsonCodecCharge::Retain { bytes } => live += bytes,
+                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("no double release"),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        assert_eq!(value["kept"], u64::MAX);
+        assert_eq!(live, owned_logical_bytes(&value));
+        drop(value);
+        let record = vec![vec!["escape\n\"\\"]];
+        for bounds in [JsonBounds { maximum_bytes: 1, ..BOUNDS },
+            JsonBounds { maximum_items: 1, ..BOUNDS }, JsonBounds { maximum_depth: 1, ..BOUNDS }] {
+            let mut active = 0u64;
+            assert!(json_value_bounded_trusted(&record, bounds, &mut |event| {
+                match event {
+                    JsonCodecCharge::Retain { bytes } => active += bytes,
+                    JsonCodecCharge::Release { bytes } => active = active.checked_sub(bytes).expect("released after drop"),
+                    _ => {}
+                }
+                Ok(())
+            }).is_err());
+            assert_eq!(active, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closed_lexical_diagnostic_witness_matches_real_owned_payloads() {
+        for (bytes, bounds) in [
+            (b"0".as_slice(), JsonBounds { maximum_bytes: 0, ..BOUNDS }),
+            (b"]".as_slice(), BOUNDS),
+            (b"0".as_slice(), JsonBounds { maximum_items: 0, ..BOUNDS }),
+            (b"[".as_slice(), BOUNDS),
+        ] {
+            let error = admit_json(bytes, bounds, &mut |_| Ok(())).unwrap_err();
+            match error {
+                Error::Invalid(message) => assert!(message.capacity() as u64 <= lexical_json_diagnostic_bytes()),
+                other => panic!("unexpected lexical cause: {other}"),
+            }
+        }
+        assert!(sdk_json_diagnostic_bytes() > lexical_json_diagnostic_bytes());
+    }
+
+    #[test]
+    fn closed_value_quota_uses_the_actual_single_lexical_pass() -> Result<()> {
+        for bytes in [
+            b"[]".as_slice(),
+            br#"[1]"#.as_slice(),
+            br#"{"x":"escape\n\u0041","x":[18446744073709551615,-9223372036854775808,0.1,-0.0]}"#.as_slice(),
+        ] {
+            let mut input_bytes = 0u64;
+            let mut items = 0u64;
+            let mut quota = None;
+            let value: Value = json_from_slice_bounded_trusted(bytes, BOUNDS, 0, &mut |event| {
+                match event {
+                    JsonCodecCharge::Read { bytes } => input_bytes += bytes,
+                    JsonCodecCharge::Work { items: visited, .. } => items += visited,
+                    JsonCodecCharge::Admission { .. } => {
+                        assert_eq!(input_bytes, bytes.len() as u64);
+                        quota = Some(json_value_decode_owned_bytes(input_bytes, items)?);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            assert!(owned_logical_bytes(&value) <= quota.expect("quota precedes parser"));
+            drop(value);
+        }
+        assert!(json_value_decode_owned_bytes(u64::MAX, 1).is_err());
+        assert!(json_value_decode_owned_bytes(1, u64::MAX).is_err());
+        let mut admission = false;
+        let cause = Uuid::new_v4();
+        let error = json_from_slice_bounded_trusted::<Value, _>(br#"["owned"]"#, BOUNDS, 0, &mut |event| {
+            if matches!(event, JsonCodecCharge::Admission { .. }) {
+                admission = true;
+                return Err(Error::Indeterminate(cause));
+            }
+            Ok(())
+        }).unwrap_err();
+        assert!(admission);
+        assert!(matches!(error, Error::Indeterminate(id) if id == cause));
+        Ok(())
     }
 
     #[test]
@@ -1145,6 +1364,17 @@ mod tests {
             let expected = serde_json::to_vec(&old).expect("oracle serialization");
             let actual = canonical_json_bytes_bounded(&value, BOUNDS, &mut |_| Ok(())).expect("admitted property record");
             proptest::prop_assert_eq!(actual, expected);
+            let mut retained = 0u64;
+            let direct = json_value_bounded_trusted(&value, BOUNDS, &mut |event| {
+                match event {
+                    JsonCodecCharge::Retain { bytes } => retained += bytes,
+                    JsonCodecCharge::Release { bytes } => retained = retained.checked_sub(bytes).expect("conserved tree quota"),
+                    _ => {}
+                }
+                Ok(())
+            }).expect("admitted direct Value");
+            proptest::prop_assert_eq!(&direct, &old);
+            proptest::prop_assert_eq!(retained, owned_logical_bytes(&direct));
         }
     }
 }
