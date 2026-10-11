@@ -154,6 +154,12 @@ The immutable `DiscoveredContext` source supports native loading without repeati
 
 `CompositeContentVerifier` routes refs by exact owner volume. A `ContentMountResolver` resolves an unseen exact `FileRef` on demand and returns both its owner reader and a verified `ContentGrant`; the composite checks that grant against the ref on every use. Attached agents therefore need neither an eager copy nor registration of every private directory. Explicit volume bindings take precedence; both routes still verify pinned bytes at the owning provider before admission or model projection.
 
+`ContentGrant::verify_with_native_work` and
+`verify_directory_read_with_native_work` return the authenticated grant and its
+original allocation guard. Native scope verification and capability formatting
+precede controlled volume/prefix copies; keep the guard until after the grant
+drops. Directory grants remain segment-bounded READ grants and never imply WRITE.
+
 A replacement executor can coexist with the same pinned tool registry used by typed tasks. Only stock-loop model, provider, and context-stage bindings are exclusive with that replacement; tool registration is not silently discarded.
 
 Durable task admission has an operation-only reconciliation path: `HarnessBundle::reconcile_admission` observes a committed task ID and pinned implementation without resending the input. A confirmed absence returns `None`; missing content for a committed admission is an error, not an absent operation. `HarnessBuilder::state` and `spawner` may bind retained observation and admission independently; `durable_host` supplies both as a combined local convenience. An independent spawner requires the state provider to attest the entire owner-retained `TaskAdmissionRecord` before the runtime exposes an accepted handle; an operation ID need not equal its task ID. Unobserved batch members stay individually indeterminate. The typed `attach` call checks the registered definition before exposing the task result.

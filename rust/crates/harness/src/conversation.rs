@@ -731,6 +731,20 @@ impl ContentGrant {
         })
     }
 
+    /// Verifies the original signed volume grant through the canonical observer.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn verify_with_native_work(
+        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
+        operation: VolumeOperation, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let grant = Self::verify_with_io(verifier, scope, volume, operation, &io)?;
+        let retained = io.owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((grant, custody))
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let mut bytes = self.volume.logical_owned_bytes()?;
@@ -788,16 +802,6 @@ impl ContentGrant {
         Ok(())
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let mut bytes = self.volume.logical_owned_bytes()?;
-        if let Some(file) = &self.exact_file {
-            bytes = bytes.checked_add(file.logical_owned_bytes()?)
-                .ok_or_else(|| Error::Invalid("content grant ownership overflow".into()))?;
-        }
-        bytes.checked_add(self.directory_prefix.as_ref().map_or(0, |prefix| prefix.capacity() as u64))
-            .ok_or_else(|| Error::Invalid("content grant ownership overflow".into()))
-    }
 
     /// Verifies a signed private-directory or whole-volume read grant. A
     /// whole-volume reader may discover subdirectories lazily; a delegated
@@ -851,6 +855,7 @@ impl ContentGrant {
                 reason: "private directory read is not granted",
             });
         }
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let volume = volume.clone_with_io(&io)?;
         io.retain_owned(prefix.len() as u64)?;
         let directory_prefix = crate::resources::copy_metadata_string(prefix, &io)?;
@@ -5972,6 +5977,103 @@ mod tests {
         same_provider
             .verify_manifest(&same_provider_manifest, 1, &Limits::default())
             .await?;
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_grant_controls {
+    use super::*;
+    use crate::core::{AggregateKind, Authority, AuthorityIssuer};
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576,
+            bytes_hashed: 1_048_576, items_examined: 1024,
+            allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    fn owner() -> Result<(AuthorityIssuer, Scope, VolumeRef)> {
+        let agent = AgentId::from_bytes([71; 16]);
+        let volume = VolumeRef::new(
+            ProviderRef::new("native-grant-control", "filesystem", "2")?,
+            "private-control", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent),
+        )?;
+        let issuer = AuthorityIssuer::new("native-grant-owner", [72; 32], Authority {
+            kind: AggregateKind::Task, id: "native-grant-task".into(),
+        });
+        let scope = issuer.root_for_agent(agent, "native-grant-scope", crate::Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]));
+        Ok((issuer, scope, volume))
+    }
+
+    #[test]
+    fn native_volume_grant_keeps_its_real_backing_until_data_drop() -> Result<()> {
+        let (issuer, scope, volume) = owner()?;
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite original grant ledger");
+        let baseline = work.remaining().expect("original quota").peak_allocation_bytes;
+        let grant = ContentGrant::verify_with_native_work(
+            &issuer.verifier(), &scope, &volume, VolumeOperation::Write, &work,
+        )?;
+        grant.0.require(&volume, VolumeOperation::Write)?;
+        assert!(grant.1.work().shares_ledger(&work));
+        assert!(grant.1.bytes() >= std::mem::size_of::<ContentGrant>() as u64);
+        assert!(work.remaining().expect("retained grant").peak_allocation_bytes < baseline);
+        drop(grant);
+        assert_eq!(work.remaining().expect("physically dropped grant").peak_allocation_bytes, baseline);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_directory_grant_is_segment_bounded_and_never_writable() -> Result<()> {
+        let (issuer, parent, volume) = owner()?;
+        let child = issuer.delegate_private_directory_read(
+            &parent, AgentId::from_bytes([73; 16]), "attached-directory", &volume, "private",
+        )?;
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite original directory ledger");
+        let baseline = work.remaining().expect("original quota").peak_allocation_bytes;
+        let grant = ContentGrant::verify_directory_read_with_native_work(
+            &issuer.verifier(), &child, &volume, "private", &work,
+        )?;
+        grant.0.require_directory_path(&volume, "private/nested")?;
+        assert!(grant.0.require_directory_path(&volume, "private-other").is_err());
+        assert!(grant.0.require(&volume, VolumeOperation::Write).is_err());
+        assert!(matches!(ContentGrant::verify_with_native_work(
+            &issuer.verifier(), &child, &volume, VolumeOperation::Write, &work,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        drop(grant);
+        assert_eq!(work.remaining().expect("dropped directory grant").peak_allocation_bytes, baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn native_grant_cancellation_precedes_metadata_allocations() -> Result<()> {
+        let (issuer, scope, volume) = owner()?;
+        let verifier = issuer.verifier();
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite cancellable grant ledger");
+        cancellation.cancel();
+        let before = work.receipt().allocation_operations;
+        assert!(matches!(ContentGrant::verify_with_native_work(
+            &verifier, &scope, &volume, VolumeOperation::Read, &work,
+        ), Err(Error::NativeWork { .. })));
+        assert!(matches!(ContentGrant::verify_directory_read_with_native_work(
+            &verifier, &scope, &volume, "", &work,
+        ), Err(Error::NativeWork { .. })));
+        assert_eq!(work.receipt().allocation_operations, before);
+        assert_eq!(work.receipt().backend_read_operations, 0);
         Ok(())
     }
 }
