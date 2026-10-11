@@ -275,6 +275,10 @@ pub(crate) struct CreationFixture {
 
 impl CreationFixture {
     pub(crate) async fn new() -> Result<Self> {
+        Self::new_with_grants(&[]).await
+    }
+
+    pub(crate) async fn new_with_grants(extra: &[&str]) -> Result<Self> {
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let filesystem_provider = ProviderRef::new("created-controls", "filesystem", "2")?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), filesystem_provider.clone())?);
@@ -295,7 +299,7 @@ impl CreationFixture {
                 VolumeOwner::Project("created-project".into()))?.capability(VolumeOperation::Read)?,
             VolumeRef::new(filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([90;16])))?.capability(VolumeOperation::Read)?,
-        ]);
+        ].into_iter().chain(extra.iter().map(|grant| (*grant).to_owned())));
         let signed = issuer.root_for_agent(AgentId::from_bytes([80; 16]), "owner", grants.clone());
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {

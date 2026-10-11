@@ -187,6 +187,12 @@ their owned metadata. Custom hosts reject unsupported native callbacks before
 allocating a future or starting SDK IO; a native execution preflight does not
 authenticate a task or authorize a dispatch.
 
+Native model claims use that same current-owner gate, retained admission and
+session ceilings, canonical lease digest and original keyed coordinator append.
+An uncertain acknowledgement remains the same attempt; reconciliation does not
+allocate a new lease. Execution appends and quiescent suspension likewise use
+the original optional observer and guarded journal CAS, not a second runtime.
+
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
 `Bindings::local()` starts without authority or implicit providers. `HarnessBuilder::bindings` installs its scope, registries, provider boundaries, and concurrency together. An imported binding scope can only be narrowed; configure local root grants on `HarnessBuilder` before building, or construct the desired scope in the binding set before importing it. Later builder calls can register more tasks and tools.

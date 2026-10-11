@@ -633,15 +633,28 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         revision: u64,
         command: OperationId,
     ) -> Result<()> {
-        self.host
-            .suspend_workflow_command_guarded(
-                self.task_id,
-                self.fence.clone(),
-                revision,
-                Some(command),
-                Some((execution, tail)),
-            )
-            .await
+        self.suspend_quiescent_execution_with_work(
+            execution, tail, revision, command, &mut None,
+        ).await
+    }
+
+    pub(crate) async fn suspend_quiescent_execution_with_work(
+        &self,
+        execution: OperationId,
+        tail: u64,
+        revision: u64,
+        command: OperationId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.host.suspend_workflow_command_guarded_with_work(
+            self.task_id,
+            &self.fence,
+            revision,
+            Some(command),
+            Some((execution, tail)),
+            None,
+            work,
+        ).await
     }
     /// Consumes only the original journal's sealed current Pending witness and
     /// settled execution tail. Uncertain work keeps its original reservation.
@@ -1223,7 +1236,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event))
+        self.verify_execution_with_work(operation, event, &mut None).await
+    }
+
+    pub(crate) async fn verify_execution_with_work(
+        &self,
+        operation: OperationId,
+        event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.condition_with_work(Self::execution_write(operation, event), work)
             .await
             .map(|_| ())
     }
@@ -1583,15 +1605,34 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: Bytes,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<bool> {
-        let path = crate::distributed::execution_path(operation)?;
-        self.append(
-            path,
-            expected_tail,
-            key,
-            bytes,
-            Self::execution_write(operation, event),
-        )
-        .await
+        self.append_execution_with_work(
+            operation, expected_tail, key, bytes, event, &mut None,
+        ).await
+    }
+
+    pub(crate) async fn append_execution_with_work(
+        &self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+        event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(CoordinatorTaskHost::<P>::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid,
+                "execution record exceeds canonical Stream byte bound",
+            ));
+        }
+        let path = crate::distributed::execution_path_with_work(operation, work)?;
+        self.append_with_work(
+            path, expected_tail, key, bytes,
+            Self::execution_write(operation, event), work,
+        ).await
     }
 
     pub(crate) async fn append_workflow(
@@ -1892,6 +1933,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.verify_model_history_with_work(task,operation,records.iter(),&mut None).await
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn verify_model_history_with_native_work(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        records: &[crate::executor::ExecutionRecord],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.verify_model_history_with_work(
+            task, operation, records.iter(), &mut Some(&mut io),
+        ).await
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) async fn verify_model_history_with_work<'a>(
         &self, task: TaskId, operation: OperationId,
@@ -1924,14 +1980,81 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ..
             } = &record.event
             {
-                coordinator.scheduler().require_model_claim(
+                coordinator.scheduler().require_model_claim_with_work(
                     task_operation,
                     purpose.attempt_operation(operation),
                     *step,
                     request_digest,
+                    work,
                 )?;
             }
         }
+        Ok(())
+    }
+
+    async fn claim_model_dispatch_with_work(
+        &self,
+        task_id: TaskId,
+        attempt_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        fence: &crate::scheduler::LeaseFence,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        let operation_id = OperationId::from_bytes(task_id.into_bytes());
+        let admission = self.admission_with_work(operation_id, work).await?;
+        if !admission.grants.contains("model:generate") {
+            return Err(Self::admission_boundary(
+                work, crate::wire::ErrorCode::Unauthorized,
+                "task scope lacks model:generate",
+            ));
+        }
+        let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
+        self.validate_parent_scope_with_work(admission.parent, &scope, work).await?;
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh_with_work(work).await?;
+        let operation = coordinator.observe_operation_ref_with_work(
+            &self.owner, &self.owner_scope, &self.verifier, operation_id, work,
+        )?;
+        crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)?;
+        let session = coordinator.scheduler().session_limits_with_work(operation_id, work)?;
+        let ceiling = (scope.limits().model_steps as u64)
+            .min(scope.run_limits().max_steps.map_or(u64::MAX, u64::from))
+            .min(session.model_steps);
+        let lease_digest = crate::contract::canonical_json_digest_with_work(
+            fence, acyclic_stream::MAX_RECORD_BYTES as u64, work,
+        )?;
+        let mut uuid = [0; 36];
+        let attempt = uuid::Uuid::from_bytes(attempt_id.into_bytes())
+            .hyphenated().encode_lower(&mut uuid);
+        let digits = if step == 0 { 1 } else { step.ilog10() as usize + 1 };
+        let length = "model-dispatch:".len() + attempt.len() + 1 + digits + 1 + 64;
+        let mut key = String::new();
+        if let Some(io) = work.as_deref_mut() {
+            io.admit_copy(length as u64)?;
+            io.reserve_text(&mut key, length)?;
+            io.copy_bytes(length as u64)?;
+        } else {
+            key.reserve_exact(length);
+        }
+        use std::fmt::Write as _;
+        write!(&mut key, "model-dispatch:{attempt}:{step}:{}", blake3::Hash::from(lease_digest))
+            .map_err(|_| Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid,
+                "model dispatch key formatting failed",
+            ))?;
+        let fence = fence.clone_with_work(work)?;
+        coordinator.apply_with_work(
+            operation_id,
+            IdempotencyKey::new(key)?,
+            crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
+                operation_id, attempt_id, step, request_digest, fence, ceiling,
+            },
+            work,
+        ).await?;
         Ok(())
     }
 
@@ -4250,52 +4373,38 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
-            let admission = self.admission(operation_id).await?;
-            if !admission.grants.contains("model:generate") {
-                return Err(Error::Unauthorized(
-                    "task scope lacks model:generate".into(),
-                ));
-            }
-            let scope = RuntimeScope::new(admission.grants, admission.limits)?
-                .with_run_limits(admission.run_limits)?;
-            self.validate_parent_scope(admission.parent, &scope).await?;
-            let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh().await?;
-            let operation = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-            )?;
-            crate::scheduler::require_model_owner(&operation, &fence)?;
-            let session = coordinator.scheduler().session_limits(operation_id)?;
-            let ceiling = (scope.limits().model_steps as u64)
-                .min(
-                    scope
-                        .run_limits()
-                        .max_steps
-                        .map_or(u64::MAX, |value| value as u64),
-                )
-                .min(session.model_steps);
-            let lease_digest = blake3::hash(&crate::contract::canonical_json_bytes(&fence)?);
-            coordinator
-                .apply(
-                    operation_id,
-                    IdempotencyKey::new(format!(
-                        "model-dispatch:{attempt_id}:{step}:{lease_digest}"
-                    ))?,
-                    crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
-                        operation_id,
-                        attempt_id,
-                        step,
-                        request_digest,
-                        fence,
-                        ceiling,
-                    },
-                )
-                .await?;
-            Ok(())
+            self.claim_model_dispatch_with_work(
+                task_id, attempt_id, step, request_digest, &fence, &mut None,
+            ).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(true)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn claim_model_dispatch_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        attempt: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        fence: &'a crate::scheduler::LeaseFence,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let mut io = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            self.claim_model_dispatch_with_work(
+                task, attempt, step, request_digest, fence, &mut Some(&mut io),
+            ).await
         })
     }
 
@@ -4950,6 +5059,62 @@ pub(crate) mod tests {
     mod resource_preparation;
     #[cfg(feature = "filesystem")]
     pub(crate) mod created_resource_access;
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_model_claim_keeps_original_attempt_and_fence() -> Result<()> {
+        let fixture = created_resource_access::CreationFixture::new_with_grants(
+            &["model:generate"],
+        ).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            native_lifecycle_budget(), &cancellation,
+        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
+        let attempt = OperationId::from_bytes([112; 16]);
+        let digest = [113; 32];
+        for _ in 0..2 {
+            DurableTaskHost::claim_model_dispatch_with_native_work(
+                fixture.host.as_ref(), fixture.root, attempt, 0, digest, &fence, &work,
+            )?.await?;
+        }
+        let mut coordinator = fixture.host.coordinator.lock().await;
+        coordinator.refresh().await?;
+        coordinator.scheduler().require_model_claim(
+            OperationId::from_bytes(fixture.root.into_bytes()), attempt, 0, &digest,
+        )?;
+        drop(coordinator);
+        let mut foreign = fence.clone();
+        foreign.placement.push_str("-foreign");
+        assert!(DurableTaskHost::claim_model_dispatch_with_native_work(
+            fixture.host.as_ref(), fixture.root, OperationId::from_bytes([114; 16]),
+            1, digest, &foreign, &work,
+        )?.await.is_err());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_model_claim_denies_missing_grant_and_cancelled_work() -> Result<()> {
+        let fixture = created_resource_access::CreationFixture::new().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            native_lifecycle_budget(), &cancellation,
+        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
+        assert!(matches!(DurableTaskHost::claim_model_dispatch_with_native_work(
+            fixture.host.as_ref(), fixture.root, OperationId::from_bytes([115; 16]),
+            0, [116; 32], &fence, &work,
+        )?.await, Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized, ..
+        })));
+        cancellation.cancel();
+        assert!(DurableTaskHost::claim_model_dispatch_with_native_work(
+            fixture.host.as_ref(), fixture.root, OperationId::from_bytes([117; 16]),
+            0, [118; 32], &fence, &work,
+        ).is_err());
+        Ok(())
+    }
 
     struct MemoryPayloads {
         volume: VolumeRef,
