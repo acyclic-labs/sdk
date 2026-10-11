@@ -1428,6 +1428,20 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// A native reservation failure retaining its original physical cleanup owner.
+    ///
+    /// Its concrete source slot is admitted and allocated before reservation IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeReservation {
+        /// The original primary failure's wire classification.
+        code: ErrorCode,
+        /// The complete failure in its preallocated concrete source slot.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        /// Original slot custody, released after physical Box deallocation.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An original SDK filesystem failure without a diagnostic projection.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1512,7 +1526,8 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
             | Self::NativeDecode { code, .. } | Self::NativeEncode { code, .. }
-            | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. } => *code,
+            | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. }
+            | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
