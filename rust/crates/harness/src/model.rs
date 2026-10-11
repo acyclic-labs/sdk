@@ -50,6 +50,20 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
     }
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for ToolResultContent {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        // The converter supplies the root header; this trait reports deep only.
+        ToolResultContent::logical_owned_bytes(self)?
+            .checked_sub(std::mem::size_of::<Self>() as u64)
+            .ok_or_else(model_owned_overflow)
+    }
+
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ToolResultContent
+    }
+}
+
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     fn maximum_slot_bytes() -> u64 {
@@ -499,7 +513,7 @@ fn model_validate_file_shape_with_io(
     file.validate()
 }
 
-fn model_json_bound<T: Serialize>(
+fn model_json_bound_legacy<T: Serialize>(
     value: &T, maximum: u64, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     #[cfg(not(feature = "filesystem"))]
@@ -513,6 +527,73 @@ fn model_json_bound<T: Serialize>(
     }
     crate::contract::validate_json_byte_bound(value, maximum)
         .map_err(|_| Error::Invalid("model tool projection exceeds render limit".into()))
+}
+
+fn model_value_json_bound(
+    value: &Value, maximum: u64, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        return io.check_json_byte_bound(value, maximum);
+    }
+    model_json_bound_legacy(value, maximum, io)
+}
+
+fn model_tool_result_json_bound(
+    content: &ToolResultContent, maximum: u64, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        let bounds = || -> Result<crate::contract::JsonBounds> {
+            Ok(crate::contract::JsonBounds {
+                maximum_bytes: maximum,
+                maximum_items: io.remaining()?.items_examined,
+                maximum_depth: 256,
+            })
+        };
+        let work = io.original_native_work().expect("native branch");
+        match content {
+            ToolResultContent::Json { value } => {
+                // Inspect the resident wire Value, including raw JSON payloads,
+                // before the envelope serializer scans it. No conversion graph
+                // or encoded buffer is constructed for this size-only check.
+                crate::contract::json_owned_value_shape_bounded(
+                    value, bounds()?, crate::contract::JsonValueSchema::None,
+                    &mut |next| io.codec_charge(next, false),
+                )?;
+            }
+            ToolResultContent::Parts { parts } => {
+                // validate_limits_with_io has already witnessed each FileRef's
+                // closed metadata through the original native file validator.
+                // The remaining resident strings are text and binding labels.
+                for part in parts {
+                    model_step(Some(io), 1)?;
+                    match part {
+                        ModelDataPart::Text { text } => {
+                            crate::conversation::inspect_native_metadata(work, text.len())?;
+                        }
+                        ModelDataPart::File { policy, .. } => {
+                            if let FileProjectionPolicy::Native(policy) = policy
+                                && let Some(binding) = &policy.configuration
+                            {
+                                crate::conversation::inspect_native_metadata(
+                                    work, binding.source.authority.id.len(),
+                                )?;
+                                crate::conversation::inspect_native_metadata(
+                                    work, binding.configuration.extension.name.len(),
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return crate::contract::validate_json_byte_bound_native_trusted(
+            content, bounds()?, crate::wire::ErrorCode::Invalid,
+            &mut |next| io.codec_charge(next, false),
+        );
+    }
+    model_json_bound_legacy(content, maximum, io)
 }
 
 fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
@@ -719,7 +800,7 @@ impl ModelContent {
                 } => {
                     model_step(io, name.len() as u64)?;
                     crate::registry::validate_component_label(name, "tool name")?;
-                    model_json_bound(arguments, limits.render_bytes, io)?;
+                    model_value_json_bound(arguments, limits.render_bytes, io)?;
                 }
                 ModelContentPart::ToolResult { name, content, .. } => {
                     model_step(io, name.len() as u64)?;
@@ -1266,6 +1347,19 @@ impl FileProjectionPolicy {
 }
 
 impl ToolResultContent {
+    /// Runs the original borrowed Value deserializer with paid DTO admission.
+    /// This does not clone the Value or serialize/decode it through wire bytes.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn decode_with_native_work(
+        value: &Value, work: &NativeMaterializationWork,
+    ) -> Result<(Self, NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let content = io.value_decode::<Self>(value, crate::wire::ErrorCode::Invalid)?;
+        let retained = content.logical_owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok((content, custody))
+    }
+
     /// Completed closed payload size, without allocation or cancellation.
     /// Map key/value slots are logical storage; opaque tree nodes are excluded.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -1306,30 +1400,26 @@ impl ToolResultContent {
         model_validate_limits_with_io(limits, io)?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
-                return Err(Error::Invalid(
-                    "tool result exceeds attachment limit".into(),
-                ));
+                return Err(model_invalid(io, "tool result exceeds attachment limit"));
             }
             let mut references = 0usize;
             for part in parts {
                 model_step(io, 1)?;
                 match part {
                     ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
-                        return Err(Error::Invalid(
-                            "tool result text exceeds render limit".into(),
-                        ));
+                        return Err(model_invalid(io, "tool result text exceeds render limit"));
                     }
                     ModelDataPart::File { file, policy } => {
                         policy.validate_file_with_io(file, limits, io)?;
                         references = references.checked_add(1).ok_or_else(|| {
-                            Error::Invalid("tool result reference count overflow".into())
+                            model_invalid(io, "tool result reference count overflow")
                         })?;
                         if matches!(
                             policy,
                             FileProjectionPolicy::Native(policy) if policy.configuration.is_some()
                         ) {
                             references = references.checked_add(1).ok_or_else(|| {
-                                Error::Invalid("tool result reference count overflow".into())
+                                model_invalid(io, "tool result reference count overflow")
                             })?;
                         }
                     }
@@ -1337,12 +1427,10 @@ impl ToolResultContent {
                 }
             }
             if references > limits.attachments.saturating_add(1) {
-                return Err(Error::Invalid(
-                    "tool result reference count exceeds limit".into(),
-                ));
+                return Err(model_invalid(io, "tool result reference count exceeds limit"));
             }
         }
-        model_json_bound(self, limits.render_bytes, io)
+        model_tool_result_json_bound(self, limits.render_bytes, io)
     }
 }
 
