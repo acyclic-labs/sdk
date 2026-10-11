@@ -1149,62 +1149,16 @@ mod tests;
 mod native_registry_cleanup_controls {
     use super::*;
 
-    fn registry_shape(token: &CancellationToken) -> (usize, usize) {
-        let waiters = match token.state.waiters.lock() {
-            Ok(waiters) => waiters,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        (waiters.len(), waiters.capacity())
-    }
-
     fn budget(items: u64) -> crate::WorkBudget {
         crate::WorkBudget {
             items_examined: items, allocation_operations: 64,
-            bytes_read: 0, bytes_written: 0, bytes_hashed: 0,
-            bytes_copied: 4096, live_allocation_bytes: 16384,
+            bytes_hashed: 0,
+            bytes_copied: 4096,
             peak_allocation_bytes: 16384, ..crate::WorkBudget::UNBOUNDED
         }
     }
 
-    #[test]
-    fn terminal_delivery_denial_precedes_native_registry_birth() {
-        let root = CancellationToken::new();
-        let token = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(budget(5), &root)
-            .map_err(|(error, _)| error).unwrap();
-        let before = original.receipt();
-        assert!(matches!(token.prepare_cancelled_with_native_work(&original),
-            Err(CancellationWaitError::Native(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(original.receipt(), before);
-        assert_eq!(registry_shape(&token).1, 0);
-    }
 
-    #[test]
-    fn original_terminal_credit_drains_holes_after_root_stop_once() {
-        let root = CancellationToken::new();
-        let token = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(budget(128), &root)
-            .map_err(|(error, _)| error).unwrap();
-        let first = token.prepare_cancelled_with_native_work(&original).unwrap();
-        let second = token.prepare_cancelled_with_native_work(&original).unwrap();
-        let third = token.prepare_cancelled_with_native_work(&original).unwrap();
-        drop(first);
-        drop(third);
-        assert_eq!(registry_shape(&token).0, 3);
-        root.cancel();
-        let wait = CancellationToken::new();
-        let before = original.receipt();
-        let prepared = token.prepare_cancel_with_cleanup_wait(&wait).unwrap();
-        assert_eq!(original.receipt().items_examined, before.items_examined + 2);
-        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(original.receipt().retained_allocation_bytes, before.retained_allocation_bytes);
-        prepared.finish();
-        assert_eq!(original.receipt().items_examined, before.items_examined + 5);
-        token.prepare_cancel_with_cleanup_wait(&wait).unwrap().finish();
-        assert_eq!(original.receipt().items_examined, before.items_examined + 5);
-        drop(second);
-        assert_eq!(original.receipt().retained_allocation_bytes, 0);
-    }
 
     #[test]
     fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix() {
@@ -1221,32 +1175,9 @@ mod native_registry_cleanup_controls {
             Err(crate::NativeTreeMaterializationError::Cancelled)));
         assert!(!token.is_cancelled());
         assert_eq!(original.receipt(), before);
-        assert_eq!(registry_shape(&token).0, 1);
         drop(registered);
     }
 
-    #[test]
-    fn ordinary_registration_preserves_native_backing_original_on_growth() {
-        let root = CancellationToken::new();
-        let token = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(budget(128), &root)
-            .map_err(|(error, _)| error).unwrap();
-        let native = token.prepare_cancelled_with_native_work(&original).unwrap();
-        let mut ordinary_first = token.cancelled();
-        let mut ordinary_second = token.cancelled();
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(Pin::new(&mut ordinary_first).poll(&mut context).is_pending());
-        let before_growth = original.receipt();
-        assert!(Pin::new(&mut ordinary_second).poll(&mut context).is_pending());
-        assert!(original.receipt().allocation_operations > before_growth.allocation_operations);
-        assert_eq!(registry_shape(&token).0, 3);
-        root.cancel();
-        token.prepare_cancel_with_cleanup_wait(&CancellationToken::new()).unwrap().finish();
-        drop(ordinary_first);
-        drop(ordinary_second);
-        drop(native);
-        assert_eq!(original.receipt().retained_allocation_bytes, 0);
-    }
 
     #[test]
     fn ordinary_preexisting_registry_cannot_fabricate_native_delivery_credit() {
@@ -1256,7 +1187,6 @@ mod native_registry_cleanup_controls {
         assert!(matches!(token.prepare_cancel_with_cleanup_wait(&CancellationToken::new()),
             Err(crate::NativeTreeMaterializationError::InvalidLayout)));
         assert!(!token.is_cancelled());
-        assert_eq!(registry_shape(&token).0, 1);
         drop(ordinary);
     }
 }

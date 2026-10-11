@@ -473,7 +473,7 @@ mod tests {
             &cancellation,
         ).map_err(|(error, _work)| error)?;
         original.admit(WorkCounters { items_examined: 3, ..WorkCounters::UNCHARGED })?;
-        let baseline = original.with_allocations(|ledger, _, _, _| Ok(ledger.live_bytes()))?;
+        let baseline = original.live_allocation_bytes();
         let prior = original.receipt();
         let ((encoding, bytes), custody) = host_name_bytes_with_native_work(
             OsStr::new("native"), FilesystemProfile::Portable, 255, &original,
@@ -485,13 +485,13 @@ mod tests {
         assert_eq!(original.receipt().items_examined, prior.items_examined);
         assert_eq!(original.receipt().allocation_operations, prior.allocation_operations + 1);
         assert_eq!(
-            original.with_allocations(|ledger, _, _, _| Ok(ledger.live_bytes()))?,
+            original.live_allocation_bytes(),
             baseline + bytes.capacity() as u64,
         );
         drop(bytes);
         drop(custody);
         assert_eq!(
-            original.with_allocations(|ledger, _, _, _| Ok(ledger.live_bytes()))?,
+            original.live_allocation_bytes(),
             baseline,
         );
         Ok(())
@@ -552,7 +552,7 @@ mod tests {
             WorkBudget { bytes_encoded: 2, peak_allocation_bytes: 64 * 1024, ..finite_name_budget() },
             &cancellation,
         ).map_err(|(error, _)| error)?;
-        let baseline = original.with_allocations(|ledger, _, _, _| Ok(ledger.live_bytes()))?;
+        let baseline = original.live_allocation_bytes();
         let prior = original.receipt();
         assert!(matches!(host_name_bytes_with_native_work(
             OsStr::new("ab"), FilesystemProfile::Windows, 255, &original,
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(completed.bytes_encoded, prior.bytes_encoded + 2);
         assert_eq!(completed.items_examined, prior.items_examined + 3);
         assert_eq!(completed.allocation_operations, prior.allocation_operations + 1);
-        assert_eq!(original.with_allocations(|ledger, _, _, _| Ok(ledger.live_bytes()))?, baseline);
+        assert_eq!(original.live_allocation_bytes(), baseline);
         cancellation.cancel();
         let before = original.receipt();
         assert!(matches!(host_name_bytes_with_native_work(

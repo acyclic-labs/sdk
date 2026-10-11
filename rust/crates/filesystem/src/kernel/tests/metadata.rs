@@ -1,3 +1,4 @@
+use crate::WorkError;
 use super::*;
 use crate::foundation::Digest;
 

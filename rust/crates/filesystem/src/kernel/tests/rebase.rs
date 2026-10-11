@@ -97,7 +97,7 @@ async fn native_control_events_preserve_the_original_until_actual_parent_buffer_
     let fs = crate::Fs::memory();
     let workspace = fs.create_workspace("native-parent-buffer-custody").await?;
     let checkout = workspace.checkout_measured(
-        crate::GenerationSelector::Head, crate::CheckoutMode::read_only_pinned(),
+        crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let original_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -135,18 +135,10 @@ async fn native_control_events_preserve_the_original_until_actual_parent_buffer_
     drop(copy);
     assert_eq!(owner.native_control_events(), (initial.0 + u128::from(native_bytes), initial.1));
     assert_eq!(owner.non_native_retained_payload_bytes(), 0);
-    let mut allocations = super::super::allocation::AllocationLedger::default();
-    let mut work = WorkCounters::default();
-    let mut generic = super::super::allocation::reserve_exact::<GenerationId>(
-        1, &mut allocations, &mut work, WorkBudget::UNBOUNDED,
-    )?;
-    generic.push(generation(8));
+    let generic = vec![generation(8)];
     let generic_bytes = (generic.capacity() * std::mem::size_of::<GenerationId>()) as u64;
     let generic = (generic, ProofDataClaim::control(&owner, generic_bytes));
-    let mut pending = super::super::allocation::reserve_exact::<GenerationId>(
-        1, &mut allocations, &mut work, WorkBudget::UNBOUNDED,
-    )?;
-    pending.push(generation(9));
+    let pending = vec![generation(9)];
     let pending_bytes = (pending.capacity() * std::mem::size_of::<GenerationId>()) as u64;
     let pending = (pending, ProofDataClaim::pending_control(&owner, pending_bytes));
     assert_eq!(owner.non_native_retained_payload_bytes(), generic_bytes + pending_bytes);
@@ -177,7 +169,7 @@ async fn native_data_is_already_original_standing_but_retires_with_its_actual_na
     let fs = crate::Fs::memory();
     let workspace = fs.create_workspace("native-name-buffer-custody").await?;
     let checkout = workspace.checkout_measured(
-        crate::GenerationSelector::Head, crate::CheckoutMode::read_only_pinned(),
+        crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let original_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)

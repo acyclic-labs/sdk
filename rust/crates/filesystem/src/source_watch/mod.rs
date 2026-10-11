@@ -397,6 +397,7 @@ impl Delivery {
         invoke()
     }
 
+    #[allow(unsafe_code, reason = "reads live thread-local callback frames")]
     fn ensure_stop_available(&self) -> Result<(), crate::demand::DemandError> {
         ACTIVE_CALLBACK.with(|active| {
             let mut frame = active.get();

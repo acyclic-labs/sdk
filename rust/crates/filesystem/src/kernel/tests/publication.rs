@@ -1,7 +1,9 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::foundation::{DurableCommit, ProposedCommit, Sequence};
 use crate::kernel::{
     Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
+    prove_generation_closure,
     PublicationEvidenceError, TreeEntry, decode_generation_publication_evidence,
     encode_extent_page, encode_generation_export_manifest, encode_generation_publication_evidence,
 };
@@ -644,12 +646,14 @@ fn evidence_fixture() -> Result<
     assert_eq!(proof.object_count, 5);
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
-    let prepared = prepare_publication(proof.clone(), request, None, WorkBudget::UNBOUNDED)?;
+    let cancellation = CancellationToken::new();
+    let commit = prepare_publication_commit(request, None, None,
+        &mut PublicationAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     let append = GuardedAppend {
         authority_id: request.authority_id,
         epoch: request.epoch,
         expected: request.expected,
-        commit: prepared.commit,
+        commit,
         permit: PublicationPermit::Unrestricted,
     };
     let mut config = VolumeConfig::portable(Lifecycle::Durable);
@@ -811,7 +815,7 @@ fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
         },
         GuardedAppend {
             commit: ProposedCommit {
-                payload: Bytes::from(encode_publication_payload(
+                payload: bytes::Bytes::from(encode_publication_payload(
                     VolumeId::from_bytes([81; 16]), request.generation_root,
                 )),
                 ..append.commit.clone()
@@ -914,7 +918,7 @@ impl crate::AsyncObjectStore for CustodyObjectStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -1213,12 +1217,14 @@ fn historical_publication_evidence_binds_original_memory_commit_not_later_head()
     let proof = prove_generation_closure(
         &objects, request.generation_root, limits(), WorkBudget::UNBOUNDED,
     )?;
-    let prepared = prepare_publication(proof.clone(), request, None, WorkBudget::UNBOUNDED)?;
+    let cancellation = CancellationToken::new();
+    let commit = prepare_publication_commit(request, None, None,
+        &mut PublicationAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     let append = GuardedAppend {
         authority_id,
         epoch: request.epoch,
         expected: head,
-        commit: prepared.commit,
+        commit,
         permit: PublicationPermit::Unrestricted,
     };
     let evidence = crate::kernel::HistoricalGenerationEvidence::from(
@@ -1263,7 +1269,7 @@ fn historical_publication_evidence_binds_original_memory_commit_not_later_head()
     for altered in [
         DurableCommit { operation_id: later.operation_id, ..original.clone() },
         DurableCommit { fingerprint: Digest::from_bytes([104; 32]), ..original.clone() },
-        DurableCommit { payload: Bytes::from_static(b"altered"), ..original.clone() },
+        DurableCommit { payload: bytes::Bytes::from_static(b"altered"), ..original.clone() },
         DurableCommit { epoch: Epoch::new(2)?, ..original.clone() },
         DurableCommit { sequence: later.sequence, ..original.clone() },
         DurableCommit { previous_digest: later.digest, ..original.clone() },
@@ -1517,7 +1523,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         .map_err(|(error, _)| error)?;
     let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
     let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
-        .map_err(|failure| failure.into_error())?;
+        .expect("fresh evidence has fully initialized unique backing");
     let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
         .with_original_evidence(Some(evidence));
     let mut guard = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), NativePublicationTestError>(()));
@@ -1875,7 +1881,7 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     assert_eq!(decoded.original_evidence, None);
     assert_eq!(decoded.evidence_digest, None);
     assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
-    let mut suffixed = legacy;
+    let mut suffixed = legacy.clone();
     suffixed.extend_from_slice(evidence);
     assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
     let large_evidence = vec![7; 4_096];
@@ -1931,7 +1937,7 @@ fn publication_payload_aliases_hold_actual_original_evidence_until_last_owner_dr
     let baseline = original.live_allocation_bytes();
     let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
     let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
-        .map_err(|failure| failure.into_error())?;
+        .expect("fresh evidence has fully initialized unique backing");
     assert!(original.live_allocation_bytes() > baseline);
     let authority = MemoryAuthorityStore::default();
     let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([57; 32]) };
@@ -2028,7 +2034,7 @@ async fn native_original_fingerprint_survives_real_reservation_rotation_without_
     let context = Digest::from_bytes([65; 32]);
     let (data, custody) = original.copy_bytes(b"immutable original reservation operation data")?;
     let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
-        .map_err(|failure| failure.into_error())?;
+        .expect("fresh evidence has fully initialized unique backing");
     let expected_fingerprint = {
         let mut binding = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let bound = permit_context_with_accounting(Some(context), old_permit, &mut binding)?;
@@ -2072,7 +2078,7 @@ async fn native_original_fingerprint_survives_real_reservation_rotation_without_
     assert!(seals.load(std::sync::atomic::Ordering::SeqCst) > 0);
     let (data, custody) = original.copy_bytes(b"altered original reservation operation data")?;
     let altered = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
-        .map_err(|failure| failure.into_error())?;
+        .expect("fresh evidence has fully initialized unique backing");
     let before = seals.load(std::sync::atomic::Ordering::SeqCst);
     let changed = publish_generation_async_guarded_with_native_work(
         &objects, &authority, request,

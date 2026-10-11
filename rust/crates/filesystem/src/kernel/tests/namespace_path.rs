@@ -1,3 +1,4 @@
+use crate::kernel::PathLookupError;
 use super::*;
 
 #[test]

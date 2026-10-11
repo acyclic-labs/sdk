@@ -1,3 +1,4 @@
+use crate::kernel::decode_tree_page;
 use super::*;
 use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;

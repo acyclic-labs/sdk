@@ -1751,6 +1751,7 @@ mod tests {
         fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> {
             work.check()
         }
+        fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
         fn host_changed_wide_with_native_work(
             &self, _: &[HostChangeWide<'_>], work: &mut crate::demand::NativeSourceWork<'_>,
         ) -> Result<(), DemandError> { crate::native_host::NativeHostWork::check(work) }

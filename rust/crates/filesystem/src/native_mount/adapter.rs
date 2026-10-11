@@ -5,14 +5,15 @@ use super::view_ledger::{ViewChange, ViewEffect, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountPath, MountPublication, MountRangeAllocation, MountSparseRange, MountSeekTarget, MountSourceError,
     MountViewLease, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
     seal_checkout,
 };
 use crate::heap_future::in_heap;
+use crate::native_host::NativeHostWork as _;
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
-    FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
+    FileRecord, GenerationMutationError, LogicalName, MetadataField, NameEncoding, NamespacePath, RebaseDecision,
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
@@ -25,7 +26,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
     GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
-    OperationId, VolumeId, WorkBudget,
+    OperationId, VolumeId, WorkBudget, WorkError,
 };
 use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
@@ -290,6 +291,9 @@ impl crate::native_host::NativeHostWork for CaptureScratchAllocation<'_> {
     fn record(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
         self.work.record(delta)
     }
+    fn started_io(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
+        crate::native_host::NativeHostWork::started_io(self.work, delta)
+    }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
         self.work.allocate(bytes)?;
         self.track(bytes);
@@ -525,7 +529,7 @@ impl NativeDemandCarrier<'_> {
             super::NativeMountAllocationCustody::new_on_original(&original.original_demand_work())
                 .map_err(super::lazy::mount_demand_error)
         } else {
-            self.with_work(super::NativeMountAllocationCustody::new).map_err(native_custody_error)
+            self.with_work(super::NativeMountAllocationCustody::new).map_err(super::lazy::mount_demand_error)
         }
     }
 
@@ -626,7 +630,7 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
     } else {
         let (budget, prior_live) = carrier.with_work(|work| {
             Ok::<_, MountSourceError>((
-                work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
             ))
         })?;
         let inspected = checkout.inspector_measured(budget, cancellation);
@@ -640,7 +644,7 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
     } else {
         let (budget, prior_live) = inspector.work.with_work(|work| {
             Ok::<_, MountSourceError>((
-                work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
             ))
         })?;
         let lookup = inspector.lookup_no_follow(path, budget, cancellation).await;
@@ -2402,7 +2406,7 @@ impl GroupedCallbackBindings {
                     Option<Arc<dyn super::NativeMountCallbackGuard>>, Option<CancellationToken>,
                 )>()).ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
                 scratch.track(bytes);
-                custody.retain_admitted(bytes, scratch.work).map_err(native_custody_error)?;
+                custody.retain_admitted(bytes, scratch.work).map_err(super::lazy::mount_demand_error)?;
                 scratch.retain();
                 Ok(Self { entries, legacy_custody: Some(custody), native_allocation: None })
             })?
@@ -2492,8 +2496,8 @@ impl GroupedAdmission {
         phase: u8,
         work: &mut crate::demand::DemandWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let allocation = super::NativeMountAllocationCustody::new(work).map_err(native_custody_error)?;
-        allocation.claim(std::mem::size_of::<Self>() as u64, work).map_err(native_custody_error)?;
+        let allocation = super::NativeMountAllocationCustody::new(work).map_err(super::lazy::mount_demand_error)?;
+        allocation.claim(std::mem::size_of::<Self>() as u64, work).map_err(super::lazy::mount_demand_error)?;
         Ok(Arc::new(Self {
             phase: AtomicU8::new(phase),
             failure: OnceLock::new(),
@@ -2726,12 +2730,12 @@ impl<A, O> SharedCheckout<A, O> {
                         Ok(custody) => Ok(Some(custody)),
                         Err(error) => {
                             work.release(bytes).map_err(super::lazy::mount_demand_error)?;
-                            Err(error.into())
+                            Err(super::lazy::mount_demand_error(error))
                         }
                     }
                 }
                 SharedControlEvent::Attach { custody, owner } => {
-                    custody.attach_known_control(owner, work)?;
+                    custody.attach_known_control(owner, work).map_err(super::lazy::mount_demand_error)?;
                     Ok(None)
                 }
             }
@@ -2743,7 +2747,7 @@ impl<A, O> SharedCheckout<A, O> {
             Err(error) => {
                 drop(value);
                 work.release(bytes).map_err(super::lazy::mount_demand_error)?;
-                return Err(error.into());
+                return Err(super::lazy::mount_demand_error(error));
             }
         };
         value.control_custodies[3] = Some(custody.clone());
@@ -2751,7 +2755,7 @@ impl<A, O> SharedCheckout<A, O> {
         let erased: Arc<dyn std::any::Any + Send + Sync> = shared.clone();
         let owner = super::NativeMountControlAllocation::SharedCheckout(Arc::downgrade(&erased));
         drop(erased);
-        custody.attach_known_control(owner, work)?;
+        custody.attach_known_control(owner, work).map_err(super::lazy::mount_demand_error)?;
         Ok(shared)
     }
 
@@ -2797,7 +2801,7 @@ impl<A, O> SharedCheckout<A, O> {
         };
         if let Some(custody) = &ledger_custody {
             admission(SharedControlEvent::Attach {
-                custody, owner: super::NativeMountControlAllocation::ViewLedger(Arc::downgrade(&ledger)),
+                custody, owner: super::NativeMountControlAllocation::ViewLedger(Arc::downgrade(&(ledger.clone() as Arc<dyn std::any::Any + Send + Sync>))),
             })?;
         }
         let (gate_custody, view_gate) = match native {
@@ -2809,7 +2813,7 @@ impl<A, O> SharedCheckout<A, O> {
         };
         if let Some(custody) = &gate_custody {
             admission(SharedControlEvent::Attach {
-                custody, owner: super::NativeMountControlAllocation::ViewGate(Arc::downgrade(&view_gate)),
+                custody, owner: super::NativeMountControlAllocation::ViewGate(Arc::downgrade(&(view_gate.clone() as Arc<dyn std::any::Any + Send + Sync>))),
             })?;
         }
         Ok(Self {
@@ -3252,7 +3256,7 @@ impl<A, O> SharedCheckout<A, O> {
             ).map_err(MountSourceError::Filesystem)?
         } else {
             carrier.with_work(|work| {
-            let prior_live = work.allocations.live_bytes();
+            let prior_live = work.live_allocation_bytes();
             let result = state.checkout.prepare_candidate_adoption_measured(
                 &candidate.base, &candidate.checkout,
                 work.remaining().map_err(mount_demand_error)?, cancellation,
@@ -3311,7 +3315,7 @@ impl<A, O> SharedCheckout<A, O> {
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let result = candidate.checkout.change_content_by_id(
@@ -3378,7 +3382,7 @@ impl<A, O> SharedCheckout<A, O> {
             } else {
                 let (budget, prior_live) = observer.work.with_work(|work| {
                     Ok::<_, MountSourceError>((
-                        work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                        work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                     ))
                 })?;
                 let result = observer.read_file_record_by_id(file_id, budget, cancellation).await;
@@ -3450,7 +3454,7 @@ impl<A, O> SharedCheckout<A, O> {
             return Err(MountSourceError::Stale);
         }
         if let Some(original) = &original {
-            original.check().map_err(MountSourceError::NativeWork)
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)
         } else {
             carrier.with_work(|work| work.check()).map_err(mount_demand_error)
         }
@@ -3502,7 +3506,7 @@ impl<A, O> SharedCheckout<A, O> {
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let result = candidate.checkout.set_attributes_by_id(
@@ -3560,7 +3564,7 @@ impl<A, O> SharedCheckout<A, O> {
         } else {
             let (budget, prior_live) = input.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let (name, value) = input.value.take().expect("native attribute input is live");
@@ -3860,7 +3864,10 @@ impl<A, O> SharedCheckout<A, O> {
                 return Err(E::from(error));
             }
         };
-        let result = async {
+        let result = {
+        let loan = &mut loan;
+        let carrier = &mut carrier;
+        async move {
             let native = mounted.native_materialization_work();
             carrier.with_work(|work| work.check()).map_err(mount_demand_error)?;
             if lifetime.is_some_and(CancellationToken::is_cancelled) {
@@ -3920,7 +3927,8 @@ impl<A, O> SharedCheckout<A, O> {
                     error => MountSourceError::Filesystem(error),
                 })),
             }
-        }.await;
+        }.await
+        };
         loan.restore().await;
         let reconciled = carrier.with_work(|work| work.record(crate::WorkCounters::UNCHARGED))
             .map_err(mount_demand_error);
@@ -4031,7 +4039,7 @@ impl<A, O> SharedCheckout<A, O> {
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
             let (mut replacement, custody) = carrier.with_work(|work| {
                 let custody = super::NativeMountAllocationCustody::new(work)
-                    .map_err(native_custody_error)?;
+                    .map_err(super::lazy::mount_demand_error)?;
                 let copied = crate::WorkCounters {
                     bytes_copied: (held.len() * std::mem::size_of::<Arc<PendingCreate>>()) as u64,
                     items_examined: held.len() as u64,
@@ -4043,7 +4051,7 @@ impl<A, O> SharedCheckout<A, O> {
                 if let Err(error) = custody.retain_admitted(bytes, work) {
                     drop(vector);
                     work.release(bytes).map_err(mount_demand_error)?;
-                    return Err(native_custody_error(error));
+                    return Err(super::lazy::mount_demand_error(error));
                 }
                 work.record(copied).map_err(mount_demand_error)?;
                 Ok::<_, MountSourceError>((vector, custody))
@@ -4343,7 +4351,7 @@ impl<A, O> SharedCheckout<A, O> {
             }
             let cleanup = preparation.finish_cleanup(restored, false);
             let released = preparation.release(false);
-            return Err(error).and(cleanup).and(released);
+            return Err::<(), _>(error).and(cleanup).and(released);
         }
         drop(checkout);
         preparation.scan = true;
@@ -4838,7 +4846,7 @@ impl<A, O> SharedCheckoutState<A, O> {
                 ).map_err(MountSourceError::Filesystem);
             }
             carrier.with_work(|work| {
-                let prior_live = work.allocations.live_bytes();
+                let prior_live = work.live_allocation_bytes();
                 let result = self.private_candidate_measured(
                     work.remaining().map_err(mount_demand_error)?, cancellation,
                 );
@@ -5166,7 +5174,7 @@ impl<A, O> SharedCheckout<A, O> {
                 (budget, original.live_allocation_bytes())).map_err(MountSourceError::NativeWork),
             None => buffers.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             }),
         };
@@ -5955,7 +5963,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             state.metadata = receipt.value;
             state.mutation_epoch = epoch;
         }
-        carrier.with_work(|work| mount_accept(work, receipt, facade_error)).map(|_| ())
+        carrier.with_work(|work| mount_accept(work, receipt, fs_error)).map(|_| ())
     }
 
     async fn read_sparse_async_with_native_work(
@@ -6333,7 +6341,7 @@ where
         {
             return Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout));
         }
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let runtime_meter = original.runtime_meter_owner();
         // The tuple drops its physical spans before their paid native guard,
         // after the canonical runtime has retired the accepted callback.
@@ -6557,7 +6565,7 @@ where
 
     fn native_view(&self, work: &super::NativeMountMeterWork) -> Result<ViewReadLease, MountSourceError> {
         let original = work.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.attached.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let cancellation = work.meter().lock().cancellation().clone();
         let meter = original.runtime_meter_owner();
@@ -6571,7 +6579,7 @@ where
 
     fn apply_with_native_work(&self, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
         let original = work.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.attached.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if matches!(&*self.pending.state(), PendingState::Pending { .. }) {
             let meter = original.runtime_meter_owner();
@@ -6643,14 +6651,18 @@ where
                 let original = work.native_materialization_work();
                 let contents = bytes.get(start..end).unwrap_or_default();
                 if contents.is_empty() {
-                    original.check().map_err(MountSourceError::NativeWork)?;
+                    original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
                     return Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0));
                 }
                 let (data, allocation) = original.copy_bytes(contents)
                     .map_err(MountSourceError::NativeWork)?;
                 let capacity = data.capacity() as u64;
                 let data = OwnedBytes::from_vec_with_guard(data, allocation, original.runtime_meter_owner())
-                    .map_err(|error| MountSourceError::NativeWork(original.runtime_error(error.into_error())))?;
+                    .map_err(|error| MountSourceError::NativeWork(match error.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                        | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                    }))?;
                 return Ok(crate::kernel::OwnedSourceChunk::intrinsic(data, capacity));
             }
         }
@@ -6901,7 +6913,11 @@ where
             let (data, allocation) = original.copy_bytes(&bytes).map_err(MountSourceError::NativeWork)?;
             let capacity = data.capacity() as u64;
             let data = OwnedBytes::from_vec_with_guard(data, allocation, original.runtime_meter_owner())
-                .map_err(|error| MountSourceError::NativeWork(original.runtime_error(error.into_error())))?;
+                .map_err(|error| MountSourceError::NativeWork(match error.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                        | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                    }))?;
             return self.attached.write_range_with_meter(
                 offset, crate::kernel::OwnedSourceChunk::intrinsic(data, capacity), &work,
             );
@@ -7156,7 +7172,7 @@ where
             use super::lazy::mount_demand_error;
             let (_view, mut observer) = self.measured_observer(NativeDemandCarrier::Native(work)).await?;
             let cancellation = meter.lock().cancellation().clone();
-            let result = async {
+            let result: Result<MountLookup, MountSourceError> = async {
                 let original = work.native_materialization_work();
                 let record = observer.read_file_record_by_id_with_native_work(
                     self.file_id, &original, &cancellation,
@@ -7458,7 +7474,7 @@ where
         {
             return Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout));
         }
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let runtime_meter = original.runtime_meter_owner();
         // Keep data and its paid guard together through the physical terminal.
         let mut carrier = NativeDemandCarrier::Native(work);
@@ -8032,7 +8048,7 @@ fn native_attribute_page_with_native_work(
     let mut scratch = NativeCaptureScratchAllocation::new(original)?;
     let mut names = scratch.vec::<Vec<u8>>(entries.len())?;
     for entry in entries {
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         if let Some(lifetime) = lifetime {
             lifetime.check().map_err(|_| MountSourceError::Cancelled)?;
         }
@@ -8067,7 +8083,7 @@ fn native_attribute_page_with_native_work(
         } else { None }
     } else { None };
     let output = MountAttributePage { names, next_cursor };
-    original.check().map_err(MountSourceError::NativeWork)?;
+    original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
     if let Some(lifetime) = lifetime {
         lifetime.check().map_err(|_| MountSourceError::Cancelled)?;
     }
@@ -8286,7 +8302,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>
     where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
         let original = native.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let mut carrier = NativeDemandCarrier::Native(native);
         let cancellation = carrier.cancellation();
@@ -8298,7 +8314,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         ).await?;
         let _view = observation._view;
         let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let result = match range {
             Some(range) => observer.read_file_range_with_native_work(
@@ -8314,7 +8330,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let completed = observer.finish();
         let output = result.map_err(MountSourceError::Filesystem)?;
         completed?;
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         Ok(output)
     }
@@ -8346,7 +8362,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let _view = observation._view;
         let mut observer = LookupObserverOwned::new(observation.observer, meter)?;
         let budget = {
-            let work = meter.lock();
+            let mut work = meter.lock();
             work.check().map_err(mount_demand_error)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             work.remaining().map_err(mount_demand_error)?
@@ -8380,7 +8396,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         };
         observer.finish()?;
         {
-            let work = meter.lock();
+            let mut work = meter.lock();
             work.check().map_err(mount_demand_error)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         }
@@ -8402,7 +8418,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         O: AsyncObjectStore + 'static,
     {
         if let Some(original) = carrier.original_native_work() {
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         } else {
             carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
         }
@@ -8431,7 +8447,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         O: AsyncObjectStore + 'static,
     {
         if let Some(original) = carrier.original_native_work() {
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         } else {
             carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
         }
@@ -8458,7 +8474,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     ) -> Result<MountDirectoryPage, MountSourceError>
     where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
         let original = native.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let mut carrier = NativeDemandCarrier::Native(native);
         let cancellation = carrier.cancellation();
@@ -8496,7 +8512,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut scratch = NativeCaptureScratchAllocation::new(&original)?;
         let mut entries = scratch.vec::<MountDirectoryEntry>(source_entries.len())?;
         for entry in source_entries {
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let name_pair = native_mount_name_with_native_work(&entry.name, &original)?;
             scratch.absorb(name_pair.1);
@@ -8527,7 +8543,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             } else { None }
         } else { None };
         let page = MountDirectoryPage::with_native_allocation(entries, next_cursor, scratch.retain());
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         Ok(page)
     }
@@ -8569,7 +8585,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             return Ok(pending);
         }
         carrier.with_work(|work| {
-            let custody = super::NativeMountAllocationCustody::new(work).map_err(native_custody_error)?;
+            let custody = super::NativeMountAllocationCustody::new(work).map_err(super::lazy::mount_demand_error)?;
             let mut scratch = CaptureScratchAllocation::new(work);
             let path = mount_clone_namespace(path.components(), self.limits, scratch.work)?;
             scratch.track(path.retained_bytes());
@@ -8577,11 +8593,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 bytes_copied: (std::mem::size_of::<FileMetadata>() + std::mem::size_of::<PendingCreate>()) as u64,
                 ..crate::WorkCounters::UNCHARGED
             }).map_err(mount_demand_error)?;
-            custody.claim(std::mem::size_of::<FileMetadata>() as u64, scratch.work).map_err(native_custody_error)?;
+            custody.claim(std::mem::size_of::<FileMetadata>() as u64, scratch.work).map_err(super::lazy::mount_demand_error)?;
             let metadata = Box::new(metadata);
-            custody.retain_admitted(path.retained_bytes(), scratch.work).map_err(native_custody_error)?;
+            custody.retain_admitted(path.retained_bytes(), scratch.work).map_err(super::lazy::mount_demand_error)?;
             scratch.retain();
-            custody.claim(std::mem::size_of::<PendingCreate>() as u64, work).map_err(native_custody_error)?;
+            custody.claim(std::mem::size_of::<PendingCreate>() as u64, work).map_err(super::lazy::mount_demand_error)?;
             Ok(Arc::new(PendingCreate {
                 path, file_id, origin: ViewOrigin::current(),
                 native_callback_guard: self.native_callback_guard.as_ref().map(Arc::clone),
@@ -8756,7 +8772,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let mut authored = NativeCarrierOwned { value: Some(authored), carrier, bytes };
             let (budget, prior_live) = authored.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -8909,7 +8925,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let mut consumed = NativeCarrierOwned { value: Some(consumed), carrier, bytes };
             let (budget, prior_live) = consumed.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
@@ -9019,7 +9035,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             };
             let (budget, prior_live) = consumed.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let path = consumed.value.take().expect("native remove input is live");
@@ -9056,7 +9072,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let inspected = checkout.inspector_measured(budget, cancellation);
@@ -9073,7 +9089,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 } else {
                     let (budget, prior_live) = inspector.work.with_work(|work| {
                         Ok::<_, MountSourceError>((
-                            work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                            work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                         ))
                     })?;
                     let lookup = inspector.lookup_no_follow(path, budget, cancellation).await;
@@ -9198,7 +9214,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             };
             let (budget, prior_live) = consumed_destination.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let source_path = consumed_source.value.take().expect("native rename source is live");
@@ -9402,7 +9418,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let mut found = None;
             for pending in held.iter() {
                 original.charge(crate::WorkCounters {
-                    items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+                    items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }).map_err(MountSourceError::NativeWork)?;
                 if pending.file_id == created.node.file_id {
                     found = Some(Arc::clone(pending));
@@ -9951,12 +9967,12 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .map_err(MountSourceError::NativeWork)?)
         } else {
             owned.carrier.with_work(|work| {
-                custody.retain_admitted(bytes, work).map_err(native_custody_error)
+                custody.retain_admitted(bytes, work).map_err(super::lazy::mount_demand_error)
             })?;
             owned.bytes = 0;
             owned.carrier.with_work(|work| {
                 custody.claim(std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64, work)
-                    .map_err(native_custody_error)
+                    .map_err(super::lazy::mount_demand_error)
             })?;
             None
         };
@@ -10042,7 +10058,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Arc<CheckoutDetachedFile<A, O>>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let custody = super::NativeMountAllocationCustody::new(work).map_err(native_custody_error)?;
+        let custody = super::NativeMountAllocationCustody::new(work).map_err(super::lazy::mount_demand_error)?;
         let file = self.detached_identity_from_record_with_work(record, work, view, cancellation).await?;
         self.detached_handle_from_identity_with_carrier(
             file, metadata, custody, &mut NativeDemandCarrier::Borrowed(work),
@@ -10139,7 +10155,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let cancellation = CancellationToken::new_with_native_work(&work)
             .map_err(MountSourceError::NativeWork)?;
         let mut cleanup_credit = work.reserve_work(crate::WorkCounters {
-            items_examined: 2, ..crate::WorkCounters::UNCHARGED,
+            items_examined: 2, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork)?;
         let final_credit = cleanup_credit.partition_items(1).map_err(MountSourceError::NativeWork)?;
         Ok(Self {
@@ -10444,7 +10460,7 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     fn reserve_capture_poll(&self) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError> {
         self.native_original.as_ref().map(|original| original.reserve_work(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork)).transpose()
     }
 
@@ -11833,7 +11849,7 @@ where
         let times = ContentTimes::Stamp(content_change_time()?);
         let (budget, prior_live) = carrier.with_work(|work| {
             Ok::<_, MountSourceError>((
-                work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
             ))
         })?;
         // These inputs remain caller-owned; the original path-based SDK
@@ -11951,7 +11967,7 @@ where
         } else {
             let (budget, prior_live) = name.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             let attribute = name.value.take().expect("native attribute name is live");
@@ -12018,7 +12034,7 @@ where
             ContentChange::CloneFrom {
                 source: source_file_id, source_offset, offset: destination_offset, length,
             },
-            carrier, &cancellation, Some(&self.cancellation),
+            carrier, &cancellation, Some(&self.cancellation), None,
         ).await
     }
 
@@ -12220,7 +12236,7 @@ where
             };
             let (budget, prior_live) = authored.carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
-                    work.remaining().map_err(mount_demand_error)?, work.allocations.live_bytes(),
+                    work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
             self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
@@ -12568,8 +12584,8 @@ where
             .then(|| self.checkout.ledger.stamp())
     }
 
-    fn observe_view(&self, observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError> {
-        self.checkout.ledger.observe(observer)
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        self.checkout.ledger.observe(observer).expect("unbounded view observer registration");
     }
 
     fn observe_view_with_work(
@@ -12577,11 +12593,7 @@ where
         observer: Weak<dyn ViewObserver>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.work.check().map_err(super::lazy::mount_demand_error)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.observe_view_on_meter(observer, meter)
-        })
+        work.run_with_meter(|original| self.observe_view_with_meter(observer, original))
     }
 
     fn observe_view_with_meter(
@@ -12596,11 +12608,7 @@ where
         &self,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.work.check().map_err(super::lazy::mount_demand_error)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.fence_changes_on_meter(meter)
-        })
+        work.run_with_meter(|original| self.fence_changes_with_meter(original))
     }
 
     fn fence_changes_with_meter(
@@ -12862,11 +12870,7 @@ where
         expected_epoch: Option<u64>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        work.work.check().map_err(super::lazy::mount_demand_error)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.acquire_binding_lease_on_meter(expected_epoch, meter)
-        })
+        work.run_with_meter(|original| self.acquire_binding_lease_with_meter(expected_epoch, original))
     }
 
     fn acquire_binding_lease_with_meter(
@@ -12889,9 +12893,7 @@ where
         path: &MountPath,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<Option<MountLookup>, MountSourceError> {
-        work.native_materialization_work().check().map_err(MountSourceError::NativeWork)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        work.run_with_meter(|native| self.lookup_on_native_work(path, native))
+        work.run_with_meter(|original| self.lookup_with_meter(path, original))
     }
 
     fn lookup_with_meter(
@@ -12907,9 +12909,7 @@ where
         path: &MountPath,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<Option<(MountLookup, Option<super::MountContentPin>)>, MountSourceError> {
-        // Checkout content has no external source to pin, exactly as in the
-        // canonical lookup_pinned default.
-        Ok(self.lookup_with_work(path, work)?.map(|lookup| (lookup, None)))
+        work.run_with_meter(|original| self.lookup_pinned_with_meter(path, original))
     }
 
     fn read_pinned_with_work(
@@ -12922,11 +12922,7 @@ where
         _sink: &mut super::NativeMountContentSink<'_>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.native_materialization_work().check().map_err(MountSourceError::NativeWork)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        // lookup_pinned never issues a checkout content pin. The inherited
-        // reader rejects every foreign pin before resolving or reading a path.
-        Err(MountSourceError::Stale)
+        work.run_with_meter(|original| self.read_pinned_with_meter(_path, _pin, _offset, _length, _piece, _sink, original))
     }
 
     fn lookup_pinned_with_meter(
@@ -13054,9 +13050,7 @@ where
         path: &MountPath,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        work.native_materialization_work().check().map_err(MountSourceError::NativeWork)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        work.run_with_meter(|native| self.read_link_with_meter(path, native))
+        work.run_with_meter(|original| self.read_link_with_meter(path, original))
     }
 
     fn read_link_with_meter(
@@ -13065,7 +13059,7 @@ where
         work: &super::NativeMountMeterWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let original = work.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let owner = ViewGate::callback_owner();
         let runtime_meter = original.runtime_meter_owner();
@@ -13109,9 +13103,7 @@ where
         length: u32,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        work.native_materialization_work().check().map_err(MountSourceError::NativeWork)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        work.run_with_meter(|native| self.read_range_with_meter(path, offset, length, native))
+        work.run_with_meter(|original| self.read_range_with_meter(path, offset, length, original))
     }
 
     fn read_range_with_meter(
@@ -13122,7 +13114,7 @@ where
         work: &super::NativeMountMeterWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let original = work.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let owner = ViewGate::callback_owner();
         let runtime_meter = original.runtime_meter_owner();
@@ -13213,9 +13205,7 @@ where
         maximum_entries: u32,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        work.native_materialization_work().check().map_err(MountSourceError::NativeWork)?;
-        self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        work.run_with_meter(|native| self.read_directory_with_meter(path, cursor, maximum_entries, native))
+        work.run_with_meter(|original| self.read_directory_with_meter(path, cursor, maximum_entries, original))
     }
 
     fn read_directory_with_meter(
@@ -13226,7 +13216,7 @@ where
         work: &super::NativeMountMeterWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
         let original = work.native_materialization_work();
-        original.check().map_err(MountSourceError::NativeWork)?;
+        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         let owner = ViewGate::callback_owner();
         let runtime_meter = original.runtime_meter_owner();
@@ -13377,9 +13367,7 @@ where
         logical_bytes: Option<u64>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.set_attributes_on_meter(path, metadata, logical_bytes, meter)
-        })
+        work.run_with_meter(|original| self.set_attributes_with_meter(path, metadata, logical_bytes, original))
     }
 
     fn set_attributes_with_meter(
@@ -13416,7 +13404,7 @@ where
         let meter = work.meter();
         self.runtime.block_on_measured(|| async {
             let original = work.native_materialization_work();
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = carrier.cancellation();
@@ -13433,7 +13421,7 @@ where
             ).await?;
             let _view = observation._view;
             let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let result = observer.read_named_attribute_owned_with_native_work(
                 &namespace, &name, &original, &cancellation,
@@ -13441,7 +13429,7 @@ where
             let completed = observer.finish();
             let output = result.map_err(MountSourceError::Filesystem)?;
             completed?;
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             Ok(output)
         }, meter.as_ref()).map_err(capture_io_error)?
@@ -13469,7 +13457,7 @@ where
         let meter = work.meter();
         self.runtime.block_on_measured(|| async {
             let original = work.native_materialization_work();
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = carrier.cancellation();
@@ -13488,7 +13476,7 @@ where
             ).await?;
             let _view = observation._view;
             let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let result = observer.list_named_attributes_with_native_work(
                 &namespace, cursor.as_ref(), maximum_entries, &original, &cancellation,
@@ -13503,7 +13491,7 @@ where
             )?;
             let allocation = output_pair.1;
             let page = output_pair.0;
-            original.check().map_err(MountSourceError::NativeWork)?;
+            original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             Ok((page, allocation))
         }, meter.as_ref()).map_err(capture_io_error)?
@@ -13667,9 +13655,7 @@ where
         expected: Option<FileId>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.remove_on_meter(path, expected, meter)
-        })
+        work.run_with_meter(|original| self.remove_with_meter(path, expected, original))
     }
 
     fn remove_with_meter(
@@ -13702,9 +13688,7 @@ where
         replace: bool,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| {
-            self.rename_on_meter(source, destination, replace, meter)
-        })
+        work.run_with_meter(|original| self.rename_with_meter(source, destination, replace, original))
     }
 
     fn rename_with_meter(
@@ -13754,7 +13738,7 @@ where
         &self,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        BorrowedNativeDemandMeter::new(work.work)?.run(|meter| self.flush_on_meter(meter))
+        work.run_with_meter(|original| self.flush_with_meter(original))
     }
 
     fn flush_with_meter(
@@ -13791,9 +13775,7 @@ where
         expected_root_identity: NativeRootIdentity,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.capture_host_with_identity_with_work(
-            source_root, paths, expected_root_identity, HostCaptureScope::ExactPaths, work.work,
-        )
+        work.run_with_meter(|original| self.capture_host_paths_with_meter(source_root, paths, expected_root_identity, original))
     }
 
     fn capture_host_paths_with_meter(
@@ -13815,10 +13797,7 @@ where
         expected_root_identity: NativeRootIdentity,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.capture_host_with_identity_with_work(
-            source_root, std::slice::from_ref(path), expected_root_identity,
-            HostCaptureScope::Subtree, work.work,
-        )
+        work.run_with_meter(|original| self.capture_host_subtree_with_meter(source_root, path, expected_root_identity, original))
     }
 
     fn capture_host_subtree_with_meter(
