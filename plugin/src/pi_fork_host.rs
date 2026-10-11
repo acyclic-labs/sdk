@@ -186,6 +186,9 @@ impl<'a> PiForkHost<'a> {
         if command.commit.child.project_volumes.len() != 1 {
             return Err(invalid("Pi fork requires exactly its actually selected project"));
         }
+        crate::pi_inspection::authorize_selected_source(&self.runtime.runtime,
+            self.protected.policy().root_task, shared.context(), owner, command.commit.source_task,
+            self.protected.policy().session_limits.depth, work).await?;
         let source = if command.commit.source_task == self.protected.policy().root_task {
             let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi original selected root has no actual lazy handle"))?;
             actual.workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
@@ -348,7 +351,8 @@ impl<'a> PiForkHost<'a> {
         }
         if self.retained.pending.iter().any(|pending| pending.agent_id.as_deref() == Some(input.commit.alias.as_str())
             && pending.fork_key != operations.fork.into_bytes()) {
-            return Err(Error::Conflict("Pi requested alias is already reserved by another original fork".into()));
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi requested alias is already reserved by another original fork" });
         }
         if self.retained.routes.values().any(|route| route.agent_id == input.commit.alias
             && !matches!(&route.task_binding, PluginTaskBinding::Pi(binding) if same_identity(binding, &input.commit.child))) {

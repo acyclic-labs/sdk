@@ -249,6 +249,18 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
         maximum_volumes: 3, work_per_volume: crate::pi_root_provider::allocation_budget() },
         volumes: vec![mapping(project, "project"), mapping(binding.scratch.volume.clone(), "scratch"),
             mapping(result, "result")] };
+    assert!(validate_declared_working_roles(binding, &manifest).is_err());
+    let declared = NativeViewManifest {
+        options: manifest.options.clone(),
+        volumes: manifest.volumes[..2].to_vec(),
+    };
+    validate_declared_working_roles(binding, &declared).unwrap();
+    let mut substituted = declared.clone();
+    substituted.volumes[1].volume = binding.results.as_ref().unwrap().volume.clone();
+    assert!(validate_declared_working_roles(binding, &substituted).is_err());
+    substituted = declared.clone();
+    substituted.volumes[0].volume = fixture.root_request.binding.project_volumes.values().next().unwrap().clone();
+    assert!(validate_declared_working_roles(binding, &substituted).is_err());
     let result_path = temporary.path().join("result/output.txt");
     assert!(select_native_path(result_path.to_str().unwrap(), binding, &manifest).is_err());
     let outside_path = temporary.path().join("outside-marker.txt");

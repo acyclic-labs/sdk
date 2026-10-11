@@ -46,9 +46,9 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + 'static,
 {
     owner.native_view_owner().verify_with_native_work(native_work).await?;
     if caller.durable_task_id() != Some(owner.task_id()) {
-        return Err(Error::Unauthorized("selected graph changed its ORIGINAL caller context".into()));
+        return Err(selected_unauthorized("selected graph changed its ORIGINAL caller context"));
     }
-    if maximum_depth == 0 { return Err(Error::Invalid("selected ancestry bound is zero".into())); }
+    if maximum_depth == 0 { return Err(selected_invalid("selected ancestry bound is zero")); }
     for selected in [owner.task_id(), source] {
         let mut task = selected;
         let mut authenticated = false;
@@ -56,22 +56,34 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + 'static,
             let admission_custody = runtime.task_host().observe_admission_with_native_work(task, native_work).await?;
             let admission = &admission_custody.0;
             if admission.task_id() != task {
-                return Err(Error::Unauthorized("selected admission substituted its task identity".into()));
+                return Err(selected_unauthorized("selected admission substituted its task identity"));
             }
             if task == original_root {
                 if admission.parent.is_some() {
-                    return Err(Error::Unauthorized("selected original root is itself a child".into()));
+                    return Err(selected_unauthorized("selected original root is itself a child"));
                 }
                 authenticated = true;
                 break;
             }
-            task = admission.parent.ok_or_else(|| Error::Unauthorized("selected task belongs to another original root".into()))?;
+            task = admission.parent.ok_or_else(|| selected_unauthorized("selected task belongs to another original root"))?;
         }
         if !authenticated {
-            return Err(Error::Unauthorized("selected task ancestry exceeds its authenticated bound".into()));
+            return Err(selected_unauthorized("selected task ancestry exceeds its authenticated bound"));
         }
     }
     owner.native_view_owner().verify_with_native_work(native_work).await
+}
+
+fn selected_unauthorized(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason }
+}
+
+fn selected_invalid(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason }
+}
+
+fn selected_conflict(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict, reason }
 }
 
 /// Retains only the independently authorized caller reader and exact source allocation.
@@ -83,45 +95,6 @@ pub(crate) struct PiSelectedSource {
 }
 
 impl PiSelectedSource {
-    /// Selects original immutable allocation metadata, not a live source head.
-    /// Live native snapshots must first be resolved by the canonical native producer.
-    pub(crate) async fn select<P, A, O>(
-        runtime: &FilesystemTaskRuntime<P, A, O>, caller: &TaskContext,
-        owner: &TaskJournalOwner<P>, original_root: TaskId, source: TaskId, maximum_depth: u32,
-    ) -> Result<Self>
-    where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + 'static,
-          O: acyclic_fs::AsyncObjectStore + 'static,
-    {
-        authorize_selected_source(runtime, original_root, caller, owner, source, maximum_depth).await?;
-        let inspection = runtime.inspect_source(owner.task_id(), source).await?;
-        let project = inspection.project()?;
-        let volume = project.volume.clone();
-        let generation = project.generation.clone();
-        owner.verify_dispatch().await?;
-        Ok(Self { inspection, reader_task: owner.task_id(), volume, generation })
-    }
-
-    /// Accepts the canonical checkpoint's retained generation for an original
-    /// authenticated source allocation. The service supplies this value, never
-    /// an unchecked tool parameter or a mutable-head observation.
-    pub(crate) async fn select_checkpoint<P, A, O>(
-        runtime: &FilesystemTaskRuntime<P, A, O>, caller: &TaskContext,
-        owner: &TaskJournalOwner<P>, original_root: TaskId, source: TaskId, maximum_depth: u32,
-        volume: &VolumeRef, generation: &GenerationRef,
-    ) -> Result<Self>
-    where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + 'static,
-          O: acyclic_fs::AsyncObjectStore + 'static,
-    {
-        authorize_selected_source(runtime, original_root, caller, owner, source, maximum_depth).await?;
-        let inspection = runtime.inspect_source(owner.task_id(), source).await?;
-        if !inspection.volumes().iter().any(|snapshot| &snapshot.volume == volume)
-            || generation.as_resource().provider() != volume.provider()
-        {
-            return Err(Error::Unauthorized("checkpoint is not an original selected source volume".into()));
-        }
-        owner.verify_dispatch().await?;
-        Ok(Self { inspection, reader_task: owner.task_id(), volume: volume.clone(), generation: generation.clone() })
-    }
 
     pub(crate) fn source(&self) -> TaskId { TaskId::from_bytes(self.inspection.source().operation_id.into_bytes()) }
     pub(crate) fn volume(&self) -> &VolumeRef { &self.volume }
@@ -155,7 +128,7 @@ impl PiSelectedSource {
 
     fn require_reader(&self, task: TaskId) -> Result<()> {
         if task != self.reader_task {
-            return Err(Error::Unauthorized("selected reader belongs to another original caller".into()));
+            return Err(selected_unauthorized("selected reader belongs to another original caller"));
         }
         Ok(())
     }
@@ -169,10 +142,10 @@ impl PiSelectedSource {
 
     fn page(&self, directory: &str, page: PrivateDirectoryPage) -> Result<PiInspectionPage> {
         if page.generation != self.generation {
-            return Err(Error::Conflict("selected inspection generation changed".into()));
+            return Err(selected_conflict("selected inspection generation changed"));
         }
         let cursor = if page.has_more {
-            let after = page.entries.last().ok_or_else(|| Error::Conflict("empty selected continuation page".into()))?.name.clone();
+            let after = page.entries.last().ok_or_else(|| selected_conflict("empty selected continuation page"))?.name.clone();
             Some(PiInspectionCursor { source: self.source(), volume: self.volume.clone(), generation: self.generation.clone(), directory: directory.into(), after })
         } else { None };
         Ok(PiInspectionPage { source: self.source(), volume: self.volume.clone(), generation: self.generation.clone(), directory: directory.into(), entries: page.entries, cursor })
@@ -184,7 +157,7 @@ impl PiInspectionCursor {
         if self.source != source || &self.volume != volume || &self.generation != generation
             || self.directory != directory || self.after.is_empty() || self.after.contains(['/', '\\'])
         {
-            return Err(Error::Invalid("selected cursor belongs to another source, generation or directory".into()));
+            return Err(selected_invalid("selected cursor belongs to another source, generation or directory"));
         }
         validate_content_path(&self.after)
     }
@@ -193,7 +166,7 @@ impl PiInspectionCursor {
 pub(crate) async fn authenticate<P: StreamProvider>(context: &TaskContext, owner: &TaskJournalOwner<P>) -> Result<()> {
     owner.verify_dispatch().await?;
     if context.durable_task_id() != Some(owner.task_id()) {
-        return Err(Error::Unauthorized("selected filesystem operation has another original task owner".into()));
+        return Err(selected_unauthorized("selected filesystem operation has another original task owner"));
     }
     Ok(())
 }
@@ -201,7 +174,7 @@ pub(crate) async fn authenticate<P: StreamProvider>(context: &TaskContext, owner
 fn validate_page(directory: &str, maximum_entries: u32) -> Result<()> {
     if !directory.is_empty() { validate_content_path(directory)?; }
     if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
-        return Err(Error::Invalid("selected inspection page bound is invalid".into()));
+        return Err(selected_invalid("selected inspection page bound is invalid"));
     }
     Ok(())
 }
@@ -245,7 +218,7 @@ pub(crate) async fn diff<P: StreamProvider>(
         cursor.before.require(before.source(), &before.volume, &before.generation, directory)?;
         cursor.after.require(after.source(), &after.volume, &after.generation, directory)?;
         if cursor.before.after != cursor.after.after {
-            return Err(Error::Invalid("selected diff cursor keys differ".into()));
+            return Err(selected_invalid("selected diff cursor keys differ"));
         }
         Some(cursor.before.after.as_str())
     } else { None };
@@ -283,7 +256,7 @@ pub(crate) async fn diff<P: StreamProvider>(
     }
     let more = left.peek().is_some() || right.peek().is_some() || old.has_more || new.has_more;
     let cursor = if more {
-        let last = last_scanned.ok_or_else(|| Error::Conflict("empty selected diff continuation".into()))?;
+        let last = last_scanned.ok_or_else(|| selected_conflict("empty selected diff continuation"))?;
         Some(PiDiffCursor {
             before: PiInspectionCursor { source: before.source(), volume: before.volume.clone(), generation: before.generation.clone(), directory: directory.into(), after: last.clone() },
             after: PiInspectionCursor { source: after.source(), volume: after.volume.clone(), generation: after.generation.clone(), directory: directory.into(), after: last },
@@ -347,11 +320,11 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
         || actual_root.physical.source.inner().root_identity() != root.identity
         || paths.is_empty() || maximum_paths == 0 || paths.len() > maximum_paths as usize
     {
-        return Err(Error::Unauthorized("writeback baseline is not the ORIGINAL creator's frozen native root".into()));
+        return Err(selected_unauthorized("writeback baseline is not the ORIGINAL creator's frozen native root"));
     }
     let retained = (paths.len() as u64).checked_mul(
         (std::mem::size_of::<String>() + std::mem::size_of::<&str>()) as u64,
-    ).ok_or_else(|| Error::Invalid("selected writeback container size overflow".into()))?;
+    ).ok_or_else(|| selected_invalid("selected writeback container size overflow"))?;
     let custody = native_work.claim(retained).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters {
         allocation_operations: 2, ..acyclic_fs::WorkCounters::default()
@@ -359,7 +332,7 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     let mut absolute_paths = (Vec::with_capacity(paths.len()), paths.iter().map(String::as_str).collect::<Vec<_>>(), custody);
     absolute_paths.1.sort_unstable();
     if absolute_paths.1.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(Error::Invalid("writeback repeats a selected path".into()));
+        return Err(selected_invalid("writeback repeats a selected path"));
     }
     for path in paths {
         validate_content_path(path)?;
@@ -428,7 +401,7 @@ async fn native_fs_scope_guard<P: StreamProvider>(
         && context.scope().grants().contains(&capability.0);
     if !bound {
         let mut original = cause.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if original.is_none() { *original = Some(Error::Unauthorized("original destination context lacks its selected write grant".into())); }
+        if original.is_none() { *original = Some(selected_unauthorized("original destination context lacks its selected write grant")); }
         return Err(acyclic_fs::FsError::MutationNotAllowed);
     }
     crate::pi_native::lazy_publication_guard(owner.native_view_owner(), volume, verifier, scope,
@@ -480,7 +453,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
         || generations.original_snapshot.workspace_id != root.workspace
         || from.workspace_id() != candidate.workspace_id()
     {
-        return Err(Error::Unauthorized("writeback candidate is not the original selected root workspace".into()));
+        return Err(selected_unauthorized("writeback candidate is not the original selected root workspace"));
     }
     let operation = acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes());
     let guard_work = native_work.clone();
@@ -503,7 +476,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
     if journal.root_identity != Some(root.identity.to_bytes())
         || journal.phase != acyclic_fs::MaterializationPhase::Prepared
     {
-        return Err(Error::Conflict("writeback preparation has another original root or is not ready for approval".into()));
+        return Err(selected_conflict("writeback preparation has another original root or is not ready for approval"));
     }
     require_selected_edits(&journal.plan.edits, paths)?;
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
@@ -514,7 +487,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, native_work)?;
     digest.1.absorb(&mut encoded.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let canonical_digest_input = String::from_utf8(encoded.0)
-        .map_err(|error| { drop(error); Error::Invalid("canonical SDK approval codec returned non-UTF8".into()) })?;
+        .map_err(|error| { drop(error); selected_invalid("canonical SDK approval codec returned non-UTF8") })?;
     Ok(acyclic_fs::OperationReceipt {
         value: PiPreparedWriteback { root_task: root.task, root_volume: &root.volume,
             root_identity: root.identity, operation, from: from.id(), to: candidate.id(),
@@ -561,7 +534,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
         || excluded_names != prepared.excluded_names
         || digest.0 != prepared.approval_digest
     {
-        return Err(Error::Unauthorized("writeback lacks exact original-root user approval".into()));
+        return Err(selected_unauthorized("writeback lacks exact original-root user approval"));
     }
     drop(digest);
     let work = native_work.clone();
@@ -576,7 +549,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
             authenticate_root(root, context, owner, verifier, scope, &guard_work).await
                 .map_err(|error| native_guard_cause(error, &guard_cause))?;
             if !confirmed_by_user || confirmed_digest != prepared.approval_digest {
-                return Err(native_guard_cause(Error::Unauthorized("writeback original approval changed".into()), &guard_cause));
+                return Err(native_guard_cause(selected_unauthorized("writeback original approval changed"), &guard_cause));
             }
             Ok(())
         }).await;
@@ -606,7 +579,7 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
         || !matches!(journal.plan.intent, acyclic_fs::MaterializationIntent::GenerationTransition { from, to }
             if from == generations.from.id() && to == generations.candidate.id())
         || generations.original_snapshot.workspace_id != root.workspace {
-        return Err(Error::Unauthorized("completed writeback differs from its original root and generations".into()));
+        return Err(selected_unauthorized("completed writeback differs from its original root and generations"));
     }
     require_selected_edits(&journal.plan.edits, &generations.paths)?;
     let digest = crate::pi_root_provider::digest_pi_value_with_native_work(
@@ -614,7 +587,7 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
             generations.from.id(), generations.candidate.id(), &generations.paths, generations.original_snapshot,
             generations.imported, journal), native_work)?;
     if digest.0 != confirmed_digest {
-        return Err(Error::Unauthorized("completed writeback changed its exact user approval".into()));
+        return Err(selected_unauthorized("completed writeback changed its exact user approval"));
     }
     Ok(())
 }
@@ -640,7 +613,7 @@ async fn authenticate_root<P: StreamProvider>(
         || !root.path.is_absolute() || !root.operation_directory.is_absolute()
         || !context.scope().grants().contains(&capability.0)
     {
-        return Err(Error::Unauthorized("writeback does not own the ORIGINAL root task and destination".into()));
+        return Err(selected_unauthorized("writeback does not own the ORIGINAL root task and destination"));
     }
     let _grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
@@ -671,7 +644,7 @@ fn require_selected_edits(edits: &[acyclic_fs::MaterializationEdit], paths: &[St
             acyclic_fs::MaterializationEdit::Rename { from, to } => selected(from) && selected(to),
             _ => false,
         };
-        if !allowed { return Err(Error::Unauthorized("native candidate changes an unselected writeback path".into())); }
+        if !allowed { return Err(selected_unauthorized("native candidate changes an unselected writeback path")); }
     }
     Ok(())
 }
@@ -744,7 +717,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         if workspace.workspace().name().as_str() != storage_name.0
             || snapshot.workspace_id != workspace.workspace().id()
         {
-            return Err(Error::Unauthorized("native selected snapshot differs from its original allocation".into()));
+            return Err(selected_unauthorized("native selected snapshot differs from its original allocation"));
         }
         Ok(Self { workspace, source, reader, volume, snapshot, inspection })
     }
@@ -752,7 +725,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
 
     fn require_reader(&self, context: &TaskContext, path: &str) -> Result<()> {
         if context.durable_task_id() != Some(self.reader) {
-            return Err(Error::Unauthorized("native selected reader belongs to another original caller".into()));
+            return Err(selected_unauthorized("native selected reader belongs to another original caller"));
         }
         if !path.is_empty() { validate_content_path(path)?; }
         Ok(())
@@ -768,16 +741,16 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         let result = async {
         owner.native_view_owner().verify_with_native_work(native_work).await?;
         if context.durable_task_id() != Some(owner.task_id()) {
-            return Err(Error::Unauthorized("native inspection changed its ORIGINAL caller context".into()));
+            return Err(selected_unauthorized("native inspection changed its ORIGINAL caller context"));
         }
         self.require_reader(context, directory)?;
         validate_page(directory, maximum_entries)?;
         let continuation = if let Some(cursor) = cursor {
             if cursor.source != self.source || &cursor.volume != self.volume || cursor.snapshot != self.snapshot || cursor.directory != directory {
-                return Err(Error::Invalid("native selected cursor belongs to another snapshot or directory".into()));
+                return Err(selected_invalid("native selected cursor belongs to another snapshot or directory"));
             }
             if cursor.continuation.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES {
-                return Err(Error::Invalid("native selected cursor exceeds its transport bound".into()));
+                return Err(selected_invalid("native selected cursor exceeds its transport bound"));
             }
             Some(acyclic_fs::LazyDirectoryCursor::decode_with_native_work(
                 &cursor.continuation, self.workspace.workspace().profile(),
@@ -790,7 +763,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         let retained = (page.0.entries.len() as u64)
             .checked_mul(std::mem::size_of::<PiNativeInspectionEntry>() as u64)
             .and_then(|bytes| bytes.checked_add(directory.len() as u64))
-            .ok_or_else(|| Error::Invalid("native inspection payload size overflow".into()))?;
+            .ok_or_else(|| selected_invalid("native inspection payload size overflow"))?;
         let custody = native_work.claim(retained).map_err(native_error)?;
         native_work.charge(acyclic_fs::WorkCounters {
             bytes_copied: directory.len() as u64,
@@ -833,7 +806,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)> {
         self.require_reader(context, path)?;
         if context.durable_task_id() != Some(owner.task_id()) || owner.task_id() != self.reader {
-            return Err(Error::Unauthorized("native selected read changed its ORIGINAL caller owner".into()));
+            return Err(selected_unauthorized("native selected read changed its ORIGINAL caller owner"));
         }
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
         self.inspection.read_native_path_with_native_work(self.workspace, self.snapshot,
@@ -845,7 +818,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     ) -> Result<(acyclic_fs::LazyLookup, acyclic_fs::NativeAllocation)> {
         self.require_reader(context, path)?;
         if context.durable_task_id() != Some(owner.task_id()) || owner.task_id() != self.reader {
-            return Err(Error::Unauthorized("native selected lookup changed its ORIGINAL caller owner".into()));
+            return Err(selected_unauthorized("native selected lookup changed its ORIGINAL caller owner"));
         }
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
         self.inspection.lookup_native_path_with_native_work(self.workspace, self.snapshot, &absolute.0, work).await
@@ -856,7 +829,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)> {
         self.require_reader(context, path)?;
         if context.durable_task_id() != Some(owner.task_id()) || owner.task_id() != self.reader {
-            return Err(Error::Unauthorized("native selected link read changed its ORIGINAL caller owner".into()));
+            return Err(selected_unauthorized("native selected link read changed its ORIGINAL caller owner"));
         }
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
         self.inspection.read_native_link_with_native_work(self.workspace, self.snapshot, &absolute.0, work).await
@@ -887,7 +860,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
     destination_owner.native_view_owner().verify_with_native_work(native_work).await?;
     if caller.durable_task_id() != Some(caller_owner.task_id())
         || destination.durable_task_id() != Some(destination_owner.task_id()) {
-        return Err(Error::Unauthorized("native import changed its ORIGINAL caller or destination context".into()));
+        return Err(selected_unauthorized("native import changed its ORIGINAL caller or destination context"));
     }
     let capability = destination_volume.capability_with_native_work(
         acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
@@ -899,13 +872,13 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
         || !destination.scope().grants().contains(&capability.0)
         || !caller.scope().grants().contains(&capability.0)
     {
-        return Err(Error::Unauthorized("native import lacks its original destination WRITE grant or selected checkpoint".into()));
+        return Err(selected_unauthorized("native import lacks its original destination WRITE grant or selected checkpoint"));
     }
     let _grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         verifier, scope, destination_volume, acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
     let retained = (paths.len() as u64).checked_mul(
         (std::mem::size_of::<acyclic_fs::kernel::NamespacePath>() + std::mem::size_of::<&str>()) as u64,
-    ).ok_or_else(|| Error::Invalid("selected namespace container size overflow".into()))?;
+    ).ok_or_else(|| selected_invalid("selected namespace container size overflow"))?;
     let custody = native_work.claim(retained).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters {
         allocation_operations: 2, ..acyclic_fs::WorkCounters::default()
@@ -913,7 +886,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
     let mut requested = (Vec::with_capacity(paths.len()), paths.iter().map(String::as_str).collect::<Vec<_>>(), custody);
     requested.1.sort_unstable();
     if requested.1.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(Error::Invalid("native import repeats a selected path".into()));
+        return Err(selected_invalid("native import repeats a selected path"));
     }
     for path in paths {
         validate_content_path(path)?;
@@ -933,7 +906,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
     if plan.0.logical_bytes() > maximum_bytes
         || plan.0.maximum_regular_file_bytes() > caller.scope().limits().file_bytes
     {
-        return Err(Error::Invalid("selected import exceeds its actual selected byte allowance".into()));
+        return Err(selected_invalid("selected import exceeds its actual selected byte allowance"));
     }
     let cause = std::sync::Mutex::new(None);
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
@@ -1051,7 +1024,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let result = async {
     owner.native_view_owner().verify_with_native_work(native_work).await?;
     if context.durable_task_id() != Some(owner.task_id()) {
-        return Err(Error::Unauthorized("native diff changed its ORIGINAL caller context".into()));
+        return Err(selected_unauthorized("native diff changed its ORIGINAL caller context"));
     }
     before.require_reader(context, directory)?;
     after.require_reader(context, directory)?;
@@ -1060,14 +1033,14 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let after_key = PiNativeSourceKeyRef { source: after.source, volume: after.volume, snapshot: after.snapshot };
     let before_pass = if let Some(cursor) = cursor {
         if !before_key.matches(&cursor.before) || !after_key.matches(&cursor.after) || cursor.directory != directory {
-            return Err(Error::Invalid("native diff cursor belongs to another source, snapshot or directory".into()));
+            return Err(selected_invalid("native diff cursor belongs to another source, snapshot or directory"));
         }
         cursor.before_pass
     } else { false };
     let current = if before_pass { before } else { after };
     let other = if before_pass { after } else { before };
     let continuation = if let Some(bytes) = cursor.and_then(|cursor| cursor.continuation.as_deref()) {
-        if bytes.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES { return Err(Error::Invalid("native diff cursor exceeds its transport bound".into())); }
+        if bytes.len() > crate::MAXIMUM_CONTROL_MESSAGE_BYTES { return Err(selected_invalid("native diff cursor exceeds its transport bound")); }
         Some(acyclic_fs::LazyDirectoryCursor::decode_with_native_work(bytes,
             current.workspace.workspace().profile(), current.workspace.workspace().limits(), native_work, cancellation)
             .map_err(|(source, custody)| Error::NativeSource { source, custody })?)
@@ -1087,7 +1060,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let count = page.as_ref().map_or(0, |(page, _)| page.entries.len());
     let retained = (count as u64).checked_mul(std::mem::size_of::<PiDifference>() as u64)
         .and_then(|bytes| bytes.checked_add(directory.len() as u64))
-        .ok_or_else(|| Error::Invalid("native diff payload size overflow".into()))?;
+        .ok_or_else(|| selected_invalid("native diff payload size overflow"))?;
     let custody = native_work.claim(retained).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters { bytes_copied: directory.len() as u64,
         allocation_operations: u64::from(count != 0) + u64::from(!directory.is_empty()),

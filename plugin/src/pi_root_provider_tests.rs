@@ -1228,12 +1228,11 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     let verifier = FilesystemContentVerifier::new_with_native_work(fixture.filesystem.clone(),
         &authority.value.verifier, &authority.value.signed,
         fixture.owner.policy().maximum_payload_bytes, &work).unwrap();
-    let (bytes, body_custody) = verifier.read_with_native_work(&original,
+    let bytes = verifier.read_with_native_work(&original,
         fixture.owner.policy().maximum_payload_bytes, &work).await.unwrap();
-    let (decoded, decoded_custody) = guarded_pi_decode::<Payload>(&bytes, fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<Payload>() as u64, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["Payload", "sender", "message", "_text"]), &work).unwrap();
+    let (decoded, decoded_custody) = guarded_pi_decode::<Payload>(bytes.as_ref(), fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<Payload>() as u64, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["Payload", "sender", "message", "_text"]), &work).unwrap();
     assert_eq!(decoded, payload);
     drop(bytes);
-    drop(body_custody);
     drop(original);
     drop(original_custody);
     drop(decoded);
