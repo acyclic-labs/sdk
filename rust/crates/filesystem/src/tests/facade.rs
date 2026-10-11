@@ -39,8 +39,8 @@ async fn measured_private_candidate_admits_only_independent_proof_and_root_stora
     assert!(candidate.work.peak_allocation_bytes >= candidate.value.logical_owned_bytes());
     assert!(!Arc::ptr_eq(&candidate.value.dependencies.proof, &checkout.dependencies.proof));
     assert!(Arc::ptr_eq(
-        &candidate.value.dependencies.proof().observed_paths,
-        &checkout.dependencies.proof().observed_paths,
+        candidate.value.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
+        checkout.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
     ));
     assert!(candidate.value.root == checkout.root);
     assert_eq!(candidate.value.base_root, checkout.base_root);
@@ -52,6 +52,1080 @@ async fn measured_private_candidate_admits_only_independent_proof_and_root_stora
     };
     assert!(matches!(failed.error, FsError::Cancelled(_)));
     assert_eq!(*failed.work, WorkCounters::default());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fresh_checkout_control_custody_uses_its_actual_constructor_and_last_proof_alias()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("fresh-checkout-control").await?;
+    workspace.write_text("/file", "body").await?;
+    let cancellation = CancellationToken::new();
+    let receipt = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let checkout = receipt.value;
+    let custody = checkout.private_control_custody();
+    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
+    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
+    let path_bytes = size_of::<ObservedPathMap>() as u64;
+    let parents = root_parent_bytes(&checkout.base_root)?
+        + root_parent_bytes(&checkout.root)? * (1 + u64::from(checkout.root.has_hold()));
+    assert!(parents > 0);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parents + map_bytes + path_bytes);
+    assert_eq!(custody.retained_bytes(), 0);
+    assert!(receipt.work.peak_allocation_bytes >= proof_bytes + parents + map_bytes + path_bytes + custody.logical_owned_bytes());
+    let alias = Arc::clone(&checkout.dependencies.proof);
+    let map_alias = checkout.dependencies.proof().dependencies.clone();
+    let path_alias = Arc::clone(checkout.dependencies.proof().observed_paths.as_ref().expect("constructor map"));
+    let mut borrowed = map_alias.clone();
+    assert!(!borrowed.attach_fresh_control_custody(&custody),
+        "fresh constructor attachment never copies or adopts a shared authority map");
+    drop(borrowed);
+    cancellation.cancel();
+    drop(checkout);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes + map_bytes + path_bytes);
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), map_bytes + path_bytes,
+        "actual map payloads outlive the independent proof mutex");
+    drop(map_alias);
+    assert_eq!(custody.physical_retained_bytes(), path_bytes);
+    drop(path_alias);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_private_ctor_retains_original_mutex_until_last_proof_alias_and_retires_failed_copies()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-private-ctor-custody").await?;
+    workspace.write_text("/seed", "body").await?;
+    let active = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &active)
+        .map_err(|(cause, _)| cause)?;
+    let candidate = checkout.private_candidate_with_native_work(&original, &active)?;
+    let custody = candidate.private_control_custody();
+    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
+    let parents = root_parent_bytes(&candidate.base_root)?
+        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
+    assert!(parents > 0);
+    assert_eq!(custody.native_control_events(), (u128::from(proof_bytes + parents), 0));
+    assert_eq!(custody.non_native_retained_payload_bytes(), 0,
+        "borrowed source map storage never becomes this original constructor's payload");
+    let alias = Arc::clone(&candidate.dependencies.proof);
+    let live = original.live_allocation_bytes();
+    drop(candidate);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
+    assert_eq!(custody.native_control_events(),
+        (u128::from(proof_bytes + parents), u128::from(parents)));
+    assert_eq!(original.live_allocation_bytes(), live - parents);
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    assert_eq!(custody.native_control_events(),
+        (u128::from(proof_bytes + parents), u128::from(proof_bytes + parents)));
+    assert_eq!(original.live_allocation_bytes(), live - parents - proof_bytes,
+        "registry/token metadata is separate from actual retired primitive bytes");
+    let bounded = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: size_of::<Proof>() as u64, ..WorkBudget::UNBOUNDED },
+        &active,
+    ).map_err(|(cause, _)| cause)?;
+    let failed = checkout.private_candidate_with_native_work(&bounded, &active)
+        .err().ok_or("copy-limited original ctor installed parent buffers")?;
+    assert!(matches!(failed, FsError::Work(_)));
+    let prefix = bounded.receipt();
+    assert_eq!(prefix.bytes_copied, size_of::<Proof>() as u64);
+    assert!(prefix.allocation_operations >= 3, "actual state, token and mutex constructors ran");
+    assert!(bounded.live_allocation_bytes() + proof_bytes <= prefix.peak_allocation_bytes,
+        "failed ctor retires its actual mutex/root copies, not its retained registry metadata");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_proof_copy_admission_atomically_gates_original_and_resource_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let copy = WorkCounters { bytes_copied: 3, items_examined: 1, ..WorkCounters::UNCHARGED };
+    for budget in [
+        WorkBudget { peak_allocation_bytes: 2, ..WorkBudget::UNBOUNDED },
+        WorkBudget { bytes_copied: 2, ..WorkBudget::UNBOUNDED },
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+    ] {
+        let denied = original.native_volume_work(budget)?;
+        let before = original.receipt();
+        assert!(denied.claim_allocation_with_work(3, 1, copy).is_err());
+        assert_eq!(original.receipt(), before,
+            "a denied copy/allocation bundle records neither imaginary copies nor allocation attempts");
+    }
+    let scope = original.native_volume_work(WorkBudget {
+        peak_allocation_bytes: 3, bytes_copied: 3, items_examined: 1,
+        allocation_operations: 1, ..WorkBudget::UNBOUNDED
+    })?;
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    let allocation = scope.claim_allocation_with_work(3, 1, copy)?;
+    // Cancellation cannot revoke an already granted infallible copy permit.
+    cancellation.cancel();
+    let payload = (b"abc".to_vec(), allocation);
+    assert_eq!(payload.1.bytes(), payload.0.capacity() as u64);
+    let after = original.receipt();
+    assert_eq!(after.bytes_copied - before.bytes_copied, 3);
+    assert_eq!(after.items_examined - before.items_examined, 1);
+    assert_eq!(after.allocation_operations - before.allocation_operations, 1);
+    assert_eq!(original.live_allocation_bytes(), live + 3);
+    drop(payload);
+    assert_eq!(original.live_allocation_bytes(), live);
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn native_observer_frontdoors_share_semantic_proof_but_only_adopt_their_actual_constructors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-observer-frontdoor-custody").await?;
+    workspace.write_text("/seed", "body").await?;
+    let active = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &active)
+        .map_err(|(cause, _)| cause)?;
+    let observer = checkout.observer_with_native_work(&original, &active)?;
+    assert!(Arc::ptr_eq(&checkout.dependencies.proof, &observer.checkout.dependencies.proof),
+        "a semantic observer aliases the existing actual proof, never clones its mutex");
+    let custody = observer.checkout.private_control_custody();
+    assert!(!Arc::ptr_eq(&custody, &checkout.dependencies.data_custody));
+    let parents = root_parent_bytes(&observer.checkout.base_root)?
+        + root_parent_bytes(&observer.checkout.root)? * (1 + u64::from(observer.checkout.root.has_hold()));
+    assert!(parents > 0);
+    assert_eq!(custody.physical_retained_bytes(), parents);
+    assert_eq!(custody.retained_bytes(), 0);
+    assert_eq!(custody.non_native_retained_payload_bytes(), 0);
+    assert_eq!(custody.native_control_events(), (u128::from(parents), 0));
+    let proof_alias = Arc::clone(&observer.checkout.dependencies.proof);
+    let live = original.live_allocation_bytes();
+    drop(observer);
+    assert_eq!(custody.physical_retained_bytes(), 0,
+        "copied observer roots retire even while the borrowed source proof remains live");
+    assert_eq!(custody.native_control_events(), (u128::from(parents), u128::from(parents)));
+    assert_eq!(original.live_allocation_bytes(), live - parents);
+    assert!(Arc::ptr_eq(&proof_alias, &checkout.dependencies.proof));
+    drop(proof_alias);
+
+    let inspector = checkout.inspector_with_native_work(&original, &active)?;
+    assert!(!Arc::ptr_eq(&checkout.dependencies.proof, &inspector.checkout.dependencies.proof));
+    assert!(!inspector.checkout.dependencies.observing);
+    let inspector_custody = inspector.checkout.private_control_custody();
+    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
+    let alias = Arc::clone(&inspector.checkout.dependencies.proof);
+    drop(inspector);
+    assert_eq!(inspector_custody.physical_retained_bytes(), proof_bytes,
+        "the independent inspector's actual mutex follows its last proof alias");
+    drop(alias);
+    assert_eq!(inspector_custody.physical_retained_bytes(), 0);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    assert!(matches!(checkout.observer_with_native_work(&original, &cancelled),
+        Err(FsError::Cancelled(_))));
+    assert!(matches!(checkout.inspector_with_native_work(&original, &cancelled),
+        Err(FsError::Cancelled(_))));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), live);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_observed_path_claims_original_data_once_until_last_proof_alias()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-observed-path-custody").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let custody = candidate.private_control_custody();
+    let observed = path("native-owned-path")?;
+    let expected = path_clone_data(&observed).0;
+    let before = original.receipt();
+    let mut staged = original.claim(0)?;
+    candidate.dependencies.observe_paths_with_native_work(
+        candidate.base_root.file_table, [&observed], true, Vec::new(), &mut staged,
+        candidate.volume.config.limits.maximum_checkout_dependencies, &original, &cancellation,
+    )?;
+    let after = original.receipt();
+    assert_eq!(after.bytes_copied - before.bytes_copied, expected);
+    assert_eq!(custody.retained_bytes(), expected);
+    assert_eq!(custody.non_native_retained_payload_bytes(), 0);
+    assert_eq!(custody.pending_data_work(), WorkCounters::UNCHARGED,
+        "direct original claims cannot be imported again as child SDK work");
+    assert_eq!(candidate.proof_data_snapshot_completed().total_bytes()?, expected);
+    let alias = Arc::clone(&candidate.dependencies.proof);
+    drop(candidate);
+    assert_eq!(custody.retained_bytes(), expected, "the actual path still belongs to the proof");
+    let live = original.live_allocation_bytes();
+    drop(alias);
+    assert_eq!(custody.retained_bytes(), 0);
+    assert!(original.live_allocation_bytes() + expected <= live,
+        "last physical proof drop retires its DATA and known map/mutex payloads");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_copied_record_compiler_preserves_real_payload_and_authored_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-copied-record").await?;
+    workspace.write_text("/source", "authenticated source bytes").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = checkout.lookup_no_follow(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("real source record absent")?;
+    checkout.bind_authored_operation(OperationId::new());
+    let expected = checkout.compile_copied_record_measured(
+        path("copy")?, source, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let requested = path("copy")?;
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let (paid_path, allocation) = requested.clone_with_accounting(&mut accounting, &cancellation)?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+        return Err("paid path lost its original custody".into());
+    };
+    let compiled = checkout.compile_copied_record_with_native_work(
+        paid_path, source, allocation, &original, &cancellation,
+    ).await?;
+    let Mutation::Create { record, path: destination } = &compiled.0.0 else {
+        return Err("regular source did not compile a canonical create".into());
+    };
+    assert_eq!(destination, &requested);
+    assert_eq!(record.file_id, expected.1, "original and ordinary lineage derives the same ID");
+    assert_ne!(record.file_id, source.file_id);
+    assert_eq!(record.payload, source.payload, "no replacement or fake content root");
+    assert_eq!(record.metadata, source.metadata);
+    assert_eq!(record.link_count, 1);
+    assert_eq!(compiled.1.bytes(), destination.logical_owned_bytes());
+    assert!(compiled.1.work().shares_ledger(&original));
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    drop(compiled);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_copied_directory_and_metadata_denial_precede_staged_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-copied-denial").await?;
+    workspace.write_text("/source", "existing nonempty directory contents").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let root = NamespacePath::new(Vec::new(), workspace.limits())?;
+    let source = checkout.lookup_no_follow(
+        &root, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("authenticated directory absent")?;
+    assert_eq!(source.kind, FileKind::Directory);
+    let requested = path("copy")?;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 4, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let (paid_path, allocation) = requested.clone_with_accounting(&mut accounting, &cancellation)?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+        return Err("paid path lost its original custody".into());
+    };
+    let failure = checkout.compile_copied_record_with_native_work(
+        paid_path, source, allocation, &original, &cancellation,
+    ).await.err().ok_or("copy denial staged a directory")?;
+    assert!(matches!(failure, FsError::Work(_)));
+    assert_eq!(original.receipt().bytes_copied, 4);
+    assert_eq!(original.receipt().bytes_encoded, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    let metadata = checkout.lookup_no_follow_with_metadata(
+        &root, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("authenticated metadata absent")?.1;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let failure = checkout.stage_metadata_with_accounting(
+        metadata, &mut accounting, &cancellation,
+    ).await.err().ok_or("metadata encoder denial reached object write")?;
+    assert!(matches!(failure, FsError::Work(_)));
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.receipt().bytes_encoded, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-identity-candidate").await?;
+    workspace.write_text("/source", "actual source bytes").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        CheckoutMode::writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let path = NamespacePath::from_posix_absolute("/source", workspace.limits())?;
+    let source = checkout.lookup_no_follow(
+        &path, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("actual source record absent")?;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let mut candidate = checkout.private_candidate_with_native_work(
+        &original, &cancellation,
+    )?;
+    let paid = |mutation| -> Result<(Vec<Mutation>, crate::NativeAllocation), FsError> {
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+        accounting.charge(WorkCounters {
+            bytes_copied: size_of::<Mutation>() as u64, ..WorkCounters::UNCHARGED
+        })?;
+        operations.value.push(Mutation::File { file_id: source.file_id, mutation });
+        let KernelOwnedAllocation::NativeOriginal(allocation) = operations.allocation else {
+            unreachable!("native context returns original input custody")
+        };
+        Ok((operations.value, allocation))
+    };
+    let input = paid(FileMutation::Resize { logical_bytes: 0 })?;
+    candidate.mutate_with_native_work(input.0, input.1, &original, &cancellation).await?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let current = crate::kernel::lookup_file_record_async_with_accounting(
+        &fs.inner.objects, candidate.root.file_table, source.file_id,
+        DecodeLimits::for_volume(candidate.volume.config), &mut accounting, &cancellation, None,
+    ).await?;
+    let current = current.0.ok_or("mutated identity disappeared")?;
+    assert_eq!(current.file_id, source.file_id);
+    assert_ne!(current.payload, source.payload);
+    assert!(candidate.root.same_original_scope(original.native_read_meter()));
+    assert_eq!(candidate.base_file_table, checkout.root.file_table);
+    assert_eq!(checkout.lookup_no_follow(
+        &path, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record, Some(source));
+    let before = (
+        candidate.root.file_table, candidate.base_file_table,
+        candidate.authored_operation_id, candidate.live_operation_id,
+    );
+    let baseline = original.live_allocation_bytes();
+    let input = paid(FileMutation::Resize { logical_bytes: 7 })?;
+    let before_io = original.receipt();
+    cancellation.cancel();
+    let failure = candidate.mutate_with_native_work(
+        input.0, input.1, &original, &cancellation,
+    ).await.err().ok_or("cancelled mutation changed candidate")?;
+    assert!(matches!(failure,
+        FsError::Cancelled(_) |
+        FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)));
+    assert_eq!(before, (
+        candidate.root.file_table, candidate.base_file_table,
+        candidate.authored_operation_id, candidate.live_operation_id,
+    ));
+    assert_eq!(original.receipt().backend_read_operations, before_io.backend_read_operations);
+    assert_eq!(original.receipt().backend_write_operations, before_io.backend_write_operations);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_control_custody_retires_with_actual_root_buffers_and_last_proof_alias()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("private-control-retirement").await?;
+    workspace.write_text("/file", "body").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let custody = candidate.private_control_custody();
+    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
+    let parent_bytes = root_parent_bytes(&candidate.base_root)?
+        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
+    assert!(parent_bytes > 0);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parent_bytes);
+    assert_eq!(custody.retained_bytes(), 0, "constructor control is not observer DATA");
+    assert_eq!(custody.retained_payload_bytes(), proof_bytes + parent_bytes);
+    let source_custody = checkout.private_control_custody();
+    assert!(!Arc::ptr_eq(&source_custody, &custody),
+        "a private copy does not adopt its source's constructor claims");
+    assert_eq!(source_custody.physical_retained_bytes(),
+        proof_bytes + CheckoutDependencies::empty_logical_owned_bytes() as u64 + size_of::<ObservedPathMap>() as u64
+            + root_parent_bytes(&checkout.base_root)?
+            + root_parent_bytes(&checkout.root)? * (1 + u64::from(checkout.root.has_hold())));
+    let ordinary = candidate.private_candidate();
+    assert_eq!(ordinary.private_control_custody().physical_retained_bytes(), 0,
+        "a clone clears inherited primitive tags");
+    assert!(Arc::ptr_eq(ordinary.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
+        candidate.dependencies.proof().observed_paths.as_ref().expect("constructor map")));
+    drop(ordinary);
+    let alias = Arc::clone(&candidate.dependencies.proof);
+    let observed = Arc::clone(candidate.dependencies.proof().observed_paths.as_ref().expect("constructor map"));
+    cancellation.cancel();
+    drop(candidate);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes,
+        "the by-value Checkout dies before its aliased Mutex proof");
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), 0,
+        "an immutable map alias does not retain independent control");
+    drop(observed);
+    let candidate = checkout.private_candidate_measured(
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    )?.value;
+    let custody = candidate.private_control_custody();
+    let alias = Arc::clone(&candidate.dependencies.proof);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _candidate = candidate;
+        panic!("unwind the private producer's by-value owner");
+    })).is_err());
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_mutation_root_vectors_follow_their_actual_owner_across_replacements()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("private-mutation-root-custody").await?;
+    workspace.write_text("/seed", "body").await?;
+    let active = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
+    ).await?.value;
+    let mut candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?.value;
+    let custody = candidate.private_control_custody();
+    let parents = candidate.root.parents.clone();
+    assert!(!parents.is_empty());
+    let base = candidate.base_root.clone();
+    let generation = candidate.generation_id();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let original_control = custody.physical_retained_bytes();
+    let failed = candidate.create_file(
+        path("cancelled")?, Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancelled,
+    ).await.err().ok_or("cancelled mutation changed the working roots")?;
+    assert!(matches!(failed.error, FsError::Cancelled(_) | FsError::Mutation(_)));
+    assert_eq!(custody.physical_retained_bytes(), original_control);
+    assert_eq!(candidate.base_root, base);
+    for name in ["first", "second"] {
+        let receipt = candidate.create_file(
+            path(name)?, Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active,
+        ).await?;
+        assert!(receipt.work.allocation_operations > 0);
+        assert_eq!(candidate.generation_id(), generation);
+        assert_eq!(candidate.base_root, base);
+        assert_eq!(candidate.root.parents, parents);
+    }
+    // Moving the exact vector owner must not retire its control by dropping
+    // Checkout or its proof. This also catches old-vector tags left behind by
+    // either replacement, independently of dependency-map custody.
+    let roots = std::mem::replace(&mut candidate.root, checkout.root.replicate());
+    let retained_roots = root_parent_bytes(&roots)?
+        * (1 + u64::from(roots.has_hold()));
+    assert!(retained_roots > 0);
+    drop(candidate);
+    assert_eq!(custody.physical_retained_bytes(), retained_roots);
+    assert_eq!(custody.live_payload_counts(), (retained_roots, 0),
+        "new operation vectors await original receipt delivery, unlike ctor standing");
+    drop(roots);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_post_seal_roots_preserve_custody_and_cancelled_preparation_retires_copies()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("private-seal-root-custody").await?;
+    let active = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
+    ).await?.value;
+    checkout.create_file(path("pending")?, Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active).await?;
+    let mut candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?.value;
+    let custody = candidate.private_control_custody();
+    let original_root = candidate.generation_id();
+    let original_control = custody.physical_retained_bytes();
+    let denied = candidate.prepare_root_replacement(
+        &candidate.base_root, &candidate.root,
+        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &active, None,
+    );
+    if !candidate.base_root.parents.is_empty()
+        || (candidate.root.has_hold() && !candidate.root.parents.is_empty())
+    {
+        let failure = denied.err().ok_or("root copy ignored its zero capacity budget")?;
+        assert!(matches!(failure.error, FsError::Work(_)));
+        assert_eq!(failure.work.allocation_operations, 0);
+    } else {
+        drop(denied?);
+    }
+    assert_eq!(custody.physical_retained_bytes(), original_control);
+    let cancelled = CancellationToken::new();
+    let operation = OperationId::from_bytes([241; 16]);
+    let failed = candidate.commit_with_permit_guarded(
+        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled,
+        |_| {
+            assert!(custody.physical_retained_bytes() > original_control,
+                "the authoritative pre-seal root copies have real retained tags");
+            cancelled.cancel();
+            async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) }
+        },
+    ).await.err().ok_or("a cancelled publication seal appended")?;
+    assert!(matches!(failed.error, FsError::Publication(_) | FsError::Cancelled(_)));
+    assert!(failed.work.allocation_operations > 0);
+    assert_eq!(candidate.generation_id(), original_root);
+    assert!(candidate.has_pending_mutations());
+    assert_eq!(custody.physical_retained_bytes(), original_control,
+        "cancelled preparation frees actual copies, not the installed producer");
+    let panicked = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        candidate.commit_with_permit_guarded(
+            operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
+            |_| async {
+                assert!(custody.physical_retained_bytes() > original_control);
+                panic!("unwind after authoritative root copies, before the original CAS");
+            },
+        ),
+    )).await;
+    assert!(panicked.is_err());
+    assert_eq!(candidate.generation_id(), original_root);
+    assert_eq!(custody.physical_retained_bytes(), original_control,
+        "panic retires actual prepared buffers without releasing installed control");
+    let committed = candidate.commit_with_permit_guarded(
+        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
+        |_| async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+    ).await?;
+    assert!(matches!(committed.value, CheckoutCommitOutcome::Committed { .. }));
+    assert!(!candidate.has_pending_mutations());
+    assert_eq!(candidate.base_root, candidate.root.clone());
+    assert_eq!(candidate.root.parents, vec![checkout.generation_id()]);
+    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
+    let parent_bytes = root_parent_bytes(&candidate.base_root)?
+        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parent_bytes,
+        "post-seal replacement keeps only the actual installed vector capacities");
+    let alias = Arc::clone(&candidate.dependencies.proof);
+    drop(candidate);
+    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn installed_private_candidate_keeps_its_original_control_custody_until_actual_destruction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("installed-private-control").await?;
+    workspace.write_text("/file", "body").await?;
+    let cancellation = CancellationToken::new();
+    let mut installed = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let base = installed.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let mut candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let custody = candidate.private_control_custody();
+    let control = custody.physical_retained_bytes();
+    candidate.lookup_no_follow(&path("retained-observation")?, WorkBudget::UNBOUNDED, &cancellation).await?;
+    assert_eq!(custody.physical_retained_bytes(),
+        control + CheckoutDependencies::empty_logical_owned_bytes() as u64);
+    assert!(custody.retained_bytes() > 0, "name/path DATA stays a separate custody class");
+    let prepared = installed.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.ok_or("compatible private candidate was rejected")?;
+    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
+    assert!(Arc::ptr_eq(&custody, &installed.private_control_custody()),
+        "installation retains the same producer, not a scalar replacement claim");
+    drop(base);
+    cancellation.cancel();
+    assert_eq!(custody.physical_retained_bytes(),
+        control + CheckoutDependencies::empty_logical_owned_bytes() as u64);
+    let _completed = installed.proof_data_snapshot_completed();
+    let alias = Arc::clone(&installed.dependencies.proof);
+    drop(installed);
+    assert_eq!(custody.physical_retained_bytes(),
+        size_of::<Mutex<Proof>>() as u64 + CheckoutDependencies::empty_logical_owned_bytes() as u64);
+    drop(alias);
+    assert_eq!(custody.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn borrowed_seal_tags_only_new_root_buffers_to_the_current_producer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("borrowed-seal-root-custody").await?;
+    workspace.write_text("/file", "body").await?;
+    let active = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
+    ).await?.value;
+    checkout.create_file(path("pending")?, Bytes::from_static(b"pending"), WorkBudget::UNBOUNDED, &active).await?;
+    let mut service = checkout.private_candidate();
+    let foreign = service.private_control_custody();
+    let foreign_control = foreign.physical_retained_bytes();
+    assert_eq!(foreign_control, 0, "preexisting service control belongs to no current producer");
+    let projection = service.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?;
+    assert!(projection.work.allocation_operations > 0,
+        "the current producer token is a real admitted SDK constructor, not an empty marker");
+    let projection = projection.value;
+    let producer = projection.private_control_custody();
+    let producer_control = producer.physical_retained_bytes();
+    assert!(!Arc::ptr_eq(&foreign, &producer));
+    let borrowed_proof_alias = Arc::clone(&service.dependencies.proof);
+    let cancelled = CancellationToken::new();
+    let operation = OperationId::from_bytes([242; 16]);
+    let denied = service.commit_with_permit_even_if_clean_guarded(
+        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled,
+        &mut |_| {
+            assert_eq!(foreign.physical_retained_bytes(), foreign_control);
+            assert!(producer.physical_retained_bytes() > producer_control);
+            cancelled.cancel();
+            async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) }
+        },
+        Some(&producer),
+    ).await.err().ok_or("cancelled borrowed seal published")?;
+    assert!(denied.work.allocation_operations > 0);
+    assert_eq!(foreign.physical_retained_bytes(), foreign_control);
+    assert_eq!(producer.physical_retained_bytes(), producer_control,
+        "cancelled new copies retire from only their current producer");
+    let committed = service.commit_with_permit_even_if_clean_guarded(
+        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
+        &mut |_| async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        Some(&producer),
+    ).await?;
+    assert!(matches!(committed.value, CheckoutCommitOutcome::Committed { .. }));
+    let new_vectors = root_parent_bytes(&service.base_root)?
+        + root_parent_bytes(&service.root)? * (1 + u64::from(service.root.has_hold()));
+    assert_eq!(foreign.physical_retained_bytes(), 0,
+        "new buffers are tagged even when the borrowed service had no private producer tags");
+    assert_eq!(producer.physical_retained_bytes(), producer_control + new_vectors);
+    drop(projection);
+    assert_eq!(producer.physical_retained_bytes(), new_vectors,
+        "only genuine new seal buffers remain in the current producer");
+    drop(service);
+    assert_eq!(producer.physical_retained_bytes(), 0,
+        "a borrowed proof alias never becomes current-producer control");
+    assert_eq!(foreign.physical_retained_bytes(), 0);
+    drop(borrowed_proof_alias);
+    assert_eq!(foreign.physical_retained_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn measured_candidate_adoption_seals_actual_proof_and_preserves_failure_prefixes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("measured-candidate-adoption").await?;
+    let cancellation = CancellationToken::new();
+    let mut live = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let base = live.private_candidate();
+    let mut candidate = base.private_candidate();
+    let candidate_path = path("candidate-observation")?;
+    let live_path = path("reader-observation")?;
+    candidate.lookup_no_follow(&candidate_path, WorkBudget::UNBOUNDED, &cancellation).await?;
+    live.lookup_no_follow(&live_path, WorkBudget::UNBOUNDED, &cancellation).await?;
+    let expected = candidate.dependencies.proof().dependencies
+        .merged(&live.dependencies.proof().dependencies).ok_or("compatible proofs rejected")?;
+
+    let denied = match live.prepare_candidate_adoption_measured(
+        &base, &candidate,
+        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err("zero DATA budget admitted proof copies".into()),
+    };
+    assert!(matches!(denied.error, FsError::Work(_)));
+    assert_eq!(denied.work.bytes_copied, 0);
+    assert_eq!(denied.work.allocation_operations, 0);
+    assert!(denied.work.items_examined > 0);
+    let denied = match live.prepare_candidate_adoption_measured(
+        &base, &candidate,
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err("one allocation admitted two name copies".into()),
+    };
+    assert!(matches!(denied.error, FsError::Work(_)));
+    assert_eq!(denied.work.allocation_operations, 1);
+    assert_eq!(denied.work.bytes_copied, candidate_path.components()[0].as_bytes().len() as u64);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let denied = match live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancelled,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err("cancelled proof preparation succeeded".into()),
+    };
+    assert!(matches!(denied.error, FsError::Cancelled(_)));
+    assert_eq!(*denied.work, WorkCounters::default());
+
+    let prepared = live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    let name_bytes = (candidate_path.components()[0].as_bytes().len()
+        + live_path.components()[0].as_bytes().len()) as u64;
+    assert_eq!(prepared.work.bytes_copied, name_bytes);
+    assert_eq!(prepared.work.allocation_operations, 3);
+    let prepared = prepared.value.ok_or("compatible candidate rejected")?;
+    assert_eq!(prepared.retained_bytes(),
+        name_bytes + CheckoutDependencies::empty_logical_owned_bytes() as u64);
+    let mut ordinary = live.private_candidate();
+    assert!(ordinary.admits_candidate(&base, &candidate));
+    assert!(ordinary.adopt_candidate(&base, candidate.private_candidate()));
+    assert_eq!(ordinary.dependencies.proof().dependencies, expected);
+    assert!(live.adopt_prepared_candidate(&base, candidate, prepared));
+    assert_eq!(live.dependencies.proof().dependencies, expected);
+    assert!(live.dependencies.proof().observes_path(base.base_file_table, &candidate_path, true));
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("candidate-adoption-seal").await?;
+    let cancellation = CancellationToken::new();
+    let mut live = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let base = live.private_candidate();
+    let mut candidate = base.private_candidate();
+    let prepared = live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?;
+    assert_eq!(prepared.work.allocation_operations, 0, "identical proof is only shared");
+    assert_eq!(prepared.value.as_ref().ok_or("shared proof rejected")?.retained_bytes(), 0);
+    live.lookup_no_follow(&path("later-reader")?, WorkBudget::UNBOUNDED, &cancellation).await?;
+    assert!(!live.adopt_prepared_candidate(
+        &base, candidate.private_candidate(), prepared.value.ok_or("shared proof rejected")?,
+    ));
+    let prepared = live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.ok_or("reader observations rejected")?;
+    candidate.lookup_no_follow(&path("later-candidate")?, WorkBudget::UNBOUNDED, &cancellation).await?;
+    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(), prepared));
+    let prepared = live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.ok_or("compatible candidate rejected")?;
+    live.live_operation_id = Some(OperationId::from_bytes([209; 16]));
+    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(), prepared));
+    assert!(live.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.is_none());
+    assert!(!live.admits_candidate(&base, &candidate));
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn prepared_merge_custody_retires_precommit_copies_and_follows_actual_map_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("prepared-merge-custody").await?;
+    let cancellation = CancellationToken::new();
+    let mut installed = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let base = installed.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let mut candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let own_path = path("producer-name")?;
+    let reader_path = path("borrowed-reader-name")?;
+    candidate.lookup_no_follow(&own_path, WorkBudget::UNBOUNDED, &cancellation).await?;
+    installed.lookup_no_follow(&reader_path, WorkBudget::UNBOUNDED, &cancellation).await?;
+    let custody = candidate.private_control_custody();
+    let before_data = custody.retained_bytes();
+    let before_control = custody.physical_retained_bytes();
+    let names = (own_path.components()[0].as_bytes().len()
+        + reader_path.components()[0].as_bytes().len()) as u64;
+    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
+
+    let prepared = installed.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.ok_or("compatible candidate rejected")?;
+    assert_eq!(custody.retained_bytes(), before_data + names);
+    assert_eq!(custody.physical_retained_bytes(), before_control + map_bytes);
+    drop(prepared); // e.g. an authority fence rejects before physical CAS.
+    assert_eq!(custody.retained_bytes(), before_data);
+    assert_eq!(custody.physical_retained_bytes(), before_control);
+
+    let denied = match installed.prepare_candidate_adoption_measured(
+        &base, &candidate,
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err("finite merge budget accepted two new name copies".into()),
+    };
+    assert_eq!(denied.work.allocation_operations, 1);
+    assert_eq!(denied.work.bytes_copied, own_path.components()[0].as_bytes().len() as u64);
+    assert_eq!(custody.retained_bytes(), before_data, "failed merge retires its actual first key");
+    assert_eq!(custody.physical_retained_bytes(), before_control);
+
+    let prepared = installed.prepare_candidate_adoption_measured(
+        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
+    )?.value.ok_or("compatible candidate rejected")?;
+    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
+    assert!(Arc::ptr_eq(&custody, &installed.private_control_custody()));
+    assert_eq!(custody.physical_retained_bytes(), before_control,
+        "installation retires the original candidate map before retaining only the new map");
+    let proof_alias = Arc::clone(&installed.dependencies.proof);
+    let map_alias = installed.dependencies.proof().dependencies.clone();
+    drop(installed);
+    assert_eq!(custody.physical_retained_bytes(), size_of::<Mutex<Proof>>() as u64 + map_bytes);
+    drop(proof_alias);
+    assert_eq!(custody.physical_retained_bytes(), map_bytes, "actual map Arc still owns its payload");
+    assert_eq!(custody.retained_bytes(), names, "only actual merged keys remain");
+    drop(map_alias);
+    assert_eq!(custody.retained_payload_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn native_candidate_adoption_enforces_full_resource_copies_and_actual_map_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    use crate::kernel::persistent_point::Owned;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-candidate-adoption-resource").await?;
+    let cancellation = CancellationToken::new();
+    let seed = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut installed = seed.private_candidate_with_native_work(&original, &cancellation)?;
+    let base = installed.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut candidate = base.private_candidate_with_native_work(&original, &cancellation)?;
+    let own_path = path("candidate-proof-key")?;
+    let reader_path = path("reader-proof-key")?;
+    candidate.lookup_no_follow_with_native_work(&own_path, &original, &cancellation).await?;
+    installed.lookup_no_follow_with_native_work(&reader_path, &original, &cancellation).await?;
+    let owner = candidate.private_control_custody();
+    assert_eq!(owner.non_native_retained_payload_bytes(), 0);
+    let before_payload = owner.retained_payload_bytes();
+    let expected = candidate.dependencies.proof().dependencies
+        .merged(&installed.dependencies.proof().dependencies).ok_or("compatible proofs rejected")?;
+    let own_bytes = own_path.components()[0].as_bytes().len() as u64;
+    let names = own_bytes + reader_path.components()[0].as_bytes().len() as u64;
+    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
+
+    let denied_scope = original.native_volume_work(WorkBudget {
+        peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED
+    })?;
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    let failed = installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &denied_scope, &cancellation,
+    ).err().ok_or("standalone Fs budget bypassed the actual native resource ceiling")?;
+    assert!(matches!(failed, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+        WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
+    ))));
+    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(owner.retained_payload_bytes(), before_payload);
+
+    let partial_scope = original.native_volume_work(WorkBudget {
+        allocation_operations: 1, ..WorkBudget::UNBOUNDED
+    })?;
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    let events = owner.native_control_events();
+    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &partial_scope, &cancellation,
+    ), Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+        WorkError::BudgetExceeded { counter: "allocation_operations", .. }
+    )))));
+    assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 1);
+    assert_eq!(original.receipt().bytes_copied - before.bytes_copied, own_bytes);
+    assert_eq!(owner.native_control_events(),
+        (events.0 + u128::from(own_bytes), events.1 + u128::from(own_bytes)));
+    assert_eq!(original.live_allocation_bytes(), live, "failed merge destroyed its actual first copied key");
+    assert_eq!(owner.retained_payload_bytes(), before_payload);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let before = original.receipt();
+    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &original, &cancelled,
+    ), Err(FsError::Cancelled(_))));
+    assert_eq!(original.receipt(), before);
+    let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &foreign, &cancellation,
+    ), Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout))));
+    assert_eq!(original.receipt(), before, "a foreign original cannot claim this producer's proof");
+
+    let scope = original.native_volume_work(WorkBudget {
+        peak_allocation_bytes: names + map_bytes, ..WorkBudget::UNBOUNDED
+    })?;
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    let prepared = installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &scope, &cancellation,
+    )?.ok_or("compatible native candidate rejected")?;
+    assert_eq!(prepared.retained_bytes(), names + map_bytes);
+    assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 3);
+    assert_eq!(original.receipt().bytes_copied - before.bytes_copied, names);
+    assert_eq!(original.live_allocation_bytes(), live + names + map_bytes);
+    assert_eq!(owner.retained_payload_bytes(), before_payload + names + map_bytes);
+    assert_eq!(owner.non_native_retained_payload_bytes(), 0,
+        "actual new buffers own native resource tickets, not imported scalar bytes");
+    assert_eq!(owner.pending_data_work(), WorkCounters::UNCHARGED,
+        "direct original work must never be merged as another child receipt");
+    drop(prepared); // An original authority fence can reject before installation.
+    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(owner.retained_payload_bytes(), before_payload);
+
+    let prepared = installed.prepare_candidate_adoption_with_native_work(
+        &base, &candidate, &scope, &cancellation,
+    )?.ok_or("compatible native candidate rejected")?;
+    let completed = original.receipt();
+    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
+    assert_eq!(original.receipt(), completed, "physical adoption does not allocate or recharge native work");
+    assert_eq!(installed.dependencies.proof().dependencies, expected);
+    let map_alias = installed.dependencies.proof().dependencies.clone();
+    drop(installed);
+    assert_eq!(owner.retained_bytes(), names);
+    assert_eq!(owner.physical_retained_bytes(), map_bytes);
+    let mut accounting = KernelAccounting::native(&scope, &cancellation);
+    assert!(matches!(Owned::<Vec<u8>>::allocate(1, &mut accounting),
+        Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
+        )))), "the actual map alias still consumes its original resource allowance");
+    drop(map_alias);
+    assert_eq!(owner.retained_payload_bytes(), 0);
+    let bytes = Owned::<Vec<u8>>::allocate((names + map_bytes) as usize, &mut accounting)?;
+    assert_eq!(bytes.bytes, names + map_bytes, "actual map destruction released the same resource allowance");
+    drop(bytes);
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn proof_payload_reconciliation_mirrors_constructor_and_preserves_pending_map_data_peak()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("proof-payload-reconciliation").await?;
+    let cancellation = CancellationToken::new();
+    let base = workspace.checkout_measured(
+        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let owner = candidate.private_control_custody();
+    let constructor = owner.physical_retained_bytes();
+    assert!(constructor > 0);
+    assert_eq!(owner.live_payload_counts(), (constructor, constructor));
+    let observed_path = path("new-owned-name")?;
+    let name_bytes = observed_path.components()[0].as_bytes().len() as u64;
+    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
+    let mut proof = candidate.dependencies.proof();
+    let extension = proof.dependencies.prepare_observations(vec![Dependency {
+        region: DependencyRegion::DirectoryName {
+            directory_id: candidate.base_root.root_file_id,
+            name: observed_path.components()[0].clone(),
+        },
+        expected: crate::kernel::DependencyState::Absent,
+    }], candidate.volume.config.limits.maximum_checkout_dependencies)?;
+    let mut accounting = candidate.dependencies.accounting.lock();
+    let mut work = WorkCounters::default();
+    {
+        let mut admission = ProofDataAdmission {
+            ledger: ProofDataAdmissionLedger::Local {
+                accounting: &mut accounting, work: &mut work,
+                budget: WorkBudget {
+                    peak_allocation_bytes: map_bytes + name_bytes,
+                    ..WorkBudget::UNBOUNDED
+                },
+            },
+            owner: &owner,
+            cancellation: &cancellation,
+        };
+        admission.admit(0, 0, 0, 0)?;
+        assert_eq!(match &admission.ledger {
+            ProofDataAdmissionLedger::Local { work, .. } => **work,
+            #[cfg(not(target_arch = "wasm32"))]
+            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
+        }, WorkCounters::default(),
+            "mirroring real constructor custody is not a new allocation or peak");
+        proof.dependencies.commit_with_data_custody(
+            extension, Some(&owner),
+            |bytes, operations, copied, items| admission.admit(bytes, operations, copied, items),
+        )?;
+    }
+    assert_eq!(work.allocation_operations, 1);
+    assert_eq!(work.bytes_copied, 0, "the staged name was moved, not copied");
+    assert_eq!(work.peak_allocation_bytes, map_bytes + name_bytes,
+        "pending map and DATA remain simultaneous without charging constructor twice");
+    assert_eq!(owner.live_payload_counts(), (constructor + map_bytes + name_bytes, constructor));
+    let delivered = owner.take_completed_data_work();
+    assert_eq!(delivered.peak_allocation_bytes, map_bytes + name_bytes);
+    assert_eq!(owner.live_payload_counts(),
+        (constructor + map_bytes + name_bytes, constructor + map_bytes + name_bytes));
+    let mut next_work = WorkCounters::default();
+    {
+        let mut admission = ProofDataAdmission {
+            ledger: ProofDataAdmissionLedger::Local {
+                accounting: &mut accounting, work: &mut next_work, budget: WorkBudget::default(),
+            },
+            owner: &owner, cancellation: &cancellation,
+        };
+        admission.admit(0, 0, 0, 0)?;
+        assert_eq!(match &admission.ledger {
+            ProofDataAdmissionLedger::Local { work, .. } => **work,
+            #[cfg(not(target_arch = "wasm32"))]
+            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
+        }, WorkCounters::default(), "delivered payload is standing");
+        proof.dependencies.clear();
+        admission.reconcile()?;
+        assert_eq!(match &admission.ledger {
+            ProofDataAdmissionLedger::Local { accounting, .. } => accounting.allocations.live_bytes(),
+            #[cfg(not(target_arch = "wasm32"))]
+            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
+        }, constructor, "actual key/map destruction retires only those exact mirrored payloads");
+    }
+    assert_eq!(owner.live_payload_counts(), (constructor, constructor));
     Ok(())
 }
 
@@ -88,14 +1162,23 @@ async fn concurrent_observers_attribute_only_their_completed_name_and_path_data(
         });
         (first_thread.join().expect("first observer completes"), second_thread.join().expect("second observer completes"))
     });
-    assert!(first_result.0?.value.record.is_none());
-    assert!(second_result.0?.value.record.is_none());
+    let first_receipt = first_result.0?;
+    let second_receipt = second_result.0?;
+    assert!(first_receipt.value.record.is_none());
+    assert!(second_receipt.value.record.is_none());
     assert_eq!(first_result.1.retained_bytes, expected_first);
     assert_eq!(second_result.1.retained_bytes, expected_second);
     assert_eq!(first_result.1.work.bytes_copied, expected_first);
     assert_eq!(second_result.1.work.bytes_copied, expected_second);
-    assert_eq!(first_result.1.work.allocation_operations, 3);
-    assert_eq!(second_result.1.work.allocation_operations, 3);
+    for (completed, receipt) in [
+        (first_result.1, &first_receipt),
+        (second_result.1, &second_receipt),
+    ] {
+        // Decoded cold-frontier frames depend on cache races, unlike each
+        // observer's exact DATA buffers and the six always-reached frames.
+        assert!(completed.work.allocation_operations >= 10);
+        assert!(completed.work.allocation_operations <= receipt.work.allocation_operations);
+    }
     assert_eq!(checkout.proof_data_snapshot_completed().total_bytes()?, expected_first + expected_second);
     cancellation.cancel();
     let failed = first.lookup_no_follow(&first_path, WorkBudget::UNBOUNDED, &cancellation).await;
@@ -131,11 +1214,11 @@ fn proof_data_failure_keeps_only_the_completed_moved_name_prefix()
     ).expect_err("path DATA copy is denied before construction");
     assert!(matches!(error, FsError::Work(_)));
     assert_eq!(ledger.proof().dependencies.len(), 1);
-    assert!(ledger.proof().observed_paths.is_empty());
+    assert!(ledger.proof().observed_paths.as_deref().expect("reset map").entries.is_empty());
     let completed = ledger.proof_data_completed();
     assert_eq!(completed.retained_bytes, name_bytes);
     assert_eq!(completed.work.bytes_copied, 0);
-    assert_eq!(completed.work.allocation_operations, 0, "name was moved, not allocated");
+    assert_eq!(completed.work.allocation_operations, 1, "only the actual empty path-map Arc was allocated");
     cancellation.cancel();
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _held = ledger.proof();
@@ -179,9 +1262,10 @@ fn delivered_proof_data_is_not_recharged_and_unreported_peak_is_segment_local()
     )?;
     let first_owned = ledger.data_custody.retained_bytes();
     let first_report = ledger.data_custody.take_completed_data_work();
-    assert_eq!(first_report.peak_allocation_bytes, first_owned);
-    assert_eq!(ledger.data_custody.live_data_counts(), (first_owned, first_owned));
-    assert_eq!(ledger.accounting.lock().allocations.live_bytes(), first_owned);
+    let map_bytes = size_of::<ObservedPathMap>() as u64;
+    assert_eq!(first_report.peak_allocation_bytes, first_owned + map_bytes);
+    assert_eq!(ledger.data_custody.live_payload_counts(), (first_owned + map_bytes, first_owned + map_bytes));
+    assert_eq!(ledger.accounting.lock().allocations.live_bytes(), first_owned + map_bytes);
     let second_owned = path_clone_data(&second).0 + second.components()[0].retained_bytes() as u64;
     let mut second_work = WorkCounters::default();
     ledger.observe_paths(
@@ -195,18 +1279,213 @@ fn delivered_proof_data_is_not_recharged_and_unreported_peak_is_segment_local()
     assert!(second_report.peak_allocation_bytes < first_report.peak_allocation_bytes);
     assert_eq!(ledger.proof_data_completed().retained_bytes, first_owned + second_owned);
     ledger.proof().clear();
-    assert_eq!(ledger.data_custody.live_data_counts(), (0, 0));
+    assert_eq!(ledger.data_custody.live_payload_counts(), (0, 0));
     let mut next_work = WorkCounters::default();
     ledger.observe_paths(
         base, [&second], true, vec![dependency(&second)], 8, &mut next_work,
-        WorkBudget { peak_allocation_bytes: second_owned, ..WorkBudget::UNBOUNDED },
+        WorkBudget { peak_allocation_bytes: second_owned + map_bytes, ..WorkBudget::UNBOUNDED },
         &cancellation,
     )?;
-    assert_eq!(ledger.data_custody.live_data_counts(), (second_owned, 0), "new DATA is not standing retired DATA");
-    assert_eq!(next_work.peak_allocation_bytes, second_owned);
-    assert_eq!(ledger.data_custody.take_completed_data_work().peak_allocation_bytes, second_owned);
+    assert_eq!(ledger.data_custody.live_payload_counts(), (second_owned + map_bytes, 0),
+        "new DATA and its actual map payload are not standing retired payloads");
+    assert_eq!(next_work.peak_allocation_bytes, second_owned + map_bytes);
+    assert_eq!(ledger.data_custody.take_completed_data_work().peak_allocation_bytes, second_owned + map_bytes);
     assert_eq!(ledger.data_custody.take_completed_data_work(), WorkCounters::default());
     assert!(ledger.proof_data_completed().work.bytes_copied > first_report.bytes_copied);
+    Ok(())
+}
+
+#[test]
+fn observed_path_map_replacement_and_clear_retire_only_their_actual_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
+    let owner = Arc::clone(&ledger.data_custody);
+    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([45; 32]) };
+    let cancellation = CancellationToken::new();
+    let first = path("first")?;
+    let second = path("second")?;
+    let map_bytes = size_of::<ObservedPathMap>() as u64;
+    let mut work = WorkCounters::default();
+    ledger.observe_paths(base, [&first], true, vec![], 1, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
+    let old = Arc::clone(ledger.proof().observed_paths.as_ref().expect("first map"));
+    let generation = ledger.proof().observed_data_generation;
+    owner.take_completed_data_work();
+    let mut next = WorkCounters::default();
+    ledger.observe_paths(base, [&second], true, vec![], 1, &mut next, WorkBudget::UNBOUNDED, &cancellation)?;
+    assert!(old.entries.contains_key(&first));
+    assert!(!ledger.proof().observes_path(base, &first, true));
+    assert!(ledger.proof().observes_path(base, &second, true));
+    assert_eq!(ledger.proof().observed_data_generation, generation + 1);
+    assert_eq!(owner.physical_retained_bytes(), 2 * map_bytes);
+    assert_eq!(owner.retained_bytes(), path_clone_data(&first).0 + path_clone_data(&second).0);
+    let current = Arc::clone(ledger.proof().observed_paths.as_ref().expect("replacement map"));
+    cancellation.cancel();
+    ledger.proof().clear();
+    {
+        let proof = ledger.proof();
+        assert!(proof.observed_paths.is_none());
+        assert!(proof.observed_base.is_none());
+        assert_eq!(proof.observed_data_bytes, 0);
+        assert_eq!(proof.observed_clone_data_bytes, 0);
+        assert_eq!(proof.observed_data_generation, generation + 2);
+    }
+    assert_eq!(owner.physical_retained_bytes(), 2 * map_bytes, "clear does not destroy external map aliases");
+    drop(old);
+    assert_eq!(owner.physical_retained_bytes(), map_bytes);
+    assert_eq!(owner.retained_bytes(), path_clone_data(&second).0);
+    drop(current);
+    assert_eq!(owner.retained_payload_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn observed_path_true_cow_preclaims_arc_and_copy_and_clears_inherited_tags()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
+    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([46; 32]) };
+    let cancellation = CancellationToken::new();
+    let observed = path("copied-name")?;
+    let map_bytes = size_of::<ObservedPathMap>() as u64;
+    let (data_bytes, data_operations) = path_clone_data(&observed);
+    let mut work = WorkCounters::default();
+    ledger.observe_paths(base, [&observed], false, vec![], 8, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
+    let old = Arc::clone(ledger.proof().observed_paths.as_ref().expect("original map"));
+    let original_generation = ledger.proof().observed_data_generation;
+    ledger.data_custody.take_completed_data_work();
+    let mut denied = WorkCounters::default();
+    let error = ledger.observe_paths(
+        base, [&observed], true, vec![], 8, &mut denied,
+        WorkBudget { peak_allocation_bytes: map_bytes + data_bytes - 1, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ).expect_err("the actual Arc and copied DATA must be funded together before cloning");
+    assert!(matches!(error, FsError::Work(_)));
+    assert_eq!(denied.allocation_operations, 0);
+    assert_eq!(denied.bytes_copied, 0);
+    assert!(Arc::ptr_eq(&old, ledger.proof().observed_paths.as_ref().expect("unchanged map")));
+    assert_eq!(ledger.proof().observed_data_generation, original_generation);
+    assert_eq!(ledger.data_custody.physical_retained_bytes(), map_bytes);
+    let plain_clone = old.as_ref().clone();
+    assert!(plain_clone == *old, "map equality compares only semantic entries");
+    assert_eq!(ledger.data_custody.retained_payload_bytes(), map_bytes + data_bytes,
+        "a genuine Clone clears every old physical and DATA tag");
+    drop(plain_clone);
+    let mut copied = WorkCounters::default();
+    ledger.observe_paths(
+        base, [&observed], true, vec![], 8, &mut copied,
+        WorkBudget { peak_allocation_bytes: map_bytes + data_bytes, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    )?;
+    assert_eq!(copied.allocation_operations, 1 + data_operations);
+    assert_eq!(copied.bytes_copied, data_bytes);
+    assert_eq!(copied.peak_allocation_bytes, map_bytes + data_bytes);
+    assert!(!old.entries.get(&observed).expect("old entry").terminal);
+    assert!(ledger.proof().observes_path(base, &observed, true));
+    assert_eq!(ledger.proof().observed_data_bytes, data_bytes);
+    assert_eq!(ledger.proof().observed_clone_data_bytes, data_bytes);
+    assert_eq!(ledger.proof().observed_data_generation, original_generation + 1);
+    assert_eq!(ledger.data_custody.retained_payload_bytes(), 2 * (map_bytes + data_bytes));
+    drop(old);
+    assert_eq!(ledger.data_custody.retained_payload_bytes(), map_bytes + data_bytes);
+    ledger.proof().clear();
+    assert_eq!(ledger.data_custody.retained_payload_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn observed_path_weak_move_preserves_key_data_and_replaces_only_arc_control()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
+    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([47; 32]) };
+    let cancellation = CancellationToken::new();
+    let observed = path("moved-name")?;
+    let map_bytes = size_of::<ObservedPathMap>() as u64;
+    let data_bytes = path_clone_data(&observed).0;
+    let mut work = WorkCounters::default();
+    ledger.observe_paths(base, [&observed], false, vec![], 8, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
+    let (weak, old_address, key_address, generation) = {
+        let proof = ledger.proof();
+        let map = proof.observed_paths.as_ref().expect("observed map");
+        let key = map.entries.keys().next().expect("observed key");
+        (Arc::downgrade(map), Arc::as_ptr(map) as usize,
+            key.components().as_ptr() as usize, proof.observed_data_generation)
+    };
+    ledger.data_custody.take_completed_data_work();
+    let mut moved = WorkCounters::default();
+    ledger.observe_paths(
+        base, [&observed], true, vec![], 8, &mut moved,
+        WorkBudget { peak_allocation_bytes: map_bytes, bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    )?;
+    assert!(weak.upgrade().is_none(), "make_mut dissociates the old weak-only Arc");
+    assert_eq!(moved.allocation_operations, 1);
+    assert_eq!(moved.bytes_copied, 0);
+    assert_eq!(moved.peak_allocation_bytes, map_bytes);
+    {
+        let proof = ledger.proof();
+        let map = proof.observed_paths.as_ref().expect("moved map");
+        assert_ne!(Arc::as_ptr(map) as usize, old_address);
+        assert_eq!(map.entries.keys().next().expect("moved key").components().as_ptr() as usize, key_address);
+        assert_eq!(proof.observed_data_bytes, data_bytes);
+        assert_eq!(proof.observed_clone_data_bytes, data_bytes);
+        assert_eq!(proof.observed_data_generation, generation + 1);
+    }
+    assert_eq!(ledger.data_custody.retained_bytes(), data_bytes);
+    assert_eq!(ledger.data_custody.physical_retained_bytes(), map_bytes);
+    ledger.proof().clear();
+    assert_eq!(ledger.data_custody.retained_payload_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_initial_path_map_denial_precedes_constructor_and_alias_owns_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-map-admission").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let custody = candidate.private_control_custody();
+    drop(candidate);
+    let map_bytes = size_of::<ObservedPathMap>() as u64;
+    let initial = custody.native_control_events();
+    let denied = original.native_volume_work(WorkBudget {
+        peak_allocation_bytes: map_bytes - 1, ..WorkBudget::UNBOUNDED
+    })?;
+    let before = original.receipt();
+    assert!(denied.claim_allocation(map_bytes, 1).is_err(),
+        "the real resource view rejects the known payload before its Arc constructor");
+    assert_eq!(original.receipt(), before);
+    assert_eq!(custody.native_control_events(), initial);
+    drop(denied);
+    let scope = original.native_volume_work(WorkBudget {
+        peak_allocation_bytes: map_bytes, ..WorkBudget::UNBOUNDED
+    })?;
+    let witness = scope.checkout_control_sink(&custody)?;
+    let mut allocation = scope.claim_allocation(map_bytes, 1)?;
+    let control = allocation.transfer_checkout_control(&custody, &witness)?;
+    let dependencies = checkout.dependencies.proof().dependencies.clone();
+    let mut proof = Proof::new_with_control(dependencies, control);
+    drop(allocation);
+    drop(witness);
+    let expected = (initial.0 + u128::from(map_bytes), initial.1);
+    assert_eq!(custody.native_control_events(), expected);
+    let alias = Arc::clone(proof.observed_paths.as_ref().expect("native initial map"));
+    let live = original.live_allocation_bytes();
+    cancellation.cancel();
+    proof.clear();
+    assert!(proof.observed_paths.is_none());
+    assert_eq!(custody.native_control_events(), expected);
+    assert_eq!(original.live_allocation_bytes(), live);
+    drop(proof);
+    drop(alias);
+    assert_eq!(custody.native_control_events(),
+        (expected.0, initial.1 + u128::from(map_bytes)));
+    assert_eq!(original.live_allocation_bytes(), live - map_bytes);
     Ok(())
 }
 
@@ -529,8 +1808,8 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
     for expected_reads in [3, 4] {
         assert!(matches!(
             generation.pin("third").await,
-            Err(crate::workspace::WorkspaceError::Engine(message))
-                if message.contains("object is missing")
+            Err(crate::workspace::WorkspaceError::Filesystem(error))
+                if error.to_string().contains("object is missing")
         ));
         assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
     }
@@ -996,6 +2275,52 @@ impl AsyncObjectStore for CountingObjectStore {
 }
 
 impl AsyncObjectStore for PostPutObjectStore {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_with_native_work(
+        &self, object_id: ObjectId, bytes: Bytes,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        ObjectStore::put_with_native_work(&*self.inner, object_id, bytes, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_hashed_with_native_work(
+        &self, object: HashedObject,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        ObjectStore::put_hashed_with_native_work(&*self.inner, object, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn put_many_with_native_work(
+        &self, writes: &[ObjectWrite],
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(), ObjectStoreError> {
+        ObjectStore::put_many_with_native_work(&*self.inner, writes, original, cancellation)?;
+        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work(
+        &self, object_id: ObjectId, maximum_bytes: u64,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+        ObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_many_with_native_work(
+        &self, requests: &[ObjectReadRequest],
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+        ObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation)
+    }
+
     async fn put(
         &self,
         object_id: ObjectId,
@@ -4129,6 +5454,18 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
 #[test]
 fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_overlap()
 -> Result<(), Box<dyn std::error::Error>> {
+    sparse_rebase_across_remote_ranges(false)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_native_rebase_preserves_disjoint_ranges_and_is_atomic_on_denial_and_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    sparse_rebase_across_remote_ranges(true)
+}
+
+fn sparse_rebase_across_remote_ranges(native: bool)
+-> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume = poll_ready(fs.create_volume_with_id(
@@ -4200,9 +5537,40 @@ fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_over
         &cancellation,
     ))
     .ok_or("remote commit blocked")??;
-    let safe = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("disjoint rebase blocked")??;
-    assert!(matches!(safe.value, RebaseDecision::Safe { .. }));
+    #[cfg(not(target_arch = "wasm32"))]
+    if native {
+        let before = (
+            local.generation_id(), local.root.file_table, local.base_file_table,
+            local.authority_head, local.authored_operation_id, local.live_operation_id,
+            local.dependencies.proof().dependencies.clone(),
+        );
+        let denied = crate::NativeMaterializationWork::new(
+            WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        assert!(poll_ready(local.rebase_head_with_native_work(8, &denied, &cancellation))
+            .ok_or("native denial rebase blocked")?.is_err());
+        assert_eq!(before, (
+            local.generation_id(), local.root.file_table, local.base_file_table,
+            local.authority_head, local.authored_operation_id, local.live_operation_id,
+            local.dependencies.proof().dependencies.clone(),
+        ));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let safe = if native {
+        let result = poll_ready(local.rebase_head_with_native_work(8, &original, &cancellation))
+            .ok_or("native disjoint rebase blocked")??;
+        (result.0, Some(result.1))
+    } else {
+        (poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("disjoint rebase blocked")??.value, None)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let safe = (poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("disjoint rebase blocked")??.value, ());
+    assert!(matches!(safe.0, RebaseDecision::Safe { .. }));
     let local_bytes = poll_ready(local.read_file_range(
         &file,
         ByteRange {
@@ -4254,11 +5622,34 @@ fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_over
         &cancellation,
     ))
     .ok_or("overlapping remote commit blocked")??;
-    let conflict =
-        poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("overlapping rebase blocked")??;
+    let unchanged = (
+        overlapping_local.generation_id(), overlapping_local.root.file_table,
+        overlapping_local.base_file_table, overlapping_local.authority_head,
+        overlapping_local.authored_operation_id, overlapping_local.live_operation_id,
+        overlapping_local.dependencies.proof().dependencies.clone(),
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let conflict = if native {
+        let result = poll_ready(overlapping_local.rebase_head_with_native_work(8, &original, &cancellation))
+            .ok_or("native overlapping rebase blocked")??;
+        assert!(result.1.work().shares_ledger(&original));
+        assert!(result.1.bytes() >= (std::mem::size_of::<crate::kernel::RebaseConflict>()) as u64);
+        (result.0, Some(result.1))
+    } else {
+        (poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("overlapping rebase blocked")??.value, None)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let conflict = (poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("overlapping rebase blocked")??.value, ());
+    assert_eq!(unchanged, (
+        overlapping_local.generation_id(), overlapping_local.root.file_table,
+        overlapping_local.base_file_table, overlapping_local.authority_head,
+        overlapping_local.authored_operation_id, overlapping_local.live_operation_id,
+        overlapping_local.dependencies.proof().dependencies.clone(),
+    ));
     assert!(matches!(
-        conflict.value,
+        conflict.0,
         RebaseDecision::Conflicted { ref conflicts, .. }
             if conflicts.iter().any(|conflict| matches!(
                 conflict.region,
@@ -4570,6 +5961,89 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
         invalid_path.error,
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_guarded_live_retry_preserves_both_real_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = fs.create_volume_with_id(
+        VolumeId::from_bytes([209; 16]), serialized_config(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let mut seed = volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let left = seed.create_file(
+        path("left")?, Bytes::from_static(b"left real source"),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let right = seed.create_file(
+        path("right")?, Bytes::from_static(b"distinct right real source"),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    seed.commit(OperationId::from_bytes([210; 16]), WorkBudget::UNBOUNDED, &cancellation).await?;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let mut local = volume.checkout_with_native_work(
+        GenerationSelector::Head, writable_live(), &original, &cancellation,
+    ).await?;
+    let mut remote = volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+    accounting.charge(WorkCounters {
+        bytes_copied: size_of::<Mutation>() as u64, ..WorkCounters::UNCHARGED
+    })?;
+    operations.value.push(Mutation::File {
+        file_id: left, mutation: FileMutation::Resize { logical_bytes: 0 },
+    });
+    let KernelOwnedAllocation::NativeOriginal(allocation) = operations.allocation else {
+        unreachable!("native input retains original custody")
+    };
+    local.mutate_with_native_work(
+        operations.value, allocation, &original, &cancellation,
+    ).await?;
+    remote.mutate(vec![Mutation::File {
+        file_id: right, mutation: FileMutation::Resize { logical_bytes: 0 },
+    }], WorkBudget::UNBOUNDED, &cancellation).await?;
+    remote.commit(
+        OperationId::from_bytes([211; 16]), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let mut callbacks = 0;
+    let mut before_publication = |meter: &crate::NativeMaterializationWork| {
+        assert!(meter.shares_ledger(&original));
+        callbacks += 1;
+        std::future::ready(Ok::<(), FsError>(()))
+    };
+    let outcome = local.resume_live_guarded_with_native_work(
+        OperationId::from_bytes([212; 16]), 8, 16, PublicationPermit::Unrestricted,
+        &original, &cancellation, &mut before_publication, None,
+    ).await?;
+    assert!(matches!(outcome.0, LiveMutationOutcome::Committed { .. }));
+    assert_eq!(outcome.1.bytes(), 0);
+    assert!(outcome.1.work().shares_ledger(&original));
+    assert!(callbacks >= 2);
+    assert!(!local.has_pending_mutations());
+    assert_eq!(local.live_operation_id, None);
+    assert!(local.root.same_original_scope(original.native_read_meter()));
+    let left_record = crate::kernel::lookup_file_record_async_with_accounting(
+        &fs.inner.objects, local.root.file_table, left, DecodeLimits::for_volume(volume.config),
+        &mut accounting, &cancellation, None,
+    ).await?.0.ok_or("local identity disappeared during safe retry")?;
+    let right_record = crate::kernel::lookup_file_record_async_with_accounting(
+        &fs.inner.objects, local.root.file_table, right, DecodeLimits::for_volume(volume.config),
+        &mut accounting, &cancellation, None,
+    ).await?.0.ok_or("concurrent destination identity disappeared during safe retry")?;
+    assert_eq!(left_record.file_id, left);
+    assert_eq!(right_record.file_id, right);
+    assert_eq!(left_record.payload, right_record.payload);
     Ok(())
 }
 
@@ -4906,6 +6380,23 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
             ))
     ));
     assert_eq!(live.generation_id(), before_conflict);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let native_conflict = poll_ready(live.synchronize_live_with_native_work(&original, &cancellation))
+            .ok_or("native conflicting live sync blocked")?
+            .err().ok_or("native conflicting live sync unexpectedly advanced")?;
+        assert!(matches!(&native_conflict,
+            FsError::NativeLiveConflict { conflicts, allocation, .. }
+                if allocation.work().shares_ledger(&original)
+                    && allocation.bytes() >= size_of::<RebaseConflict>() as u64
+                    && conflicts.iter().any(|conflict| matches!(
+                        conflict.region, DependencyRegion::ContentRange { .. }
+                    ))
+        ));
+        assert_eq!(live.generation_id(), before_conflict);
+    }
     Ok(())
 }
 
@@ -5697,75 +7188,803 @@ fn authored_transaction_reuses_a_staged_file_metadata_object()
     .value;
     let file = path("memo.txt")?;
     let metadata = empty_metadata();
-    let mut operations = Vec::new();
-    let mut work = WorkCounters::default();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        WorkBudget::UNBOUNDED, &cancellation,
+    );
+    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(4, &mut accounting)?;
     let mut staged_metadata = AuthoredMetadataCache::new();
-    poll_ready(checkout.compile_authored_mutation(
+    let mut writes_after_create = 0;
+    for (index, authored) in [
         AuthoredMutation::CreateFile {
-            path: file.clone(),
-            bytes: Bytes::new(),
-            metadata,
+            path: file.clone(), bytes: Bytes::new(), metadata,
         },
-        &mut operations,
-        &mut work,
-        &mut staged_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("create compilation blocked")??;
-    let writes_after_create = work.backend_write_operations;
-    assert!(writes_after_create > 0);
-    poll_ready(checkout.compile_authored_mutation(
         AuthoredMutation::CreateFile {
-            path: path("other.txt")?,
-            bytes: Bytes::new(),
-            metadata,
+            path: path("other.txt")?, bytes: Bytes::new(), metadata,
         },
-        &mut operations,
-        &mut work,
-        &mut staged_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("second create compilation blocked")??;
-    assert_eq!(work.backend_write_operations, writes_after_create);
-    poll_ready(checkout.compile_authored_mutation(
-        AuthoredMutation::SetMetadata {
-            path: file.clone(),
-            metadata,
-        },
-        &mut operations,
-        &mut work,
-        &mut staged_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("metadata compilation blocked")??;
-    assert_eq!(work.backend_write_operations, writes_after_create);
-    let created_metadata = match &operations[0] {
+        AuthoredMutation::SetMetadata { path: file.clone(), metadata },
+    ].into_iter().enumerate() {
+        let bytes = authored.logical_owned_bytes();
+        let allocation = accounting.claim_owned(bytes, 0)?;
+        poll_ready(checkout.compile_authored_mutation_with_accounting(
+            crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
+            &mut staged_metadata, &mut accounting, &cancellation,
+        )).ok_or("authored compilation blocked")??;
+        if index == 0 {
+            writes_after_create = accounting.spent().backend_write_operations;
+            assert!(writes_after_create > 0);
+        } else {
+            assert_eq!(accounting.spent().backend_write_operations, writes_after_create);
+        }
+    }
+    let created_metadata = match &operations.value[0] {
         Mutation::Create { record, .. } => record.metadata,
         _ => return Err("expected create".into()),
     };
     assert!(matches!(
-        &operations[2],
+        &operations.value[2],
         Mutation::SetMetadata { metadata, .. } if *metadata == created_metadata
     ));
 
     let mut changed = metadata;
     changed.modified_ns = MetadataField::Value(42);
-    poll_ready(checkout.compile_authored_mutation(
-        AuthoredMutation::SetMetadata {
-            path: file,
-            metadata: changed,
-        },
-        &mut operations,
-        &mut work,
-        &mut staged_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
+    let authored = AuthoredMutation::SetMetadata { path: file, metadata: changed };
+    let bytes = authored.logical_owned_bytes();
+    let allocation = accounting.claim_owned(bytes, 0)?;
+    poll_ready(checkout.compile_authored_mutation_with_accounting(
+        crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
+        &mut staged_metadata, &mut accounting, &cancellation,
+    )).ok_or("changed metadata compilation blocked")??;
+    assert_eq!(accounting.spent().backend_write_operations, writes_after_create + 1);
+    operations.retire(&mut accounting)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn original_authored_creates(
+    requests: &[(&NamespacePath, Bytes)],
+    metadata: FileMetadata,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<AuthoredMutation>, crate::NativeAllocation), FsError> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    let mut input = crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(requests.len(), &mut accounting)?;
+    for (requested, content) in requests {
+        let mut path = clone_authored_path(requested, &mut accounting)?;
+        accounting.charge(WorkCounters {
+            bytes_copied: size_of::<AuthoredMutation>() as u64, ..WorkCounters::UNCHARGED
+        })?;
+        let bytes = input.bytes.checked_add(path.bytes).ok_or(WorkError::Overflow)?;
+        absorb_authored_allocation(&mut input.allocation, &mut path.allocation)?;
+        input.value.push(AuthoredMutation::CreateFile {
+            path: path.value, bytes: content.clone(), metadata,
+        });
+        input.bytes = bytes;
+    }
+    let KernelOwnedAllocation::NativeOriginal(allocation) = input.allocation else {
+        unreachable!("original producer keeps its original guard")
+    };
+    Ok((input.value, allocation))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_authored_compiler_admits_metadata_and_inline_copy_before_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-authored-compiler").await?;
+    workspace.write_text("/source", "authenticated compiler source").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let metadata = checkout.lookup_no_follow_with_metadata(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("authenticated source metadata absent")?.metadata;
+    checkout.bind_authored_operation(OperationId::new());
+    let requested = path("compiler-copy")?;
+    let body = Bytes::from_static(b"authenticated compiler source");
+    let expected = checkout.authored_file_id(FileKind::Regular, &requested);
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+    let paid_path = clone_authored_path(&requested, &mut accounting)?;
+    let authored = crate::kernel::Owned::new(
+        AuthoredMutation::CreateFile { path: paid_path.value, bytes: body.clone(), metadata },
+        paid_path.allocation, paid_path.bytes,
+    );
+    let mut cache = AuthoredMetadataCache::new();
+    let created = checkout.compile_authored_mutation_with_accounting(
+        authored, &mut operations, &mut cache, &mut accounting, &cancellation,
+    ).await?;
+    assert_eq!(created, Some(expected));
+    let Mutation::Create { record, path: actual_path } = &operations.value[0] else {
+        return Err("inline source did not produce an actual create".into());
+    };
+    assert_eq!(actual_path, &requested);
+    assert_eq!(record.file_id, expected);
+    assert_eq!(record.payload, FilePayload::InlineRegular(InlineFileData::new(&body)?));
+    assert!(original.receipt().backend_write_operations > 0);
+    assert_eq!(original.receipt().source_bytes_read, 0);
+    let KernelOwnedAllocation::NativeOriginal(guard) = &operations.allocation else {
+        return Err("compiler output lost original custody".into());
+    };
+    assert!(guard.work().shares_ledger(&original));
+    assert_eq!(guard.bytes(), operations.bytes);
+    operations.retire(&mut accounting)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    // Cached real metadata removes staging from the copy-denial control.
+    let metadata_object = cache.get(metadata, &mut accounting)?.ok_or("real metadata was not cached")?;
+    for deny_metadata in [true, false] {
+        let budget = if deny_metadata {
+            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }
+        } else {
+            WorkBudget { bytes_copied: requested.components().iter()
+                .map(|name| name.as_bytes().len() as u64).sum(), ..WorkBudget::UNBOUNDED }
+        };
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+        let paid_path = clone_authored_path(&requested, &mut accounting)?;
+        let authored = crate::kernel::Owned::new(
+            AuthoredMutation::CreateFile { path: paid_path.value, bytes: body.clone(), metadata },
+            paid_path.allocation, paid_path.bytes,
+        );
+        let mut cache = AuthoredMetadataCache::new();
+        if !deny_metadata { cache.remember(metadata, metadata_object); }
+        let failure = checkout.compile_authored_mutation_with_accounting(
+            authored, &mut operations, &mut cache, &mut accounting, &cancellation,
+        ).await.err().ok_or("finite compiler denial unexpectedly succeeded")?;
+        assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+        assert!(operations.value.is_empty());
+        assert_eq!(original.receipt().backend_write_operations, 0);
+        assert_eq!(original.receipt().source_bytes_read, 0);
+        assert_eq!(original.receipt().bytes_encoded, 0);
+        operations.retire(&mut accounting)?;
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn borrowed_compiler_source_body(
+    body: &[u8],
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<crate::kernel::Owned<Bytes>, FsError> {
+    let mut data = crate::kernel::Owned::<Vec<u8>>::allocate(body.len(), accounting)?;
+    accounting.charge(WorkCounters {
+        bytes_copied: body.len() as u64, ..WorkCounters::UNCHARGED
+    })?;
+    data.value.extend_from_slice(body);
+    let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<Vec<u8>>()?;
+    let mut control = match accounting.claim_owned(control_bytes, 1) {
+        Ok(control) => control,
+        Err(error) => {
+            data.retire(accounting)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = data.allocation.absorb(&mut control) {
+        crate::kernel::retire_allocation(control, control_bytes, accounting)?;
+        data.retire(accounting)?;
+        return Err(error);
+    }
+    Ok(crate::kernel::Owned::new(
+        Bytes::from_owner(data.value), data.allocation, data.bytes + control_bytes,
     ))
-    .ok_or("changed metadata compilation blocked")??;
-    assert_eq!(work.backend_write_operations, writes_after_create + 1);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn borrowed_authored_compiler_preserves_all_descriptors_and_external_source_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    for profile in [FilesystemProfile::Posix, FilesystemProfile::Windows] {
+        let mut volume_config = config();
+        volume_config.profile = profile;
+        let volume = fs.create_volume(
+            volume_config, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value;
+        let mut checkout = volume.checkout(
+            GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value;
+        let metadata = empty_metadata();
+        checkout.apply_authored_transaction(
+            vec![AuthoredMutation::CreateFile {
+                path: path("source")?, bytes: Bytes::from_static(b"existing source"), metadata,
+            }], WorkBudget::UNBOUNDED, &cancellation,
+        ).await?;
+        let source_id = checkout.lookup_no_follow(
+            &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value.record.ok_or("compiler source missing")?.file_id;
+        checkout.bind_authored_operation(OperationId::new());
+        let mut cursor = std::io::Cursor::new(b"authenticated staged source");
+        let staged = checkout.stage_content(
+            &mut cursor, 64, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value;
+
+        // These are real producer allocations on another ledger. Neither source
+        // paths nor the opaque Bytes owner may be adopted by the SDK's original.
+        let producer = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let producer_baseline = producer.live_allocation_bytes();
+        let mut source_accounting = KernelAccounting::native(&producer, &cancellation);
+        let body = borrowed_compiler_source_body(b"opaque\0source target", &mut source_accounting)?;
+        let body_pointer = body.value.as_ptr();
+        let mut requests = vec![
+            AuthoredMutation::Reidentify { path: path("source")?, file_id: source_id },
+            AuthoredMutation::CreateFile {
+                path: path("new-file")?, bytes: body.value.clone(), metadata,
+            },
+            AuthoredMutation::CreateFileFromContent {
+                path: path("streamed-file")?, content: staged, metadata, file_id: Some(source_id),
+            },
+            AuthoredMutation::CreateDirectory { path: path("directory")?, metadata },
+            AuthoredMutation::CreateSymbolicLink {
+                path: path("symlink")?, target: body.value.clone(), metadata,
+            },
+            AuthoredMutation::CreateEmptySpecial {
+                path: path("boundary")?, kind: FileKind::MountBoundary, metadata,
+            },
+            AuthoredMutation::Remove { path: path("source")?, expected_file_id: Some(source_id) },
+            AuthoredMutation::Rename {
+                source: path("source")?, destination: path("renamed")?, replace: true,
+            },
+            AuthoredMutation::HardLink { source: path("source")?, destination: path("alias")? },
+            AuthoredMutation::Write {
+                path: path("source")?, offset: 7, bytes: body.value.clone(),
+            },
+            AuthoredMutation::WriteFromContent { path: path("source")?, offset: 11, content: staged },
+            AuthoredMutation::SetMetadata { path: path("source")?, metadata },
+            AuthoredMutation::Resize { path: path("source")?, logical_bytes: 91 },
+            AuthoredMutation::ZeroRange {
+                path: path("source")?, range: ByteRange { offset: 13, length: 17 },
+                allocated: true, extend: true,
+            },
+            AuthoredMutation::Preallocate {
+                path: path("source")?, range: ByteRange { offset: 19, length: 23 }, keep_size: true,
+            },
+            AuthoredMutation::CloneRange(FileCloneRequest {
+                source: path("source")?, source_offset: 29,
+                destination: path("destination")?, destination_offset: 31, length: 37,
+            }),
+        ];
+        if profile == FilesystemProfile::Posix {
+            requests.push(AuthoredMutation::CreateEmptySpecial {
+                path: path("fifo")?, kind: FileKind::Fifo, metadata,
+            });
+            requests.push(AuthoredMutation::CreateEmptySpecial {
+                path: path("socket")?, kind: FileKind::Socket, metadata,
+            });
+            for (name, kind) in [
+                ("character-device", FileKind::CharacterDevice),
+                ("block-device", FileKind::BlockDevice),
+            ] {
+                requests.push(AuthoredMutation::CreateDevice {
+                    path: path(name)?, kind, major: 41, minor: 43, metadata,
+                });
+            }
+        } else {
+            requests.push(AuthoredMutation::CreateReparsePoint {
+                path: path("reparse")?, payload: body.value.clone(), metadata,
+            });
+        }
+        for request in requests {
+            source_accounting.charge(WorkCounters {
+                bytes_copied: size_of::<AuthoredMutation>() as u64, ..WorkCounters::UNCHARGED
+            })?;
+            let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
+            let source_live = producer.live_allocation_bytes();
+            let source_receipt = producer.receipt();
+            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| cause)?;
+            let baseline = original.live_allocation_bytes();
+            let mut accounting = KernelAccounting::native(&original, &cancellation);
+            let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(2, &mut accounting)?;
+            let mut cache = AuthoredMetadataCache::new();
+            let created = checkout.compile_borrowed_authored_mutation_with_accounting(
+                &source.value, &mut operations, &mut cache, &mut accounting, &cancellation,
+            ).await?;
+            assert_eq!(source.value, request);
+            assert_eq!(producer.live_allocation_bytes(), source_live);
+            assert_eq!(producer.receipt(), source_receipt);
+            assert_eq!(body.value.as_ptr(), body_pointer);
+            let KernelOwnedAllocation::NativeOriginal(source_guard) = &source.allocation else {
+                return Err("source descriptor lost producer custody".into());
+            };
+            assert!(source_guard.work().shares_ledger(&producer));
+            assert!(!source_guard.work().shares_ledger(&original));
+            assert_eq!(source_guard.bytes(), source.bytes);
+            let KernelOwnedAllocation::NativeOriginal(output_guard) = &operations.allocation else {
+                return Err("borrowed compiler output lost original custody".into());
+            };
+            assert!(output_guard.work().shares_ledger(&original));
+            assert_eq!(output_guard.bytes(), operations.bytes);
+
+            let mut ordinary = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let mut expected = crate::kernel::Owned::<Vec<Mutation>>::allocate(2, &mut ordinary)?;
+            let input = request.clone();
+            let bytes = input.logical_owned_bytes();
+            let allocation = ordinary.claim_owned(bytes, 0)?;
+            let ordinary_created = checkout.compile_authored_mutation_with_accounting(
+                crate::kernel::Owned::new(input, allocation, bytes),
+                &mut expected, &mut AuthoredMetadataCache::new(), &mut ordinary, &cancellation,
+            ).await?;
+            assert_eq!(created, ordinary_created);
+            assert_eq!(operations.value, expected.value);
+            expected.retire(&mut ordinary)?;
+            operations.retire(&mut accounting)?;
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            // Destroy every descriptor reference before retiring its producer guard.
+            drop(request);
+            source.retire(&mut source_accounting)?;
+        }
+        body.retire(&mut source_accounting)?;
+        assert_eq!(producer.live_allocation_bytes(), producer_baseline);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn borrowed_authored_compiler_denies_copy_metadata_and_partial_path_before_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("borrowed-compiler-denials").await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let producer = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let producer_baseline = producer.live_allocation_bytes();
+    let mut source_accounting = KernelAccounting::native(&producer, &cancellation);
+    let body = borrowed_compiler_source_body(b"paid source body", &mut source_accounting)?;
+    let request = AuthoredMutation::CreateFile {
+        path: path("not-staged")?, bytes: body.value.clone(), metadata: empty_metadata(),
+    };
+    let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
+    for budget in [
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
+    ] {
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let baseline = original.live_allocation_bytes();
+        let source_live = producer.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+        let failure = checkout.compile_borrowed_authored_mutation_with_accounting(
+            &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
+            &mut accounting, &cancellation,
+        ).await.err().ok_or("borrowed compiler denial unexpectedly succeeded")?;
+        assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+        assert!(operations.value.is_empty());
+        assert_eq!(original.receipt().backend_write_operations, 0);
+        assert_eq!(original.receipt().source_bytes_read, 0);
+        assert_eq!(original.receipt().bytes_encoded, 0);
+        operations.retire(&mut accounting)?;
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(producer.live_allocation_bytes(), source_live);
+    }
+    let cancelled = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
+        .map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancelled);
+    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+    let before = original.receipt();
+    let source_live = producer.live_allocation_bytes();
+    cancelled.cancel();
+    assert!(checkout.compile_borrowed_authored_mutation_with_accounting(
+        &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
+        &mut accounting, &cancelled,
+    ).await.is_err());
+    assert!(operations.value.is_empty());
+    assert_eq!(original.receipt(), before);
+    assert_eq!(producer.live_allocation_bytes(), source_live);
+    operations.retire(&mut accounting)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    drop(request);
+    source.retire(&mut source_accounting)?;
+
+    let request = AuthoredMutation::HardLink {
+        source: path("first-paid-path")?, destination: path("second-denied-path")?,
+    };
+    let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
+    let AuthoredMutation::HardLink { source: first, .. } = &source.value else { unreachable!() };
+    let mut probe = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let paid_first = clone_authored_path(first, &mut probe)?;
+    let first_copy_bytes = probe.spent().bytes_copied;
+    paid_first.retire(&mut probe)?;
+    let original = crate::NativeMaterializationWork::new(WorkBudget {
+        bytes_copied: size_of::<AuthoredMutation>() as u64 + first_copy_bytes,
+        ..WorkBudget::UNBOUNDED
+    }, &cancellation).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
+    assert!(checkout.compile_borrowed_authored_mutation_with_accounting(
+        &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
+        &mut accounting, &cancellation,
+    ).await.is_err());
+    assert!(operations.value.is_empty());
+    assert_eq!(original.receipt().bytes_copied,
+        size_of::<AuthoredMutation>() as u64 + first_copy_bytes);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline + operations.bytes);
+    operations.retire(&mut accounting)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    drop(request);
+    source.retire(&mut source_accounting)?;
+    body.retire(&mut source_accounting)?;
+    assert_eq!(producer.live_allocation_bytes(), producer_baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-authored-transaction").await?;
+    workspace.write_text("/source", "transaction source").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let metadata = checkout.lookup_no_follow_with_metadata(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("real source metadata absent")?.metadata;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    candidate.bind_authored_operation(OperationId::new());
+    let first = path("transaction-first")?;
+    let second = path("transaction-second")?;
+    let expected = [
+        Some(candidate.authored_file_id(FileKind::Regular, &first)),
+        Some(candidate.authored_file_id(FileKind::Regular, &second)),
+    ];
+    let input = original_authored_creates(
+        &[(&first, Bytes::from_static(b"first actual source")),
+          (&second, Bytes::from_static(b"second actual source"))],
+        metadata, &original, &cancellation,
+    )?;
+    let result = candidate.apply_authored_transaction_with_native_work(
+        input.0, input.1, &original, &cancellation,
+    ).await?;
+    assert_eq!(result.0.created_file_ids, expected);
+    assert!(result.1.work().shares_ledger(&original));
+    assert_eq!(result.1.bytes(),
+        (result.0.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    for (requested, expected) in [(&first, expected[0]), (&second, expected[1])] {
+        let actual = crate::kernel::lookup_path_async_with_accounting(
+            &fs.inner.objects, &candidate.root, requested, candidate.volume.config,
+            &mut accounting, &cancellation, None,
+        ).await?.record.ok_or("created real record absent")?;
+        assert_eq!(Some(actual.file_id), expected);
+    }
+    let live = original.live_allocation_bytes();
+    let result_bytes = result.1.bytes();
+    drop(result);
+    assert_eq!(original.live_allocation_bytes(), live - result_bytes);
+    assert!(checkout.lookup_no_follow(
+        &first, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.is_none(), "private transaction cannot alter its source checkout");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn original_borrowed_path_changes(
+    source: &NamespacePath,
+    destination: &NamespacePath,
+    removed: &NamespacePath,
+    metadata: FileMetadata,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<AuthoredMutation>, crate::NativeAllocation, crate::NativeAllocation), FsError> {
+    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    let input = crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(4, &mut accounting)?;
+    let mut source_allocation = accounting.claim_owned(0, 0)?;
+    let mut copy_path = |requested: &NamespacePath| -> Result<NamespacePath, FsError> {
+        let mut path = clone_authored_path(requested, &mut accounting)?;
+        absorb_authored_allocation(&mut source_allocation, &mut path.allocation)?;
+        Ok(path.value)
+    };
+    let metadata_path = copy_path(source)?;
+    let resize_path = copy_path(source)?;
+    let rename_source = copy_path(source)?;
+    let rename_destination = copy_path(destination)?;
+    let remove_path = copy_path(removed)?;
+    accounting.charge(WorkCounters {
+        bytes_copied: (4 * size_of::<AuthoredMutation>()) as u64,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let crate::kernel::Owned { mut value, allocation, .. } = input;
+    value.push(AuthoredMutation::SetMetadata { path: metadata_path, metadata });
+    value.push(AuthoredMutation::Resize { path: resize_path, logical_bytes: 4 });
+    value.push(AuthoredMutation::Rename {
+        source: rename_source, destination: rename_destination, replace: true,
+    });
+    value.push(AuthoredMutation::Remove { path: remove_path, expected_file_id: None });
+    let KernelOwnedAllocation::NativeOriginal(slots) = allocation else {
+        unreachable!("native producer retains original slots")
+    };
+    let KernelOwnedAllocation::NativeOriginal(source) = source_allocation else {
+        unreachable!("native producer retains original paths")
+    };
+    Ok((value, slots, source))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn borrowed_authored_path_changes_match_owned_and_keep_source_for_finish()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("borrowed-authored-paths").await?;
+    workspace.write_text("/source", "source body").await?;
+    workspace.write_text("/removed", "removed body").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = path("source")?;
+    let destination = path("destination")?;
+    let removed = path("removed")?;
+    let mut metadata = checkout.lookup_no_follow_with_metadata(
+        &source, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("real source missing")?.metadata;
+    metadata.modified_ns = MetadataField::Value(42);
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut native = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut ordinary = checkout.private_candidate();
+    let operation = OperationId::new();
+    native.bind_authored_operation(operation);
+    ordinary.bind_authored_operation(operation);
+    let input = original_borrowed_path_changes(
+        &source, &destination, &removed, metadata, &original, &cancellation,
+    )?;
+    let slots = input.1.bytes();
+    let source_bytes = input.2.bytes();
+    assert_eq!(slots, (input.0.capacity() * size_of::<AuthoredMutation>()) as u64);
+    let result = native.apply_borrowed_authored_transaction_with_native_work(
+        &input.0, &input.1, &original, &cancellation,
+    ).await?;
+    let ordinary_result = ordinary.apply_authored_transaction(
+        vec![
+            AuthoredMutation::SetMetadata { path: source.clone(), metadata },
+            AuthoredMutation::Resize { path: source.clone(), logical_bytes: 4 },
+            AuthoredMutation::Rename {
+                source: source.clone(), destination: destination.clone(), replace: true,
+            },
+            AuthoredMutation::Remove { path: removed.clone(), expected_file_id: None },
+        ], WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    assert_eq!(result.0.created_file_ids, ordinary_result.created_file_ids);
+    assert_eq!(result.0.created_file_ids, [None; 4]);
+    assert_eq!(original.receipt().source_bytes_read, 0);
+    assert_eq!(native.root.file_table, ordinary.root.file_table);
+    assert!(result.1.work().shares_ledger(&original));
+    assert_eq!(result.1.bytes(),
+        (result.0.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
+    assert_eq!(input.1.bytes(), slots);
+    assert_eq!(input.2.bytes(), source_bytes);
+    // Source's real finish phase can still inspect the original paths after await.
+    assert!(matches!(&input.0[2], AuthoredMutation::Rename {
+        source: old_source, destination: old_destination, ..
+    } if old_source == &source && old_destination == &destination));
+    let actual = native.lookup_no_follow_with_metadata_with_native_work(
+        &destination, &original, &cancellation,
+    ).await?.ok_or("renamed source absent")?;
+    assert_eq!(actual.metadata, metadata);
+    match actual.record.payload {
+        FilePayload::InlineRegular(data) => assert_eq!(data.as_bytes(), b"sour"),
+        FilePayload::Regular { logical_bytes, .. } => assert_eq!(logical_bytes, 4),
+        _ => return Err("metadata/resize changed regular file kind".into()),
+    }
+    for requested in [&source, &removed] {
+        assert!(native.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?.value.record.is_none());
+        assert!(checkout.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?.value.record.is_some());
+    }
+    drop(result);
+    drop(native);
+    let live = original.live_allocation_bytes();
+    drop(input);
+    assert_eq!(original.live_allocation_bytes(), live - slots - source_bytes);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn borrowed_authored_slots_and_native_denial_precede_copies_and_writes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("borrowed-authored-slots").await?;
+    workspace.write_text("/source", "source body").await?;
+    workspace.write_text("/removed", "removed body").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = path("source")?;
+    let destination = path("destination")?;
+    let removed = path("removed")?;
+    let metadata = checkout.lookup_no_follow_with_metadata(
+        &source, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("real source missing")?.metadata;
+    let mut producer_allocations = 0;
+    for deny in [false, true] {
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                allocation_operations: if deny { producer_allocations } else { u64::MAX },
+                ..WorkBudget::UNBOUNDED
+            }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let input = original_borrowed_path_changes(
+            &source, &destination, &removed, metadata, &original, &cancellation,
+        )?;
+        producer_allocations = original.receipt().allocation_operations;
+        let short = original.claim(0)?;
+        let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let foreign_slots = foreign.claim(input.1.bytes())?;
+        let before = original.receipt();
+        let live = original.live_allocation_bytes();
+        let state = checkout_state(&candidate);
+        for witness in [&short, &foreign_slots] {
+            let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
+                &input.0, witness, &original, &cancellation,
+            ).await.err().ok_or("invalid slots accepted")?;
+            assert!(matches!(failure, FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)));
+            assert_eq!(original.receipt(), before);
+            assert_eq!(checkout_state(&candidate), state);
+        }
+        let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
+            &input.0, &input.1, &foreign, &cancellation,
+        ).await.err().ok_or("foreign original accepted")?;
+        assert!(matches!(failure, FsError::NativeKernel(_)));
+        assert_eq!(original.receipt(), before);
+        if deny {
+            let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
+                &input.0, &input.1, &original, &cancellation,
+            ).await.err().ok_or("exhausted allocation budget accepted")?;
+            assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+            assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+            assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
+            assert_eq!(original.live_allocation_bytes(), live);
+            assert_eq!(checkout_state(&candidate), state);
+            assert_eq!(input.0.len(), 4);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_and_destination()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let control = Arc::new(FaultControl::disabled());
+    let objects = Arc::new(crate::memory::MemoryObjectStore::default());
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        PostPutObjectStore { inner: Arc::clone(&objects), control: Arc::clone(&control) },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let volume = fs.create_volume_with_id(
+        VolumeId::from_bytes([122; 16]), config(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let mut checkout = volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = path("source")?;
+    let destination = path("destination")?;
+    let removed = path("removed")?;
+    for (requested, body) in [
+        (&source, b"source body".as_slice()),
+        (&destination, b"destination body".as_slice()),
+        (&removed, b"removed body".as_slice()),
+    ] {
+        checkout.create_file(requested.clone(), Bytes::copy_from_slice(body), WorkBudget::UNBOUNDED, &cancellation).await?;
+    }
+    let mut metadata = checkout.lookup_no_follow_with_metadata(
+        &source, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("real source missing")?.metadata;
+    metadata.modified_ns = MetadataField::Value(99);
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let input = original_borrowed_path_changes(
+        &source, &destination, &removed, metadata, &original, &cancellation,
+    )?;
+    let state = checkout_state(&candidate);
+    let installed = checkout_state(&checkout);
+    let live = original.live_allocation_bytes();
+    control.arm(2);
+    let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
+        &input.0, &input.1, &original, &cancellation,
+    ).await.err().ok_or("second staged write unexpectedly succeeded")?;
+    assert!(matches!(failure, FsError::Object(ObjectStoreError::Corrupt)));
+    assert_eq!(control.operation.load(Ordering::Relaxed), 2);
+    assert_eq!(original.receipt().backend_write_operations, 2);
+    assert_eq!(checkout_state(&candidate), state);
+    assert_eq!(checkout_state(&checkout), installed);
+    assert_eq!(original.live_allocation_bytes(), live);
+    assert!(matches!(&input.0[2], AuthoredMutation::Rename {
+        source: old_source, destination: old_destination, ..
+    } if old_source == &source && old_destination == &destination));
+    control.disable();
+    for requested in [&source, &destination, &removed] {
+        let retained = candidate.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?.value.record.ok_or("failed candidate lost existing record")?;
+        let installed = checkout.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?.value.record.ok_or("installed source record disappeared")?;
+        assert_eq!(retained, installed);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_authored_bulk_source_denial_preserves_the_installed_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let mut limits = config();
+    limits.limits.maximum_mutations_per_batch = 2;
+    let volume = fs.create_volume_with_id(
+        VolumeId::from_bytes([121; 16]), limits, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let mut checkout = volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let root = NamespacePath::new(Vec::new(), limits.limits)?;
+    let metadata = checkout.lookup_no_follow_with_metadata(
+        &root, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("authenticated root metadata absent")?.metadata;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let first = path("bulk-first")?;
+    let second = path("bulk-source-denied")?;
+    let input = original_authored_creates(
+        &[(&first, Bytes::from_static(b"first staged batch")),
+          (&second, Bytes::from_static(&[b'b'; 1024]))],
+        metadata, &original, &cancellation,
+    )?;
+    let before = (checkout.root.file_table, checkout.base_file_table,
+        checkout.authored_operation_id, checkout.live_operation_id);
+    let failure = checkout.apply_authored_bulk_transaction_with_native_work(
+        input.0, input.1, &original, &cancellation,
+    ).await.err().ok_or("denied actual bulk source installed a candidate")?;
+    assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+    assert!(original.receipt().backend_write_operations > 0, "immutable first-batch prefix was staged");
+    assert_eq!(original.receipt().source_bytes_read, 0);
+    assert_eq!(before, (checkout.root.file_table, checkout.base_file_table,
+        checkout.authored_operation_id, checkout.live_operation_id));
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    for requested in [&first, &second] {
+        assert!(checkout.lookup_no_follow(
+            requested, WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value.record.is_none());
+    }
     Ok(())
 }
 
@@ -6673,6 +8892,62 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         .ok_or("excessive staging bound blocked")?
         .is_err()
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+        let body = [b'n'; 256];
+        let mut source = std::io::Cursor::new(body.as_slice());
+        let staged = poll_ready(checkout.stage_content_with_accounting(
+            &mut source, body.len() as u64, &mut accounting, &cancellation,
+        )).ok_or("original content staging blocked")??;
+        assert_eq!(staged.logical_bytes(), body.len() as u64);
+        assert_eq!(original.receipt().source_bytes_read, body.len() as u64);
+        assert!(original.receipt().backend_write_operations > 0);
+
+        let denied = crate::NativeMaterializationWork::new(
+            WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&denied, &cancellation);
+        let mut source = std::io::Cursor::new(body.as_slice());
+        assert!(poll_ready(checkout.stage_content_with_accounting(
+            &mut source, body.len() as u64, &mut accounting, &cancellation,
+        )).ok_or("original source denial blocked")?.is_err());
+        assert_eq!(source.position(), 0);
+        assert_eq!(denied.receipt().backend_write_operations, 0);
+
+        struct PrefixFailure(bool);
+        impl std::io::Read for PrefixFailure {
+            fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 { return Err(std::io::Error::other("content source failed")); }
+                self.0 = true;
+                let count = destination.len().min(4);
+                destination[..count].fill(b'p');
+                Ok(count)
+            }
+        }
+        let failed = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&failed, &cancellation);
+        let mut source = PrefixFailure(false);
+        assert!(poll_ready(checkout.stage_content_with_accounting(
+            &mut source, 64, &mut accounting, &cancellation,
+        )).ok_or("original source failure blocked")?.is_err());
+        assert_eq!(failed.receipt().source_bytes_read, 4);
+
+        let cancelled = CancellationToken::new();
+        let stopped = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
+            .map_err(|(cause, _)| cause)?;
+        cancelled.cancel();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&stopped, &cancelled);
+        let mut source = std::io::Cursor::new(body.as_slice());
+        assert!(poll_ready(checkout.stage_content_with_accounting(
+            &mut source, body.len() as u64, &mut accounting, &cancelled,
+        )).ok_or("original cancellation blocked")?.is_err());
+        assert_eq!(source.position(), 0);
+        assert_eq!(stopped.receipt().backend_write_operations, 0);
+    }
     Ok(())
 }
 
@@ -6932,6 +9207,86 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .err()
     .ok_or("repeated identity attribute removal unexpectedly succeeded")?;
     assert!(matches!(repeated_remove.error, FsError::NotFound));
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let source = Bytes::from_static(b"actual original-accounted attribute source");
+        poll_ready(candidate.write_named_attribute_by_id_with_native_work(
+            file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
+        )).ok_or("native identity attribute creation blocked")??;
+        let created = poll_ready(candidate.read_metadata_by_id_with_native_work(
+            file_id, &original, &cancellation,
+        )).ok_or("native identity metadata read blocked")??;
+        let MetadataField::Value(root) = created.named_attributes else {
+            return Err("native attribute metadata root absent".into());
+        };
+        let reader = candidate.pinned_reader_with_native_work(&original, &cancellation)?;
+        let (values, allocation) = poll_ready(reader.read_named_attributes_with_native_work(
+            root, &original, &cancellation,
+        )).ok_or("native attribute source read blocked")??;
+        assert_eq!(values.len(), 1);
+        assert_eq!(&values[0].0, &attribute);
+        assert_eq!(values[0].1, source);
+        drop(values);
+        drop(allocation);
+        let duplicate = poll_ready(candidate.write_named_attribute_by_id_with_native_work(
+            file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
+        )).ok_or("native duplicate attribute creation blocked")?
+            .err().ok_or("native duplicate attribute unexpectedly accepted")?;
+        assert!(matches!(duplicate, FsError::CreationRejected));
+        let mut updated = created;
+        updated.modified_ns = MetadataField::Value(913);
+        poll_ready(candidate.set_attributes_by_id_with_native_work(
+            file_id, updated, Some(7), &original, &cancellation,
+        )).ok_or("native metadata resize blocked")??;
+        assert_eq!(poll_ready(candidate.read_metadata_by_id_with_native_work(
+            file_id, &original, &cancellation,
+        )).ok_or("native changed metadata read blocked")??, updated);
+        let resized = poll_ready(candidate.read_file_record_by_id_with_native_work(
+            file_id, &original, &cancellation,
+        )).ok_or("native resized record read blocked")??;
+        let resized_bytes = match resized.payload {
+            FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
+            FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+            _ => return Err("native resize changed the regular file kind".into()),
+        };
+        assert_eq!(resized_bytes, 7);
+        poll_ready(candidate.remove_named_attribute_by_id_with_native_work(
+            file_id, &attribute, &original, &cancellation,
+        )).ok_or("native identity attribute removal blocked")??;
+        assert!(original.receipt().source_bytes_read >= source.len() as u64);
+        assert!(original.receipt().bytes_encoded > 0);
+        assert!(original.receipt().allocation_operations > 0);
+
+        let denied = crate::NativeMaterializationWork::new(
+            WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied, &cancellation)?;
+        let before = denied_candidate.root.file_table;
+        let failure = poll_ready(denied_candidate.write_named_attribute_by_id_with_native_work(
+            file_id, &attribute, &source, NamedAttributeWriteMode::Upsert, &denied, &cancellation,
+        )).ok_or("native denied attribute source blocked")?
+            .err().ok_or("native attribute source denial ignored")?;
+        assert!(matches!(failure, FsError::Work(_)));
+        assert_eq!(denied_candidate.root.file_table, before);
+        assert_eq!(denied.receipt().source_bytes_read, 0);
+
+        let denied_metadata = crate::NativeMaterializationWork::new(
+            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied_metadata, &cancellation)?;
+        let before = denied_candidate.root.file_table;
+        let failure = poll_ready(denied_candidate.set_attributes_by_id_with_native_work(
+            file_id, updated, Some(3), &denied_metadata, &cancellation,
+        )).ok_or("native denied metadata resize blocked")?
+            .err().ok_or("native metadata encoding denial ignored")?;
+        assert!(matches!(failure, FsError::Work(_)));
+        assert_eq!(denied_candidate.root.file_table, before);
+        assert_eq!(denied_metadata.receipt().bytes_encoded, 0);
+    }
 
     assert!(
         poll_ready(checkout.list_directory(&file, None, 8, WorkBudget::UNBOUNDED, &cancellation,))
@@ -10217,6 +12572,97 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
             usize::try_from(maximum)?
         );
     }
+    // Extend the same fixture with an identity-preserving rename, a hard link,
+    // and directory metadata: none may become a remove/create approximation.
+    let changed_id = ready!(checkout.lookup_no_follow(
+        &path("changed")?, WorkBudget::UNBOUNDED, &cancellation,
+    )).value.record.ok_or("changed record absent")?.file_id;
+    ready!(checkout.hard_link(
+        path("changed")?, path("alias")?, WorkBudget::UNBOUNDED, &cancellation,
+    ));
+    ready!(checkout.rename(
+        path("changed")?, path("renamed")?, false, WorkBudget::UNBOUNDED, &cancellation,
+    ));
+    let mut metadata = root_metadata;
+    metadata.modified_ns = MetadataField::Value(123);
+    ready!(checkout.set_metadata(
+        root_path()?, metadata, WorkBudget::UNBOUNDED, &cancellation,
+    ));
+    let fourth = match ready!(checkout.commit(
+        OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,
+    )).value {
+        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        outcome => return Err(format!("unexpected semantic diff commit: {outcome:?}").into()),
+    };
+    let semantic = ready!(volume.diff_generations(
+        third, fourth, 32, WorkBudget::UNBOUNDED, &cancellation,
+    )).value;
+    let file = semantic.files.iter().find(|change| change.file_id == changed_id)
+        .ok_or("hard-link identity change absent")?;
+    assert_eq!(file.before.ok_or("original record absent")?.file_id, changed_id);
+    assert_eq!(file.after.ok_or("linked record absent")?.link_count, 2);
+    assert!(semantic.files.iter().any(|change|
+        change.after.is_some_and(|record| record.kind == FileKind::Directory && record.metadata == metadata)));
+    assert_eq!(semantic.bindings.len(), 3);
+    assert!(semantic.bindings.iter().any(|change|
+        change.name.as_bytes() == b"changed" && change.before.is_some() && change.after.is_none()));
+    for name in [b"alias".as_slice(), b"renamed".as_slice()] {
+        assert!(semantic.bindings.iter().any(|change|
+            change.name.as_bytes() == name && change.before.is_none()
+                && change.after.as_ref().is_some_and(|entry| entry.file_id == changed_id)));
+    }
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    for (before, after) in [(initial, first), (first, second), (second, third), (third, fourth), (fourth, fourth)] {
+        let before = ready!(volume.checkout(
+            GenerationSelector::Exact(before), pinned(), WorkBudget::UNBOUNDED, &cancellation,
+        )).value;
+        let after = ready!(volume.checkout(
+            GenerationSelector::Exact(after), pinned(), WorkBudget::UNBOUNDED, &cancellation,
+        )).value;
+        for maximum in [1, 2, 32] {
+            let ordinary = ready!(before.candidate_diff(
+                &after, maximum, WorkBudget::UNBOUNDED, &cancellation,
+            )).value;
+            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| cause)?;
+            let baseline = original.live_allocation_bytes();
+            let (native, allocation) = ready!(before.candidate_diff_with_native_work(
+                &after, maximum, &original, &cancellation,
+            ));
+            assert_eq!(ordinary, native);
+            let actual = (native.files.capacity() * size_of::<FileRecordChange>()
+                + native.bindings.capacity() * size_of::<DirectoryBindingChange>()) as u64
+                + native.bindings.iter().map(|change| {
+                    change.name.retained_bytes() as u64
+                        + change.before.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64)
+                        + change.after.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64)
+                }).sum::<u64>();
+            assert_eq!(original.live_allocation_bytes() - baseline, actual);
+            drop(native);
+            drop(allocation);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        if before.root.file_table != after.root.file_table {
+            for budget in [
+                WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+                WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
+            ] {
+                let denied = crate::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(cause, _)| cause)?;
+                let baseline = denied.live_allocation_bytes();
+                let failure = poll_ready(before.candidate_diff_with_native_work(
+                    &after, 32, &denied, &cancellation,
+                )).ok_or("native diff denial blocked")?.err().ok_or("native diff denial succeeded")?;
+                assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+                assert_eq!(denied.receipt().bytes_copied, 0);
+                if budget.allocation_operations == 0 {
+                    assert_eq!(denied.receipt().backend_read_operations, 0);
+                }
+                drop(failure);
+                assert_eq!(denied.live_allocation_bytes(), baseline);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -10771,71 +13217,17 @@ fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
         object_probes: 1,
         ..WorkCounters::default()
     };
-    let spent = WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::default()
-    };
-    let mapped = map_diff_failure(
-        OperationFailure::new(PersistentDiffError::WrongRootKind, spent),
-        prior,
-    );
-    assert!(matches!(mapped.error, FsError::InvalidDiff));
-    assert_eq!(mapped.work.object_probes, 1);
-    assert_eq!(mapped.work.items_examined, 1);
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(PersistentDiffError::InvalidLimit, spent),
-            prior,
-        )
-        .error,
-        FsError::InvalidDiff
-    ));
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(PersistentDiffError::AllocationFailed, spent),
-            prior,
-        )
-        .error,
-        FsError::DiffAllocationFailed
-    ));
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(
-                PersistentDiffError::Storage(ObjectStoreError::Corrupt),
-                spent,
-            ),
-            prior,
-        )
-        .error,
-        FsError::Object(ObjectStoreError::Corrupt)
-    ));
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(
-                PersistentDiffError::Decode(CanonicalDecodeError::TrailingBytes),
-                spent,
-            ),
-            prior,
-        )
-        .error,
-        FsError::Decode(CanonicalDecodeError::TrailingBytes)
-    ));
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(PersistentDiffError::Work(WorkError::Overflow), spent),
-            prior,
-        )
-        .error,
-        FsError::Work(WorkError::Overflow)
-    ));
-    assert!(matches!(
-        map_diff_failure(
-            OperationFailure::new(PersistentDiffError::Cancelled, spent),
-            prior,
-        )
-        .error,
-        FsError::Cancelled(CancellationError)
-    ));
+    let invalid_root = poll_ready(diff_generation_file_tables(
+        &store, empty, empty, 1, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("invalid-root diff blocked")?.expect_err("a tree is not a file-table root");
+    assert!(matches!(invalid_root.error, FsError::InvalidDiff));
+    assert_eq!(invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
+    let table = ObjectId { kind: ObjectKind::FileTablePage, digest: empty.digest };
+    let invalid_bound = poll_ready(diff_generation_file_tables(
+        &store, table, table, 0, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("zero-bound diff blocked")?.expect_err("the canonical engine rejects a zero bound");
+    assert!(matches!(invalid_bound.error, FsError::InvalidDiff));
+    assert_eq!(invalid_bound.work, prior);
     Ok(())
 }
 
@@ -11266,14 +13658,15 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     let head = match active.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
+    let encoded = crate::kernel::encode_volume_created_measured(VolumeCreated {
+        volume_id: wrong_volume,
+        config: config(),
+        initial_generation_root: generation_root,
+    }, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0)?;
     let (proposal, _) = creation_commit(
-        OperationId::from_bytes([227; 16]),
-        encode_volume_created(VolumeCreated {
-            volume_id: wrong_volume,
-            config: config(),
-            initial_generation_root: generation_root,
-        })?,
-    );
+        OperationId::from_bytes([227; 16]), encoded,
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    )?.value;
     AuthorityStore::compare_and_append(
         &*authority,
         expected_authority,
@@ -12092,6 +14485,48 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     .ok_or("read blocked")??
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
+    // A real streamed source still completes before ordered retry, even when
+    // its neighbour makes the combined transaction fail.
+    let streamed_id = FileId::new();
+    let streamed = poll_ready(checkout.apply_group(
+        vec![
+            GroupedChange::CreateFile {
+                path: path("streamed")?,
+                metadata: Box::new(FileMetadata::default()),
+                file_id: streamed_id,
+                bytes: Bytes::from(vec![b's'; 4096]),
+            },
+            create("first")?,
+            content(b"END"),
+            content(b"LAST"),
+        ],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )).ok_or("streamed mixed group blocked")??.value;
+    assert!(matches!(streamed[0], Ok(GroupedOutcome::Created(id)) if id == streamed_id));
+    assert!(streamed[1].is_err());
+    assert!(matches!(streamed[2], Ok(GroupedOutcome::Changed)));
+    assert!(matches!(streamed[3], Ok(GroupedOutcome::Changed)));
+    let streamed_read = poll_ready(checkout.read_file_range_by_id(
+        streamed_id, ByteRange { offset: 0, length: 4096 },
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("streamed read blocked")??.value;
+    assert_eq!(streamed_read.bytes.as_ref(), vec![b's'; 4096].as_slice());
+    let ordered_read = poll_ready(checkout.read_file_range_by_id(
+        existing, ByteRange { offset: 0, length: 4 },
+        WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("ordered read blocked")??.value;
+    assert_eq!(ordered_read.bytes.as_ref(), b"LAST");
+
+    let denied = poll_ready(checkout.apply_group(
+        vec![create("denied-group")?],
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    )).ok_or("denied group blocked")?;
+    assert!(denied.is_err(), "output admission must precede effects");
+    assert!(poll_ready(checkout.lookup_no_follow(
+        &path("denied-group")?, WorkBudget::UNBOUNDED, &cancellation,
+    )).ok_or("denied lookup blocked")??.value.record.is_none());
     Ok(())
 }
 
@@ -12662,5 +15097,670 @@ async fn local_open_records_its_owned_outcome_even_with_filtered_children()
                 .all(|(_, fields)| fields.iter().all(|(_, value)| !value.contains("private-")))
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn readonly_directory_metadata_admits_owned_vectors_before_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("readonly-directory-vector-admission").await?;
+    workspace.write_text("/file", "body").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let record = checkout.lookup_no_follow_with_metadata(
+        &path("file")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.ok_or("fixture file absent")?.record;
+    let make_named = || -> Result<Vec<(LogicalName, FileRecord)>, Box<dyn std::error::Error>> {
+        let mut name = Vec::with_capacity(64);
+        name.extend_from_slice(b"file");
+        let name = LogicalName::new(NameEncoding::Utf8, name, 255)?;
+        let mut named = Vec::with_capacity(3);
+        named.push((name, record));
+        Ok(named)
+    };
+    let named = make_named()?;
+    let retained = (named.capacity() * size_of::<(LogicalName, FileRecord)>()) as u64
+        + named[0].0.retained_bytes() as u64;
+    let prior = WorkCounters { bytes_hashed: 7, ..WorkCounters::UNCHARGED };
+    let expected_prefix = WorkCounters { peak_allocation_bytes: retained, ..prior };
+    let failure = checkout.attach_directory_metadata(
+        named, false, prior,
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ).await.err().ok_or("request allocation unexpectedly admitted")?;
+    assert!(matches!(failure.error, FsError::Work(WorkError::BudgetExceeded {
+        counter: "allocation_operations", observed: 1, maximum: 0,
+    })));
+    assert_eq!(*failure.work, expected_prefix);
+
+    let maximum = retained + size_of::<ObjectReadRequest>() as u64 - 1;
+    let failure = checkout.attach_directory_metadata(
+        make_named()?, false, prior,
+        WorkBudget { peak_allocation_bytes: maximum, ..WorkBudget::UNBOUNDED },
+        &cancellation,
+    ).await.err().ok_or("overlapping request capacity unexpectedly admitted")?;
+    assert!(matches!(failure.error, FsError::Work(WorkError::BudgetExceeded {
+        counter: "peak_allocation_bytes", observed, maximum: limit,
+    }) if observed == maximum + 1 && limit == maximum));
+    assert_eq!(*failure.work, expected_prefix);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = checkout.attach_directory_metadata(
+        make_named()?, false, prior, WorkBudget::UNBOUNDED, &cancelled,
+    ).await.err().ok_or("cancelled metadata list unexpectedly admitted")?;
+    assert!(matches!(failure.error, FsError::Cancelled(_)));
+    assert_eq!(*failure.work, prior);
+
+    let page = checkout.attach_directory_metadata(
+        make_named()?, true, prior, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(page.value.has_more);
+    assert_eq!(page.value.entries[0].record, record);
+    assert_eq!(page.value.entries[0].name.retained_bytes(), 64);
+    // Output overlaps the owned input backing and the canonical read container;
+    // shared backend Bytes are not adopted as operation-owned metadata.
+    assert!(page.work.peak_allocation_bytes >= retained
+        + size_of::<ObjectRead>() as u64 + size_of::<DirectoryRecordEntry>() as u64);
+    assert!(page.work.bytes_copied >=
+        (size_of::<ObjectReadRequest>() + size_of::<DirectoryRecordEntry>()) as u64);
+    Ok(())
+}
+
+#[tokio::test]
+async fn readonly_directory_records_share_the_finite_and_unbounded_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("readonly-directory-finite-engine").await?;
+    workspace.write_text("/first", "one").await?;
+    workspace.write_text("/second", "two").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let root = root_path()?;
+    // Warm authenticated immutable-page caches before comparing exact receipts.
+    checkout.list_directory_records(
+        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let ordinary = checkout.list_directory_records(
+        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let finite = checkout.list_directory_records(
+        &root, None, 8,
+        WorkBudget {
+            items_returned: ordinary.work.items_returned + 8 - ordinary.value.entries.len() as u64,
+            ..ordinary.work
+        },
+        &cancellation,
+    ).await?;
+    assert_eq!(finite.value, ordinary.value);
+    assert_eq!(finite.work, ordinary.work);
+    assert!(ordinary.work.allocation_operations > 0);
+    // Every allocation cutoff includes the named-record, request, and final
+    // output admissions, not merely the outer heap-future allocation.
+    for maximum in 0..ordinary.work.allocation_operations {
+        let failure = checkout.list_directory_records(
+            &root, None, 8,
+            WorkBudget { allocation_operations: maximum, ..WorkBudget::UNBOUNDED },
+            &cancellation,
+        ).await.err().ok_or("finite list bypassed a vector admission")?;
+        assert!(failure.work.allocation_operations <= maximum);
+    }
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = checkout.list_directory_records(
+        &root, None, 8, WorkBudget::UNBOUNDED, &cancelled,
+    ).await.err().ok_or("cancelled list unexpectedly succeeded")?;
+    assert!(matches!(failure.error, FsError::Cancelled(_)));
+    let after_failure = checkout.list_directory_records(
+        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert_eq!(after_failure.value, ordinary.value);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_fork_owned_input_gates_preserve_capacity_without_backend_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::WorkspaceError;
+    let tracked = Arc::new(std::sync::Mutex::new(None));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        CountingObjectStore {
+            inner: crate::memory::MemoryObjectStore::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
+            unreadable: Arc::default(),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs.create_workspace("selected-fork-input-gates").await?;
+    workspace.write_text("/file", "body").await?;
+    let source = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
+    });
+    let input = || {
+        let mut paths = Vec::with_capacity(17);
+        let mut root = String::with_capacity(97);
+        root.push('/');
+        paths.push(root);
+        paths
+    };
+    let sizing = input();
+    let owned = (sizing.capacity() * std::mem::size_of::<String>()
+        + sizing[0].capacity()) as u64;
+    drop(sizing);
+    for budget in [
+        WorkBudget::default(),
+        WorkBudget { peak_allocation_bytes: owned - 1, ..WorkBudget::UNBOUNDED },
+    ] {
+        reads.store(0, Ordering::Relaxed);
+        let failure = fs.select_fork_paths(
+            &source, checkout.root(), input(), budget, &cancellation,
+        ).await.err().ok_or("unadmitted owned input unexpectedly succeeded")?;
+        assert!(matches!(failure.error, WorkspaceError::Work(_)));
+        assert_eq!(*failure.work, WorkCounters {
+            peak_allocation_bytes: owned, ..WorkCounters::default()
+        });
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+    }
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = fs.select_fork_paths(
+        &source, checkout.root(), input(), WorkBudget::UNBOUNDED, &cancelled,
+    ).await.err().ok_or("cancelled selection unexpectedly succeeded")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work, WorkCounters {
+        peak_allocation_bytes: owned, ..WorkCounters::default()
+    });
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    let mut paths = input();
+    paths[0].push_str("file");
+    let failed = fs.select_fork_paths(
+        &source, checkout.root(), paths,
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).await.err().ok_or("selection ignored its allocation gate")?;
+    assert!(matches!(failed.error, WorkspaceError::Work(_)));
+    assert_eq!(failed.work.allocation_operations, 0);
+    assert_eq!(failed.work.peak_allocation_bytes, owned);
+    assert_eq!(failed.work.backend_read_operations, 0);
+    assert_eq!(failed.work.bytes_copied, 0);
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::WorkspaceError;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("selected-fork-invalid-paths").await?;
+    workspace.write_text("/file", "body").await?;
+    let source = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let limits = source.workspace.volume.config().limits;
+    for invalid in [
+        "/../file".to_owned(),
+        "/bad\0name".to_owned(),
+        format!("/{}", "x".repeat(limits.maximum_component_bytes as usize + 1)),
+        format!("/{}", "a/".repeat(limits.maximum_path_depth as usize + 1)),
+        format!("/{}", "x".repeat(limits.maximum_path_bytes as usize + 1)),
+    ] {
+        let paths = vec![invalid];
+        let owned = (paths.capacity() * std::mem::size_of::<String>()
+            + paths[0].capacity()) as u64;
+        let failure = fs.select_fork_paths(
+            &source, checkout.root(), paths,
+            WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        ).await.err().ok_or("invalid selected path unexpectedly succeeded")?;
+        assert!(matches!(failure.error, WorkspaceError::NamespacePath(_)));
+        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.page_reads, 0);
+        assert_eq!(failure.work.bytes_copied, 0);
+        assert_eq!(failure.work.peak_allocation_bytes, owned);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn selected_fork_original_native_matches_frozen_source_and_keeps_failed_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("selected-fork-original-frozen").await?;
+    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/tree/nested").await?;
+    transaction.write_text("/tree/nested/file", "frozen body").await?;
+    transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
+    transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
+    transaction.write_text("/omitted", "old omitted body").await?;
+    transaction.commit().await?;
+    let source = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source_table = checkout.root().file_table;
+    let source_id = source.id();
+    // Selection must authenticate the supplied frozen generation, not current head.
+    workspace.write_text("/tree/nested/file", "replacement at current head").await?;
+    workspace.write_text("/new-at-head", "not in the frozen source").await?;
+    for paths in [
+        vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()],
+        vec!["/tree/nested/file".to_owned()],
+        vec!["/outside-alias".to_owned(), "/tree/nested/alias".to_owned()],
+        Vec::new(),
+        vec!["/tree".to_owned(), "/".to_owned()],
+    ] {
+        let expected = fs.select_fork_paths(
+            &source, checkout.root(), paths.clone(), WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.0;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let actual = fs.select_fork_paths_with_accounting(
+            &source, checkout.root(), paths, &mut accounting, &cancellation,
+        ).await?;
+        assert_eq!(actual, expected, "the original operation uses the same canonical closure");
+        assert_eq!(source.id(), source_id);
+        assert_eq!(checkout.root().file_table, source_table);
+    }
+    assert_eq!(source.read("/tree/nested/file", 64).await?, Bytes::from_static(b"frozen body"));
+    assert!(source.read("/new-at-head", 64).await.is_err());
+
+    let denied = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let mut accounting = KernelAccounting::native(&denied, &cancellation);
+    let failed = fs.select_fork_paths_with_accounting(
+        &source, checkout.root(), vec!["/tree/nested/file".to_owned()],
+        &mut accounting, &cancellation,
+    ).await.err().ok_or("native selection ignored its original encoding ceiling")?;
+    assert!(matches!(failed, crate::workspace::WorkspaceError::Work(_)));
+    let spent = denied.receipt();
+    assert!(spent.allocation_operations > 0);
+    assert!(spent.backend_read_operations > 0);
+    assert_eq!(spent.bytes_encoded, 0);
+    assert_eq!(spent.backend_write_operations, 0);
+    assert_eq!(checkout.root().file_table, source_table);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn selected_fork_original_root_transfer_adopts_capacity_once_without_new_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("selected-fork-original-root-transfer").await?;
+    let source = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let checkout = workspace.checkout_measured(
+        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 0, backend_read_operations: 0,
+            bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let mut paths = Vec::with_capacity(17);
+    let mut root = String::with_capacity(97);
+    root.push('/');
+    paths.push(root);
+    let owned = crate::workspace::workspace_owned_strings_bytes(&paths)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let selected = fs.select_fork_paths_with_accounting(
+        &source, checkout.root(), paths, &mut accounting, &cancellation,
+    ).await?;
+    assert_eq!(selected, checkout.root().file_table);
+    let spent = original.receipt();
+    assert_eq!(spent.allocation_operations, 0);
+    assert_eq!(spent.backend_read_operations, 0);
+    assert_eq!(spent.bytes_copied, 0);
+    assert_eq!(spent.peak_allocation_bytes, baseline + owned);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::{ForkOptions, WorkspaceError};
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("selected-fork-closure-controls").await?;
+    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/tree/nested").await?;
+    transaction.write_text("/tree/nested/file", "linked body").await?;
+    transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
+    transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
+    transaction.write_text("/omitted", "not inherited").await?;
+    transaction.commit().await?;
+    let source = workspace.head().await?;
+    let paths = vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()];
+    let child = workspace.fork(
+        "selected-fork-closure-child",
+        ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
+            .inherit_paths(paths.clone()),
+    ).await?;
+    let initial = child.head().await?;
+    assert_eq!(child.read("/tree/nested/alias", 32).await?, Bytes::from_static(b"linked body"));
+    assert!(child.read("/outside-alias", 32).await.is_err());
+    assert!(child.read("/omitted", 32).await.is_err());
+    let file = initial.stat("/tree/nested/file").await?;
+    let alias = initial.stat("/tree/nested/alias").await?;
+    assert_eq!(file.file_id, alias.file_id);
+    assert_eq!(file.link_count, 2);
+    assert!(initial.matches_fork_selection(&source, Some(paths.clone())).await?);
+    assert!(initial.matches_fork_selection(&source, Some(vec!["/tree".to_owned()])).await?);
+    let cancellation = CancellationToken::new();
+    let baseline = initial.matches_fork_selection_measured(
+        &source, Some(paths.clone()), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    assert!(baseline.value);
+    assert!(baseline.work.allocation_operations > 0);
+    assert!(baseline.work.backend_read_operations > 0);
+    let finite = WorkBudget {
+        authority_records_read: 1_000_000, authority_records_appended: 1_000_000,
+        authority_bytes_read: 1_000_000, authority_bytes_written: 1_000_000,
+        object_probes: 1_000_000, backend_read_operations: 1_000_000,
+        backend_write_operations: 1_000_000, durability_operations: 1_000_000,
+        page_reads: 1_000_000, page_writes: 1_000_000,
+        object_bytes_read: 1_000_000, object_bytes_written: 1_000_000,
+        bytes_hashed: 1_000_000, bytes_copied: 1_000_000, bytes_encoded: 1_000_000,
+        source_bytes_read: 1_000_000, source_path_components: 1_000_000,
+        source_entries_visited: 1_000_000, output_bytes: 1_000_000,
+        items_examined: 1_000_000, items_returned: 1_000_000,
+        allocation_operations: 1_000_000, peak_allocation_bytes: 64 * 1024 * 1024,
+        materializations: 1_000_000,
+    };
+    let replay = initial.matches_fork_selection_measured(
+        &source, Some(paths.clone()), finite, &cancellation,
+    ).await?;
+    assert_eq!(replay.value, baseline.value);
+    assert_eq!(replay.work, baseline.work);
+    let denied = initial.matches_fork_selection_measured(
+        &source, Some(paths),
+        WorkBudget { peak_allocation_bytes: baseline.work.peak_allocation_bytes - 1, ..finite },
+        &cancellation,
+    ).await.err().ok_or("tight peak unexpectedly admitted the entire selection")?;
+    assert!(matches!(denied.error, WorkspaceError::Work(_)));
+    assert!(denied.work.peak_allocation_bytes > 0);
+    assert!(denied.work.backend_read_operations > 0);
+    assert!(denied.work.allocation_operations > 0);
+    let all = workspace.fork(
+        "selected-fork-root-child",
+        ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
+            .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
+    ).await?;
+    let all = all.head().await?;
+    assert!(all.matches_fork_selection(&source, None).await?);
+    assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
+    assert!(!initial.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::{ForkOptions, WorkspaceError};
+    let tracked = Arc::new(std::sync::Mutex::new(None));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        CountingObjectStore {
+            inner: crate::memory::MemoryObjectStore::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
+            unreadable: Arc::default(),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs.create_workspace("selected-fork-verification-gates").await?;
+    workspace.write_text("/file", "body").await?;
+    let source = workspace.head().await?;
+    let child = workspace.fork(
+        "selected-fork-verification-child",
+        ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
+            .inherit_paths(vec!["/file".to_owned()]),
+    ).await?;
+    let initial = child.head().await?;
+    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
+    });
+    reads.store(0, Ordering::Relaxed);
+    let cancellation = CancellationToken::new();
+    for budget in [
+        WorkBudget::default(),
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+    ] {
+        let failed = initial.matches_fork_selection_measured(
+            &source, Some(vec!["/file".to_owned()]), budget, &cancellation,
+        ).await.err().ok_or("verification ignored its allocation gate")?;
+        assert!(matches!(failed.error, WorkspaceError::Work(_)));
+        assert_eq!(failed.work.allocation_operations, 0);
+        assert_eq!(failed.work.backend_read_operations, 0);
+        assert_eq!(reads.load(Ordering::Relaxed), 0);
+    }
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failed = initial.matches_fork_selection_measured(
+        &source, Some(vec!["/file".to_owned()]), WorkBudget::UNBOUNDED, &cancelled,
+    ).await.err().ok_or("verification ignored cancellation")?;
+    assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(failed.work.allocation_operations, 0);
+    assert_eq!(failed.work.backend_read_operations, 0);
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-content-stream").await?;
+    workspace.write_text("/source", "authenticated source bytes").await?;
+    workspace.write_text("/destination", "old destination").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = checkout.lookup_no_follow(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("actual source absent")?;
+    let destination = checkout.lookup_no_follow(
+        &path("destination")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("actual destination absent")?;
+    let metadata = FileMetadata {
+        modified_ns: MetadataField::Value(1), changed_ns: MetadataField::Value(2),
+        accessed_ns: MetadataField::Value(3), ..FileMetadata::default()
+    };
+    checkout.set_metadata_by_id(
+        destination.file_id, metadata, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let reader = checkout.pinned_reader()?;
+    let bytes = reader.read_record_range_with_native_work(
+        source, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
+    ).await?.bytes;
+    assert_eq!(bytes.as_ref(), b"authenticated source bytes");
+    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    candidate.change_content_by_id_with_native_work(
+        destination.file_id, ContentChange::Write { offset: 0, bytes },
+        ContentTimes::Stamp(40), &original, &cancellation,
+    ).await?;
+    candidate.change_content_by_id_with_native_work(
+        destination.file_id,
+        ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 },
+        ContentTimes::Stamp(41), &original, &cancellation,
+    ).await?;
+    let actual = candidate.read_file_record_by_id_with_native_work(
+        destination.file_id, &original, &cancellation,
+    ).await?;
+    assert_eq!(actual.file_id, destination.file_id);
+    let content = reader.read_record_range_with_native_work(
+        actual, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
+    ).await?;
+    assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
+    let stamped = candidate.read_metadata_by_id_with_native_work(
+        destination.file_id, &original, &cancellation,
+    ).await?;
+    assert_eq!(stamped.modified_ns, MetadataField::Value(41));
+    assert_eq!(stamped.changed_ns, MetadataField::Value(41));
+    assert_eq!(stamped.accessed_ns, MetadataField::Value(3));
+    assert!(original.receipt().source_bytes_read >= 26);
+    assert!(original.receipt().bytes_encoded > 0);
+    assert_eq!(checkout.read_metadata_by_id(
+        destination.file_id, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value, metadata, "private native content cannot stamp its source checkout");
+    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    let destination_path = path("destination")?;
+    let source_path = path("source")?;
+    let mut destination_owned = clone_authored_path(&destination_path, &mut accounting)?;
+    let mut source_owned = clone_authored_path(&source_path, &mut accounting)?;
+    let input_bytes = destination_owned.bytes.checked_add(source_owned.bytes).ok_or(WorkError::Overflow)?;
+    destination_owned.allocation.absorb(&mut source_owned.allocation)?;
+    let compiled = candidate.compile_content_with_accounting(
+        crate::kernel::Owned::new(
+            (destination_owned.value, ContentChange::CloneFrom {
+                source: source_owned.value, source_offset: 0, offset: 0, length: 6,
+            }),
+            destination_owned.allocation, input_bytes,
+        ),
+        ContentTimes::Stamp(42), &mut accounting, &cancellation,
+    ).await?;
+    assert!(matches!(&compiled.value[0], Mutation::CloneRange { source, destination, .. }
+        if source == &source_path && destination == &destination_path));
+    assert_eq!(compiled.bytes,
+        compiled.value.capacity() as u64 * size_of::<Mutation>() as u64
+        + source_path.retained_bytes() + 2 * destination_path.retained_bytes());
+    compiled.retire(&mut accounting)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_content_copy_and_stamp_denials_leave_real_records_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::KernelAccounting;
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-content-denials").await?;
+    workspace.write_text("/source", "actual clone source").await?;
+    workspace.write_text("/destination", "actual old destination").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = checkout.lookup_no_follow(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("actual source absent")?;
+    let destination = checkout.lookup_no_follow(
+        &path("destination")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("actual destination absent")?;
+    checkout.set_metadata_by_id(destination.file_id, FileMetadata {
+        modified_ns: MetadataField::Value(1), changed_ns: MetadataField::Value(2),
+        ..FileMetadata::default()
+    }, WorkBudget::UNBOUNDED, &cancellation).await?;
+    let before = checkout.root.file_table;
+    for deny_stamp in [false, true] {
+        let budget = if deny_stamp {
+            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }
+        } else {
+            WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }
+        };
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let allocation = accounting.claim_owned(0, 0)?;
+        let change = ContentChange::CloneFrom {
+            source: source.file_id, source_offset: 0, offset: 0, length: 6,
+        };
+        let failed = checkout.compile_content_with_accounting(
+            crate::kernel::Owned::new((destination.file_id, change), allocation, 0),
+            if deny_stamp { ContentTimes::Stamp(50) } else { ContentTimes::Preserve },
+            &mut accounting, &cancellation,
+        ).await.err().ok_or("original content ignored its copy/stamp gate")?;
+        assert!(matches!(failed, FsError::Work(_) | FsError::NativeKernel(_)));
+        assert_eq!(checkout.root.file_table, before);
+        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(original.receipt().backend_write_operations, 0);
+        if !deny_stamp { assert_eq!(original.live_allocation_bytes(), baseline); }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_detached_content_stream_keeps_atomic_metadata_transition()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("original-detached-content").await?;
+    workspace.write_text("/source", "real detached stream").await?;
+    workspace.write_text("/destination", "before").await?;
+    let cancellation = CancellationToken::new();
+    let mut checkout = workspace.checkout_measured(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value;
+    let source = checkout.lookup_no_follow(
+        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("real detached source absent")?;
+    let destination = checkout.lookup_no_follow(
+        &path("destination")?, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?.value.record.ok_or("real detached destination absent")?;
+    let reader = checkout.pinned_reader()?;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let source = reader.read_record_range_with_native_work(
+        source, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
+    ).await?;
+    let metadata = FileMetadata {
+        modified_ns: MetadataField::Value(90), changed_ns: MetadataField::Value(90),
+        ..FileMetadata::default()
+    };
+    let mut detached = DetachedFile::from_record(checkout.volume.clone(), destination);
+    detached.change_content_with_native_work(
+        ContentChange::Write { offset: 0, bytes: source.bytes }, Some(metadata),
+        &original, &cancellation,
+    ).await?;
+    assert_eq!(detached.record.file_id, destination.file_id);
+    assert_eq!(reader.read_record_range_with_native_work(
+        detached.record, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
+    ).await?.bytes.as_ref(), b"real detached stream");
+    let before = detached.record;
+    let denied = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(cause, _)| cause)?;
+    let failure = detached.change_content_with_native_work(
+        ContentChange::Write { offset: 0, bytes: Bytes::new() },
+        Some(FileMetadata { modified_ns: MetadataField::Value(91), ..metadata }),
+        &denied, &cancellation,
+    ).await.err().ok_or("detached metadata encoding ignored original denial")?;
+    assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
+    assert_eq!(detached.record, before);
+    assert_eq!(denied.receipt().bytes_encoded, 0);
+    assert_eq!(denied.receipt().backend_write_operations, 0);
     Ok(())
 }

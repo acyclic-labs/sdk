@@ -7,7 +7,10 @@
 //! generations and are never enumerated here.
 
 use crate::WorkspaceId;
-use crate::record_store::stored_revision;
+use crate::record_store::{Revisioned, stored_revision};
+use crate::kernel::allocation::KernelOwnedAllocation;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::kernel::allocation::KernelAccounting;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -131,6 +134,43 @@ pub trait WorkspaceContextStore: Send + Sync {
         require_exact_set: bool,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
+    /// Loads metadata on the caller's original native invocation.
+    /// Custom adapters opt in explicitly; the default performs no I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> impl Future<Output = Result<Option<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
+        let _ = context_id;
+        async move {
+            KernelAccounting::native(original, cancellation).check()
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            Err((WorkspaceContextError::NativeOriginalUnsupported, None))
+        }
+    }
+
+    /// Performs the same revision comparison and index update with custody.
+    /// The replacement's already-paid physical payload moves into the store.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compare_and_swap_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        expected_revision: u64,
+        replacement: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> impl Future<Output = Result<bool, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
+        let _ = (context_id, expected_revision);
+        async move {
+            KernelAccounting::native(original, cancellation).check()
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            drop(replacement);
+            Err((WorkspaceContextError::NativeOriginalUnsupported, None))
+        }
+    }
+
     /// Atomically validates and tombstones one direct-child subtree.
     fn discard_subtree(
         &self,
@@ -204,6 +244,14 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// A root cannot be removed while a descendant still depends on it.
     #[error("workspace root is still bound by a live descendant")]
     RootInUse,
+    /// The original native invocation rejected measured metadata work.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    NativeFilesystem(crate::FsError),
+    /// A custom adapter has not implemented original-ledger metadata work.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("workspace-context store does not support original native work")]
+    NativeOriginalUnsupported,
 }
 
 impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
@@ -214,6 +262,30 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         roots: impl IntoIterator<Item = WorkspaceContextRoot>,
     ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
         self.register(context_id, None, roots).await
+    }
+
+    /// Registers root metadata without content reads on the original invocation.
+    ///
+    /// The physical roots and their exact exclusive paid backing move together.
+    /// The caller must not release or re-adopt the transferred allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn register_root_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        roots: (Vec<WorkspaceContextRoot>, crate::NativeAllocation),
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>, (WorkspaceContextError<S::Error>, Option<crate::NativeAllocation>)> {
+        let record = native_root_record(context_id, roots, original, cancellation)
+            .map_err(|error| (error, None))?;
+        self.register_record(record, RegistrationMode::Native { original, cancellation })
+            .await
+            .map(|record| {
+                crate::lazy_workspace::NativeOwnedCoreState::from_parts(
+                    record.context, record.allocation.expect("native registration retains its physical payload"),
+                )
+            })
+            .map_err(native_registration_failure)
     }
 
     /// Registers a recursively forked context after the SDK workspaces have
@@ -601,58 +673,91 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         parent_context_id: Option<WorkspaceContextId>,
         roots: impl IntoIterator<Item = WorkspaceContextRoot>,
     ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
-        let roots = collect_roots(roots)?;
+        let record = ContextOwnedRecord::ordinary(WorkspaceContext {
+            version: WORKSPACE_CONTEXT_VERSION,
+            revision: 1,
+            context_id,
+            parent_context_id,
+            roots: collect_roots(roots)?,
+            state: WorkspaceContextState::Active,
+        });
+        self.register_record(record, RegistrationMode::Ordinary { _lifetime: std::marker::PhantomData })
+            .await
+            .map(|record| record.context)
+            .map_err(|(error, _)| error)
+    }
+
+    async fn register_record(
+        &self,
+        record: ContextOwnedRecord,
+        mode: RegistrationMode<'_>,
+    ) -> Result<ContextOwnedRecord, (WorkspaceContextError<S::Error>, Option<KernelOwnedAllocation>)> {
+        let context_id = record.context.context_id;
+        let parent_context_id = record.context.parent_context_id;
+        let roots = &record.context.roots;
         if parent_context_id.is_none()
-            && roots
-                .values()
-                .any(|root| root.parent_workspace_id.is_some())
+            && roots.values().any(|root| root.parent_workspace_id.is_some())
         {
-            return Err(WorkspaceContextError::InvalidRoots);
+            return Err((WorkspaceContextError::InvalidRoots, None));
         }
         loop {
-            let mut expected = BTreeMap::from([(context_id, 0)]);
-            if let Some(parent_id) = parent_context_id {
-                let parent = self.resolve(parent_id).await?;
-                if parent.state == WorkspaceContextState::Discarded
-                    || roots.len() != parent.roots.len()
-                    || roots.iter().any(|(root_id, root)| {
-                        parent.roots.get(root_id).is_none_or(|parent_root| {
-                            root.source_path != parent_root.source_path
-                                || root.parent_workspace_id != Some(parent_root.workspace_id)
-                        })
-                    })
-                {
-                    return Err(WorkspaceContextError::InvalidRoots);
+            // Native root registration has no parent and needs no temporary
+            // expected-revision map. Ordinary child registration retains its
+            // exact existing multi-record optimistic-concurrency operation.
+            let committed = match mode {
+                RegistrationMode::Ordinary { .. } => {
+                    let mut expected = BTreeMap::from([(context_id, 0)]);
+                    if let Some(parent_id) = parent_context_id {
+                        let parent = self.resolve(parent_id).await.map_err(|error| (error, None))?;
+                        if parent.state == WorkspaceContextState::Discarded
+                            || roots.len() != parent.roots.len()
+                            || roots.iter().any(|(root_id, root)| {
+                                parent.roots.get(root_id).is_none_or(|parent_root| {
+                                    root.source_path != parent_root.source_path
+                                        || root.parent_workspace_id != Some(parent_root.workspace_id)
+                                })
+                            })
+                        {
+                            return Err((WorkspaceContextError::InvalidRoots, None));
+                        }
+                        expected.insert(parent_id, parent.revision);
+                    }
+                    self.store.compare_and_swap_many(expected, vec![record.context.clone()], false)
+                        .await.map_err(|error| (WorkspaceContextError::Store(error), None))?
                 }
-                expected.insert(parent_id, parent.revision);
-            }
-            let record = WorkspaceContext {
-                version: WORKSPACE_CONTEXT_VERSION,
-                revision: 1,
-                context_id,
-                parent_context_id,
-                roots: roots.clone(),
-                state: WorkspaceContextState::Active,
+                #[cfg(not(target_arch = "wasm32"))]
+                RegistrationMode::Native { original, cancellation } => {
+                    let accounting = KernelAccounting::native(original, cancellation);
+                    accounting.check().map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                    let replacement = clone_context_with_native_work(&record.context, original, cancellation)
+                        .map_err(|error| (error, None))?;
+                    accounting.check().map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                    self.store.compare_and_swap_with_native_work(context_id, 0, replacement, original, cancellation)
+                        .await.map_err(|(error, allocation)| (error, allocation.map(KernelOwnedAllocation::NativeOriginal)))?
+                }
             };
-            if self
-                .store
-                .compare_and_swap_many(expected, vec![record.clone()], false)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
+            if committed {
                 return Ok(record);
             }
-            if let Some(existing) = self
-                .store
-                .load(context_id)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                validate_record(&existing, context_id)?;
-                return if same_registration(&existing, &record) {
+            let existing = match mode {
+                RegistrationMode::Ordinary { .. } => self.store.load(context_id).await
+                    .map_err(|error| (WorkspaceContextError::Store(error), None))?
+                    .map(ContextOwnedRecord::ordinary),
+                #[cfg(not(target_arch = "wasm32"))]
+                RegistrationMode::Native { original, cancellation } => {
+                    KernelAccounting::native(original, cancellation).check()
+                        .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+                    self.store.load_with_native_work(context_id, original, cancellation).await
+                        .map_err(|(error, allocation)| (error, allocation.map(KernelOwnedAllocation::NativeOriginal)))?
+                        .map(ContextOwnedRecord::native)
+                }
+            };
+            if let Some(existing) = existing {
+                validate_record(&existing.context, context_id).map_err(|error| (error, None))?;
+                return if same_registration(&existing.context, &record.context) {
                     Ok(existing)
                 } else {
-                    Err(WorkspaceContextError::ConflictingRegistration)
+                    Err((WorkspaceContextError::ConflictingRegistration, None))
                 };
             }
         }
@@ -682,19 +787,283 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum RegistrationMode<'a> {
+    Ordinary { _lifetime: std::marker::PhantomData<&'a ()> },
+    #[cfg(not(target_arch = "wasm32"))]
+    Native {
+        original: &'a crate::NativeMaterializationWork,
+        cancellation: &'a crate::CancellationToken,
+    },
+}
+
+// Intrinsic persisted metadata custody; no external guard registry or journal.
+struct ContextOwnedRecord {
+    context: WorkspaceContext,
+    #[cfg(not(target_arch = "wasm32"))]
+    allocation: Option<crate::NativeAllocation>,
+    #[cfg(not(target_arch = "wasm32"))]
+    entry_allocation: Option<crate::NativeAllocation>,
+}
+
+impl ContextOwnedRecord {
+    fn ordinary(context: WorkspaceContext) -> Self {
+        Self {
+            context,
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            entry_allocation: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native(record: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>) -> Self {
+        let (context, allocation) = record.into_parts();
+        Self { context, allocation: Some(allocation), entry_allocation: None }
+    }
+}
+
+impl Revisioned for ContextOwnedRecord {
+    fn revision(&self) -> u64 { self.context.revision }
+}
+
+impl std::ops::Deref for ContextOwnedRecord {
+    type Target = WorkspaceContext;
+    fn deref(&self) -> &WorkspaceContext { &self.context }
+}
+
+impl std::ops::DerefMut for ContextOwnedRecord {
+    fn deref_mut(&mut self) -> &mut WorkspaceContext { &mut self.context }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_registration_failure<E: std::error::Error + 'static>(
+    failure: (WorkspaceContextError<E>, Option<KernelOwnedAllocation>),
+) -> (WorkspaceContextError<E>, Option<crate::NativeAllocation>) {
+    let (error, allocation) = failure;
+    (error, allocation.and_then(|allocation| match allocation {
+        KernelOwnedAllocation::NativeOriginal(allocation) => Some(allocation),
+        KernelOwnedAllocation::Standalone => None,
+    }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn context_root_backing(root: &WorkspaceContextRoot) -> Result<u64, crate::FsError> {
+    (root.source_path.capacity() as u64)
+        .checked_add(root.workspace_name.capacity() as u64)
+        .and_then(|bytes| bytes.checked_add(root.mount_path.as_ref().map_or(0, |path| path.capacity() as u64)))
+        .ok_or_else(|| crate::WorkError::Overflow.into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn context_native_backing(context: &WorkspaceContext) -> Result<u64, crate::FsError> {
+    context.roots.values().try_fold(0u64, |bytes, root| {
+        let backing = context_root_backing(root)?;
+        bytes.checked_add(std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64)
+            .and_then(|bytes| bytes.checked_add(backing))
+            .ok_or_else(|| crate::WorkError::Overflow.into())
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_root_record<E: std::error::Error + 'static>(
+    context_id: WorkspaceContextId,
+    roots: (Vec<WorkspaceContextRoot>, crate::NativeAllocation),
+    original: &crate::NativeMaterializationWork,
+    cancellation: &crate::CancellationToken,
+) -> Result<ContextOwnedRecord, WorkspaceContextError<E>> {
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    accounting.check().map_err(WorkspaceContextError::NativeFilesystem)?;
+    let vec_bytes = (roots.0.capacity() as u64)
+        .checked_mul(std::mem::size_of::<WorkspaceContextRoot>() as u64)
+        .ok_or_else(|| WorkspaceContextError::NativeFilesystem(crate::WorkError::Overflow.into()))?;
+    let bytes = roots.0.iter().try_fold(vec_bytes, |bytes, root| {
+        bytes.checked_add(context_root_backing(root)?).ok_or_else(|| crate::FsError::from(crate::WorkError::Overflow))
+    }).map_err(WorkspaceContextError::NativeFilesystem)?;
+    if !roots.1.work().shares_allocation_context(original) || roots.1.bytes() != bytes {
+        return Err(WorkspaceContextError::NativeFilesystem(
+            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
+        ));
+    }
+    let (roots, allocation) = roots;
+    let mut input = (roots, KernelOwnedAllocation::NativeOriginal(allocation));
+    let copied = crate::WorkCounters {
+        bytes_copied: std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    let collected = collect_roots_with(input.0, |step| match step {
+        RootCollectionStep::Validate => accounting.charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(WorkspaceContextError::NativeFilesystem),
+        RootCollectionStep::Insert => {
+            accounting.admit(copied).map_err(WorkspaceContextError::NativeFilesystem)?;
+            let mut entry = accounting.claim_owned(
+                std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0,
+            ).map_err(WorkspaceContextError::NativeFilesystem)?;
+            input.1.absorb(&mut entry).map_err(WorkspaceContextError::NativeFilesystem)
+        }
+        RootCollectionStep::Inserted => accounting.record_completed(copied)
+            .map_err(WorkspaceContextError::NativeFilesystem),
+    })?;
+    let KernelOwnedAllocation::NativeOriginal(allocation) = input.1 else {
+        return Err(WorkspaceContextError::IncompatibleState);
+    };
+    let mut record = ContextOwnedRecord {
+        context: WorkspaceContext {
+            version: WORKSPACE_CONTEXT_VERSION,
+            revision: 1,
+            context_id,
+            parent_context_id: None,
+            roots: collected,
+            state: WorkspaceContextState::Active,
+        },
+        allocation: Some(allocation),
+        entry_allocation: None,
+    };
+    // The IntoIter has destroyed the moved vector's backing, not its roots.
+    record.allocation.as_mut().expect("native root custody").release(vec_bytes)
+        .map_err(|error| WorkspaceContextError::NativeFilesystem(error.into()))?;
+    accounting.check().map_err(WorkspaceContextError::NativeFilesystem)?;
+    Ok(record)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clone_context_path(
+    path: &Path,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(PathBuf, KernelOwnedAllocation), crate::FsError> {
+    let bytes = path.as_os_str().len() as u64;
+    let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
+    accounting.admit(copied)?;
+    let allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+    let mut owned = (PathBuf::new(), allocation);
+    owned.0.try_reserve_exact(path.as_os_str().len())
+        .map_err(|error| crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+    accounting.reconcile_owned(&mut owned.1, bytes, owned.0.capacity() as u64)?;
+    owned.0.push(path);
+    accounting.record_completed(copied)?;
+    Ok(owned)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clone_context_name(
+    name: &str,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(String, KernelOwnedAllocation), crate::FsError> {
+    let bytes = name.len() as u64;
+    let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
+    accounting.admit(copied)?;
+    let allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+    let mut owned = (String::new(), allocation);
+    owned.0.try_reserve_exact(name.len())
+        .map_err(|error| crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+    accounting.reconcile_owned(&mut owned.1, bytes, owned.0.capacity() as u64)?;
+    owned.0.push_str(name);
+    accounting.record_completed(copied)?;
+    Ok(owned)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clone_context_with_native_work<E: std::error::Error + 'static>(
+    context: &WorkspaceContext,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>, WorkspaceContextError<E>> {
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    let allocation = accounting.claim_owned(0, 0)
+        .map_err(WorkspaceContextError::NativeFilesystem)?;
+    let mut owned = (BTreeMap::new(), allocation);
+    for (root_id, root) in &context.roots {
+        accounting.charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(WorkspaceContextError::NativeFilesystem)?;
+        let mut entry = accounting.claim_owned(
+            std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0,
+        ).map_err(WorkspaceContextError::NativeFilesystem)?;
+        owned.1.absorb(&mut entry).map_err(WorkspaceContextError::NativeFilesystem)?;
+        let copied = crate::WorkCounters {
+            bytes_copied: std::mem::size_of::<(WorkspaceRootId, WorkspaceContextRoot)>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied).map_err(WorkspaceContextError::NativeFilesystem)?;
+        let mut source = clone_context_path(&root.source_path, &mut accounting)
+            .map_err(WorkspaceContextError::NativeFilesystem)?;
+        let mut name = clone_context_name(&root.workspace_name, &mut accounting)
+            .map_err(WorkspaceContextError::NativeFilesystem)?;
+        let mut mount = root.mount_path.as_deref().map(|path| clone_context_path(path, &mut accounting))
+            .transpose().map_err(WorkspaceContextError::NativeFilesystem)?;
+        owned.1.absorb(&mut source.1).map_err(WorkspaceContextError::NativeFilesystem)?;
+        owned.1.absorb(&mut name.1).map_err(WorkspaceContextError::NativeFilesystem)?;
+        if let Some((_, allocation)) = &mut mount {
+            owned.1.absorb(allocation).map_err(WorkspaceContextError::NativeFilesystem)?;
+        }
+        let source_path = source.0;
+        let workspace_name = name.0;
+        let mount_path = mount.map(|(path, _)| path);
+        accounting.admit(copied).map_err(WorkspaceContextError::NativeFilesystem)?;
+        owned.0.insert(*root_id, WorkspaceContextRoot {
+            root_id: root.root_id,
+            source_path,
+            workspace_id: root.workspace_id,
+            workspace_name,
+            parent_workspace_id: root.parent_workspace_id,
+            mount_path,
+        });
+        accounting.record_completed(copied).map_err(WorkspaceContextError::NativeFilesystem)?;
+    }
+    let header_copy = crate::WorkCounters {
+        bytes_copied: std::mem::size_of::<WorkspaceContext>() as u64,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    accounting.admit(header_copy).map_err(WorkspaceContextError::NativeFilesystem)?;
+    let KernelOwnedAllocation::NativeOriginal(allocation) = owned.1 else {
+        return Err(WorkspaceContextError::IncompatibleState);
+    };
+    let result = crate::lazy_workspace::NativeOwnedCoreState::from_parts(WorkspaceContext {
+        version: context.version,
+        revision: context.revision,
+        context_id: context.context_id,
+        parent_context_id: context.parent_context_id,
+        roots: owned.0,
+        state: context.state,
+    }, allocation);
+    accounting.record_completed(header_copy).map_err(WorkspaceContextError::NativeFilesystem)?;
+    Ok(result)
+}
+
 fn collect_roots<E: std::error::Error + 'static>(
     roots: impl IntoIterator<Item = WorkspaceContextRoot>,
 ) -> Result<BTreeMap<WorkspaceRootId, WorkspaceContextRoot>, WorkspaceContextError<E>> {
+    collect_roots_with(roots, |_| Ok(()))
+}
+
+enum RootCollectionStep {
+    Validate,
+    Insert,
+    Inserted,
+}
+
+fn collect_roots_with<E: std::error::Error + 'static>(
+    roots: impl IntoIterator<Item = WorkspaceContextRoot>,
+    mut insertion: impl FnMut(RootCollectionStep) -> Result<(), WorkspaceContextError<E>>,
+) -> Result<BTreeMap<WorkspaceRootId, WorkspaceContextRoot>, WorkspaceContextError<E>> {
     let mut collected = BTreeMap::new();
     for root in roots {
+        insertion(RootCollectionStep::Validate)?;
         if root.workspace_name.is_empty()
             || !is_canonical(&root.source_path)
             || root
                 .mount_path
                 .as_deref()
                 .is_some_and(|path| !is_canonical(path))
-            || collected.insert(root.root_id, root).is_some()
         {
+            return Err(WorkspaceContextError::InvalidRoots);
+        }
+        insertion(RootCollectionStep::Insert)?;
+        let duplicate = collected.insert(root.root_id, root).is_some();
+        insertion(RootCollectionStep::Inserted)?;
+        if duplicate {
             return Err(WorkspaceContextError::InvalidRoots);
         }
     }
@@ -850,8 +1219,28 @@ pub struct MemoryWorkspaceContextStore {
 
 #[derive(Default)]
 struct MemoryWorkspaceContextState {
-    records: BTreeMap<WorkspaceContextId, WorkspaceContext>,
+    records: BTreeMap<WorkspaceContextId, ContextOwnedRecord>,
     children: WorkspaceContextChildren,
+}
+
+fn replace_context_record(
+    state: &mut MemoryWorkspaceContextState,
+    context_id: WorkspaceContextId,
+    replacement: ContextOwnedRecord,
+) {
+    let MemoryWorkspaceContextState { records, children } = state;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut replacement = replacement;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(before) = records.get_mut(&context_id) {
+        // This is the same physical retained entry, even when its payload is
+        // replaced on a different original invocation. Never adopt it again.
+        replacement.entry_allocation = before.entry_allocation.take();
+    }
+    update_context_children(
+        children, records.get(&context_id).map(|record| &record.context), Some(&replacement.context),
+    );
+    records.insert(context_id, replacement);
 }
 
 impl MemoryWorkspaceContextStore {
@@ -870,6 +1259,85 @@ pub struct MemoryWorkspaceContextStoreError;
 impl WorkspaceContextStore for MemoryWorkspaceContextStore {
     type Error = MemoryWorkspaceContextStoreError;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn load_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<Option<crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>>, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
+        KernelAccounting::native(original, cancellation).charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        let state = self.state.lock()
+            .map_err(|_| (WorkspaceContextError::Store(MemoryWorkspaceContextStoreError), None))?;
+        state.records.get(&context_id).map(|record| {
+            clone_context_with_native_work(&record.context, original, cancellation)
+        }).transpose().map_err(|error| (error, None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn compare_and_swap_with_native_work(
+        &self,
+        context_id: WorkspaceContextId,
+        expected_revision: u64,
+        replacement: crate::lazy_workspace::NativeOwnedCoreState<WorkspaceContext>,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<bool, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
+        let mut replacement = ContextOwnedRecord::native(replacement);
+        if !replacement.allocation.as_ref().expect("native record custody").matches_work(original) {
+            return Err((WorkspaceContextError::IncompatibleState, None));
+        }
+        let required = context_native_backing(&replacement.context)
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        if replacement.allocation.as_ref().expect("native record custody").bytes() < required {
+            return Err((WorkspaceContextError::IncompatibleState, None));
+        }
+        let mut accounting = KernelAccounting::native(original, cancellation);
+        accounting.charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        let mut state = self.state.lock()
+            .map_err(|_| (WorkspaceContextError::Store(MemoryWorkspaceContextStoreError), None))?;
+        if stored_revision(&state.records, &context_id) != expected_revision {
+            return Ok(false);
+        }
+        if !state.records.contains_key(&context_id) {
+            let backing = accounting.claim_owned(
+                std::mem::size_of::<(WorkspaceContextId, ContextOwnedRecord)>() as u64, 0,
+            ).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+            if let KernelOwnedAllocation::NativeOriginal(backing) = backing {
+                replacement.entry_allocation = Some(backing);
+            }
+        }
+        let mut bytes = 0u64;
+        if let Some(parent) = replacement.context.parent_context_id {
+            if !state.children.contains_key(&parent) {
+                bytes = bytes.checked_add(std::mem::size_of::<(WorkspaceContextId, BTreeSet<WorkspaceContextId>)>() as u64)
+                    .ok_or_else(|| (WorkspaceContextError::NativeFilesystem(crate::WorkError::Overflow.into()), None))?;
+            }
+            if state.children.get(&parent).is_none_or(|children| !children.contains(&replacement.context.context_id)) {
+                bytes = bytes.checked_add(std::mem::size_of::<WorkspaceContextId>() as u64)
+                    .ok_or_else(|| (WorkspaceContextError::NativeFilesystem(crate::WorkError::Overflow.into()), None))?;
+            }
+        }
+        let mut backing = accounting.claim_owned(bytes, 0)
+            .map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        if let KernelOwnedAllocation::NativeOriginal(backing) = &mut backing {
+            replacement.allocation.as_mut().expect("native record custody").absorb(backing)
+                .map_err(|error| (WorkspaceContextError::NativeFilesystem(error.into()), None))?;
+        }
+        let copied = crate::WorkCounters {
+            bytes_copied: std::mem::size_of::<(WorkspaceContextId, WorkspaceContext)>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        replace_context_record(&mut state, context_id, replacement);
+        accounting.record_completed(copied).map_err(|error| (WorkspaceContextError::NativeFilesystem(error), None))?;
+        Ok(true)
+    }
+
     async fn load(
         &self,
         context_id: WorkspaceContextId,
@@ -877,14 +1345,14 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         self.state
             .lock()
             .map_err(|_| MemoryWorkspaceContextStoreError)
-            .map(|state| state.records.get(&context_id).cloned())
+            .map(|state| state.records.get(&context_id).map(|record| record.context.clone()))
     }
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
         self.state
             .lock()
             .map_err(|_| MemoryWorkspaceContextStoreError)
-            .map(|state| state.records.values().cloned().collect())
+            .map(|state| state.records.values().map(|record| record.context.clone()).collect())
     }
 
     async fn compare_and_swap(
@@ -900,9 +1368,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         if stored_revision(&state.records, &context_id) != expected_revision {
             return Ok(false);
         }
-        let before = state.records.get(&context_id).cloned();
-        update_context_children(&mut state.children, before.as_ref(), Some(&replacement));
-        state.records.insert(context_id, replacement);
+        replace_context_record(&mut state, context_id, ContextOwnedRecord::ordinary(replacement));
         Ok(true)
     }
 
@@ -929,9 +1395,8 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
             return Ok(false);
         }
         for replacement in replacements {
-            let before = state.records.get(&replacement.context_id).cloned();
-            update_context_children(&mut state.children, before.as_ref(), Some(&replacement));
-            state.records.insert(replacement.context_id, replacement);
+            let context_id = replacement.context_id;
+            replace_context_record(&mut state, context_id, ContextOwnedRecord::ordinary(replacement));
         }
         Ok(true)
     }
@@ -946,10 +1411,37 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
             .state
             .lock()
             .map_err(|_| MemoryWorkspaceContextStoreError)?;
-        let MemoryWorkspaceContextState { records, children } = &mut *state;
-        Ok(discard_context_subtree(
-            records, children, parent, child, maximum,
-        ))
+        let discarded = match plan_context_subtree_discard(
+            state.records.get(&child).map(|record| &record.context),
+            &state.children, parent, child, maximum,
+        ) {
+            Ok(discarded) => discarded,
+            Err(outcome) => return Ok(outcome),
+        };
+        // Validate every revision before changing any record. Mutating scalar
+        // metadata in place keeps each native record's intrinsic custody.
+        if discarded.iter().any(|id| state.records.get(id).is_none_or(|record| {
+            !record_is_valid(&record.context, *id) || record.revision.checked_add(1).is_none()
+        })) {
+            return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
+        }
+        for id in &discarded {
+            let record = state.records.get_mut(id).expect("validated subtree record");
+            record.context.revision += 1;
+            record.context.state = WorkspaceContextState::Discarded;
+            for root in record.context.roots.values_mut() {
+                if let Some(path) = root.mount_path.take() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let bytes = path.capacity() as u64;
+                    drop(path);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(allocation) = &mut record.allocation {
+                        allocation.release(bytes).map_err(|_| MemoryWorkspaceContextStoreError)?;
+                    }
+                }
+            }
+        }
+        Ok(WorkspaceContextDiscardOutcome::Discarded(discarded))
     }
 }
 

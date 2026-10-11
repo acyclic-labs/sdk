@@ -125,6 +125,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map(|value| OperationReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_fork_selection_with_native_work(
+        &self, source: &crate::Generation<A, O>, initial: &crate::Generation<A, O>,
+        paths: Option<Vec<String>>, original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, WorkspaceError> {
+        let mut accounting = KernelAccounting::native(original, cancellation);
+        let input_bytes = paths.as_ref().map(workspace_owned_strings_bytes).transpose()?.unwrap_or(0);
+        let (allocation, admitted) = accounting.record_actual_owned(input_bytes)?;
+        let mut paths = (paths, allocation);
+        admitted?;
+        accounting.check()?;
+        if !self.same_deployment(&source.workspace.volume.fs)
+            || !self.same_deployment(&initial.workspace.volume.fs) {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let selected = paths.0.take();
+        accounting.release_owned(&mut paths.1, input_bytes)?;
+        let (expected, _) = self.materialize_forked_generation_root_with_accounting(
+            source, initial.workspace.id(), source.workspace.volume.config, selected,
+            &mut accounting, cancellation,
+        ).await?;
+        Ok(expected.value.generation_root.digest == initial.id.digest())
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {

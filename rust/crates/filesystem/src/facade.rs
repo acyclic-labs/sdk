@@ -151,7 +151,7 @@ pub(crate) enum WorkspaceJoinOutcome {
     IdempotencyConflict,
 }
 
-pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
+pub(crate) struct WorkspaceJoinRequest<'a, A, O, R = BTreeMap<MergeConflict, MergeConflictResolution>> {
     pub target: &'a Volume<A, O>,
     pub base: WorkspaceCommonAncestor,
     pub source: &'a crate::Generation<A, O>,
@@ -163,12 +163,11 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
     pub maximum_generations: u32,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
-    pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
+    pub resolutions: R,
 }
 
-impl<A, O> WorkspaceJoinRequest<'_, A, O> {
-    fn operation_context(&self) -> Digest {
-        let resolutions = hash_join_resolutions(&self.resolutions);
+impl<A, O, R> WorkspaceJoinRequest<'_, A, O, R> {
+    fn operation_context(&self, resolutions: Digest) -> Digest {
         workspace_join_context(
             self.source.workspace.volume.id,
             self.source.id,
@@ -221,10 +220,75 @@ fn workspace_join_context(
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
-fn hash_join_resolutions(resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>) -> Digest {
+#[derive(Clone, Copy)]
+enum WorkspaceJoinResolutionView<'a> {
+    Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
+    Slice(&'a [(MergeConflict, MergeConflictResolution)]),
+}
+
+trait WorkspaceJoinResolutions: Send + Sync {
+    fn view(&self) -> WorkspaceJoinResolutionView<'_>;
+}
+
+impl WorkspaceJoinResolutions for BTreeMap<MergeConflict, MergeConflictResolution> {
+    fn view(&self) -> WorkspaceJoinResolutionView<'_> { WorkspaceJoinResolutionView::Map(self) }
+}
+
+impl WorkspaceJoinResolutions for &[(MergeConflict, MergeConflictResolution)] {
+    fn view(&self) -> WorkspaceJoinResolutionView<'_> { WorkspaceJoinResolutionView::Slice(self) }
+}
+
+impl WorkspaceJoinResolutionView<'_> {
+    fn visit(
+        self,
+        mut visit: impl FnMut(&MergeConflict, &MergeConflictResolution) -> Result<(), FsError>,
+    ) -> Result<(), FsError> {
+        match self {
+            Self::Map(map) => { for (key, value) in map { visit(key, value)?; } }
+            Self::Slice(slice) => { for (key, value) in slice { visit(key, value)?; } }
+        }
+        Ok(())
+    }
+}
+
+fn hash_join_resolutions(
+    resolutions: WorkspaceJoinResolutionView<'_>,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<Digest, FsError> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-fs-workspace-join-resolutions-v1\0");
-    for (conflict, resolution) in resolutions {
+    let domain = b"acyclic-fs-workspace-join-resolutions-v1\0";
+    let prefix = WorkCounters { bytes_hashed: domain.len() as u64, ..WorkCounters::UNCHARGED };
+    accounting.admit(prefix)?;
+    hasher.update(domain);
+    accounting.record_completed(prefix)?;
+    resolutions.visit(|conflict, resolution| {
+        let key_bytes = match conflict {
+            MergeConflict::File(_) => 17,
+            MergeConflict::Binding { name, .. } =>
+                26_u64.checked_add(name.as_bytes().len() as u64).ok_or(WorkError::Overflow)?,
+        };
+        let resolution_bytes = match resolution {
+            MergeConflictResolution::Select(_) => 2,
+            MergeConflictResolution::File(None) | MergeConflictResolution::Binding(None) => 2,
+            MergeConflictResolution::Binding(Some(_)) => 18,
+            MergeConflictResolution::File(Some(record)) => {
+                let payload_bytes = match record.payload {
+                    FilePayload::InlineRegular(data) => 9 + data.as_bytes().len() as u64,
+                    FilePayload::Regular { .. } | FilePayload::SymbolicLink { .. }
+                    | FilePayload::ReparsePoint { .. } => 42,
+                    FilePayload::Directory { .. } => 34,
+                    FilePayload::Empty => 1,
+                    FilePayload::Device { .. } => 9,
+                };
+                60 + payload_bytes
+            }
+        };
+        let hashing = WorkCounters {
+            bytes_hashed: key_bytes.checked_add(resolution_bytes).ok_or(WorkError::Overflow)?,
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashing)?;
         match conflict {
             MergeConflict::File(file_id) => {
                 hasher.update(&[0]);
@@ -243,8 +307,111 @@ fn hash_join_resolutions(resolutions: &BTreeMap<MergeConflict, MergeConflictReso
             }
         }
         hash_merge_resolution(&mut hasher, resolution);
+        accounting.record_completed(hashing)
+    })?;
+    Ok(Digest::from_bytes(*hasher.finalize().as_bytes()))
+}
+
+fn workspace_join_conflict_bytes(conflicts: &Vec<MergeConflict>) -> Result<u64, FsError> {
+    let slots = conflicts.capacity().checked_mul(size_of::<MergeConflict>())
+        .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
+    conflicts.iter().try_fold(slots, |bytes, conflict| {
+        let name = match conflict {
+            MergeConflict::File(_) => 0,
+            MergeConflict::Binding { name, .. } => name.retained_bytes() as u64,
+        };
+        bytes.checked_add(name).ok_or_else(|| WorkError::Overflow.into())
+    })
+}
+
+fn workspace_join_scalar(
+    outcome: WorkspaceJoinOutcome,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<crate::kernel::Owned<WorkspaceJoinOutcome>, crate::workspace::WorkspaceError> {
+    Ok(crate::kernel::Owned::new(outcome, accounting.claim_owned(0, 0)?, 0))
+}
+
+enum WorkspaceJoinPublished {
+    Committed(GenerationId),
+    AlreadyCommitted(GenerationId),
+    Conflict,
+    Fenced,
+    IdempotencyConflict,
+}
+
+fn workspace_join_published(receipt: &crate::kernel::PublicationReceipt) -> WorkspaceJoinPublished {
+    match &receipt.outcome {
+        AppendOutcome::Committed(_) => WorkspaceJoinPublished::Committed(receipt.proof.generation_id),
+        AppendOutcome::AlreadyCommitted(_) => WorkspaceJoinPublished::AlreadyCommitted(receipt.proof.generation_id),
+        AppendOutcome::Conflict { .. } => WorkspaceJoinPublished::Conflict,
+        AppendOutcome::Fenced { .. } => WorkspaceJoinPublished::Fenced,
+        AppendOutcome::IdempotencyConflict { .. } => WorkspaceJoinPublished::IdempotencyConflict,
     }
-    Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
+trait WorkspaceJoinPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
+    fn publish(
+        &mut self, objects: &O, authority: &A, request: PublishGenerationRequest,
+        intent: PublicationIntent, limits: crate::kernel::ClosureLimits,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<WorkspaceJoinPublished, FsError>> + crate::async_storage::StorageFuture;
+}
+
+struct StandaloneJoinPublication;
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> WorkspaceJoinPublication<A, O> for StandaloneJoinPublication {
+    async fn publish(
+        &mut self, objects: &O, authority: &A, request: PublishGenerationRequest,
+        intent: PublicationIntent, limits: crate::kernel::ClosureLimits,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceJoinPublished, FsError> {
+        let published = publish_generation_async_with_permit(
+            objects, authority, request, intent, limits, accounting.remaining()?, cancellation,
+        ).await;
+        let spent = match &published { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+        merge_creation_backend_work(accounting, spent)?;
+        published.map(|receipt| workspace_join_published(&receipt))
+            .map_err(|failure| failure.error.into())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeJoinPublication<'original, 'guard, F> {
+    original: &'original crate::NativeMaterializationWork,
+    before_publication: &'guard mut F,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'original, A, O, F, Fut> WorkspaceJoinPublication<A, O> for NativeJoinPublication<'original, '_, F>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+    Fut: Future<Output = Result<(), FsError>> + Send,
+{
+    async fn publish(
+        &mut self, objects: &O, authority: &A, request: PublishGenerationRequest,
+        intent: PublicationIntent, limits: crate::kernel::ClosureLimits,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceJoinPublished, FsError> {
+        let original = accounting.native_work().ok_or(FsError::MutationNotAllowed)?;
+        if !original.shares_ledger(self.original) {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+        }
+        let (receipt, allocation) = crate::kernel::publish_generation_async_guarded_with_native_work(
+            objects, authority, request, intent, limits, self.original, cancellation,
+            self.before_publication, None, None,
+        ).await?;
+        let outcome = workspace_join_published(&receipt);
+        // The kernel owns the sole preparation hook, publication hold and CAS.
+        // Destroy all returned proof/append data before its original guard.
+        drop(receipt);
+        drop(allocation);
+        Ok(outcome)
+    }
 }
 
 /// Restart-safe proof inputs for one committed workspace join. Verification
@@ -3833,6 +4000,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(root.parents)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn generation_parents_with_native_work(
+        &self, volume: &Volume<A, O>, generation: GenerationId,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(Vec<GenerationId>, crate::NativeAllocation), crate::workspace::WorkspaceError> {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let decoded = crate::kernel::read_generation_root_with_accounting(
+            &self.inner.objects,
+            ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
+            volume.config, &mut accounting, cancellation,
+        ).await?;
+        if decoded.0.volume_id != volume.id {
+            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+        }
+        let guard = match decoded.1 {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) => guard,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
+                unreachable!("original-native root retains its parent allocation"),
+        };
+        Ok((decoded.0.parents, guard))
+    }
+
     /// Creates or recovers one canonical named workspace with portable defaults.
     ///
     /// # Errors
@@ -4685,13 +4874,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
         let name_allocation = accounting.record_actual_owned(destination.retained_bytes());
+        let mut publication = MeasuredForkPublication { before_publication: guard };
         let result = match name_allocation {
             Ok((allocation, admitted)) => {
                 let destination = (destination, allocation);
                 match admitted {
                     Ok(()) => self.fork_workspace_with_accounting(
                         destination.0, source, idempotency_key, paths, permit,
-                        &mut accounting, cancellation, guard,
+                        &mut accounting, cancellation, &mut publication,
                     ).await,
                     Err(error) => Err(crate::workspace::WorkspaceError::from(error)),
                 }
@@ -4710,23 +4900,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let mut publication = MeasuredForkPublication::<
+            fn(WorkBudget) -> std::future::Ready<FsResult<()>>,
+        > { before_publication: None };
         self.fork_workspace_with_accounting(
             destination, source, idempotency_key, paths, PublicationPermit::Unrestricted,
-            &mut accounting, cancellation,
-            None::<&mut fn(WorkBudget) -> std::future::Ready<FsResult<()>>>,
+            &mut accounting, cancellation, &mut publication,
         ).await
     }
 
-    async fn fork_workspace_with_accounting<F, Fut>(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn fork_workspace_guarded_with_native_work<'original, F, Fut>(
+        &self, destination: crate::WorkspaceName, source: &crate::Generation<A, O>,
+        idempotency_key: crate::IdempotencyKey, paths: Option<Vec<String>>,
+        permit: PublicationPermit, original: &'original crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, before_publication: &mut F,
+    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError>
+    where
+        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), FsError>> + Send,
+    {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let mut publication = NativeForkPublication { original, before_publication };
+        self.fork_workspace_with_accounting(
+            destination, source, idempotency_key, paths, permit,
+            &mut accounting, cancellation, &mut publication,
+        ).await
+    }
+
+    async fn fork_workspace_with_accounting<G>(
         &self, destination: crate::WorkspaceName, source: &crate::Generation<A, O>,
         idempotency_key: crate::IdempotencyKey, paths: Option<Vec<String>>,
         permit: PublicationPermit,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken, guard: Option<&mut F>,
+        cancellation: &CancellationToken, publication: &mut G,
     ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = FsResult<()>> + Send,
+        G: ForkPublication<A>,
     {
         use crate::workspace::WorkspaceError;
         let path_bytes = paths.as_ref().map_or(Ok(0), |paths|
@@ -4779,7 +4989,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let original_root = fork_root.value.generation_root;
         let outcome = self.publish_fork_with_accounting(
-            fork, &fork_root.value, payload_bytes, permit, accounting, cancellation, guard,
+            fork, &fork_root.value, payload_bytes, permit, accounting, cancellation, publication,
         ).await?;
         match outcome {
             crate::WorkspaceForkOutcome::Committed => {}
@@ -4842,15 +5052,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(|failure| crate::workspace::WorkspaceError::from(failure.error))
     }
 
-    async fn publish_fork_with_accounting<F, Fut>(
+    async fn publish_fork_with_accounting<G>(
         &self, fork: crate::WorkspaceForkCommit, proof: &VerifiedForkSource,
         payload_bytes: u64, permit: PublicationPermit,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken, guard: Option<&mut F>,
+        cancellation: &CancellationToken, publication: &mut G,
     ) -> Result<crate::WorkspaceForkOutcome, crate::workspace::WorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = FsResult<()>> + Send,
+        G: ForkPublication<A>,
     {
         let scope = crate::PublicationScope::Closure {
             objects: &proof.closure, proven_at: proof.proven_at,
@@ -4861,9 +5070,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 scope, original, cancellation,
             ).await.map_err(FsError::from)?;
             accounting.check()?;
-            let outcome = self.inner.authority.commit_workspace_fork_with_native_work(
-                fork, original, cancellation,
-            ).await.map_err(FsError::from)?;
+            let outcome = publication.commit(
+                &self.inner.authority, fork, permit, accounting, cancellation,
+            ).await?;
             drop(drained);
             return Ok(outcome);
         }
@@ -4873,22 +5082,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let work = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
         let drained = drained.map_err(|failure| FsError::from(failure.error))?;
-        let committed = match guard {
-            Some(guard) => self.inner.authority.commit_workspace_fork_guarded(
-                fork, permit, accounting.remaining()?, cancellation, guard,
-            ).await,
-            None => self.inner.authority.commit_workspace_fork(
-                fork, accounting.remaining()?, cancellation,
-            ).await.map(|receipt| FsReceipt { value: receipt.value, work: receipt.work })
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, FsError::from)),
-        };
-        let work = match &committed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-        merge_fork_backend_work(accounting, work)?;
+        let committed = publication.commit(
+            &self.inner.authority, fork, permit, accounting, cancellation,
+        ).await;
         let mut allocation = crate::kernel::allocation::KernelOwnedAllocation::Standalone;
         accounting.release_owned(&mut allocation, payload_bytes)?;
         drop(drained);
-        committed.map(|receipt| receipt.value)
-            .map_err(|failure| crate::workspace::WorkspaceError::from(failure.error))
+        committed
     }
 
     /// The source lineage a fork's authority starts from: the published
@@ -5386,11 +5586,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(())
     }
 
-    pub(crate) async fn workspace_common_ancestor(
+    pub(crate) async fn workspace_common_ancestor_with_accounting(
         &self,
         source: &crate::Generation<A, O>,
         target: &crate::Generation<A, O>,
         maximum_generations: u32,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
         if maximum_generations == 0
             || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
@@ -5401,25 +5603,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if source.workspace.volume.config != target.workspace.volume.config {
             return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
         }
-        let cancellation = CancellationToken::new();
+        accounting.check()?;
         let (target_ancestors, target_truncated) = collect_generation_ancestors(
             &self.inner.objects,
             target.id,
             target.workspace.volume.config,
             maximum_generations,
-            &cancellation,
-        )
-        .await?;
-        find_first_generation_ancestor(
+            accounting,
+            cancellation,
+        ).await?;
+        let result = find_first_generation_ancestor(
             &self.inner.objects,
             source.id,
             source.workspace.volume.config,
             maximum_generations,
-            &target_ancestors,
+            &target_ancestors.value,
             target_truncated,
-            &cancellation,
-        )
-        .await
+            accounting,
+            cancellation,
+        ).await;
+        target_ancestors.retire(accounting)?;
+        result
     }
 
     /// Computes the immutable source-parent identity used by a true merge
@@ -5485,6 +5689,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn workspace_normalized_join_parent_with_native_work(
+        &self, source: &crate::Generation<A, O>, target: &crate::Generation<A, O>,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<GenerationId, crate::workspace::WorkspaceError> {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        accounting.check()?;
+        if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
+            || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
+            || source.workspace.volume.config != target.workspace.volume.config
+        {
+            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+        }
+        let source_root = crate::kernel::read_generation_root_with_accounting(
+            &self.inner.objects,
+            ObjectId { kind: ObjectKind::GenerationRoot, digest: source.id.digest() },
+            source.workspace.volume.config, &mut accounting, cancellation,
+        ).await?;
+        let target_root = crate::kernel::read_generation_root_with_accounting(
+            &self.inner.objects,
+            ObjectId { kind: ObjectKind::GenerationRoot, digest: target.id.digest() },
+            target.workspace.volume.config, &mut accounting, cancellation,
+        ).await?;
+        if source_root.0.volume_id != source.workspace.volume.id
+            || target_root.0.volume_id != target.workspace.volume.id
+            || source_root.0.root_file_id != target_root.0.root_file_id
+        {
+            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+        }
+        let normalized = (GenerationRoot {
+            volume_id: target.workspace.volume.id,
+            root_file_id: target_root.0.root_file_id,
+            file_table: source_root.0.file_table,
+            required_features: source_root.0.continuation_features(),
+            parents: source_root.0.parents,
+        }, source_root.1);
+        let encoded = crate::kernel::encode_generation_root_with_accounting(
+            &normalized.0, &mut accounting, cancellation,
+        )?;
+        let hashing = WorkCounters {
+            bytes_hashed: (encoded.0.len() as u64).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+                .ok_or(WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashing)?;
+        let digest = object_digest(ObjectKind::GenerationRoot, &encoded.0);
+        accounting.record_completed(hashing)?;
+        Ok(GenerationId::new(digest))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes(
         &self,
         base: GenerationId,
@@ -5527,7 +5781,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes_with_native_work(
         &self,
         base: GenerationId,
@@ -5603,10 +5857,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         workspace: &Volume<A, O>,
     ) -> Result<(GenerationId, Head), crate::workspace::WorkspaceError> {
-        let (root, head, _) = workspace
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
+        let cancellation = CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED, &cancellation,
+        );
+        self.workspace_head_state_with_accounting(workspace, &mut accounting, &cancellation).await
+    }
+
+    pub(crate) async fn workspace_head_state_with_accounting(
+        &self,
+        workspace: &Volume<A, O>,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(GenerationId, Head), crate::workspace::WorkspaceError> {
+        accounting.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let (root, head) = workspace
+                .resolve_head_generation_with_native_work(original, cancellation).await?;
+            return Ok((GenerationId::new(root.digest), head));
+        }
+        let result = workspace.resolve_head_generation(accounting.remaining()?, cancellation).await;
+        let backend = match &result {
+            Ok((_, _, work)) => *work,
+            Err(failure) => *failure.work,
+        };
+        let prior = accounting.spent();
+        accounting.record_completed(backend).map_err(|error| match error {
+            FsError::Work(WorkError::Overflow) => FsError::RootReadWorkMerge {
+                prior, backend, error: WorkError::Overflow,
+            },
+            error => error,
+        })?;
+        let (root, head, _) = result.map_err(|failure| failure.error)?;
         Ok((GenerationId::new(root.digest), head))
     }
 
@@ -5723,6 +6006,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             },
             witness.operation_context(),
         );
+        Ok(commit.fingerprint == expected)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_workspace_join_commit_with_native_work(
+        &self, target: &Volume<A, O>, witness: &JoinCommitWitness,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<bool, crate::workspace::WorkspaceError> {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        accounting.check()?;
+        if target.id != witness.target_workspace
+            || witness.maximum_generations == 0 || witness.maximum_changes == 0
+            || witness.maximum_conflicts == 0
+            || witness.source_workspace == witness.target_workspace
+            || witness.expected_target == witness.result_generation
+        {
+            return Ok(false);
+        }
+        let observed = self.inner.authority.find_operation_with_native_work(
+            volume_authority_id(target.id), witness.operation_id, original, cancellation,
+        ).await.map_err(FsError::from)?;
+        let Some(commit) = observed.0.as_ref() else { return Ok(false); };
+        let generation = generation_from_record_value_with_accounting(
+            commit, target.id, &mut accounting,
+        )?;
+        if generation.digest != witness.result_generation.digest() { return Ok(false); }
+        let hashing = WorkCounters {
+            bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64 + 3 * 16 + 4 * 32 + 1 + 3 * 4,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashing)?;
+        let context = witness.operation_context();
+        accounting.record_completed(hashing)?;
+        let expected = crate::kernel::contextual_publication_fingerprint_with_accounting(
+            PublishGenerationRequest {
+                authority_id: volume_authority_id(target.id), volume_id: target.id,
+                epoch: witness.expected_head.epoch, expected: witness.expected_head,
+                operation_id: witness.operation_id,
+                generation_root: ObjectId {
+                    kind: ObjectKind::GenerationRoot, digest: witness.result_generation.digest(),
+                },
+            }, context, &mut accounting,
+        )?;
         Ok(commit.fingerprint == expected)
     }
 
@@ -6292,29 +6618,69 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one join validates, merges, and publishes both workspace heads under a single fence"
-    )]
     pub(crate) async fn apply_workspace_join(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, crate::workspace::WorkspaceError> {
-        let resolutions_digest = hash_join_resolutions(&request.resolutions);
-        let operation_context = request.operation_context();
+        let cancellation = CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED, &cancellation,
+        );
+        let output = self.apply_workspace_join_with_accounting(
+            request, &mut accounting, &cancellation, &mut StandaloneJoinPublication,
+        ).await?;
+        Ok(output.value)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn apply_workspace_join_guarded_with_native_work<'original, F, Fut>(
+        &self,
+        request: WorkspaceJoinRequest<'_, A, O, &[(MergeConflict, MergeConflictResolution)]>,
+        original: &'original crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+        before_publication: &mut F,
+    ) -> Result<(WorkspaceJoinOutcome, crate::NativeAllocation), crate::workspace::WorkspaceError>
+    where
+        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), FsError>> + Send,
+    {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let output = self.apply_workspace_join_with_accounting(
+            request, &mut accounting, cancellation,
+            &mut NativeJoinPublication { original, before_publication },
+        ).await?;
+        match output.allocation {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
+                Ok((output.value, allocation)),
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
+                unreachable!("native join retains original output custody"),
+        }
+    }
+
+    async fn apply_workspace_join_with_accounting<R, P>(
+        &self,
+        request: WorkspaceJoinRequest<'_, A, O, R>,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+        publication: &mut P,
+    ) -> Result<crate::kernel::Owned<WorkspaceJoinOutcome>, crate::workspace::WorkspaceError>
+    where
+        R: WorkspaceJoinResolutions,
+        P: WorkspaceJoinPublication<A, O>,
+    {
+        use crate::kernel::Owned;
+        accounting.check()?;
+        let resolutions_digest = hash_join_resolutions(request.resolutions.view(), accounting)?;
+        let hashing = WorkCounters {
+            bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64 + 189,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashing)?;
+        let operation_context = request.operation_context(resolutions_digest);
+        accounting.record_completed(hashing)?;
         let WorkspaceJoinRequest {
-            target,
-            base,
-            source,
-            expected_target,
-            expected_head,
-            history,
-            operation_id,
-            permit,
-            maximum_generations,
-            maximum_changes,
-            maximum_conflicts,
-            resolutions,
+            target, base, source, expected_target, expected_head, history, operation_id,
+            permit, maximum_generations, maximum_changes, maximum_conflicts, resolutions,
         } = request;
         if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(crate::workspace::WorkspaceError::JoinLimit);
@@ -6324,183 +6690,140 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
         }
-        let cancellation = CancellationToken::new();
-        let (current_target_object, _, _) = target
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let current_target = GenerationId::new(current_target_object.digest);
-        let target_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: expected_target.digest(),
-        };
-        let base_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: base.id.digest(),
-        };
-        let source_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: source.id.digest(),
-        };
-        let (base_root, _) = read_generation_root(
-            &self.inner.objects,
-            base_object,
-            target.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        let (source_root, _) = read_generation_root(
-            &self.inner.objects,
-            source_object,
-            target.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        let (target_root, _) = read_generation_root(
-            &self.inner.objects,
-            target_object,
-            target.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        if source_root.volume_id != source.workspace.volume.id
-            || target_root.volume_id != target.id
-            || base_root.root_file_id != target_root.root_file_id
-            || source_root.root_file_id != target_root.root_file_id
-        {
-            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
-        }
-        let normalized_base = GenerationRoot {
-            volume_id: target.id,
-            root_file_id: target_root.root_file_id,
-            file_table: base_root.file_table,
-            required_features: base_root.continuation_features(),
-            parents: base_root.parents,
-        };
-        let normalized_source = GenerationRoot {
-            volume_id: target.id,
-            root_file_id: target_root.root_file_id,
-            file_table: source_root.file_table,
-            required_features: source_root.continuation_features(),
-            parents: source_root.parents,
-        };
-        let retained_root_bytes = roots_parent_bytes(&[&normalized_base, &normalized_source, &target_root])
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let (normalized_base_object, _) = self
-            .put_generation_root(
-                &normalized_base, WorkCounters::default(), WorkBudget::UNBOUNDED,
-                &cancellation, retained_root_bytes,
-            )
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let (normalized_source_object, _) = self
-            .put_generation_root(
-                &normalized_source, WorkCounters::default(), WorkBudget::UNBOUNDED,
-                &cancellation, retained_root_bytes,
-            )
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        // The source is exactly what the target already is: there is
-        // nothing to join, and a merge of a generation with itself has no
-        // second parent.
-        if normalized_source_object == target_object && current_target == expected_target {
-            return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
-        }
-        let merged = merge_generation_async(
-            &self.inner.objects,
-            MergeGenerationRequest {
-                base_generation: normalized_base_object,
-                base: normalized_base,
-                ours_generation: Some(target_object),
-                ours: target_root.clone(),
-                theirs_generation: normalized_source_object,
-                theirs: normalized_source,
+        let current_target = self.workspace_head_state_with_accounting(target, accounting, cancellation).await?.0;
+        let target_object = ObjectId { kind: ObjectKind::GenerationRoot, digest: expected_target.digest() };
+        let base_object = ObjectId { kind: ObjectKind::GenerationRoot, digest: base.id.digest() };
+        let source_object = ObjectId { kind: ObjectKind::GenerationRoot, digest: source.id.digest() };
+        let mut base_root = self.read_join_root_with_accounting(base_object, target.config, accounting, cancellation).await?;
+        let mut source_root = self.read_join_root_with_accounting(source_object, target.config, accounting, cancellation).await?;
+        let target_root = self.read_join_root_with_accounting(target_object, target.config, accounting, cancellation).await?;
+        let result = async {
+            if source_root.value.volume_id != source.workspace.volume.id
+                || target_root.value.volume_id != target.id
+                || base_root.value.root_file_id != target_root.value.root_file_id
+                || source_root.value.root_file_id != target_root.value.root_file_id
+            {
+                return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+            }
+            // Normalize scalar identity in place; each decoded parent vector keeps
+            // its existing exact capacity guard throughout the borrowed merge.
+            base_root.value.required_features = base_root.value.continuation_features();
+            base_root.value.volume_id = target.id;
+            source_root.value.required_features = source_root.value.continuation_features();
+            source_root.value.volume_id = target.id;
+            let encoded = crate::kernel::encode_generation_root_with_accounting(&base_root.value, accounting, cancellation)?;
+            let normalized_base_object = self.put_encoded_with_accounting(
+                ObjectKind::GenerationRoot, encoded, accounting, cancellation,
+            ).await?;
+            let encoded = crate::kernel::encode_generation_root_with_accounting(&source_root.value, accounting, cancellation)?;
+            let normalized_source_object = self.put_encoded_with_accounting(
+                ObjectKind::GenerationRoot, encoded, accounting, cancellation,
+            ).await?;
+            if normalized_source_object == target_object && current_target == expected_target {
+                return workspace_join_scalar(WorkspaceJoinOutcome::NoChanges(current_target), accounting);
+            }
+            let merge_request = crate::kernel::MergeGenerationBorrowedRequest {
+                base_generation: normalized_base_object, base: &base_root.value,
+                ours_generation: Some(target_object), ours: &target_root.value,
+                theirs_generation: normalized_source_object, theirs: &source_root.value,
                 retain_theirs_parent: history == crate::workspace::JoinHistory::Merge,
-                maximum_changes,
-                maximum_conflicts,
-                resolutions,
-            },
-            DecodeLimits::for_volume(target.config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        let (candidate, merged_root) = match merged.value {
-            MergeGenerationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => return Ok(WorkspaceJoinOutcome::Conflicted(conflicts, truncated)),
-            MergeGenerationOutcome::Prepared {
-                generation_root,
-                root,
-                ..
-            } => (generation_root, root),
-        };
-        if merged_root.file_table == target_root.file_table {
-            return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
-        }
-        if history == crate::workspace::JoinHistory::Merge {
-            // Normalization creates a new immutable history parent. Its file
-            // table and ancestors belong to the already published source, but
-            // this root itself may still be private local staging. The candidate
-            // closure proves its current namespace, not its historical parents;
-            // persist this new parent before publishing a reference to it.
-            self.inner
-                .objects
-                .flush_before_publish(
-                    crate::PublicationScope::Closure {
-                        objects: &[normalized_source_object],
-                        proven_at: self.inner.objects.collection_sweeps(),
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(crate::workspace::WorkspaceError::engine)?;
-        }
-        let publication = publish_generation_async_with_permit(
-            &self.inner.objects,
-            &self.inner.authority,
-            PublishGenerationRequest {
-                authority_id: volume_authority_id(target.id),
-                volume_id: target.id,
-                epoch: expected_head.epoch,
-                expected: expected_head,
-                operation_id,
-                generation_root: candidate,
-            },
-            PublicationIntent::guarded(Some(operation_context), permit),
-            closure_limits(target.config),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok(match publication.outcome {
-            AppendOutcome::Committed(_) => {
-                WorkspaceJoinOutcome::Joined(publication.proof.generation_id, resolutions_digest)
+                maximum_changes, maximum_conflicts,
+            };
+            let (merged, allocation) = match resolutions.view() {
+                WorkspaceJoinResolutionView::Map(map) =>
+                    crate::kernel::merge_generation_with_borrowed_map_resolutions_with_accounting(
+                        &self.inner.objects, &merge_request, map, DecodeLimits::for_volume(target.config),
+                        accounting, cancellation,
+                    ).await?,
+                WorkspaceJoinResolutionView::Slice(slice) =>
+                    crate::kernel::merge_generation_with_borrowed_resolutions_with_accounting(
+                        &self.inner.objects, merge_request, slice, DecodeLimits::for_volume(target.config),
+                        accounting, cancellation,
+                    ).await?,
+            };
+            let (candidate, root) = match merged {
+                MergeGenerationOutcome::Conflicted { conflicts, truncated } => {
+                    let mut conflicts = Owned::new(
+                        WorkspaceJoinOutcome::Conflicted(conflicts, truncated), allocation, 0,
+                    );
+                    if let WorkspaceJoinOutcome::Conflicted(values, _) = &conflicts.value {
+                        conflicts.bytes = workspace_join_conflict_bytes(values)?;
+                    }
+                    return Ok(conflicts);
+                }
+                MergeGenerationOutcome::Prepared { generation_root, root, .. } => {
+                    let mut root = Owned::new(root, allocation, 0);
+                    root.bytes = root_parent_bytes(&root.value)?;
+                    (generation_root, root)
+                }
+            };
+            let unchanged = root.value.file_table == target_root.value.file_table;
+            root.retire(accounting)?;
+            if unchanged {
+                return workspace_join_scalar(WorkspaceJoinOutcome::NoChanges(current_target), accounting);
             }
-            AppendOutcome::AlreadyCommitted(_) => WorkspaceJoinOutcome::AlreadyJoined(
-                publication.proof.generation_id,
-                resolutions_digest,
-            ),
-            AppendOutcome::Conflict { .. } => {
-                let (actual, _, _) = target
-                    .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(crate::workspace::WorkspaceError::engine)?;
-                WorkspaceJoinOutcome::Stale(GenerationId::new(actual.digest))
-            }
-            AppendOutcome::Fenced { .. } => WorkspaceJoinOutcome::Fenced,
-            AppendOutcome::IdempotencyConflict { .. } => WorkspaceJoinOutcome::IdempotencyConflict,
-        })
+            // This immutable normalized history parent is outside the candidate's
+            // namespace closure. Keep its actual visibility hold through the CAS.
+            let _source_hold = if history == crate::workspace::JoinHistory::Merge {
+                Some(self.flush_join_parent_with_accounting(normalized_source_object, accounting, cancellation).await?)
+            } else { None };
+            let published = publication.publish(
+                &self.inner.objects, &self.inner.authority,
+                PublishGenerationRequest {
+                    authority_id: volume_authority_id(target.id), volume_id: target.id,
+                    epoch: expected_head.epoch, expected: expected_head, operation_id,
+                    generation_root: candidate,
+                },
+                PublicationIntent::guarded(Some(operation_context), permit),
+                closure_limits(target.config), accounting, cancellation,
+            ).await?;
+            let outcome = match published {
+                WorkspaceJoinPublished::Committed(id) => WorkspaceJoinOutcome::Joined(id, resolutions_digest),
+                WorkspaceJoinPublished::AlreadyCommitted(id) => WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest),
+                WorkspaceJoinPublished::Conflict => WorkspaceJoinOutcome::Stale(
+                    self.workspace_head_state_with_accounting(target, accounting, cancellation).await?.0,
+                ),
+                WorkspaceJoinPublished::Fenced => WorkspaceJoinOutcome::Fenced,
+                WorkspaceJoinPublished::IdempotencyConflict => WorkspaceJoinOutcome::IdempotencyConflict,
+            };
+            workspace_join_scalar(outcome, accounting)
+        }.await;
+        target_root.retire(accounting)?;
+        source_root.retire(accounting)?;
+        base_root.retire(accounting)?;
+        result
+    }
+
+    async fn read_join_root_with_accounting(
+        &self, object: ObjectId, config: VolumeConfig,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::Owned<GenerationRoot>, FsError> {
+        let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+            &self.inner.objects, object, config, accounting, cancellation,
+        ).await?;
+        let mut root = crate::kernel::Owned::new(root, allocation, 0);
+        root.bytes = root_parent_bytes(&root.value)?;
+        Ok(root)
+    }
+
+
+    async fn flush_join_parent_with_accounting(
+        &self, parent: ObjectId,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, FsError> {
+        let objects = [parent];
+        let scope = crate::PublicationScope::Closure { objects: &objects, proven_at: self.inner.objects.collection_sweeps() };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            return self.inner.objects.flush_before_publish_with_native_work(scope, original, cancellation)
+                .await.map_err(Into::into);
+        }
+        let flushed = self.inner.objects.flush_before_publish(scope, accounting.remaining()?, cancellation).await;
+        let spent = match &flushed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+        merge_creation_backend_work(accounting, spent)?;
+        flushed.map(|receipt| receipt.value).map_err(|failure| failure.error.into())
     }
 
     /// Executes one active local-residency prediction through this filesystem's
@@ -18895,43 +19218,133 @@ async fn diff_generation_file_tables_with_accounting<O: AsyncObjectStore>(
     Ok((GenerationDiff { files, bindings, truncated }, allocation))
 }
 
+fn grow_lineage_vec<T: Copy>(
+    values: &mut crate::kernel::Owned<Vec<T>>,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    if values.value.len() < values.value.capacity() { return Ok(()); }
+    let next = values.value.capacity().checked_mul(2)
+        .map(|capacity| capacity.max(1)).ok_or(WorkError::Overflow)?;
+    let mut replacement = crate::kernel::Owned::<Vec<T>>::allocate(next, accounting)?;
+    let copied = WorkCounters {
+        bytes_copied: crate::foundation::usize_to_u64(
+            values.value.len().checked_mul(size_of::<T>()).ok_or(WorkError::Overflow)?,
+        ),
+        ..WorkCounters::UNCHARGED
+    };
+    if let Err(error) = accounting.admit(copied) {
+        replacement.retire(accounting)?;
+        return Err(error);
+    }
+    replacement.value.append(&mut values.value);
+    let completed = accounting.record_completed(copied);
+    let previous = std::mem::replace(values, replacement);
+    previous.retire(accounting)?;
+    completed
+}
+
+fn insert_lineage_value<T: Copy>(
+    values: &mut crate::kernel::Owned<Vec<T>>,
+    index: usize,
+    value: T,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    grow_lineage_vec(values, accounting)?;
+    let copied = WorkCounters {
+        bytes_copied: crate::foundation::usize_to_u64(
+            (values.value.len() - index + 1).checked_mul(size_of::<T>())
+                .ok_or(WorkError::Overflow)?,
+        ),
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copied)?;
+    values.value.insert(index, value);
+    accounting.record_completed(copied)
+}
+
+fn next_lineage_value<T: Copy>(
+    pending: &[T],
+    cursor: &mut usize,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<Option<T>, FsError> {
+    let Some(value) = pending.get(*cursor) else { return Ok(None); };
+    let copied = WorkCounters {
+        items_examined: 1,
+        bytes_copied: size_of::<T>() as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copied)?;
+    let value = *value;
+    *cursor += 1;
+    accounting.record_completed(copied)?;
+    Ok(Some(value))
+}
+
 async fn collect_generation_ancestors<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
     maximum_generations: u32,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(BTreeMap<GenerationId, Option<VolumeId>>, bool), crate::workspace::WorkspaceError> {
+) -> Result<(crate::kernel::Owned<Vec<(GenerationId, Option<VolumeId>)>>, bool), crate::workspace::WorkspaceError> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
-    let mut visited = BTreeMap::new();
-    let mut pending = VecDeque::from([start]);
-    while let Some(generation) = pending.pop_front() {
-        if visited.contains_key(&generation) {
-            continue;
-        }
-        if visited.len() == maximum {
-            for frontier in pending {
-                visited.entry(frontier).or_insert(None);
+    let mut visited = crate::kernel::Owned::<Vec<(GenerationId, Option<VolumeId>)>>::allocate(0, accounting)?;
+    let mut pending = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
+    let mut cursor = 0;
+    let result = async {
+        insert_lineage_value(&mut pending, 0, start, accounting)?;
+        while let Some(generation) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
+            let position = crate::kernel::binary_search_with_accounting(
+                &visited.value, accounting, |candidate| candidate.0.cmp(&generation),
+            )?;
+            let Err(position) = position else { continue; };
+            if visited.value.len() == maximum {
+                // Retain the entire unread target frontier, not just the item
+                // which crossed the read bound. Existing authenticated entries
+                // take precedence over an unexamined frontier occurrence.
+                while let Some(frontier) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
+                    if let Err(index) = crate::kernel::binary_search_with_accounting(
+                        &visited.value, accounting, |candidate| candidate.0.cmp(&frontier),
+                    )? {
+                        insert_lineage_value(&mut visited, index, (frontier, None), accounting)?;
+                    }
+                }
+                if let Err(index) = crate::kernel::binary_search_with_accounting(
+                    &visited.value, accounting, |candidate| candidate.0.cmp(&generation),
+                )? {
+                    insert_lineage_value(&mut visited, index, (generation, None), accounting)?;
+                }
+                return Ok(true);
             }
-            visited.entry(generation).or_insert(None);
-            return Ok((visited, true));
+            let decoded = crate::kernel::read_generation_root_with_accounting(
+                objects,
+                ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
+                config, accounting, cancellation,
+            ).await?;
+            let bytes = root_parent_bytes(&decoded.0)?;
+            let root = crate::kernel::Owned::new(decoded.0, decoded.1, bytes);
+            let expanded = (|| -> Result<(), FsError> {
+                insert_lineage_value(&mut visited, position, (generation, Some(root.value.volume_id)), accounting)?;
+                for parent in &root.value.parents {
+                    let index = pending.value.len();
+                    insert_lineage_value(&mut pending, index, *parent, accounting)?;
+                }
+                Ok(())
+            })();
+            root.retire(accounting)?;
+            expanded?;
         }
-        let (root, _) = read_generation_root(
-            objects,
-            ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: generation.digest(),
-            },
-            config,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        visited.insert(generation, Some(root.volume_id));
-        pending.extend(root.parents);
+        Ok::<_, crate::workspace::WorkspaceError>(false)
+    }.await;
+    pending.retire(accounting)?;
+    match result {
+        Ok(truncated) => Ok((visited, truncated)),
+        Err(error) => {
+            visited.retire(accounting)?;
+            Err(error)
+        }
     }
-    Ok((visited, false))
 }
 
 async fn find_first_generation_ancestor<O: AsyncObjectStore>(
@@ -18939,69 +19352,74 @@ async fn find_first_generation_ancestor<O: AsyncObjectStore>(
     start: GenerationId,
     config: VolumeConfig,
     maximum_generations: u32,
-    candidates: &BTreeMap<GenerationId, Option<VolumeId>>,
+    candidates: &[(GenerationId, Option<VolumeId>)],
     candidates_truncated: bool,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
-    let mut visited = BTreeSet::new();
-    let mut pending = VecDeque::from([(start, None)]);
-    while let Some((generation, baseline)) = pending.pop_front() {
-        if let Some(Some(volume_id)) = candidates.get(&generation) {
-            return Ok(baseline.unwrap_or(WorkspaceCommonAncestor {
-                id: generation,
-                volume_id: *volume_id,
-            }));
+    let mut visited = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
+    let mut pending = crate::kernel::Owned::<Vec<(GenerationId, Option<WorkspaceCommonAncestor>)>>::allocate(0, accounting)?;
+    let mut cursor = 0;
+    let result = async {
+        insert_lineage_value(&mut pending, 0, (start, None), accounting)?;
+        while let Some((generation, baseline)) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
+            let candidate = crate::kernel::binary_search_with_accounting(
+                candidates, accounting, |candidate| candidate.0.cmp(&generation),
+            )?.ok().map(|index| candidates[index].1);
+            if let Some(Some(volume_id)) = candidate {
+                return Ok(baseline.unwrap_or(WorkspaceCommonAncestor { id: generation, volume_id }));
+            }
+            let is_candidate_frontier = matches!(candidate, Some(None));
+            let position = crate::kernel::binary_search_with_accounting(
+                &visited.value, accounting, |candidate| candidate.cmp(&generation),
+            )?;
+            let Err(position) = position else { continue; };
+            if visited.value.len() == maximum {
+                return Err(crate::workspace::WorkspaceError::LineageLimit);
+            }
+            let decoded = crate::kernel::read_generation_root_with_accounting(
+                objects,
+                ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
+                config, accounting, cancellation,
+            ).await?;
+            let bytes = root_parent_bytes(&decoded.0)?;
+            let root = crate::kernel::Owned::new(decoded.0, decoded.1, bytes);
+            let expanded = (|| -> Result<Option<WorkspaceCommonAncestor>, FsError> {
+                insert_lineage_value(&mut visited, position, generation, accounting)?;
+                if is_candidate_frontier {
+                    return Ok(Some(baseline.unwrap_or(WorkspaceCommonAncestor {
+                        id: generation, volume_id: root.value.volume_id,
+                    })));
+                }
+                // A filtered fork's initial namespace is its delta baseline.
+                // Carry it on this path only; another merge parent may reach a
+                // nearer ancestor without crossing the filtered boundary.
+                let boundary = if baseline.is_none()
+                    && root.value.required_features & GenerationRoot::FILTERED_FORK != 0
+                {
+                    Some(WorkspaceCommonAncestor { id: generation, volume_id: root.value.volume_id })
+                } else {
+                    baseline
+                };
+                for parent in &root.value.parents {
+                    let index = pending.value.len();
+                    insert_lineage_value(&mut pending, index, (*parent, boundary), accounting)?;
+                }
+                Ok(None)
+            })();
+            root.retire(accounting)?;
+            if let Some(ancestor) = expanded? { return Ok(ancestor); }
         }
-        let is_candidate_frontier = matches!(candidates.get(&generation), Some(None));
-        if visited.contains(&generation) {
-            continue;
+        if candidates_truncated {
+            Err(crate::workspace::WorkspaceError::LineageLimit)
+        } else {
+            Err(crate::workspace::WorkspaceError::NoCommonAncestor)
         }
-        if visited.len() == maximum {
-            return Err(crate::workspace::WorkspaceError::LineageLimit);
-        }
-        let (root, _) = read_generation_root(
-            objects,
-            ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: generation.digest(),
-            },
-            config,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        visited.insert(generation);
-        if is_candidate_frontier {
-            return Ok(baseline.unwrap_or(WorkspaceCommonAncestor {
-                id: generation,
-                volume_id: root.volume_id,
-            }));
-        }
-        // A filtered fork's initial namespace is its delta baseline. Crossing
-        // that boundary must not reinterpret omitted parent paths as deletions.
-        // Keep it on this ancestry path only; another merge parent may reach a
-        // nearer common ancestor without crossing the filtered boundary.
-        for parent in &root.parents {
-            let boundary = if baseline.is_none()
-                && root.required_features & GenerationRoot::FILTERED_FORK != 0
-            {
-                Some(WorkspaceCommonAncestor {
-                    id: generation,
-                    volume_id: root.volume_id,
-                })
-            } else {
-                baseline
-            };
-            pending.push_back((*parent, boundary));
-        }
-    }
-    if candidates_truncated {
-        Err(crate::workspace::WorkspaceError::LineageLimit)
-    } else {
-        Err(crate::workspace::WorkspaceError::NoCommonAncestor)
-    }
+    }.await;
+    pending.retire(accounting)?;
+    visited.retire(accounting)?;
+    result
 }
 
 fn durable_head(commit: &DurableCommit) -> Head {
@@ -19577,6 +19995,92 @@ struct NativeCreationPayload {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsRef<[u8]> for NativeCreationPayload {
     fn as_ref(&self) -> &[u8] { &self.bytes }
+}
+
+trait ForkPublication<A: AsyncAuthorityStore>: Send {
+    fn commit(
+        &mut self,
+        authority: &A,
+        fork: crate::WorkspaceForkCommit,
+        permit: PublicationPermit,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<crate::WorkspaceForkOutcome, crate::workspace::WorkspaceError>>
+        + crate::async_storage::StorageFuture;
+}
+
+struct MeasuredForkPublication<'a, F> {
+    before_publication: Option<&'a mut F>,
+}
+
+impl<A, F, Fut> ForkPublication<A> for MeasuredForkPublication<'_, F>
+where
+    A: AsyncAuthorityStore,
+    F: FnMut(WorkBudget) -> Fut + Send,
+    Fut: Future<Output = FsResult<()>> + Send,
+{
+    async fn commit(
+        &mut self,
+        authority: &A,
+        fork: crate::WorkspaceForkCommit,
+        permit: PublicationPermit,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::WorkspaceForkOutcome, crate::workspace::WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            if self.before_publication.is_some() || permit != PublicationPermit::Unrestricted {
+                return Err(FsError::MutationNotAllowed.into());
+            }
+            return authority.commit_workspace_fork_with_native_work(
+                fork, original, cancellation,
+            ).await.map_err(|error| FsError::from(error).into());
+        }
+        let committed = match self.before_publication.as_deref_mut() {
+            Some(guard) => authority.commit_workspace_fork_guarded(
+                fork, permit, accounting.remaining()?, cancellation, guard,
+            ).await,
+            None => authority.commit_workspace_fork(
+                fork, accounting.remaining()?, cancellation,
+            ).await.map(|receipt| FsReceipt { value: receipt.value, work: receipt.work })
+                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, FsError::from)),
+        };
+        let work = match &committed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+        merge_fork_backend_work(accounting, work)?;
+        committed.map(|receipt| receipt.value)
+            .map_err(|failure| crate::workspace::WorkspaceError::from(failure.error))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeForkPublication<'original, 'guard, F> {
+    original: &'original crate::NativeMaterializationWork,
+    before_publication: &'guard mut F,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'original, A, F, Fut> ForkPublication<A> for NativeForkPublication<'original, '_, F>
+where
+    A: AsyncAuthorityStore,
+    F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+    Fut: Future<Output = Result<(), FsError>> + Send,
+{
+    async fn commit(
+        &mut self,
+        authority: &A,
+        fork: crate::WorkspaceForkCommit,
+        permit: PublicationPermit,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::WorkspaceForkOutcome, crate::workspace::WorkspaceError> {
+        let original = accounting.native_work().ok_or(FsError::MutationNotAllowed)?;
+        if !original.shares_ledger(self.original) {
+            return Err(FsError::from(crate::NativeTreeMaterializationError::InvalidLayout).into());
+        }
+        authority.commit_workspace_fork_guarded_with_native_work(
+            fork, permit, self.original, cancellation, self.before_publication,
+        ).await.map_err(crate::workspace::WorkspaceError::from)
+    }
 }
 
 fn merge_fork_backend_work(

@@ -2358,6 +2358,59 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             .await?
             .is_empty()
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+        let (native_changes, diff_guard) = before.diff_to_with_native_work(&after, 64, &original, &cancellation)
+            .await.map_err(|(error, _)| error)?;
+        let retained_diff = original.live_allocation_bytes();
+        let (native_paths, path_guard) = native_changes.changed_paths_with_native_work(64, &original, &cancellation)
+            .await.map_err(|(error, _)| error)?;
+        assert_eq!(native_paths, paths);
+        let rename_before = native_paths.iter().find(|change|
+            super::namespace_path_text(&change.path).is_ok_and(|path| path == "/rename"))
+            .and_then(|change| change.before).ok_or("missing rename before")?;
+        let rename_after = native_paths.iter().find(|change|
+            super::namespace_path_text(&change.path).is_ok_and(|path| path == "/renamed"))
+            .and_then(|change| change.after).ok_or("missing rename after")?;
+        assert_eq!(rename_before.file_id, rename_after.file_id);
+        let link = native_paths.iter().find(|change|
+            super::namespace_path_text(&change.path).is_ok_and(|path| path == "/nested/link"))
+            .and_then(|change| change.after).ok_or("missing hardlink after")?;
+        assert_eq!(link.file_id, after.stat("/linked").await?.file_id);
+        drop(native_paths);
+        drop(path_guard);
+        assert_eq!(original.live_allocation_bytes(), retained_diff);
+        let failure = match native_changes.changed_paths_with_native_work(1, &original, &cancellation).await {
+            Err(failure) => failure,
+            Ok(_) => return Err("native path bound unexpectedly succeeded".into()),
+        };
+        assert!(matches!(failure.0, WorkspaceError::ChangedPathLimit));
+        drop(failure);
+        assert_eq!(original.live_allocation_bytes(), retained_diff);
+        drop(native_changes);
+        drop(diff_guard);
+        assert_eq!(original.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+
+        for deny_copy in [false, true] {
+            let mut budget = selected_transaction_budget();
+            if deny_copy { budget.bytes_copied = 0; } else { budget.items_examined = 0; }
+            let denied = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let receipt = denied.receipt();
+            let baseline = denied.live_allocation_bytes();
+            let failure = match exact.changed_paths_with_native_work(64, &denied, &cancellation).await {
+                Err(failure) => failure,
+                Ok(_) => return Err("native path admission unexpectedly succeeded".into()),
+            };
+            assert_eq!(denied.receipt().page_reads, receipt.page_reads);
+            assert_eq!(denied.receipt().bytes_copied, receipt.bytes_copied);
+            drop(failure);
+            assert_eq!(denied.live_allocation_bytes(), baseline);
+        }
+    }
     Ok(())
 }
 
@@ -4638,6 +4691,154 @@ async fn measured_reservation_query_is_existing_only_and_preserves_original_proo
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_permanent_pin_consumes_the_original_shared_publication_custody()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-permanent-original-pin").await?;
+    let committed = match workspace.write("/value", Bytes::from_static(b"original")).await? {
+        TransactionCommit::Committed(generation) => generation,
+        _ => return Err("the original publication did not commit".into()),
+    };
+    let clone = committed.clone();
+    assert!(committed.publication_retained_bytes() != 0);
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let pinned = committed.pin_with_native_work("original-label", &original, &cancellation)
+        .await.map_err(|(error, _)| error)?;
+    assert_eq!(pinned.generation().id(), committed.id());
+    assert_eq!(pinned.identity().as_str(), "original-label");
+    assert_eq!(committed.publication_retained_bytes(), 0);
+    assert_eq!(clone.publication_retained_bytes(), 0);
+    let repeated = clone.pin_with_native_work("original-label", &original, &cancellation)
+        .await.map_err(|(error, _)| error)?;
+    assert_eq!(repeated.generation().id(), pinned.generation().id());
+    assert_eq!(repeated.identity(), pinned.identity());
+    let ordinary = committed.pin("original-label").await?;
+    assert_eq!(ordinary.generation().id(), pinned.generation().id());
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_public_transaction_cancellation_keeps_the_original_work_prefix()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-public-cancelled-transaction").await?;
+    let root = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &root,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let caller = CancellationToken::new();
+    caller.cancel();
+    let failure = workspace.begin_transaction_with_native_work(
+        IdempotencyKey::new(), &original, &caller,
+    ).await.err().ok_or("cancelled native transaction unexpectedly opened")?;
+    assert!(workspace_bounded_error(&failure.0).is_some());
+    assert_eq!(original.receipt(), before);
+    assert!(failure.1.is_none());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_whole_file_read_rejects_a_prefix_bound_on_the_exact_generation()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-original-whole-file-read").await?;
+    let committed = match workspace.write("/value", Bytes::from_static(b"complete")).await? {
+        TransactionCommit::Committed(generation) => generation,
+        _ => return Err("the original publication did not commit".into()),
+    };
+    let retained = committed.publication_retained_bytes();
+    let _ = workspace.write("/value", Bytes::from_static(b"changed-current-head")).await?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let failure = committed.read_with_native_work(
+        "/value", 7, &original, &cancellation,
+    ).await.err().ok_or("a smaller bound unexpectedly authorized a file prefix")?;
+    assert!(matches!(failure.0, WorkspaceError::ReadLimitExceeded));
+    assert!(failure.1.is_none());
+    assert_ne!(original.receipt(), before);
+    let bytes = committed.read_with_native_work(
+        "/value", 8, &original, &cancellation,
+    ).await.map_err(|(error, _)| error)?;
+    assert_eq!(bytes, Bytes::from_static(b"complete"));
+    assert_eq!(committed.publication_retained_bytes(), retained);
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_public_fork_retains_the_original_selected_generation_and_operation()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-selected-original-parent").await?;
+    workspace.write("/selected", Bytes::from_static(b"original")).await?;
+    let frozen = match workspace.write("/unselected", Bytes::from_static(b"private")).await? {
+        TransactionCommit::Committed(generation) => generation,
+        _ => return Err("the original publication did not commit".into()),
+    };
+    workspace.write("/selected", Bytes::from_static(b"advanced-parent")).await?;
+    let key = IdempotencyKey::new();
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let forked = workspace.fork_with_native_work(
+        "native-selected-original-child",
+        ForkOptions::from_generation(frozen.clone(), key)
+            .inherit_paths(vec!["/selected".to_owned()]),
+        &original, &cancellation,
+    ).await.map_err(|(error, _)| error)?;
+    assert_eq!(forked.read("/selected", 8).await?, Bytes::from_static(b"original"));
+    assert!(matches!(forked.read("/unselected", 8).await, Err(WorkspaceError::NotFound)));
+    forked.write("/selected", Bytes::from_static(b"advanced-child")).await?;
+    workspace.write("/selected", Bytes::from_static(b"another-parent-head")).await?;
+    let retried = workspace.fork_with_native_work(
+        "native-selected-original-child",
+        ForkOptions::from_generation(frozen, key)
+            .inherit_paths(vec!["/selected".to_owned()]),
+        &original, &cancellation,
+    ).await.map_err(|(error, _)| error)?;
+    assert_eq!(retried.id(), forked.id());
+    assert_eq!(retried.read("/selected", 14).await?, Bytes::from_static(b"advanced-child"));
+    assert_eq!(original.receipt().authority_records_appended, 2);
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[test]
+fn ordinary_workspace_merge_overflow_retains_both_observed_operands() {
+    let prior = crate::WorkCounters { bytes_hashed: u64::MAX, ..crate::WorkCounters::UNCHARGED };
+    let backend = crate::WorkCounters { bytes_hashed: 1, ..crate::WorkCounters::UNCHARGED };
+    let results: [crate::MeasuredResult<crate::OperationReceipt<()>, WorkspaceError>; 2] = [
+        Ok(crate::OperationReceipt { value: (), work: backend }),
+        Err(crate::OperationFailure::new(WorkspaceError::NotFound, backend)),
+    ];
+    for result in results {
+        let mut work = prior;
+        let error = merge_workspace_backend(result, &mut work, 0)
+            .expect_err("the arithmetic control must overflow");
+        assert_eq!(work, prior);
+        assert!(matches!(workspace_bounded_error(&error),
+            Some(WorkspaceError::WorkMerge { prior: retained, backend: actual, error: crate::WorkError::Overflow })
+                if retained == prior && actual == backend));
+        assert!(matches!(error,
+            WorkspaceError::WorkMerge { prior: retained, backend: actual, error: crate::WorkError::Overflow }
+                if retained == prior && actual == backend));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_workspace_name_aliases_keep_exact_original_spelling_custody()
 -> Result<(), Box<dyn Error>> {
@@ -4843,4 +5044,117 @@ fn root_read_merge_overflow_keeps_both_exact_prefixes_in_workspace_errors() {
             other => panic!("exact completed prefixes were lost: {other}"),
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_authority()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-guarded-fork-source").await?;
+    workspace.write("/selected", Bytes::from_static(b"original")).await?;
+    let frozen = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut seals = 0;
+    let mut deny = |observed: &crate::NativeMaterializationWork| {
+        assert!(observed.shares_ledger(&original));
+        seals += 1;
+        std::future::ready(Err(crate::FsError::MutationNotAllowed))
+    };
+    let failure = workspace.fork_with_permit_guarded_with_native_work(
+        "native-guarded-fork-denied", ForkOptions::from_generation(frozen, IdempotencyKey::new())
+            .inherit_paths(vec!["/selected".to_owned()]),
+        crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut deny,
+    ).await.err().ok_or("the original owner denial unexpectedly published a destination")?;
+    assert!(matches!(failure.0, WorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
+    assert!(seals > 0);
+    assert!(original.receipt().bytes_hashed > before.bytes_hashed);
+    assert!(fs.open_workspace("native-guarded-fork-denied").await.is_err());
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_selected_restore_honors_the_real_retained_authority_reservation()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-selected-reservation").await?;
+    workspace.write("/selected", Bytes::from_static(b"frozen")).await?;
+    let frozen = workspace.head().await?;
+    workspace.write("/selected", Bytes::from_static(b"current")).await?;
+    let current = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let reservation = workspace.reserve_publication_with_native_work(
+        IdempotencyKey::new().operation_id(), &original, &cancellation,
+    ).await.map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let key = IdempotencyKey::new();
+    let paths = vec!["/selected".to_owned()];
+    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok(()));
+    let denied = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
+        &frozen, &paths, current.id(), key, crate::PublicationPermit::Unrestricted,
+        &original, &cancellation, &mut allow,
+    ).await;
+    assert!(!matches!(denied, Ok(TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_))));
+    assert_eq!(workspace.head().await?.id(), current.id());
+    assert_eq!(workspace.read("/selected", 7).await?, Bytes::from_static(b"current"));
+    assert_eq!(original.receipt().authority_records_appended, before.authority_records_appended);
+    let permit = crate::PublicationPermit::Reservation {
+        operation_id: reservation.operation_id.into_bytes(),
+        gate_tail: reservation.gate_tail,
+        expected: reservation.expected,
+    };
+    let restored = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
+        &frozen, &paths, current.id(), key, permit, &original, &cancellation, &mut allow,
+    ).await.map_err(|(error, _)| error)?;
+    assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
+    assert_eq!(workspace.read("/selected", 6).await?, Bytes::from_static(b"frozen"));
+    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
+        .await.map_err(|(error, _)| error)?;
+    original.receipt().verify(selected_transaction_budget())?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_rebinding_it()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("native-fork-reserved-source").await?;
+    workspace.write("/value", Bytes::from_static(b"frozen")).await?;
+    let frozen = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        selected_transaction_budget(), &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let reservation = workspace.reserve_publication_with_native_work(
+        IdempotencyKey::new().operation_id(), &original, &cancellation,
+    ).await.map_err(|(error, _)| error)?;
+    let before = original.receipt().authority_records_appended;
+    let permit = crate::PublicationPermit::Reservation {
+        operation_id: reservation.operation_id.into_bytes(),
+        gate_tail: reservation.gate_tail,
+        expected: reservation.expected,
+    };
+    let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok(()));
+    let failed = workspace.fork_with_permit_guarded_with_native_work(
+        "native-fork-reserved-destination", ForkOptions::from_generation(frozen, IdempotencyKey::new()),
+        permit, &original, &cancellation, &mut allow,
+    ).await.err().ok_or("a source reservation was incorrectly rebound to a new destination")?;
+    assert!(matches!(failed.0,
+        WorkspaceError::Filesystem(crate::FsError::Authority(
+            crate::AuthorityStoreError::RejectedStatic(_)))));
+    assert_eq!(original.receipt().authority_records_appended, before);
+    assert!(fs.open_workspace("native-fork-reserved-destination").await.is_err());
+    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
+        .await.map_err(|(error, _)| error)?;
+    Ok(())
 }
