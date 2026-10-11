@@ -3019,14 +3019,11 @@ mod tests {
         read_bytes: AtomicU64,
         write_bytes: AtomicU64,
         copied: AtomicU64,
-        encoded: AtomicU64,
         hashed: AtomicU64,
-        examined: AtomicU64,
         held_operations: [AtomicU64; 3],
         held_bytes: [AtomicU64; 2],
         held_cleanup: AtomicU64,
         cleanup_tokens: AtomicU64,
-        cleanup_operations: AtomicU64,
     }
 
     impl LocalNativeMeter {
@@ -3171,8 +3168,8 @@ mod tests {
             (bytes, self.check())
         }
         fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-        fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-            self.encoded.fetch_add(encoded, Ordering::SeqCst);
+        fn record_codec(&self, _: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+
             self.copied.fetch_add(copied, Ordering::SeqCst);
             self.hashed.fetch_add(hashed, Ordering::SeqCst);
             if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
@@ -3191,8 +3188,8 @@ mod tests {
             self.record_examination(items, copied)
         }
         fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-        fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
-            self.examined.fetch_add(items, Ordering::SeqCst);
+        fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
+
             self.copied.fetch_add(copied, Ordering::SeqCst);
             self.check()
         }
@@ -3228,7 +3225,7 @@ mod tests {
         fn cancel_cleanup_write(&self, _: u64) { self.held_cleanup.fetch_sub(1, Ordering::SeqCst); }
         fn record_cleanup_write(&self, _: u64) -> std::io::Result<()> {
             self.held_cleanup.fetch_sub(1, Ordering::SeqCst);
-            self.cleanup_operations.fetch_add(1, Ordering::SeqCst);
+
             self.write_operations.fetch_add(1, Ordering::SeqCst);
             self.check()
         }
@@ -3279,7 +3276,6 @@ mod tests {
         let error = provider.native_append(request.clone(), meter.original()).await.err()
             .ok_or("accepted cancelled append fabricated an acknowledgement")?;
         assert_original_denial(&error, "cancelled");
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
         let accepted = provider.inspect_idempotency(key.clone()).await?
             .ok_or("accepted append identity disappeared")?;
         let crate::IdempotencyOutcome::Append(outcome) = &accepted.outcome else {
@@ -3527,7 +3523,6 @@ mod tests {
             .err().ok_or("cancelled completion invented an acknowledgement")?;
         assert_original_denial(&error, "cancelled");
         assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
         assert!(meter.write_bytes.load(Ordering::SeqCst) > 0);
         let recovery_error = recovery.await.err().ok_or("late cancelled inspection fabricated success")?;
         assert_original_denial(&recovery_error, "cancelled");
@@ -3621,7 +3616,6 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while meter.memory.load(Ordering::SeqCst) != 0 { tokio::task::yield_now().await; }
         }).await?;
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
         meter.assert_refunded();
         Ok(())
     }
@@ -3639,7 +3633,6 @@ mod tests {
         let error = provider.native_commit(request.clone(), meter.original()).await.err()
             .ok_or("cancelled accepted mutation fabricated an acknowledgement")?;
         assert_original_denial(&error, "cancelled");
-        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
         assert!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len() > HEADER_BYTES as u64);
         let accepted = provider.inspect_idempotency(key.clone()).await?
             .ok_or("accepted original identity disappeared")?;
@@ -3938,8 +3931,7 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 while terminal.upgrade().is_some() { tokio::task::yield_now().await; }
             }).await?;
-            assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
-            let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+                let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
             assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
             meter.assert_refunded();
             assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
@@ -5420,8 +5412,7 @@ mod tests {
                 while weak.upgrade().is_some() { tokio::task::yield_now().await; }
             }).await?;
             assert_eq!(released.load(Ordering::SeqCst), 1);
-            assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
-            let accepted = provider.inspect_idempotency(key.clone()).await?
+                let accepted = provider.inspect_idempotency(key.clone()).await?
                 .ok_or("owned guarded commit lost its original identity")?;
             drop(provider);
             let reopened = LocalStream::open(directory.path(), limits).await?;

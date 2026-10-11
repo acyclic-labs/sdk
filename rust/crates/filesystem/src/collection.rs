@@ -923,11 +923,11 @@ mod tests {
         let workspace = fs.create_workspace("registered-collection-root-custody").await?;
         workspace.write_text("/seed", "body").await?;
         let checkout = workspace.checkout_measured(
-            crate::GenerationSelector::Head,
-            crate::CheckoutMode {
-                access: crate::AccessMode::ReadWrite,
-                consistency: crate::ConsistencyMode::Pinned,
-                mutations: crate::MutationMode::PrivateOverlay,
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode {
+                access: crate::model::AccessMode::ReadWrite,
+                consistency: crate::model::ConsistencyMode::Pinned,
+                mutations: crate::model::MutationMode::PrivateOverlay,
             },
             WorkBudget::UNBOUNDED, &cancellation,
         ).await?.value;

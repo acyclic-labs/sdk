@@ -426,7 +426,8 @@ impl MemoryObjects {
         staged.defer_local = true;
         let mut input = requests.into_iter();
         let mut results = Vec::with_capacity(input.len());
-        while let Some(count) = put_group_sizes(input.as_slice()).next() {
+        loop {
+            let Some(count) = put_group_sizes(input.as_slice()).next() else { break; };
             let mut next = state.clone();
             let start = results.len();
             for (query, body) in input.by_ref().take(count) {

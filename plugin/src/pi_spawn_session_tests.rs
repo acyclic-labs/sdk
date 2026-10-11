@@ -116,9 +116,10 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert_eq!(observed.snapshot, plan.frozen);
     let source_owned = source_work.live_allocation_bytes();
     assert!(source_owned > source_baseline);
-    fixture.coordinator().admit_preparation(&fixture.context, &fixture.journal,
-        fixture.fence.clone(), &plan).await.unwrap();
     let catalog_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(fixture.runtime.clone(),
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &catalog_work).unwrap();
+    coordinator.admit_preparation(&fixture.context, &fixture.journal, &fixture.fence, &plan).await.unwrap();
     let native = session.native_host_with_native_work(&catalog_work).unwrap();
     let catalog_host = pi_fork_host::PiForkHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &session.state, &session.roots,
@@ -143,8 +144,8 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert!(fork_request.selections.iter().any(|selection| matches!(&selection.revision,
         acyclic_harness::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
             if volume == &plan.source.private_volume && paths.is_empty())));
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
-        &plan, fixture.source.clone(), pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
+    let prepared = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
+        &plan, fixture.source.clone(), catalog_work.remaining().unwrap(), catalog_work.cancellation().clone()).await.unwrap().unwrap();
     let results = prepared.binding.results.as_ref().unwrap();
     let PiScratchAllocation::Created(result_creation) = &results.allocation else { panic!("actual third creator"); };
     let PiScratchAllocation::Created(scratch_creation) = &prepared.binding.scratch.allocation else { panic!("actual scratch creator"); };

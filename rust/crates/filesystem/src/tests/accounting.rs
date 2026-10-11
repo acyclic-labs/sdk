@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use crate::accounting::{
     AccountingCursor, AccountingError, AccountingOperationClass, AccountingTransition,
     accounting_page,
@@ -487,7 +488,7 @@ struct OriginalArchive {
 
 impl crate::AsyncObjectStore for OriginalArchive {
     async fn put(
-        &self, object_id: ObjectId, bytes: bytes::Bytes, budget: WorkBudget,
+        &self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<()> {
         crate::AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await

@@ -639,7 +639,7 @@ fn transfer_custody<T>(
     Ok(())
 }
 
-fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
+pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
@@ -659,7 +659,6 @@ fn checked_quota(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))
 }
-
 
 fn binding_metadata_quota(binding: &PiTaskBinding) -> Result<u64> {
     let mut bytes = checked_quota(4096, binding.native_session_id.len() as u64)?;

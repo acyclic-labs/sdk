@@ -149,45 +149,62 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     use acyclic_harness::{filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
         distributed::Worker, scheduler::{LeaseFence, ResourceSnapshot}};
     let fixture = Fixture::new().await;
-    let plan = fixture.plan().await;
-    let child = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
-        &plan, fixture.source.clone(), pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
+    let work = work();
+    let plan = fixture.plan_with_native_work(&work).await;
+    let coordinator = crate::pi_fork::PiForkCoordinator::new_with_native_work(
+        fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
+        &fixture.resources, fixture.owner.clone(), &work).unwrap();
+    let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
+        &plan, fixture.source.clone(), work.remaining().unwrap(), work.cancellation().clone())
         .await.unwrap().unwrap();
     let worker = Worker { id: "operator-private-child".into(), available: ResourceSnapshot::default(),
         labels: Default::default() };
-    let attempt = fixture.runtime.runtime.run_operation(&worker, child.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1).await.unwrap().unwrap();
-    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
+    let attempt_custody;
+    let attempt;
+    (attempt, attempt_custody) = fixture.runtime.runtime.run_operation_with_native_work(&worker,
+        child.binding.task_id, &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt else {
         panic!("actual admitted child command lease");
     };
-    let child_context = fixture.runtime.runtime.task_context(child.binding.task_id,
-        LeaseFence::from(&lease.reservation)).await.unwrap();
+    let child_fence = LeaseFence::from(&lease.reservation);
+    let child_context = fixture.runtime.runtime.task_context_with_native_work(
+        child.binding.task_id, &child_fence, &work).await.unwrap();
     let session = &fixture.root_request.binding.native_session_id;
-    let work = work();
     let request_custody;
     let request;
     (request, request_custody) = build_control_request(&fixture.owner, std::env::current_dir().unwrap(),
         PiOperatorBody::Inspect { session: session.clone(), operation: "original-operator-inspection".into(),
             project_files: false, file_evidence: None }, &work).unwrap();
-    let parsed_custody;
+    let mut parsed_custody;
     let parsed_request;
     (parsed_request, parsed_custody) = PiOperatorRequest::from_value_with_native_work(&request.arguments, &work).unwrap();
     assert!(parsed_custody.shares_ledger(&request_custody));
     drop(request);
     drop(request_custody);
     let mut request = parsed_request;
-    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(fixture.owner.policy().root_task,
-        fixture.owner.policy().root_task, request.body.operation()), "selected-writeback-publish");
-    let private = accept(&work, pi_root_provider::stage_pi_operator_input(&fixture.owner, &fixture.filesystem,
-        operation, "operator-proof-isolation", &request, work.remaining().unwrap(), work.cancellation()).await).unwrap();
+    let original = crate::pi_fork::original_operation_with_native_work(fixture.owner.policy().root_task,
+        fixture.owner.policy().root_task, request.body.operation(), &work).unwrap();
+    let operation = crate::pi_fork::derived_with_native_work(original, "selected-writeback-publish", &work).unwrap();
+    let private_custody;
+    let private;
+    (private, private_custody) = pi_root_provider::stage_pi_operator_input_with_native_work(
+        &fixture.owner, &fixture.filesystem, operation, "operator-proof-isolation", &request, &work).await.unwrap();
     assert!(private.path().starts_with(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY));
-    assert!(!child_context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(
+    assert!(!child_context.context().scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(
         crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY).unwrap()));
-    assert!(matches!(child_context.read_file(&private).await, Err(Error::Unauthorized(_))));
-    request.operator = pi_caller::issue(&fixture.owner, session, &child.binding).unwrap();
+    assert!(matches!(child_context.context().read_file(&private).await, Err(Error::Unauthorized(_))));
+    let (caller, caller_custody) = pi_caller::issue_with_work(&fixture.owner, session, &child.binding, &work).unwrap();
+    request.operator = caller;
+    parsed_custody.absorb(caller_custody).unwrap();
     assert!(verify_request(&fixture.owner, session, &request, &work).is_err());
+    drop(private);
+    drop(private_custody);
     drop(request);
     drop(parsed_custody);
+    drop(child_context);
+    drop(child_fence);
+    drop(lease);
+    drop(attempt_custody);
 }
 
 #[tokio::test]

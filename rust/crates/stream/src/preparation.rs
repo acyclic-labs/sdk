@@ -1,4 +1,5 @@
-//! Canonical mutation facts prepared against one authority's pre-commit observations.
+//! Canonical mutation facts prepared against pre-commit observations.
+
 use std::collections::BTreeMap;
 
 use crate::OwnedBytes;

@@ -44,6 +44,58 @@ async fn original_native_actor(
     (context, owner)
 }
 
+#[tokio::test]
+async fn issued_task_context_alone_cannot_bypass_the_accepted_tool_callback() {
+    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    let (context, _owner) = original_native_actor(&fixture, &work).await;
+    let operation = OperationId::from_bytes([41; 16]);
+    let tool = acyclic_harness::runtime::ToolContext::new_with_native_work(
+        context, operation, "unaccepted-original-tool-call", &work).unwrap();
+    // An issued owner/context and genuine ledger are not an accepted ToolStarted
+    // record. Neither a metadata loan nor an actual IO action may bypass it.
+    assert!(tool.native_working_manifest_with_native_work(&work).is_err());
+    assert!(tool.read_working_file_with_native_work(Path::new("project/file"), 32, &work).await.is_err());
+    assert!(tool.write_working_file_with_native_work(
+        Path::new("scratch/file"), "forbidden", true, None, &work).await.is_err());
+}
+
+#[tokio::test]
+async fn builtin_arguments_cannot_substitute_the_original_sdk_invocation_actor() {
+    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    let (context, _owner) = original_native_actor(&fixture, &work).await;
+    let operation = OperationId::from_bytes([42; 16]);
+    let tool = acyclic_harness::runtime::ToolContext::new_with_native_work(
+        context, operation, "original-call", &work).unwrap();
+    let mut input = request(PiBuiltinIo::Read { maximum_bytes: 32, variants: vec![] });
+    input.caller = fixture.owner.policy().root_task;
+    let value = crate::pi_root_provider::guarded_pi_value(&input, MAXIMUM_BUILTIN_BYTES * 2, &work).unwrap();
+    let _value_custody = value.1;
+    let mut invocation = acyclic_harness::tool::ToolInvocation {
+        operation_id: operation, call_id: "original-call".into(),
+        name: PI_BUILTIN_COMMAND_KIND.into(), arguments: value.0,
+    };
+    assert!(decoded_tool_request(&tool, &invocation, &work).is_ok());
+    let executor = builtin_tool_executor_with_native_work(&work).unwrap();
+    executor.authorize_with_native_context(&tool, &invocation, &work).unwrap();
+    assert!(executor.execute_with_native_context(&tool, &invocation, &work).unwrap().await.is_err());
+    assert!(executor.reconcile_with_native_context(&tool, &invocation, &work).unwrap().await.is_err());
+    invocation.operation_id = OperationId::from_bytes([43; 16]);
+    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+    invocation.operation_id = operation;
+    invocation.call_id = "other-call".into();
+    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+    invocation.call_id = "original-call".into();
+    input.caller = TaskId::from_bytes([44; 16]);
+    let value = crate::pi_root_provider::guarded_pi_value(&input, MAXIMUM_BUILTIN_BYTES * 2, &work).unwrap();
+    let _other_value_custody = value.1;
+    invocation.arguments = value.0;
+    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+}
+
 #[test]
 fn original_builtin_operation_binds_caller_tool_and_phase() {
     let root = TaskId::from_bytes([2; 16]);
@@ -122,8 +174,10 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
     authorize_owner(context.context(), &owner, owner.task_id(), &work).await.unwrap();
     assert!(authorize_owner(context.context(), &owner, TaskId::from_bytes([41; 16]), &work).await.is_err());
     let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
-    authorize_volume(&owner, project, true,
-        &PiBuiltinIo::Write { content: "real owner WRITE required".into() }, &work).unwrap();
+    for operation in [acyclic_harness::conversation::VolumeOperation::Read,
+        acyclic_harness::conversation::VolumeOperation::Write] {
+        owner.require_volume_grant_with_native_work(project, operation, &work).unwrap();
+    }
     // Even a genuine Root WRITE grant is reserved for the existing operator
     // publication engine, never an ambient model builtin mutation.
     for io in [PiBuiltinIo::Write { content: "no physical Root write".into() },
@@ -133,12 +187,23 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         original_root.caller = owner.task_id();
         assert!(original_root.require_root_source_read(owner.task_id()).is_err());
     }
-    assert!(authorize_volume(&owner, project, false,
-        &PiBuiltinIo::EditRead { maximum_bytes: 16 }, &work).is_err());
+    let readonly = acyclic_harness::filesystem::NativeVolumeMapping {
+        volume: project.clone(), generation: fixture.root_allocation.scratch.generation.clone(),
+        namespace: acyclic_harness::filesystem::NativeVolumeNamespace::MaterializedDirectory,
+        path: fixture.resources.data.join("readonly-project"), writable: false, authority_revision: [1; 32],
+    };
+    require_builtin_mapping_access(&readonly, &PiBuiltinIo::Read { maximum_bytes: 16, variants: vec![] }).unwrap();
+    for io in [PiBuiltinIo::Write { content: "requires original WRITE".into() },
+        PiBuiltinIo::EditRead { maximum_bytes: 16 },
+        PiBuiltinIo::EditWrite { content: "requires original WRITE".into(), expected_sha256: "00".repeat(32) }] {
+        assert!(require_builtin_mapping_access(&readonly, &io).is_err());
+    }
     let unrelated = VolumeRef::new(project.provider().clone(), "outside-project", VolumeClass::Project,
         VolumeOwner::Project("outside".into())).unwrap();
-    assert!(authorize_volume(&owner, &unrelated, true,
-        &PiBuiltinIo::Read { maximum_bytes: 16, variants: vec![] }, &work).is_err());
+    for operation in [acyclic_harness::conversation::VolumeOperation::Read,
+        acyclic_harness::conversation::VolumeOperation::Write] {
+        assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
+    }
     cancellation.cancel();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
 }
@@ -251,10 +316,16 @@ async fn failed_whole_file_checks_spend_the_original_quota_without_reading_paylo
 async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volume() {
     use acyclic_harness::filesystem::{NativeViewManifest, NativeViewOptions, NativeVolumeMapping, NativeVolumeNamespace};
     let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let plan = fixture.plan().await;
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
-        CancellationToken::new()).await.unwrap().unwrap();
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    let (context, owner) = original_native_actor(&fixture, &work).await;
+    let plan = fixture.plan_with_native_work(&work).await;
+    let coordinator = crate::pi_fork::PiForkCoordinator::new_with_native_work(
+        fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
+        &fixture.resources, fixture.owner.clone(), &work).unwrap();
+    let prepared = fixture.advance_with(&coordinator, context.context(), &owner, &fixture.fence,
+        &plan, fixture.source.clone(), work.remaining().unwrap(),
+        cancellation).await.unwrap().unwrap();
     let binding = &prepared.binding;
     let temporary = tempfile::tempdir().unwrap();
     let generation = fixture.root_allocation.scratch.generation.clone();

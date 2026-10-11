@@ -296,7 +296,7 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint: Digest::from_bytes([0x43; 32]),
-        payload: Bytes::from_static(b"payload"),
+        payload: bytes::Bytes::from_static(b"payload"),
     };
     let appended = poll_ready(AsyncAuthorityStore::compare_and_append(
         &authorities,
@@ -373,7 +373,7 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
     let commit = ProposedCommit {
         operation_id,
         fingerprint: Digest::from_bytes([0x53; 32]),
-        payload: Bytes::from_static(b"cancelled"),
+        payload: bytes::Bytes::from_static(b"cancelled"),
     };
     let authority_failures = [
         poll_ready(AsyncAuthorityStore::create_authority(
@@ -591,7 +591,7 @@ fn default_first_record_failure_preserves_prior_read_and_write_work()
         ProposedCommit {
             operation_id: OperationId::from_bytes([0x72; 16]),
             fingerprint: Digest::from_bytes([0x73; 32]),
-            payload: Bytes::from_static(b"creation"),
+            payload: bytes::Bytes::from_static(b"creation"),
         },
         prior,
         WorkBudget::UNBOUNDED,
@@ -616,13 +616,13 @@ fn default_workspace_fork_preserves_both_complete_record_identities()
         creation: ProposedCommit {
             operation_id: OperationId::from_bytes([0x82; 16]),
             fingerprint: Digest::from_bytes([0x83; 32]),
-            payload: Bytes::from_static(b"creation"),
+            payload: bytes::Bytes::from_static(b"creation"),
         },
         retention: AuthorityId::from_bytes([0x84; 16]),
         retained: ProposedCommit {
             operation_id: OperationId::from_bytes([0x85; 16]),
             fingerprint: Digest::from_bytes([0x86; 32]),
-            payload: Bytes::from_static(b"retention"),
+            payload: bytes::Bytes::from_static(b"retention"),
         },
     };
     for _ in 0..2 {
@@ -671,13 +671,13 @@ fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
         creation: ProposedCommit {
             operation_id: OperationId::from_bytes([0x92; 16]),
             fingerprint: Digest::from_bytes([0x93; 32]),
-            payload: Bytes::from_static(b"creation"),
+            payload: bytes::Bytes::from_static(b"creation"),
         },
         retention: AuthorityId::from_bytes([0x94; 16]),
         retained: ProposedCommit {
             operation_id: OperationId::from_bytes([0x95; 16]),
             fingerprint: Digest::from_bytes([0x96; 32]),
-            payload: Bytes::from_static(b"retention"),
+            payload: bytes::Bytes::from_static(b"retention"),
         },
     };
     let baseline = poll_ready(append_first_record(
@@ -723,7 +723,7 @@ fn default_first_record_retry_seals_after_read_and_append_prefix()
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([0xa2; 16]),
         fingerprint: Digest::from_bytes([0xa3; 32]),
-        payload: Bytes::from_static(b"first"),
+        payload: bytes::Bytes::from_static(b"first"),
     };
     poll_ready(append_first_record(
         &store, authority, commit.clone(), WorkCounters::default(),
@@ -763,7 +763,7 @@ fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([0xb1; 16]),
         fingerprint: Digest::from_bytes([0xb2; 32]),
-        payload: Bytes::from_static(b"record"),
+        payload: bytes::Bytes::from_static(b"record"),
     };
     let fork = WorkspaceForkCommit {
         lineage: None,

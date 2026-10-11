@@ -12,9 +12,9 @@
 use acyclic_fs::{
     Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
     MaterializationError, MaterializationIntent, MaterializationJournalStore,
-    MaterializationObservation, MaterializationPhase, MaterializationPlan, MaterializationPreimage,
+    MaterializationPhase, MaterializationPlan, MaterializationPreimage,
     MaterializationRecovery, MemoryMaterializationJournalStore,
-    MemoryMaterializationJournalStoreError, OwnedMaterializationJournal,
+    MemoryMaterializationJournalStoreError,
     OperationId, OperationWindowCoordinator, OperationWindowError, OperationWindowFinish,
     OperationWindowPhase, OperationWindowSnapshot, OperationWindowStore, WorkspaceId,
 };
@@ -23,6 +23,7 @@ use acyclic_fs::{
     CancellationToken, MaterializationActionCompletion, NativeMaterializationWork,
     NativeTreeMaterializationBackend, WorkBudget,
 };
+use acyclic_fs::materializer::{MaterializationObservation, OwnedMaterializationJournal, OwnedMaterializationPreimage};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -436,11 +437,16 @@ fn target_tree() -> BTreeMap<String, Vec<u8>> {
 
 impl MaterializationBackend for TreeBackend {
     type Error = TreeBackendError;
+    fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+        if preimage.custody.is_some() { return Err(TreeBackendError); }
+        journal.preimages.push(preimage.preimage);
+        Ok(())
+    }
 
     async fn capture(
         &self,
         edit: &MaterializationEdit,
-    ) -> Result<MaterializationPreimage, Self::Error> {
+    ) -> Result<OwnedMaterializationPreimage, Self::Error> {
         let entries = self.0.lock().map_err(|_| TreeBackendError)?;
         let image = match edit {
             MaterializationEdit::Install { path, .. } | MaterializationEdit::Remove { path } => {
@@ -451,7 +457,7 @@ impl MaterializationBackend for TreeBackend {
             }
             _ => return Err(TreeBackendError),
         };
-        Ok(MaterializationPreimage { image })
+        Ok(OwnedMaterializationPreimage::ordinary(MaterializationPreimage { image }))
     }
 
     async fn apply(
@@ -615,11 +621,14 @@ impl MutationCrashBackend {
 
 impl MaterializationBackend for MutationCrashBackend {
     type Error = TreeBackendError;
+    fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+        self.inner.append_preimage(journal, preimage)
+    }
 
     async fn capture(
         &self,
         edit: &MaterializationEdit,
-    ) -> Result<MaterializationPreimage, Self::Error> {
+    ) -> Result<OwnedMaterializationPreimage, Self::Error> {
         self.receipts
             .lock()
             .map_err(|_| TreeBackendError)?
@@ -633,7 +642,7 @@ impl MaterializationBackend for MutationCrashBackend {
             .lock()
             .map_err(|_| TreeBackendError)?
             .captures
-            .push((edit.clone(), preimage.clone()));
+            .push((edit.clone(), preimage.preimage.clone()));
         Ok(preimage)
     }
 

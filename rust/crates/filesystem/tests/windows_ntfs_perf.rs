@@ -15,7 +15,7 @@ use acyclic_fs::{
     MaterializeOptions, MemoryLazyWorkspaceStore, MountPath, PublicationPermit, TransactionCommit,
     WorkBudget, capture_paths, capture_root_identity, host_path_to_namespace,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use serde_json::json;
 
 fn component(value: &str) -> Vec<u8> {
@@ -158,11 +158,11 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
     transaction.create_directory("/tree").await?;
     transaction
-        .write("/tree/file", Bytes::from_static(b"payload"))
+        .write("/tree/file", OwnedBytes::from_static(b"payload"))
         .await?;
     transaction.hard_link("/tree/file", "/tree/alias").await?;
     transaction
-        .create_symbolic_link("/tree/link", Bytes::from(component("file")))
+        .create_symbolic_link("/tree/link", OwnedBytes::from(component("file")))
         .await?;
     transaction
         .set_metadata("/tree/file", metadata(ARCHIVE | HIDDEN))

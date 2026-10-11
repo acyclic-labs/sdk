@@ -616,6 +616,8 @@ pub struct WasmTaskRuntime {
 impl WasmTaskRuntime {
     /// Opens existing providers with caller-supplied limits and signed authority.
     /// Volume creation and task admission remain separate explicit operations.
+    /// Canonical filesystem provider failures preserve their original browser
+    /// exception; obsolete databases are rejected without migration or deletion.
     pub async fn open(
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserTaskOptions")] options: JsValue,
         owner: &WasmReducer,

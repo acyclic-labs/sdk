@@ -49,7 +49,7 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     let host = PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).unwrap();
     let plan = fixture.plan().await;
-    let prepared = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
+    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
@@ -131,7 +131,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         scheduler::{LeaseFence, ResourceSnapshot}};
     let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
     let plan = fixture.plan().await;
-    let original = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
+    let original = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = original.binding.task_id;
@@ -149,15 +149,17 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         &replacement_operation, &root_key, fixture.source.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
         available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let attempt = fixture.runtime.runtime.run_operation(&worker, task,
-        &fixture.runtime.runtime.commands(), 1).await.unwrap().unwrap();
-    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt
+    let mut attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, task,
+        &fixture.runtime.runtime.commands(), 1, &query_work).await.unwrap();
+    let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0.take()
         else { panic!("original child workflow lease"); };
     let fence = LeaseFence::from(&lease.reservation);
-    let owner = Arc::new(fixture.runtime.runtime.task_host().journal_owner(task, fence.clone()).await.unwrap());
-    let context = fixture.runtime.runtime.task_context(task, fence.clone()).await.unwrap();
-    host.hydrate_child(&context, &owner, fence, crate::pi_root_provider::allocation_budget(),
-        &CancellationToken::new()).await.unwrap();
+    let owner = fixture.runtime.runtime.task_host()
+        .journal_owner_with_native_work(task, &fence, &query_work).await.unwrap()
+        .into_native_shared(&query_work).unwrap();
+    let context = fixture.runtime.runtime.task_context_with_native_work(task, &fence, &query_work).await.unwrap();
+    host.hydrate_child(&context, &owner, &fence, crate::pi_root_provider::allocation_budget(),
+        &query_cancellation, &query_work).await.unwrap();
     assert_eq!(host.binding(task), Some(original.binding));
     assert_eq!(host.frozen_source(task), Some(original.frozen_source));
     assert_eq!(host.source_frozen(task), Some(original.native_lazy));

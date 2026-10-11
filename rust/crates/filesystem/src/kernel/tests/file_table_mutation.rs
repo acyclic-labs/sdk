@@ -1,3 +1,4 @@
+use crate::kernel::decode_file_table_page;
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;

@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use super::{CanonicalDecodeError, Decoder, Encoder, EncodeAllocationStep};
 
 #[test]
@@ -178,7 +179,7 @@ mod properties {
         U32(u32),
         U64(u64),
         I64(i64),
-        Bytes(Vec<u8>),
+        OwnedBytes(Vec<u8>),
     }
 
     fn field() -> impl Strategy<Value = Field> {
@@ -187,7 +188,7 @@ mod properties {
             any::<u32>().prop_map(Field::U32),
             any::<u64>().prop_map(Field::U64),
             any::<i64>().prop_map(Field::I64),
-            prop::collection::vec(any::<u8>(), 0..12).prop_map(Field::Bytes),
+            prop::collection::vec(any::<u8>(), 0..12).prop_map(Field::OwnedBytes),
         ]
     }
 
@@ -199,7 +200,7 @@ mod properties {
                 Field::U32(value) => encoder.u32(*value),
                 Field::U64(value) => encoder.u64(*value),
                 Field::I64(value) => encoder.i64(*value),
-                Field::Bytes(value) => encoder.bounded_bytes(value)?,
+                Field::OwnedBytes(value) => encoder.bounded_bytes(value)?,
             }
         }
         Ok(encoder.finish())
@@ -215,14 +216,14 @@ mod properties {
                 Field::U32(_) => Field::U32(decoder.u32()?),
                 Field::U64(_) => Field::U64(decoder.u64()?),
                 Field::I64(_) => Field::I64(decoder.i64()?),
-                Field::Bytes(_) => Field::Bytes(decoder.bounded_bytes(12)?),
+                Field::OwnedBytes(_) => Field::OwnedBytes(decoder.bounded_bytes(12)?),
             });
         }
         decoder.finish()?;
         Ok(fields)
     }
 
-    /// Bytes near a valid encoding: one flipped byte, a truncation, then junk.
+    /// OwnedBytes near a valid encoding: one flipped byte, a truncation, then junk.
     type Change = (usize, u8, usize, Vec<u8>);
 
     fn change() -> impl Strategy<Value = Change> {

@@ -308,6 +308,15 @@ budgets include gate IO and the encoded replay buffers retained during decoding.
 Portable provider and property tests remain compiled on this target. Only native
 process, native filesystem and socket fixtures use native-only target dependencies;
 the WASM test target uses portable Tokio features and the browser entropy backend.
+
+Rust browser consumers and the installed WASM facade use the same canonical
+version-1 IndexedDB provider. Existing version-4 databases are unsupported:
+opening them rejects with the original `DOMException` (`VersionError`) without
+deleting, recreating, or migrating their stores or bytes. OPFS is an explicit
+immutable-object profile; its publication authority remains that same IndexedDB
+provider. Browser object payloads use the shared `OwnedBytes` carrier; logical
+buffer and handle accounting is not a native physical-allocation receipt.
+
 ## Original publication custody
 
 `AsyncObjectStore::prepare_generation_publication` receives the original `PublishGenerationRequest`, complete `GenerationProof`, exact `GuardedAppend`, and closure/sweep scope after flush and before the canonical authority CAS. The publication hold stays live through preparation and CAS; custody failure prevents CAS. Object-store decorators forward the same context to their durable provider. Default preparation establishes no hosted custody.

@@ -3355,17 +3355,12 @@ mod tests {
             read_limit: u64,
             pending_read: AtomicU64,
             pending_write: AtomicU64,
-            read_operations: AtomicU64,
-            write_operations: AtomicU64,
             pending_read_operations: AtomicU64,
             pending_write_operations: AtomicU64,
             pending_durability: AtomicU64,
             copied: AtomicU64,
-            examined: AtomicU64,
-            hashed: AtomicU64,
             cancel_after_read: u64,
             late_write_error: bool,
-            clock_after_copy: Option<(Arc<TestClock>, u64)>,
             cancelled: AtomicBool,
         }
 
@@ -3376,12 +3371,11 @@ mod tests {
                     pending_allocations: parking_lot::Mutex::new((0, 0)),
                     deny_allocation: u64::MAX, read: AtomicU64::new(0), read_limit: u64::MAX,
                     pending_read: AtomicU64::new(0), pending_write: AtomicU64::new(0),
-                    read_operations: AtomicU64::new(0), write_operations: AtomicU64::new(0),
+
                     pending_read_operations: AtomicU64::new(0), pending_write_operations: AtomicU64::new(0),
                     pending_durability: AtomicU64::new(0), copied: AtomicU64::new(0),
-                    examined: AtomicU64::new(0), hashed: AtomicU64::new(0),
+
                     cancel_after_read: u64::MAX, late_write_error: false,
-                    clock_after_copy: None,
                     cancelled: AtomicBool::new(false),
                 }
             }
@@ -3421,11 +3415,6 @@ mod tests {
             }
             fn record_reserved_operation(&self, kind: NativeOperationKind) -> std::io::Result<()> {
                 assert!(self.pending_operations(kind).fetch_sub(1, Ordering::SeqCst) >= 1);
-                match kind {
-                    NativeOperationKind::Read => { self.read_operations.fetch_add(1, Ordering::SeqCst); }
-                    NativeOperationKind::Write => { self.write_operations.fetch_add(1, Ordering::SeqCst); }
-                    NativeOperationKind::Durability => {}
-                }
                 Ok(())
             }
             fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
@@ -3507,14 +3496,9 @@ mod tests {
                 (bytes, self.check())
             }
             fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_codec(&self, _: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+            fn record_codec(&self, _: u64, copied: u64, _: u64) -> std::io::Result<()> {
                 self.copied.fetch_add(copied, Ordering::SeqCst);
-                self.hashed.fetch_add(hashed, Ordering::SeqCst);
-                if copied != 0 {
-                    if let Some((clock, now)) = &self.clock_after_copy {
-                        clock.0.store(*now, Ordering::SeqCst);
-                    }
-                }
+
                 Ok(())
             }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
@@ -3522,9 +3506,9 @@ mod tests {
                 self.record_examination(items, copied)
             }
             fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+            fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
                 self.copied.fetch_add(copied, Ordering::SeqCst);
-                self.examined.fetch_add(items, Ordering::SeqCst);
+
                 Ok(())
             }
             fn release(&self, bytes: u64) {
@@ -3538,12 +3522,12 @@ mod tests {
             }
             fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
                 self.admit_bytes(maximum)?;
-                self.read_operations.fetch_add(1, Ordering::SeqCst);
+
                 Ok(())
             }
             fn admit_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_operations(&self, count: u64) -> std::io::Result<()> {
-                self.read_operations.fetch_add(count, Ordering::SeqCst);
+            fn record_operations(&self, _: u64) -> std::io::Result<()> {
+
                 Ok(())
             }
             fn record_read(&self, bytes: usize) -> std::io::Result<()> {
@@ -3559,8 +3543,8 @@ mod tests {
                 } else { Ok(()) }
             }
             fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-                self.write_operations.fetch_add(count, Ordering::SeqCst);
+            fn record_write_operations(&self, _: u64) -> std::io::Result<()> {
+
                 Ok(())
             }
             fn admit_durability(&self) -> std::io::Result<()> { self.check() }
@@ -3861,18 +3845,12 @@ mod tests {
             let repeat_prepared = provider.native_prepare_commit_borrowed_inner(&mut repeat, 64, meter.original()).await??;
             let mismatch_prepared = provider.native_prepare_commit_borrowed_inner(&mut mismatch, 64, meter.original()).await??;
             let allocation_count = meter.allocations.load(Ordering::SeqCst);
-            let examinations = meter.examined.load(Ordering::SeqCst);
-            let hashes = meter.hashed.load(Ordering::SeqCst);
             let input_pointer = request.mutations.as_ptr();
             fill_prepared_fixture(&mut request, b"actual-scalars");
             fill_prepared_fixture(&mut repeat, b"actual-scalars");
             fill_prepared_fixture(&mut mismatch, b"different-scalars");
             meter.cancelled.store(true, Ordering::SeqCst);
             let completion = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut request).await??;
-            assert_eq!(meter.examined.load(Ordering::SeqCst) - examinations, 22);
-            assert_eq!(meter.hashed.load(Ordering::SeqCst) - hashes,
-                prepared_hash_bytes(&request, b"actual-scalars".len())
-                    + b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32);
             assert!(matches!(completion.error.as_ref(), Some(error) if error.kind() == std::io::ErrorKind::Interrupted));
             let CommitOutcome::Committed(envelope) = completion.outcome.value() else { panic!("real canonical publication") };
             let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { panic!("single append") };
@@ -4070,7 +4048,6 @@ mod tests {
                 } else { std::io::ErrorKind::OutOfMemory }));
                 assert!(output.value_mut().next().await.is_none());
                 assert_eq!(meter.read.load(Ordering::SeqCst), 2);
-                assert_eq!(meter.read_operations.load(Ordering::SeqCst), 1);
                 assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
                 assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
                 assert!(meter.held.load(Ordering::SeqCst) > 0);

@@ -1347,7 +1347,7 @@ impl NativeGenerationPathIndex {
             };
             // Complete an earlier interrupted eviction before another entry
             // can consume the reserved final slot.
-            evict_native_entries(&mut state, &directory, &mut meter)?;
+            evict_native_entries(state, &directory, &mut meter)?;
             let found = state.find_measured(key, &mut meter)?;
             let mut name = [0_u8; 85];
             let mut temporary = [0_u8; 85];
@@ -1403,7 +1403,7 @@ impl NativeGenerationPathIndex {
                 None => state.entries.push((key, value.len())),
             }
             state.retained_bytes += value.len();
-            evict_native_entries(&mut state, &directory, &mut meter)
+            evict_native_entries(state, &directory, &mut meter)
         })();
         if borrowed {
             let retained = state.owned_bytes()?.checked_add(root_bytes).ok_or(WorkError::Overflow)?;

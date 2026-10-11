@@ -831,6 +831,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
 pub(crate) struct RootMaterializingGitExecutor<'a> {
     pub(crate) inner: PluginGitExecutor<'a>,
     pub(crate) root: &'a Path,
+    pub(crate) source_root_identity: acyclic_fs::NativeRootIdentity,
     pub(crate) store: &'a LocalCoreStateStore,
 }
 
@@ -868,6 +869,7 @@ impl RootMaterializingGitExecutor<'_> {
             self.store,
             acyclic_fs::NativeWorkspacePublication {
                 root: self.root,
+                source_root_identity: self.source_root_identity,
                 operation_directory: &operation_directory,
                 operation_id,
                 from: from.id(),
