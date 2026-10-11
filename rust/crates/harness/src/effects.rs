@@ -284,40 +284,60 @@ impl EffectRegistry {
         &self, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&Arc<dyn EffectProvider>> {
-        let provider = self.providers.get(&effect.provider).ok_or_else(||
-            crate::effect_host::effect_error(work, crate::wire::ErrorCode::Unsupported,
-                "effect provider is not registered"))?;
+        self.resolve_fields_with_work(
+            &effect.provider, &effect.effect_kind, effect.guarantee, work)
+    }
+
+    fn resolve_fields_with_work(
+        &self, provider_name: &str, effect_kind: &str, guarantee: EffectGuarantee,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<&Arc<dyn EffectProvider>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            if !provider.supports_guarantee_with_native_work(
-                &effect.effect_kind, effect.guarantee, native)?
-            {
-                return Err(crate::effect_host::effect_error(
-                    work, crate::wire::ErrorCode::Unsupported,
-                    "effect provider does not support the pinned guarantee"));
-            }
-            if effect.guarantee == EffectGuarantee::ExactlyOnce
-                && !provider.linearizable_reconciliation()
-            {
-                return Err(crate::effect_host::effect_error(work,
-                    crate::wire::ErrorCode::Unsupported,
-                    "exactly-once requires linearizable provider reconciliation"));
-            }
-            return Ok(provider);
+            return self.resolve_fields_with_native_work(provider_name, effect_kind, guarantee, native);
         }
         if work.is_some() {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
         }
-        if !provider.guarantees(&effect.effect_kind).contains(&effect.guarantee) {
+        let provider = self.providers.get(provider_name).ok_or_else(||
+            crate::effect_host::effect_error(work, crate::wire::ErrorCode::Unsupported,
+                "effect provider is not registered"))?;
+        if !provider.guarantees(effect_kind).contains(&guarantee) {
             return Err(Error::Unsupported(format!(
-                "provider {} does not support {:?} for {}",
-                effect.provider, effect.guarantee, effect.effect_kind)));
+                "provider {provider_name} does not support {guarantee:?} for {effect_kind}")));
         }
-        if effect.guarantee == EffectGuarantee::ExactlyOnce
+        if guarantee == EffectGuarantee::ExactlyOnce
             && !provider.linearizable_reconciliation()
         {
             return Err(Error::Unsupported(
                 "exactly-once requires linearizable provider reconciliation".into()));
+        }
+        Ok(provider)
+    }
+
+    /// Checks the original provider SPI before any native future allocation or IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn resolve_fields_with_native_work(
+        &self, provider_name: &str, effect_kind: &str, guarantee: EffectGuarantee,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&Arc<dyn EffectProvider>> {
+        self.require_native_metadata(work)?;
+        work.visit(1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "effect provider is not registered",
+        })?;
+        if !provider.supports_guarantee_with_native_work(effect_kind, guarantee, work)? {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "effect provider does not support the pinned guarantee",
+            });
+        }
+        if guarantee == EffectGuarantee::ExactlyOnce && !provider.linearizable_reconciliation() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "exactly-once requires linearizable provider reconciliation",
+            });
         }
         Ok(provider)
     }

@@ -456,6 +456,18 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         })
     }
 
+    /// Checks the original provider's native support before allocating a transport future.
+    /// This pure preflight does not replace the owner and signed-scope authorization.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn require_native_task_effect_plan(
+        &self, plan: &TaskEffectPlan, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_native_metadata(work)?;
+        self.providers.resolve_fields_with_native_work(
+            &plan.provider, &plan.effect_kind, plan.guarantee, work)?;
+        Ok(())
+    }
+
     /// Runs one task command through the original conversation effect lifecycle.
     /// Only the durable dispatch winner invokes the provider; later calls reconcile.
     #[cfg(feature = "filesystem")]
