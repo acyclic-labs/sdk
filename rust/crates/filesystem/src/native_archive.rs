@@ -4,13 +4,14 @@
 //! Captures retain the held capability and journal the original generation,
 //! policy and physical preimages through the existing native state store.
 
-use crate::kernel::{AsyncBlobSource, ByteRange, FileKind, FileMetadata, LogicalName, MetadataField, NameEncoding, NamespacePath};
+use crate::kernel::{AsyncBlobSource, FileKind, FileMetadata, LogicalName, MetadataField, NameEncoding, NamespacePath};
 use crate::materializer::{capture_native_preimages, MaterializationPreimage};
+use crate::model::VolumeConfig;
 use crate::native_capture::{capture_baseline_from_root, ensure_current_host_node, host_path_to_namespace, CaptureOptions, CapturePolicy, CaptureReceipt, HostSnapshot};
 use crate::native_host::HostRoot;
 use crate::path::PortablePath;
 use crate::record_store::Revisioned;
-use crate::{AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout, CheckoutCommitOutcome, FileId, GenerationId, LocalCoreStateStore, NativeRootIdentity, OperationId, OperationReceipt, PinnedReader, PublicationPermit, ResolvedFile, StagedContent, VolumeConfig, VolumeId, WorkBudget, WorkCounters};
+use crate::{AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken, Checkout, CheckoutCommitOutcome, FileId, GenerationId, LocalCoreStateStore, NativeRootIdentity, OperationId, OperationReceipt, PinnedReader, PublicationPermit, ResolvedFile, StagedContent, VolumeId, WorkBudget, WorkCounters};
 use bytes::{Bytes, BytesMut};
 use flate2::{bufread::GzDecoder, Compression, GzBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
@@ -43,7 +44,7 @@ pub struct NativeArchiveDescription {
 pub struct NativeDirectoryArchive {
     description: NativeArchiveDescription,
     chunks: Vec<Bytes>,
-    regular_digests: Arc<BTreeMap<FileId, [u8; 32]>>,
+    regular_digests: Option<Arc<BTreeMap<FileId, [u8; 32]>>>,
 }
 
 impl NativeDirectoryArchive {
@@ -75,7 +76,7 @@ impl NativeDirectoryArchive {
         if total != expected.total_bytes || hex::encode(digest.finalize()) != expected.sha256 {
             return Err(NativeArchiveError::InvalidArchive);
         }
-        Ok(Self { description: expected, chunks, regular_digests: Arc::new(BTreeMap::new()) })
+        Ok(Self { description: expected, chunks, regular_digests: None })
     }
 
     /// Reads at most one upload body; aligned upload reads share immutable bytes.
@@ -456,7 +457,7 @@ pub async fn capture_native_directory_archive<A: AsyncAuthorityStore, O: AsyncOb
     let record = NativeCaptureRecord {
         version: 1, revision: 1, operation_id, source_root: options.source_root.clone(), root_identity: root.identity().to_bytes(), volume_id: candidate.volume_id(), volume_config: config,
         original_generation: candidate.generation_id(), policy: Arc::new(policy.clone()), preimages,
-        regular_digests: Arc::clone(&archive.regular_digests),
+        regular_digests: Arc::clone(archive.regular_digests.as_ref().ok_or(NativeArchiveError::InvalidReceipt)?),
         capture_counts: [receipt.examined_paths, receipt.changed_paths, receipt.staged_file_bytes], capture_work: receipt.work, archive: archive.description.clone(),
     };
     if !store.compare_and_swap_record(CAPTURE_FAMILY, operation_id.into_bytes(), 0, record.clone()).await.map_err(|error| NativeArchiveError::Engine(error.to_string()))? { return Err(NativeArchiveError::InvalidReceipt); }
@@ -516,7 +517,7 @@ impl ChunkSink {
     fn new() -> Self { Self { complete: Vec::new(), current: BytesMut::new(), bytes: 0, digest: Sha256::new() } }
     fn finish(mut self) -> NativeDirectoryArchive {
         if !self.current.is_empty() { self.complete.push(self.current.freeze()); }
-        NativeDirectoryArchive { description: NativeArchiveDescription { total_bytes: self.bytes, sha256: hex::encode(self.digest.finalize()) }, chunks: self.complete, regular_digests: Arc::new(BTreeMap::new()) }
+        NativeDirectoryArchive { description: NativeArchiveDescription { total_bytes: self.bytes, sha256: hex::encode(self.digest.finalize()) }, chunks: self.complete, regular_digests: None }
     }
 }
 impl Write for ChunkSink {
@@ -666,7 +667,7 @@ async fn export_archive<A: AsyncAuthorityStore, O: AsyncObjectStore>(reader: &Pi
     }
     writer.write_all(&[0; 1024])?;
     let mut archive = writer.inner.finish()?.finish();
-    archive.regular_digests = Arc::new(regular_digests);
+    if retain_regular_digests { archive.regular_digests = Some(Arc::new(regular_digests)); }
     Ok(archive)
 }
 
@@ -951,7 +952,7 @@ async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObj
         if entry.as_bytes().iter().all(|byte| *byte == 0) {
             let mut second = [0; 512]; expanded.read_exact(&mut second)?;
             if second.iter().any(|byte| *byte != 0) || long_path.is_some() || long_link.is_some() { return Err(NativeArchiveError::InvalidArchive); }
-            let mut extra = [0]; if expanded.read(&mut extra)? != 0 { return Err(NativeArchiveError::InvalidArchive); }
+            let mut extra = [0]; if Read::read(&mut expanded, &mut extra)? != 0 { return Err(NativeArchiveError::InvalidArchive); }
             let mut compressed = expanded.inner.into_inner();
             if !compressed.fill_buf()?.is_empty() { return Err(NativeArchiveError::InvalidArchive); }
             break;
