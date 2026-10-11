@@ -868,17 +868,12 @@ pub use process_tree::{ProcessCaptureFailure, ProcessInput, ProcessTree};
 pub use process_tree::PreparedClosedProcess;
 
 /// Whether a native operation may still have an unresolved kernel completion.
-pub fn is_uncertain_io_error(error: &io::Error) -> bool {
+fn is_uncertain_io_error(error: &io::Error) -> bool {
     #[cfg(target_os = "linux")]
     {
         linux::is_uncertain_completion(error)
     }
-    #[cfg(windows)]
-    {
-        let _ = error;
-        false
-    }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = error;
         false
@@ -1973,7 +1968,7 @@ impl Drop for InlineBlocking {
 
 /// Whether host operations started on this thread may block it directly.
 #[must_use]
-pub fn inline_blocking_allowed() -> bool {
+fn inline_blocking_allowed() -> bool {
     INLINE_BLOCKING.get()
 }
 
@@ -1982,7 +1977,7 @@ pub fn inline_blocking_allowed() -> bool {
 pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> BlockingIoTask<T> {
-    blocking_io_task(operation, None).expect("unmetered task construction cannot fail")
+    blocking_io_task(operation, None, None).expect("unmetered task construction cannot fail")
 }
 
 /// Uses the same host-operation queue with admission for the actual owned completion state, closure, and any capacity-waiter node.
@@ -1990,7 +1985,7 @@ pub fn run_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
 ) -> io::Result<BlockingIoTask<T>> {
-    blocking_io_task(operation, Some(meter))
+    blocking_io_task(operation, Some(meter), None)
 }
 
 /// Prepares one operation on the existing host-operation engine without submitting or invoking it.
@@ -1998,17 +1993,17 @@ pub fn prepare_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
 ) -> io::Result<BlockingIoTask<T>> {
-    prepare_blocking_io_task(operation, meter)
+    ready_workers(&BLOCKING_WORKERS)?;
+    let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
+    let mut task = blocking_io_task(
+        operation, Some(meter), Some(&allocation_meter),
+    )?;
+    task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
+    task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
+    Ok(task)
 }
 
 fn blocking_io_task<T: Send + 'static>(
-    operation: impl FnOnce() -> T + Send + 'static,
-    meter: Option<Arc<dyn NativeReadMeter>>,
-) -> io::Result<BlockingIoTask<T>> {
-    blocking_io_task_with_allocation_meter(operation, meter, None)
-}
-
-fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
     allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
@@ -2049,21 +2044,6 @@ fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
         }),
         state, waiter: None, terminated: false, prepared_wake: None,
     })
-}
-
-fn prepare_blocking_io_task<T: Send + 'static>(
-    operation: impl FnOnce() -> T + Send + 'static,
-    meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
-    // Prepare all owned controls before submission.
-    ready_workers(&BLOCKING_WORKERS)?;
-    let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
-    let mut task = blocking_io_task_with_allocation_meter(
-        operation, Some(Arc::clone(&meter)), Some(&allocation_meter),
-    )?;
-    task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
-    task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
-    Ok(task)
 }
 
 #[derive(Default)]
@@ -2179,6 +2159,18 @@ struct CompletionState<T> {
 impl<T> Default for CompletionState<T> {
     fn default() -> Self {
         Self { task_pending: false, result: None, panic: None, waker: None, _allocation: None }
+    }
+}
+
+impl<T> CompletionState<T> {
+    fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
+        if !self.task_pending && let Some(result) = self.result.take() {
+            return Poll::Ready(result);
+        }
+        if !self.waker.as_ref().is_some_and(|current| current.will_wake(waker)) {
+            self.waker = Some(waker.clone());
+        }
+        Poll::Pending
     }
 }
 
@@ -2995,13 +2987,7 @@ impl<T> Future for NativeCompletion<T> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.task_pending {
-            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
-                state.waker = Some(context.waker().clone());
-            }
-            return Poll::Pending;
-        }
-        if let Some(payload) = state.panic.take() {
+        if !state.task_pending && let Some(payload) = state.panic.take() {
             this.terminated = true;
             let waker = state.waker.take();
             drop(state);
@@ -3018,18 +3004,9 @@ impl<T> Future for NativeCompletion<T> {
             drop(this.completion.take());
             std::panic::resume_unwind(payload);
         }
-        if let Some(result) = state.result.take() {
-            this.terminated = true;
-            return Poll::Ready(result);
-        }
-        if !state
-            .waker
-            .as_ref()
-            .is_some_and(|waker| waker.will_wake(context.waker()))
-        {
-            state.waker = Some(context.waker().clone());
-        }
-        Poll::Pending
+        let result = state.poll_result(context.waker());
+        if result.is_ready() { this.terminated = true; }
+        result
     }
 }
 
@@ -3166,13 +3143,7 @@ impl<T> Future for BlockingIoTask<T> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.task_pending {
-            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
-                state.waker = Some(context.waker().clone());
-            }
-            return Poll::Pending;
-        }
-        if let Some(payload) = state.panic.take() {
+        if !state.task_pending && let Some(payload) = state.panic.take() {
             this.terminated = true;
             let waker = state.waker.take();
             drop(state);
@@ -3185,18 +3156,9 @@ impl<T> Future for BlockingIoTask<T> {
             }
             std::panic::resume_unwind(payload);
         }
-        if let Some(result) = state.result.take() {
-            this.terminated = true;
-            return Poll::Ready(result);
-        }
-        if !state
-            .waker
-            .as_ref()
-            .is_some_and(|waker| waker.will_wake(context.waker()))
-        {
-            state.waker = Some(context.waker().clone());
-        }
-        Poll::Pending
+        let result = state.poll_result(context.waker());
+        if result.is_ready() { this.terminated = true; }
+        result
     }
 }
 
