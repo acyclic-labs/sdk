@@ -412,6 +412,7 @@ pub struct NativeScenarioOracle {
     children: Mutex<[ScenarioChild; 3]>,
     completion: tokio::sync::Notify,
     last_receipt: Mutex<Option<std::sync::Arc<ScenarioReceiptPath>>>,
+    last_attempt: Mutex<Option<std::sync::Arc<ScenarioReceiptPath>>>,
 }
 
 pub fn scenario_model(delay_ms: u32, actors: [acyclic_harness::AgentId; 4]) -> Model {
@@ -432,7 +433,8 @@ impl NativeScenarioOracle {
         for entry in std::fs::read_dir(receipts).map_err(|error| Error::Storage(error.to_string()))? {
             let entry = entry.map_err(|error| Error::Storage(error.to_string()))?;
             if !entry.file_type().map_err(|error| Error::Storage(error.to_string()))?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str()) != Some("response")
+                || !entry.file_name().to_str().is_some_and(|name|
+                    name.ends_with(".response") || name.ends_with(".attempt.json"))
                 || entry.metadata().map_err(|error| Error::Storage(error.to_string()))?.len() > SCENARIO_RECEIPT_BYTES as u64 {
                 return Err(Error::Storage("recursive fixture receipt directory contains an invalid entry".into()));
             }
@@ -444,7 +446,7 @@ impl NativeScenarioOracle {
         Ok(Self { diagnostic: Deterministic::new(delay_ms, invocation_path)?, actors,
             receipts: receipts.to_path_buf(), receipt_count: Mutex::new(count),
             children: Mutex::new(std::array::from_fn(|_| ScenarioChild::default())),
-            completion: tokio::sync::Notify::new(), last_receipt: Mutex::new(None) })
+            completion: tokio::sync::Notify::new(), last_receipt: Mutex::new(None), last_attempt: Mutex::new(None) })
     }
 
     pub fn pending_children(&self) -> Result<[Option<acyclic_harness::TaskId>; 3]> {
@@ -947,14 +949,25 @@ impl NativeScenarioOracle {
         Ok(self.last_receipt.lock().map_err(|_| Error::Storage("recursive fixture receipt lock poisoned".into()))?
             .as_ref().map(|path| path.value.clone()))
     }
+    /// Actual native callback observation, never a semantic recovery input.
+    pub fn native_attempt_witness(&self) -> Result<Option<std::path::PathBuf>> {
+        Ok(self.last_attempt.lock().map_err(|_| Error::Storage("recursive fixture attempt lock poisoned".into()))?
+            .as_ref().map(|path| path.value.clone()))
+    }
+
 
     fn receipt_path(&self, dispatch: ModelDispatch, budget: &ScenarioBudget<'_>) -> Result<std::sync::Arc<ScenarioReceiptPath>> {
+        self.receipt_path_with_suffix(dispatch, "response", budget)
+    }
+
+    fn receipt_path_with_suffix(&self, dispatch: ModelDispatch, suffix: &'static str,
+        budget: &ScenarioBudget<'_>) -> Result<std::sync::Arc<ScenarioReceiptPath>> {
         let mut name = [0_u8; 128];
         let mut digest = [0_u8; 64];
         hex::encode_to_slice(dispatch.request_digest, &mut digest).expect("exact digest hex capacity");
         let digest = std::str::from_utf8(&digest).expect("hex ASCII");
         let mut writer = std::io::Cursor::new(name.as_mut_slice());
-        write!(writer, "{}-{}-{digest}.response", dispatch.operation_id, dispatch.step)
+        write!(writer, "{}-{}-{digest}.{suffix}", dispatch.operation_id, dispatch.step)
             .map_err(|_| budget.reject(acyclic_harness::wire::ErrorCode::Invalid, "recursive fixture response name exceeds its stack bound"))?;
         let length = writer.position() as usize;
         let name = std::str::from_utf8(&name[..length]).expect("UUID, decimal and hex ASCII");
@@ -1041,21 +1054,7 @@ impl NativeScenarioOracle {
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path.value)
             .map_err(|error| budget.io(error))?;
         *count += 1;
-        let mut written = 0;
-        while written < response.length {
-            budget.admit_write((response.length - written) as u64)?;
-            budget.write_operation()?;
-            let actual = file.write(&response.bytes[written..response.length]).map_err(|error| budget.io(error))?;
-            budget.write_completed(actual as u64)?;
-            if actual == 0 {
-                return Err(budget.reject(acyclic_harness::wire::ErrorCode::Storage, "recursive fixture response receipt write made no progress"));
-            }
-            written += actual;
-            budget.check()?;
-        }
-        budget.durability_operation()?;
-        file.sync_all().map_err(|error| budget.io(error))?;
-        budget.check()?;
+        self.write_receipt(&mut file, &response.bytes[..response.length], budget)?;
         *self.last_receipt.lock().map_err(|_| budget.reject(acyclic_harness::wire::ErrorCode::Storage,
             "recursive fixture receipt lock poisoned"))? = Some(path);
         Ok(())
@@ -1267,9 +1266,95 @@ impl ModelProvider for NativeScenarioOracle {
             let dispatch = ModelDispatch { operation_id: attempt.operation_id, step: attempt.step,
                 request_digest: attempt.request_digest };
             if let Some(response) = self.reconcile_response(dispatch, &budget)? {
-                let (events, custody) = response.native_suffix(attempt.observed, work)?;
-                Ok((Some(events), custody))
-            } else { Ok((None, work.retain_owned(0)?)) }
+                let produced = response.native_suffix(attempt.observed, work)?;
+                self.observe_native_attempt(attempt, work)?;
+                Ok((Some(produced.0), produced.1))
+            } else {
+                self.observe_native_attempt(attempt, work)?;
+                Ok((None, work.retain_owned(0)?))
+            }
         })
     }
+}
+
+impl NativeScenarioOracle {
+    fn write_receipt(&self, file: &mut File, bytes: &[u8], budget: &ScenarioBudget<'_>) -> Result<()> {
+        let mut written = 0;
+        while written < bytes.len() {
+            budget.admit_write((bytes.len() - written) as u64)?;
+            budget.write_operation()?;
+            let actual = file.write(&bytes[written..]).map_err(|error| budget.io(error))?;
+            budget.write_completed(actual as u64)?;
+            if actual == 0 {
+                return Err(budget.reject(acyclic_harness::wire::ErrorCode::Storage,
+                    "recursive fixture receipt write made no progress"));
+            }
+            written += actual;
+            budget.check()?;
+        }
+        budget.durability_operation()?;
+        file.sync_all().map_err(|error| budget.io(error))?;
+        budget.check()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_native_attempt(&self, attempt: NativeModelAttempt<'_>, work: &NativeMaterializationWork) -> Result<()> {
+        let budget = ScenarioBudget { native: Some(work), _lifetime: std::marker::PhantomData };
+        budget.check()?;
+        if attempt.observed.len() > SCENARIO_EVENTS {
+            return Err(budget.reject(acyclic_harness::wire::ErrorCode::Invalid,
+                "recursive fixture actual reconciliation prefix exceeds its bound"));
+        }
+        let dispatch = ModelDispatch { operation_id: attempt.operation_id, step: attempt.step,
+            request_digest: attempt.request_digest };
+        let mut digest = [0_u8; 64];
+        hex::encode_to_slice(attempt.request_digest, &mut digest).expect("exact digest hex capacity");
+        let digest = std::str::from_utf8(&digest).expect("hex ASCII");
+        let record = ScenarioAttemptWitness { format_version: 1, operation_id: attempt.operation_id,
+            step: attempt.step, request_digest: digest, observed: attempt.observed };
+        let mut bytes = [0_u8; SCENARIO_RECEIPT_BYTES];
+        let mut writer = ScenarioWriter { bytes: bytes.as_mut_slice(), length: 0, budget: &budget, cause: None };
+        let encoded = serde_json::to_writer(&mut writer, &record);
+        if let Some(cause) = writer.cause.take() { return Err(cause); }
+        encoded.map_err(|source| Error::NativeEncode { code: acyclic_harness::wire::ErrorCode::Storage,
+            source, custody: None })?;
+        let length = writer.length;
+        let path = self.receipt_path_with_suffix(dispatch, "attempt.json", &budget)?;
+        let mut count = self.receipt_count.lock().map_err(|_| budget.reject(
+            acyclic_harness::wire::ErrorCode::Storage, "recursive fixture receipt counter lock poisoned"))?;
+        budget.write_operation()?;
+        let mut file = match std::fs::OpenOptions::new().write(true).open(&path.value) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                budget.check()?;
+                if *count >= SCENARIO_RECEIPTS {
+                    return Err(budget.reject(acyclic_harness::wire::ErrorCode::Invalid,
+                        "recursive fixture aggregate response and attempt receipt count exhausted"));
+                }
+                budget.write_operation()?;
+                let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path.value)
+                    .map_err(|error| budget.io(error))?;
+                *count += 1;
+                file
+            }
+            Err(error) => return Err(budget.io(error)),
+        };
+        budget.write_operation()?;
+        file.set_len(0).map_err(|error| budget.io(error))?;
+        self.write_receipt(&mut file, &bytes[..length], &budget)?;
+        *self.last_attempt.lock().map_err(|_| budget.reject(acyclic_harness::wire::ErrorCode::Storage,
+            "recursive fixture attempt lock poisoned"))? = Some(path);
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[derive(Serialize)]
+struct ScenarioAttemptWitness<'a> {
+    format_version: u32,
+    operation_id: acyclic_harness::OperationId,
+    step: u32,
+    request_digest: &'a str,
+    observed: &'a [ModelEvent],
 }

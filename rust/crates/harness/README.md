@@ -151,6 +151,9 @@ from admitted requests and completed tool results. Its provider-owned receipts
 retain actual generated responses for restart reconciliation; its diagnostic
 invocation ledger is never a result cache. A terminal-fed completion gate carries
 SDK-observed child success text, without provider task-host IO or added grants.
+Restart qualification separately records the actual borrowed native reconcile
+prefix after that callback runs. This synced observation is never read as model
+state; generated responses and observations share one 32-file finite bound.
 The request-digest-only deterministic profile remains unchanged.
 
 Stock output-token budgets are caller-controlled: Rust exposes
