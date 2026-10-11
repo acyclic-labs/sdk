@@ -2,7 +2,7 @@
 use acyclic_objects::v1::{
     Error, MemoryObjects, MemoryOptions, ObjectsProvider, json, request, wire,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use prost::Message;
 use wasm_bindgen::prelude::*;
 
@@ -123,7 +123,7 @@ impl ObjectsV1Memory {
             "objects/put" => frames(
                 &self
                     .inner
-                    .put(decode(&bytes)?, Bytes::from(body))
+                    .put(decode(&bytes)?, OwnedBytes::from(body))
                     .await
                     .map_err(error)?,
             ),
@@ -134,7 +134,7 @@ impl ObjectsV1Memory {
             "multipart/upload-part" => frames(
                 &self
                     .inner
-                    .upload_part(decode(&bytes)?, Bytes::from(body))
+                    .upload_part(decode(&bytes)?, OwnedBytes::from(body))
                     .await
                     .map_err(error)?,
             ),
@@ -148,9 +148,9 @@ impl ObjectsV1Memory {
                     .await
                     .map_err(error)?;
                 let result = frames(&wire::GetObjectResponse {
-                    frame: Some(wire::get_object_response::Frame::Header(object.header)),
+                    frame: Some(wire::get_object_response::Frame::Header(object.header().clone())),
                 });
-                for chunk in object.body.chunks(65_536) {
+                for chunk in object.body().chunks(65_536) {
                     let value = wire::GetObjectResponse {
                         frame: Some(wire::get_object_response::Frame::Body(
                             acyclic_objects::v1::response::plain_body(chunk.to_vec()),

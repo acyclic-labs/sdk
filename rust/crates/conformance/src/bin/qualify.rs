@@ -397,11 +397,11 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
                 ..Default::default()
             };
             let object = provider
-                .put(request.clone(), body.clone())
+                .put(request.clone(), body.clone().into())
                 .await
                 .map_err(|e| e.to_string())?;
             let replay = provider
-                .put(request, body.clone())
+                .put(request, body.clone().into())
                 .await
                 .map_err(|e| e.to_string())?;
             if object != replay || object.size != body.len() as u64 {
@@ -433,7 +433,7 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
             )
             .await
             .map_err(|e| e.to_string())?;
-        if observed.body != body {
+        if observed.body().as_ref() != body.as_ref() {
             return Err(format!("reopened object {key} differs from model"));
         }
     }
@@ -469,7 +469,7 @@ async fn objects_many_chunks_setup(root: &Path) -> Result<(), String> {
                 }),
                 ..Default::default()
             },
-            Bytes::from(body),
+            acyclic_stream::OwnedBytes::from(body),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -496,7 +496,7 @@ async fn objects_sparse_first_put(root: &Path) -> Result<(), String> {
                 object_key: "only-object".into(),
                 ..Default::default()
             },
-            Bytes::from_static(b"sparse body"),
+            acyclic_stream::OwnedBytes::from_static(b"sparse body"),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -531,7 +531,7 @@ async fn objects_sparse_reopen_gc(root: &Path) -> Result<(), String> {
         )
         .await
         .map_err(|e| e.to_string())?;
-    if object.body != Bytes::from_static(b"sparse body") {
+    if object.body().as_ref() != b"sparse body" {
         return Err("sparse body changed after reopen and collection".into());
     }
     Ok(())
@@ -601,7 +601,7 @@ async fn verify_objects_current(
         ..Default::default()
     };
     match (expected.get(selected_key), provider.get(request, 3).await) {
-        (Some(body), Ok(result)) if body.get(1..4) == Some(result.body.as_ref()) => Ok(()),
+        (Some(body), Ok(result)) if body.get(1..4) == Some(result.body().as_ref()) => Ok(()),
         (None, Err(error)) if error.code == wire::ErrorCode::NotFound => Ok(()),
         _ => Err(format!("step {step}: range read differs from model")),
     }

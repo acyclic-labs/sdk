@@ -1,5 +1,5 @@
 use super::{Error, MemoryObjects, MemoryOptions, NativeBatchObjects, ObjectsProvider, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 #[allow(
@@ -24,20 +24,20 @@ pub(super) async fn exercise_uploads<'a>(
             mutation: None,
         })
         .await?;
-    let bytes = Bytes::from(vec![23; 135_000]);
+    let bytes = OwnedBytes::from(vec![23; 135_000]);
     let result = put_stream(
         put("stream"),
-        stream::iter([Ok(Bytes::new()), Ok(bytes.clone())]).boxed(),
+        stream::iter([Ok(OwnedBytes::new()), Ok(bytes.clone())]).boxed().into(),
     )
     .await?;
     assert_eq!(result.size, 135_000);
-    assert_eq!(provider.get(get("stream"), 135_000).await?.body, bytes);
+    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
     let failure = || {
         stream::iter([
-            Ok(Bytes::from_static(b"partial")),
+            Ok(OwnedBytes::from_static(b"partial")),
             Err(Error::from(wire::ErrorCode::AccessDenied)),
         ])
-        .boxed()
+        .boxed().into()
     };
     let mut failed = put("failed");
     failed.mutation = identity("source-failure");
@@ -62,7 +62,7 @@ pub(super) async fn exercise_uploads<'a>(
     );
     let accepted = put_stream(
         failed,
-        stream::iter([Ok(Bytes::from_static(b"complete"))]).boxed(),
+        stream::iter([Ok(OwnedBytes::from_static(b"complete"))]).boxed().into(),
     )
     .await?;
     assert_eq!(accepted.size, 8);
@@ -73,14 +73,14 @@ pub(super) async fn exercise_uploads<'a>(
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    assert_eq!(provider.get(get("stream"), 135_000).await?.body, bytes);
+    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
     let (started, started_rx) = futures::channel::oneshot::channel();
     let pending = stream::once(async move {
         let _ = started.send(());
-        Ok(Bytes::from_static(b"partial"))
+        Ok(OwnedBytes::from_static(b"partial"))
     })
     .chain(stream::pending())
-    .boxed();
+    .boxed().into();
     let cancelled = put_stream(put("cancelled"), pending);
     match futures::future::select(cancelled, started_rx).await {
         Either::Right((Ok(()), request)) => drop(request),
@@ -112,7 +112,7 @@ pub(super) async fn exercise_uploads<'a>(
         part_number: 1,
         mutation: None,
     };
-    let part = part_stream(header.clone(), stream::iter([Ok(bytes.clone())]).boxed()).await?;
+    let part = part_stream(header.clone(), stream::iter([Ok(bytes.clone())]).boxed().into()).await?;
     assert_eq!(
         part_stream(header, failure())
             .await
@@ -170,7 +170,7 @@ pub(super) async fn exercise_streaming<'a>(
             mutation: None,
         })
         .await?;
-    let bytes = Bytes::from((0..=250u8).cycle().take(135_000).collect::<Vec<_>>());
+    let bytes = OwnedBytes::from((0..=250u8).cycle().take(135_000).collect::<Vec<_>>());
     provider.put(put("stream"), bytes.clone()).await?;
     let mut selected = get(self::get("stream"), 135_000).await?;
     assert_eq!(
@@ -186,7 +186,7 @@ pub(super) async fn exercise_streaming<'a>(
         chunks += 1;
     }
     assert_eq!(chunks, 3);
-    assert_eq!(result, bytes);
+    assert_eq!(result.as_slice(), bytes.as_slice());
     let mut cancelled = get(self::get("stream"), 135_000).await?;
     assert!(cancelled.body.next().await.transpose()?.is_some());
     drop(cancelled);
@@ -195,7 +195,7 @@ pub(super) async fn exercise_streaming<'a>(
             .await?
             .collect(135_000)
             .await?
-            .body,
+            .into_body(),
         bytes
     );
     assert_eq!(
@@ -206,7 +206,7 @@ pub(super) async fn exercise_streaming<'a>(
         Some(wire::ErrorCode::QuotaExceeded)
     );
     provider
-        .put(put("terminal-error"), Bytes::from_static(b"body"))
+        .put(put("terminal-error"), OwnedBytes::from_static(b"body"))
         .await?;
     let failed = get(self::get("terminal-error"), 16).await?;
     assert_eq!(
@@ -285,10 +285,10 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
     invalid.object_key = "\0".into();
     let results = provider
         .put_batch(vec![
-            (first.clone(), Bytes::from_static(b"abc")),
-            (second.clone(), Bytes::from_static(b"1234")),
-            (invalid, Bytes::new()),
-            (put("third"), Bytes::from_static(b"xyz")),
+            (first.clone(), OwnedBytes::from_static(b"abc")),
+            (second.clone(), OwnedBytes::from_static(b"1234")),
+            (invalid, OwnedBytes::new()),
+            (put("third"), OwnedBytes::from_static(b"xyz")),
         ])
         .await;
     assert_eq!(results.len(), 4);
@@ -330,7 +330,7 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
         reads
             .first()
             .and_then(|value| value.as_ref().ok())
-            .map(|object| object.body.as_ref()),
+            .map(|object| object.body().as_ref()),
         Some(b"xyz".as_slice())
     );
     assert_eq!(
@@ -351,12 +351,12 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
         reads
             .get(3)
             .and_then(|value| value.as_ref().ok())
-            .and_then(|object| object.header.object.as_ref()),
+            .and_then(|object| object.header().object.as_ref()),
         Some(&original)
     );
     // Earlier successful items keep exact receipts; the failed item created none.
     let replay = provider
-        .put_batch(vec![(first, Bytes::from_static(b"abc"))])
+        .put_batch(vec![(first, OwnedBytes::from_static(b"abc"))])
         .await;
     assert_eq!(
         replay.first().and_then(|value| value.as_ref().ok()),
@@ -378,7 +378,7 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
         .await?;
     assert_eq!(
         provider
-            .put(second, Bytes::from_static(b"1234"))
+            .put(second, OwnedBytes::from_static(b"1234"))
             .await?
             .size,
         4
@@ -394,15 +394,15 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
     let mut original = put("value");
     original.mutation = identity("publish-once");
     let first = provider
-        .put(original.clone(), Bytes::from_static(b"first"))
+        .put(original.clone(), OwnedBytes::from_static(b"first"))
         .await?;
     let mut replace = put("value");
     replace.preconditions = Some(wire::Preconditions {
         condition: Some(wire::preconditions::Condition::IfMatch(first.etag.clone())),
     });
     let (left, right) = tokio::join!(
-        provider.put(replace.clone(), Bytes::from_static(b"left")),
-        provider.put(replace, Bytes::from_static(b"right"))
+        provider.put(replace.clone(), OwnedBytes::from_static(b"left")),
+        provider.put(replace, OwnedBytes::from_static(b"right"))
     );
     assert_ne!(left.is_ok(), right.is_ok());
     assert_eq!(
@@ -415,14 +415,14 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
     let current = provider.get(get("value"), 16).await?;
     assert_eq!(
         provider
-            .put(original.clone(), Bytes::from_static(b"first"))
+            .put(original.clone(), OwnedBytes::from_static(b"first"))
             .await?,
         first
     );
     assert_eq!(provider.get(get("value"), 16).await?, current);
     assert_eq!(
         provider
-            .put(original, Bytes::from_static(b"changed"))
+            .put(original, OwnedBytes::from_static(b"changed"))
             .await
             .err()
             .map(|error| error.code),
@@ -434,7 +434,7 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
     });
     assert_eq!(
         provider
-            .put(absent, Bytes::new())
+            .put(absent, OwnedBytes::new())
             .await
             .err()
             .map(|error| error.code),
@@ -451,13 +451,13 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
     })
     .await?;
     provider
-        .put(put("old"), Bytes::from_static(b"1234"))
+        .put(put("old"), OwnedBytes::from_static(b"1234"))
         .await?;
     let mut attempted = put("new");
     attempted.mutation = identity("retry");
     assert_eq!(
         provider
-            .put(attempted.clone(), Bytes::from_static(b"ab"))
+            .put(attempted.clone(), OwnedBytes::from_static(b"ab"))
             .await
             .err()
             .map(|error| error.code),
@@ -478,7 +478,7 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
             ..Default::default()
         })
         .await?;
-    provider.put(attempted, Bytes::from_static(b"ab")).await?;
+    provider.put(attempted, OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
         provider
             .get(get("new"), 1)
@@ -492,8 +492,8 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
         selection: Some(wire::byte_range::Selection::SuffixLength(1)),
     });
     assert_eq!(
-        provider.get(suffix, 1).await?.body,
-        Bytes::from_static(b"b")
+        provider.get(suffix, 1).await?.into_body(),
+        OwnedBytes::from_static(b"b")
     );
     Ok(())
 }
@@ -502,7 +502,7 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
 async fn listing_is_live_query_bound_and_counts_common_prefixes() -> Result<(), Error> {
     let provider = provider(MemoryOptions::default()).await?;
     for key in ["a/file", "a/other", "c", "é/file"] {
-        provider.put(put(key), Bytes::new()).await?;
+        provider.put(put(key), OwnedBytes::new()).await?;
     }
     let mut query = wire::ListObjectsRequest {
         bucket: bucket(),
@@ -521,8 +521,8 @@ async fn listing_is_live_query_bound_and_counts_common_prefixes() -> Result<(), 
         provider.list(changed).await.err().map(|error| error.code),
         Some(wire::ErrorCode::InvalidArgument)
     );
-    provider.put(put("b"), Bytes::new()).await?; // Inserted after the cursor, visible on the next live page.
-    provider.put(put("0"), Bytes::new()).await?; // Inserted before the cursor, intentionally missed.
+    provider.put(put("b"), OwnedBytes::new()).await?; // Inserted after the cursor, visible on the next live page.
+    provider.put(put("0"), OwnedBytes::new()).await?; // Inserted before the cursor, intentionally missed.
     let page = provider.list(query.clone()).await?;
     assert_eq!(
         page.entries.first().map(|entry| entry.object_key.as_str()),
@@ -550,7 +550,7 @@ async fn paged_listing(
 ) -> Result<Vec<(String, bool)>, Error> {
     let provider = provider(MemoryOptions::default()).await?;
     for key in keys {
-        provider.put(put(key), Bytes::new()).await?;
+        provider.put(put(key), OwnedBytes::new()).await?;
     }
     let mut query = wire::ListObjectsRequest {
         bucket: bucket(),
@@ -631,7 +631,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
 {
     let provider = provider(MemoryOptions::default()).await?;
     let old = provider
-        .put(put("value"), Bytes::from_static(b"old"))
+        .put(put("value"), OwnedBytes::from_static(b"old"))
         .await?;
     let upload = provider
         .create_multipart(wire::CreateMultipartRequest {
@@ -649,7 +649,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
                 part_number: 1,
                 mutation: None,
             },
-            Bytes::from(vec![b'a'; 5 * 1024 * 1024]),
+            OwnedBytes::from(vec![b'a'; 5 * 1024 * 1024]),
         )
         .await?;
     let last = provider
@@ -661,7 +661,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
                 part_number: 2,
                 mutation: None,
             },
-            Bytes::from_static(b"end"),
+            OwnedBytes::from_static(b"end"),
         )
         .await?;
     let mut complete = wire::CompleteMultipartRequest {
@@ -683,8 +683,8 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
         Some(wire::ErrorCode::PreconditionFailed)
     );
     assert_eq!(
-        provider.get(get("value"), 16).await?.body,
-        Bytes::from_static(b"old")
+        provider.get(get("value"), 16).await?.into_body(),
+        OwnedBytes::from_static(b"old")
     );
     let parts = provider
         .list_parts(wire::ListPartsRequest {
@@ -753,7 +753,7 @@ pub(super) async fn exercise_provider(
             .bucket,
         bucket()
     );
-    let body = Bytes::from(vec![b'x'; 2 * 65536 + 17]);
+    let body = OwnedBytes::from(vec![b'x'; 2 * 65536 + 17]);
     let info = client
         .put(
             wire::PutObjectHeader {
@@ -769,7 +769,7 @@ pub(super) async fn exercise_provider(
         object_key: "value".into(),
         ..Default::default()
     };
-    assert_eq!(client.get(get.clone(), body.len() as u64).await?.body, body);
+    assert_eq!(client.get(get.clone(), body.len() as u64).await?.into_body(), body);
     assert_eq!(
         client
             .get(get.clone(), 1)
@@ -792,7 +792,7 @@ pub(super) async fn exercise_provider(
     ranged.range = Some(wire::ByteRange {
         selection: Some(wire::byte_range::Selection::SuffixLength(17)),
     });
-    assert_eq!(client.get(ranged, 17).await?.body.len(), 17);
+    assert_eq!(client.get(ranged, 17).await?.body().len(), 17);
     assert_eq!(
         client
             .head(wire::HeadObjectRequest {
@@ -873,7 +873,7 @@ pub(super) async fn exercise_provider(
                 object_key: "malformed".into(),
                 ..Default::default()
             },
-            Bytes::from_static(b"no"),
+            OwnedBytes::from_static(b"no"),
         )
         .await?;
     assert_eq!(
@@ -909,7 +909,7 @@ pub(super) async fn exercise_provider(
                 object_key: "terminal-error".into(),
                 ..Default::default()
             },
-            Bytes::from_static(b"partial"),
+            OwnedBytes::from_static(b"partial"),
         )
         .await?;
     assert_eq!(
@@ -964,8 +964,8 @@ async fn assert_completed_multipart_range(
         })),
     });
     assert_eq!(
-        provider.get(crossing.clone(), 4).await?.body,
-        Bytes::from_static(b"aaen")
+        provider.get(crossing.clone(), 4).await?.into_body(),
+        OwnedBytes::from_static(b"aaen")
     );
     assert_eq!(
         provider
@@ -976,4 +976,474 @@ async fn assert_completed_multipart_range(
         Some(wire::ErrorCode::QuotaExceeded)
     );
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct NativeTransportMeter {
+    pub memory: std::sync::atomic::AtomicU64,
+    pub limit: std::sync::atomic::AtomicU64,
+    pub cancelled: std::sync::atomic::AtomicBool,
+    pub cancel_on_copy: std::sync::atomic::AtomicU64,
+    pub quota_on_copy: std::sync::atomic::AtomicU64,
+    pub copied: std::sync::atomic::AtomicU64,
+    pub allocations: std::sync::atomic::AtomicU64,
+    pub allocation_limit: std::sync::atomic::AtomicU64,
+    pending_allocations: parking_lot::Mutex<(u64, u64)>,
+    pub reads: std::sync::atomic::AtomicU64,
+    pub writes: std::sync::atomic::AtomicU64,
+    reserved: std::sync::atomic::AtomicU64,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeTransportMeter {
+    pub fn new() -> Self {
+        Self {
+            memory: 0.into(), limit: u64::MAX.into(), cancelled: false.into(),
+            cancel_on_copy: u64::MAX.into(), quota_on_copy: u64::MAX.into(),
+            copied: 0.into(), allocations: 0.into(),
+            allocation_limit: u64::MAX.into(), pending_allocations: parking_lot::Mutex::new((0, 0)),
+            reads: 0.into(), writes: 0.into(), reserved: 0.into(),
+        }
+    }
+    fn claim(&self, bytes: u64, allocations: u64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        acyclic_native_runtime::NativeReadMeter::check(self)?;
+        let pending = self.pending_allocations.lock();
+        let retained = self.memory.load(SeqCst).checked_add(bytes)
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        let attempts = self.allocations.load(SeqCst).checked_add(allocations)
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if retained.checked_add(pending.0).is_none_or(|value| value > self.limit.load(SeqCst))
+            || attempts.checked_add(pending.1).is_none_or(|value| value > self.allocation_limit.load(SeqCst))
+        {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.memory.fetch_add(bytes, SeqCst);
+        self.allocations.fetch_add(allocations, SeqCst);
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeTransportInputGuard {
+    _allocation: acyclic_native_runtime::ReadAllocation,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for NativeTransportInputGuard {
+    fn drop(&mut self) {
+        self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
+    fn check(&self) -> std::io::Result<()> {
+        if self.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(std::io::ErrorKind::Interrupted.into())
+        } else { Ok(()) }
+    }
+    fn allocate(&self, bytes: u64) -> std::io::Result<()> { self.claim(bytes, 1) }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.check()?;
+        let mut pending = self.pending_allocations.lock();
+        let retained = pending.0.checked_add(bytes).ok_or(std::io::ErrorKind::OutOfMemory)?;
+        let attempts = pending.1.checked_add(1).ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if self.memory.load(SeqCst).checked_add(retained).is_none_or(|value| value > self.limit.load(SeqCst))
+            || self.allocations.load(SeqCst).checked_add(attempts).is_none_or(|value| value > self.allocation_limit.load(SeqCst))
+        {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        *pending = (retained, attempts);
+        Ok(())
+    }
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        let mut pending = self.pending_allocations.lock();
+        assert!(pending.0 >= bytes && pending.1 > 0, "allocation credit cannot retire twice");
+        pending.0 -= bytes;
+        pending.1 -= 1;
+    }
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut pending = self.pending_allocations.lock();
+        assert!(pending.0 >= bytes && pending.1 > 0, "owner attempt requires its original allocation credit");
+        pending.0 -= bytes;
+        pending.1 -= 1;
+        self.memory.fetch_add(bytes, SeqCst);
+        self.allocations.fetch_add(1, SeqCst);
+        Ok(())
+    }
+    fn allocation_failed(&self, _: std::collections::TryReserveError) -> std::io::Error {
+        std::io::ErrorKind::OutOfMemory.into()
+    }
+    fn allocate_refcount_header(&self) -> std::io::Result<()> { self.claim(0, 1) }
+    fn adopt(&self, bytes: u64) -> std::io::Result<()> { self.claim(bytes, 0) }
+    fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
+        self.memory.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        (bytes, self.check())
+    }
+    fn release(&self, bytes: u64) {
+        let previous = self.memory.fetch_sub(bytes, std::sync::atomic::Ordering::SeqCst);
+        assert!(previous >= bytes, "original allocation claim cannot retire twice");
+    }
+    fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
+    fn record_codec(&self, encoded: u64, copied: u64, _: u64) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.copied.fetch_add(copied, SeqCst);
+        if encoded == 0 && copied >= self.cancel_on_copy.load(SeqCst) {
+            self.cancelled.store(true, SeqCst);
+        }
+        if encoded == 0 && copied >= self.quota_on_copy.load(SeqCst) {
+            self.limit.store(0, SeqCst);
+        }
+        Ok(())
+    }
+    fn examine(&self, _: u64, copied: u64) -> std::io::Result<()> { self.record_codec(0, copied, 0) }
+    fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
+    fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> { self.record_codec(0, copied, 0) }
+    fn reserve_operations(&self, _: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
+        self.check()?;
+        self.reserved.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn cancel_reserved_operations(&self, _: acyclic_native_runtime::NativeOperationKind, count: u64) {
+        let previous = self.reserved.fetch_sub(count, std::sync::atomic::Ordering::SeqCst);
+        assert!(previous >= count, "operation credit released twice");
+    }
+    fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        assert!(self.reserved.fetch_sub(1, SeqCst) > 0, "RPC attempt lacks its original reservation");
+        match kind {
+            acyclic_native_runtime::NativeOperationKind::Read => { self.reads.fetch_add(1, SeqCst); }
+            acyclic_native_runtime::NativeOperationKind::Write => { self.writes.fetch_add(1, SeqCst); }
+            _ => panic!("transport cannot invent a non-RPC backend operation"),
+        }
+        self.check()
+    }
+    fn reserve_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn cancel_reserved_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) { panic!("transport cannot reserve invented physical bytes") }
+    fn record_reserved_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_bytes(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_read(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn record_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn record_read(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_write(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn record_write(&self, _: usize) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn record_write_operations(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+    fn admit_durability(&self) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_allocation_credits_withhold_refund_and_consume_after_cancellation()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    use acyclic_native_runtime::{NativeReadMeter, ReadAllocationReservation};
+    use std::sync::{Arc, atomic::Ordering::SeqCst};
+    let observed = Arc::new(NativeTransportMeter::new());
+    observed.limit.store(8, SeqCst);
+    observed.allocation_limit.store(1, SeqCst);
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let credit = ReadAllocationReservation::new(&meter, 8)?;
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    assert_eq!(observed.allocations.load(SeqCst), 0);
+    assert_eq!(meter.adopt(1).unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
+    assert_eq!(meter.allocate_refcount_header().unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
+    drop(credit);
+    assert_eq!(*observed.pending_allocations.lock(), (0, 0));
+    let credit = ReadAllocationReservation::new(&meter, 8)?;
+    observed.cancelled.store(true, SeqCst);
+    observed.limit.store(0, SeqCst);
+    observed.allocation_limit.store(0, SeqCst);
+    let allocation = credit.allocate()?;
+    let physical = Box::new([0_u8; 8]);
+    assert_eq!(observed.memory.load(SeqCst), 8);
+    assert_eq!(observed.allocations.load(SeqCst), 1);
+    assert_eq!(*observed.pending_allocations.lock(), (0, 0));
+    drop(physical);
+    drop(allocation);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_wire_aliases_keep_original_claim_after_context_retirement()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    use acyclic_native_runtime::NativeReadMeter;
+    use std::sync::{Arc, atomic::Ordering::SeqCst};
+    let observed = Arc::new(NativeTransportMeter::new());
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let prepared = Download::prepare_native(0, meter.clone())?;
+    let controls = super::response::NativeGetControls { meter, errors: prepared.errors() };
+    let (data, allocation) = controls.copy(b"immutable native wire")?;
+    let wire = controls.wire_bytes(data, allocation)?;
+    let alias = wire.slice(1..4);
+    let attempts = observed.allocations.load(SeqCst);
+    drop(controls);
+    drop(prepared);
+    let retained = observed.memory.load(SeqCst);
+    assert!(retained > 0);
+    observed.cancelled.store(true, SeqCst);
+    observed.limit.store(0, SeqCst);
+    let last = alias.clone();
+    assert_eq!(last.as_ref(), b"mmu");
+    assert_eq!(observed.allocations.load(SeqCst), attempts);
+    drop(wire);
+    drop(alias);
+    assert_eq!(observed.memory.load(SeqCst), retained);
+    drop(last);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
+    provider: &P,
+    physical_get_calls: impl Fn() -> u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_native_runtime::NativeReadMeter;
+    use std::sync::{Arc, atomic::Ordering::SeqCst};
+    let bucket = wire::BucketRef { name: "native.controls".into() };
+    provider.create_bucket(wire::CreateBucketRequest { name: bucket.name.clone(), ..Default::default() }).await?;
+    let bytes = acyclic_stream::OwnedBytes::from(vec![b'n'; 131_089]);
+    for key in ["native-body", "terminal-error", "truncated", "huge-header", "corrupt-codec", "malformed"] {
+        provider.put(wire::PutObjectHeader {
+            bucket: Some(bucket.clone()), object_key: key.into(), ..Default::default()
+        }, bytes.clone()).await?;
+    }
+    let query = |key: &str| wire::GetObjectRequest {
+        bucket: Some(bucket.clone()), object_key: key.into(), ..Default::default()
+    };
+    let observed = Arc::new(NativeTransportMeter::new());
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let object = native_transport_get(provider, query("native-body"), bytes.len() as u64, meter.clone()).await?;
+    assert_eq!(object.body(), &bytes);
+    assert!(object.body().matches_meter(&meter));
+    assert_eq!(observed.reads.load(SeqCst), 1, "one GET RPC is one backend read");
+    assert_eq!(observed.writes.load(SeqCst), 0);
+    assert_eq!(observed.reserved.load(SeqCst), 0);
+    let clone = object.body().clone();
+    let slice = object.body().slice(1..17);
+    let empty = object.body().slice(0..0);
+    let allocations = observed.allocations.load(SeqCst);
+    drop(object);
+    assert!(observed.memory.load(SeqCst) >= bytes.len() as u64);
+    observed.cancelled.store(true, SeqCst);
+    observed.limit.store(0, SeqCst);
+    assert_eq!(slice.as_ref(), &bytes[1..17]);
+    drop(clone);
+    drop(slice);
+    assert!(observed.memory.load(SeqCst) > 0);
+    assert_eq!(observed.allocations.load(SeqCst), allocations);
+    drop(empty);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+
+    for (cancelled, limit, expected) in [
+        (true, u64::MAX, std::io::ErrorKind::Interrupted),
+        (false, 1, std::io::ErrorKind::OutOfMemory),
+    ] {
+        let observed = Arc::new(NativeTransportMeter::new());
+        observed.cancelled.store(cancelled, SeqCst);
+        observed.limit.store(limit, SeqCst);
+        let calls_before = physical_get_calls();
+        let error = native_transport_get(provider, query("native-body"), bytes.len() as u64, observed.clone())
+            .await.err().ok_or("native preparation accepted cancellation/quota")?;
+        match error.into_cause() {
+            super::NativeObjectsCause::Admission(error) => assert_eq!(error.kind(), expected),
+            other => return Err(format!("flattened native admission cause: {other}").into()),
+        }
+        assert_eq!(observed.memory.load(SeqCst), 0);
+        assert_eq!(physical_get_calls(), calls_before, "preparation failure dispatched a real GET");
+        assert_eq!(observed.reads.load(SeqCst), 0);
+        assert_eq!(observed.writes.load(SeqCst), 0);
+        assert_eq!(observed.reserved.load(SeqCst), 0);
+    }
+    for expected in [std::io::ErrorKind::Interrupted, std::io::ErrorKind::OutOfMemory] {
+        let observed = Arc::new(NativeTransportMeter::new());
+        if expected == std::io::ErrorKind::Interrupted {
+            observed.cancel_on_copy.store(65_536, SeqCst);
+        } else {
+            observed.quota_on_copy.store(65_536, SeqCst);
+        }
+        let error = native_transport_get(provider, query("native-body"), bytes.len() as u64, observed.clone())
+            .await.err().ok_or("native transport ignored in-flight cancellation/quota")?;
+        let super::NativeObjectsError::ReadFailure(failure) = error else {
+            return Err("native failure lost completed prefix".into());
+        };
+        let object = failure.object.as_ref().ok_or("native failure lost decoded metadata")?;
+        assert_eq!(object.body().as_ref(), &bytes[..65_536]);
+        assert!(object.header().object.is_some());
+        assert!(matches!(&failure.cause, super::NativeObjectsCause::Admission(error) if error.kind() == expected));
+        let prefix_alias = object.body().slice(0..1);
+        drop(failure);
+        assert!(observed.memory.load(SeqCst) >= bytes.len() as u64);
+        drop(prefix_alias);
+        assert_eq!(observed.memory.load(SeqCst), 0);
+    }
+    let observed = Arc::new(NativeTransportMeter::new());
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let (input, custody) = native_get_input(query("native-body"), &meter)?;
+    let calls_before = physical_get_calls();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guard = NativeTransportInputGuard { _allocation: custody, dropped: dropped.clone() };
+    let input = super::ObjectsNativeRequest::new(input, guard, &meter)?;
+    let future = provider.get_native(input, bytes.len() as u64, meter)?;
+    assert!(observed.memory.load(SeqCst) > 0);
+    assert!(!dropped.load(SeqCst), "factory detached the original opaque input guard");
+    observed.cancelled.store(true, SeqCst);
+    drop(future);
+    assert!(dropped.load(SeqCst), "cancellation reconstructed rather than releasing the original guard");
+    assert_eq!(physical_get_calls(), calls_before, "dropping an unpolled read dispatched GET");
+    assert_eq!(observed.memory.load(SeqCst), 0);
+
+    let foreign = Arc::new(NativeTransportMeter::new());
+    let foreign_meter: Arc<dyn NativeReadMeter> = foreign.clone();
+    let (input, custody) = native_get_input(query("native-body"), &foreign_meter)?;
+    let current = Arc::new(NativeTransportMeter::new());
+    let calls_before = physical_get_calls();
+    let input = super::ObjectsNativeRequest::new(input, custody, &foreign_meter)?;
+    let error = provider.get_native(input, bytes.len() as u64, current.clone())
+        .err().ok_or("foreign request custody became native authority")?;
+    assert!(matches!(error.into_cause(), super::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::InvalidInput));
+    assert_eq!(current.allocations.load(SeqCst), 0);
+    assert_eq!(current.memory.load(SeqCst), 0);
+    assert_eq!(foreign.memory.load(SeqCst), 0);
+    assert_eq!(physical_get_calls(), calls_before);
+
+    let observed = Arc::new(NativeTransportMeter::new());
+    let receipt = native_transport_put(provider, &bucket, "native-put", bytes.clone(), observed.clone()).await?;
+    assert_eq!(receipt.info().size, bytes.len() as u64);
+    assert!(observed.copied.load(SeqCst) >= bytes.len() as u64);
+    assert_eq!(observed.writes.load(SeqCst), 1, "one PUT RPC is one backend write");
+    assert_eq!(observed.reads.load(SeqCst), 0);
+    assert_eq!(observed.reserved.load(SeqCst), 0);
+    assert!(observed.memory.load(SeqCst) > 0);
+    drop(receipt);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    assert_eq!(provider.get(query("native-put"), bytes.len() as u64).await?.body(), &bytes);
+    let observed = Arc::new(NativeTransportMeter::new());
+    let error = native_transport_put(provider, &bucket, "native-bad-receipt", bytes.clone(), observed.clone())
+        .await.err().ok_or("native publication accepted a malformed acknowledgement")?;
+    let super::NativeObjectsError::ReadFailure(failure) = error else {
+        return Err("native publication lost its actual failed receipt".into());
+    };
+    assert!(matches!(&failure.cause, super::NativeObjectsCause::Service(error) if error.code == wire::ErrorCode::Unavailable));
+    assert_eq!(observed.writes.load(SeqCst), 1);
+    let allocations = observed.allocations.load(SeqCst);
+    observed.cancelled.store(true, SeqCst);
+    observed.limit.store(0, SeqCst);
+    assert_eq!(failure.receipt.as_ref().ok_or("native error detached decoded metadata")?.info().size, bytes.len() as u64 + 1);
+    assert!(observed.memory.load(SeqCst) > 0);
+    assert_eq!(observed.allocations.load(SeqCst), allocations);
+    drop(failure);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    for (key, expected) in [("native-cancelled-put", std::io::ErrorKind::Interrupted), ("native-quota-put", std::io::ErrorKind::OutOfMemory)] {
+        let observed = Arc::new(NativeTransportMeter::new());
+        if expected == std::io::ErrorKind::Interrupted {
+            observed.cancel_on_copy.store(65_536, SeqCst);
+        } else {
+            observed.quota_on_copy.store(65_536, SeqCst);
+        }
+        let error = native_transport_put(provider, &bucket, key, bytes.clone(), observed.clone())
+            .await.err().ok_or("native PUT published after cancellation/quota")?;
+        assert!(matches!(error.into_cause(), super::NativeObjectsCause::Admission(error) if error.kind() == expected));
+        assert!(observed.copied.load(SeqCst) >= 65_536);
+        assert_eq!(provider.head(wire::HeadObjectRequest {
+            bucket: Some(bucket.clone()), object_key: key.into(), ..Default::default()
+        }).await.err().ok_or("cancelled native PUT became visible")?.code, wire::ErrorCode::NotFound);
+    }
+
+    for (key, code) in [
+        ("terminal-error", wire::ErrorCode::AccessDenied),
+        ("truncated", wire::ErrorCode::Unavailable),
+        ("huge-header", wire::ErrorCode::QuotaExceeded),
+        ("corrupt-codec", wire::ErrorCode::Unavailable),
+        ("malformed", wire::ErrorCode::Unavailable),
+    ] {
+        let observed = Arc::new(NativeTransportMeter::new());
+        let error = native_transport_get(provider, query(key), bytes.len() as u64, observed.clone())
+            .await.err().ok_or("native transport accepted invalid response")?;
+        match error.into_cause() {
+            super::NativeObjectsCause::Service(error) => assert_eq!(error.code, code),
+            other => return Err(format!("changed native service cause: {other}").into()),
+        }
+        assert_eq!(observed.memory.load(SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_transport_get<P: ObjectsProvider>(
+    provider: &P,
+    query: wire::GetObjectRequest,
+    maximum: u64,
+    meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<super::Object, super::NativeObjectsError> {
+    let (query, custody) = native_get_input(query, &meter)?;
+    let request = super::ObjectsNativeRequest::new(query, custody, &meter)?;
+    provider.get_native(request, maximum, meter)?.await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_input_string(
+    value: &str,
+    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<(String, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
+    meter.admit_codec(0, value.len() as u64, 0)?;
+    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, value.len())?;
+    let mut string = String::new();
+    string.try_reserve_exact(value.len()).map_err(|error| meter.allocation_failed(error))?;
+    allocation.reconcile_capacity(string.capacity())?;
+    string.push_str(value);
+    if let Err(error) = meter.record_codec(0, value.len() as u64, 0) {
+        return Err(super::NativeObjectsError::from(error).with_wire(string.into_bytes(), allocation));
+    }
+    Ok((string, allocation))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_get_input(
+    query: wire::GetObjectRequest,
+    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<(wire::GetObjectRequest, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
+    let mut input = (wire::GetObjectRequest { range: query.range, ..Default::default() },
+        acyclic_native_runtime::ReadAllocation::empty(meter));
+    if let Some(bucket) = &query.bucket {
+        let mut name = native_input_string(&bucket.name, meter)?;
+        input.1.absorb(&mut name.1)?;
+        input.0.bucket = Some(wire::BucketRef { name: name.0 });
+    }
+    let mut key = native_input_string(&query.object_key, meter)?;
+    input.1.absorb(&mut key.1)?;
+    input.0.object_key = key.0;
+    let mut if_match = native_input_string(&query.if_match, meter)?;
+    input.1.absorb(&mut if_match.1)?;
+    input.0.if_match = if_match.0;
+    let mut if_none_match = native_input_string(&query.if_none_match, meter)?;
+    input.1.absorb(&mut if_none_match.1)?;
+    input.0.if_none_match = if_none_match.0;
+    Ok(input)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_transport_put<P: ObjectsProvider>(
+    provider: &P,
+    bucket: &wire::BucketRef,
+    key: &str,
+    body: acyclic_stream::OwnedBytes,
+    meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<super::ObjectsPutReceipt, super::NativeObjectsError> {
+    let mut input = (wire::PutObjectHeader::default(), acyclic_native_runtime::ReadAllocation::empty(&meter));
+    let mut name = native_input_string(&bucket.name, &meter)?;
+    input.1.absorb(&mut name.1)?;
+    input.0.bucket = Some(wire::BucketRef { name: name.0 });
+    let mut key = native_input_string(key, &meter)?;
+    input.1.absorb(&mut key.1)?;
+    input.0.object_key = key.0;
+    let request = super::ObjectsNativeRequest::new((input.0, body), input.1, &meter)?;
+    provider.put_native(request, meter)?.await
 }

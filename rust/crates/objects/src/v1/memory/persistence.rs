@@ -15,6 +15,184 @@ const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V1-LOCAL\0\x01";
 pub(super) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
 const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Current invocation authority and custody for temporary publication controls.
+/// Declare before the controls: their physical storage must retire first.
+pub(crate) struct Publication {
+    pub(crate) meter: Option<Arc<dyn NativeReadMeter>>,
+    retained: Option<ReadAllocation>,
+}
+impl Publication {
+    pub(crate) fn new(meter: Option<Arc<dyn NativeReadMeter>>) -> Self {
+        let retained = meter.as_ref().map(ReadAllocation::empty);
+        Self { meter, retained }
+    }
+    pub(crate) fn check(&self) -> Result<(), NativeObjectsError> {
+        if let Some(meter) = &self.meter { meter.check()?; }
+        Ok(())
+    }
+    pub(crate) fn io<T>(result: std::io::Result<T>) -> Result<T, NativeObjectsError> {
+        result.map_err(NativeObjectsError::Admission)
+    }
+    pub(crate) fn allocate(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
+        if let Some(meter) = &self.meter {
+            let mut claim = ReadAllocation::new(meter, bytes)?;
+            self.retained.as_mut().ok_or(Error::from(Unavailable))?.absorb(&mut claim)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn retain(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
+        if let Some(meter) = &self.meter {
+            let mut claim = ReadAllocation::adopt(meter, bytes)?;
+            self.retained.as_mut().ok_or(Error::from(Unavailable))?.absorb(&mut claim)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn retain_capacity(&mut self, requested: usize, actual: usize) -> Result<(), NativeObjectsError> {
+        if let Some(retained) = &mut self.retained {
+            let total = usize::try_from(retained.bytes()).map_err(|_| Error::from(QuotaExceeded))?;
+            retained.reconcile_capacity(total.checked_sub(requested).and_then(|bytes| bytes.checked_add(actual)).ok_or(Error::from(QuotaExceeded))?)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn allocation_failed(&self, error: std::collections::TryReserveError) -> NativeObjectsError {
+        match &self.meter {
+            Some(meter) => NativeObjectsError::Admission(meter.allocation_failed(error)),
+            None => NativeObjectsError::Service(Unavailable.into()),
+        }
+    }
+    pub(crate) fn retire(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
+        if let Some(retained) = &mut self.retained { retained.release(bytes)?; }
+        Ok(())
+    }
+    pub(crate) fn reserve<T>(&mut self, value: &mut Vec<T>, additional: usize) -> Result<(), NativeObjectsError> {
+        let needed = value.len().checked_add(additional).ok_or(Error::from(QuotaExceeded))?;
+        if needed <= value.capacity() { return self.check(); }
+        let width = std::mem::size_of::<T>();
+        let old = value.capacity().checked_mul(width).ok_or(Error::from(QuotaExceeded))?;
+        let requested = needed.checked_mul(width).ok_or(Error::from(QuotaExceeded))?;
+        let mut claim = self.meter.as_ref().map(|meter| ReadAllocation::new(meter, requested)).transpose()?;
+        if let Err(error) = value.try_reserve_exact(additional) {
+            return Err(self.meter.as_ref().map_or_else(
+                || NativeObjectsError::Service(Unavailable.into()),
+                |meter| NativeObjectsError::Admission(meter.allocation_failed(error)),
+            ));
+        }
+        if let Some(claim) = &mut claim {
+            let reconciled = claim.reconcile_capacity(value.capacity().checked_mul(width).ok_or(Error::from(QuotaExceeded))?);
+            let retained = self.retained.as_mut().ok_or(Error::from(Unavailable))?;
+            retained.resize_retained(usize::try_from(retained.bytes()).map_err(|_| Error::from(QuotaExceeded))?.saturating_sub(old))?;
+            retained.absorb(claim)?;
+            reconciled?;
+        }
+        Ok(())
+    }
+    pub(crate) fn push<T>(&mut self, value: &mut Vec<T>, item: T) -> Result<(), NativeObjectsError> {
+        if value.len() == value.capacity() {
+            self.reserve(value, value.capacity().max(1))?;
+        } else {
+            self.check()?;
+        }
+        value.push(item);
+        Ok(())
+    }
+    pub(crate) fn codec<T>(&self, encoded: usize, copied: usize, hashed: usize, work: impl FnOnce() -> T) -> Result<T, NativeObjectsError> {
+        if let Some(meter) = &self.meter {
+            meter.admit_codec(encoded as u64, copied as u64, hashed as u64)?;
+        }
+        let value = work();
+        if let Some(meter) = &self.meter {
+            meter.record_codec(encoded as u64, copied as u64, hashed as u64)?;
+        }
+        Ok(value)
+    }
+    pub(crate) fn text(&mut self, value: &str) -> Result<String, NativeObjectsError> {
+        match (&self.meter, &mut self.retained) {
+            (Some(meter), Some(retained)) => clone_native_text(value, meter, retained),
+            _ => Ok(value.to_owned()),
+        }
+    }
+    fn info(&mut self, value: &wire::ObjectInfo) -> Result<wire::ObjectInfo, NativeObjectsError> {
+        Ok(wire::ObjectInfo {
+            etag: self.text(&value.etag)?,
+            size: value.size,
+            metadata: value.metadata.as_ref().map(|metadata| self.metadata(metadata)).transpose()?,
+            last_modified: value.last_modified,
+        })
+    }
+    fn metadata(&mut self, value: &wire::ObjectMetadata) -> Result<wire::ObjectMetadata, NativeObjectsError> {
+        let mut output = wire::ObjectMetadata {
+            content_type: self.text(&value.content_type)?,
+            content_encoding: self.text(&value.content_encoding)?,
+            cache_control: self.text(&value.cache_control)?,
+            content_disposition: self.text(&value.content_disposition)?,
+            content_language: self.text(&value.content_language)?,
+            expires_unix_seconds: value.expires_unix_seconds,
+            user: BTreeMap::new(),
+        };
+        for (key, value) in &value.user {
+            let key = self.text(key)?;
+            let value = self.text(value)?;
+            self.retain(std::mem::size_of::<(String, String)>())?;
+            output.user.insert(key, value);
+        }
+        Ok(output)
+    }
+    pub(crate) fn bytes(&mut self, value: &[u8]) -> Result<Vec<u8>, NativeObjectsError> {
+        let mut output = Vec::new();
+        self.reserve(&mut output, value.len())?;
+        self.codec(0, value.len(), 0, || output.extend_from_slice(value))?;
+        Ok(output)
+    }
+    pub(crate) fn encode<M: prost::Message>(&mut self, value: &M) -> Result<Vec<u8>, NativeObjectsError> {
+        let length = value.encoded_len();
+        let mut output = Vec::new();
+        self.reserve(&mut output, length)?;
+        self.codec(length, 0, 0, || value.encode(&mut output))?
+            .map_err(|_| NativeObjectsError::Service(Unavailable.into()))?;
+        Ok(output)
+    }
+}
+
+fn service_error(error: NativeObjectsError) -> Error {
+    match error {
+        NativeObjectsError::Service(error) => error,
+        _ => Unavailable.into(),
+    }
+}
+
+fn open_error(error: NativeObjectsError) -> LocalOpenError {
+    match error {
+        NativeObjectsError::Admission(error) => LocalOpenError::Io(error),
+        _ => LocalOpenError::Unavailable,
+    }
+}
+
+fn composite_publication(parts: Vec<StoredBody>, length: usize, publication: &mut Publication) -> Result<StoredBody, NativeObjectsError> {
+    match &publication.meter {
+        Some(meter) => {
+            let capacity = parts.capacity().checked_mul(std::mem::size_of::<StoredBody>()).ok_or(Error::from(QuotaExceeded))?;
+            let allocation = publication.retained.as_mut().ok_or(Error::from(Unavailable))?.split(capacity)?;
+            StoredBody::composite_measured(parts, length, meter, allocation)
+        }
+        None => Ok(StoredBody::Composite { parts: parts.into(), length }),
+    }
+}
+
+fn relocated_publication(body: &StoredBody, moves: &crate::body::LocalBodyRelocations, publication: &Publication) -> Result<Option<StoredBody>, NativeObjectsError> {
+    match &publication.meter {
+        Some(meter) => body.relocated_measured(moves, meter),
+        None => Ok(body.relocated(moves)),
+    }
+}
+
+fn unpersisted(body: &StoredBody) -> bool {
+    match body {
+        StoredBody::Memory(_) => true,
+        StoredBody::Composite { parts, .. } => parts.iter().any(unpersisted),
+        StoredBody::Local { .. } => false,
+    }
+}
+
 /// Failure to open or recover logical Objects storage.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalOpenError {
@@ -189,7 +367,7 @@ pub(super) fn response_kind<R>() -> Result<u32, Error> {
 /// body, plus its object change and retry receipt. Each of those holds at most
 /// the request's bucket, key, metadata and identity, a 66-byte `ETag` and
 /// fixed-width fields; a larger body adds only a segment reference.
-pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &Bytes) -> usize {
+pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes) -> usize {
     let inline = if body.len() <= inline::LIMIT {
         body.len()
     } else {
@@ -230,6 +408,17 @@ impl MemoryObjects {
             *state = next;
             Ok(())
         })
+    }
+    pub(in crate::v1) fn compact_local_if_due_measured(&self, meter: Arc<dyn NativeReadMeter>) -> Result<(), NativeObjectsError> {
+        meter.check()?;
+        let mut state = self.lock_state()?;
+        let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
+        if !journal.maintenance_due()? { return Ok(()); }
+        let mut next = clone_state_measured(&state, &meter)?;
+        journal.materialize_inline_with(&mut next, Some(Arc::clone(&meter)))?;
+        journal.compact_with(&next, Some(meter))?;
+        *state = next;
+        Ok(())
     }
     pub(in crate::v1) fn collect_local_garbage(
         &self,
@@ -543,13 +732,21 @@ impl Journal {
         }
     }
     pub(super) fn commit(&self, before: &State, next: &mut State) -> Result<(), Error> {
+        self.commit_with(before, next, None).map_err(service_error)
+    }
+    pub(super) fn commit_measured(&self, before: &State, next: &mut State, meter: Arc<dyn NativeReadMeter>) -> Result<(), NativeObjectsError> {
+        self.commit_with(before, next, Some(meter))
+    }
+    fn commit_with(&self, before: &State, next: &mut State, meter: Option<Arc<dyn NativeReadMeter>>) -> Result<(), NativeObjectsError> {
         obs::scoped(
             &obs::span!(DEBUG, "acyclic.objects.journal.commit", bytes = obs::Empty),
             || {
+                let mut publication = Publication::new(meter);
+                publication.check()?;
                 self.check()?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
                 if tail.operations >= self.limits.maximum_journal_operations {
-                    return Err(QuotaExceeded.into());
+                    return Err(Error::from(QuotaExceeded).into());
                 }
                 let mut inline_data = Vec::new();
                 // Only an object this mutation added or replaced can hold a body not yet
@@ -557,46 +754,48 @@ impl Journal {
                 // commit proportional to its change rather than to the store, and leaves
                 // every other subtree shared with `before`, so `difference` skips it too.
                 for (name, bucket) in &mut next.buckets {
-                    let keys = changed_keys(before.buckets.get(name), bucket);
+                    let keys = changed_keys_with(before.buckets.get(name), bucket, &mut publication)?;
                     for key in keys {
                         let object = bucket
                             .objects
                             .get_mut(&key)
                             .ok_or(Error::from(Unavailable))?;
                         if object.body.len() as u64 > self.limits.maximum_object_bytes {
-                            return Err(QuotaExceeded.into());
+                            return Err(Error::from(QuotaExceeded).into());
                         }
-                        object.body = self.prepare_inline(&object.body, &mut inline_data)?;
+                        object.body = self.prepare_inline_with(&object.body, &mut inline_data, &mut publication)?;
                     }
                 }
                 for upload in next.uploads.values_mut() {
                     for (_, body) in upload.parts.values_mut() {
-                        *body = self.prepare_inline(body, &mut inline_data)?;
+                        *body = self.prepare_inline_with(body, &mut inline_data, &mut publication)?;
                     }
                 }
-                let mut delta = difference(before, next, tail.operations + 1)?;
+                let mut delta = difference_with(before, next, tail.operations + 1, &mut publication)?;
                 delta.inline_data = inline_data;
-                inline::place(&mut delta, next, tail.bytes)?;
-                let record = delta.encode_to_vec();
+                inline::place_with(&mut delta, next, tail.bytes, &mut publication)?;
+                let record = publication.encode(&delta)?;
                 let end = tail
                     .bytes
                     .checked_add(36 + record.len() as u64)
                     .ok_or(Error::from(QuotaExceeded))?;
                 if record.len() > RECORD_LIMIT || end > self.limits.maximum_journal_bytes {
-                    return Err(QuotaExceeded.into());
+                    return Err(Error::from(QuotaExceeded).into());
                 }
-                let mut frame = Vec::with_capacity(36 + record.len());
-                frame.extend_from_slice(
-                    &u32::try_from(record.len())
-                        .map_err(|_| Error::from(QuotaExceeded))?
-                        .to_le_bytes(),
-                );
-                frame.extend_from_slice(blake3::hash(&record).as_bytes());
-                frame.extend_from_slice(&record);
+                let mut frame = Vec::new();
+                publication.reserve(&mut frame, 36 + record.len())?;
+                let length = u32::try_from(record.len()).map_err(|_| Error::from(QuotaExceeded))?;
+                let digest = publication.codec(0, 0, record.len(), || *blake3::hash(&record).as_bytes())?;
+                publication.codec(0, 36 + record.len(), 0, || {
+                    frame.extend_from_slice(&length.to_le_bytes());
+                    frame.extend_from_slice(&digest);
+                    frame.extend_from_slice(&record);
+                })?;
                 obs::record!("bytes" = frame.len());
-                if self.write(&mut tail.file, &frame).is_err() {
+                let start = tail.bytes;
+                if let Err(error) = self.write_with(&mut tail.file, start, &frame, &mut publication) {
                     self.poisoned.store(true, Ordering::Release);
-                    return Err(Unavailable.into());
+                    return Err(error);
                 }
                 tail.bytes = end;
                 tail.operations += 1;
@@ -607,19 +806,20 @@ impl Journal {
             },
         )
     }
-    fn external(&self, body: &StoredBody) -> Result<StoredBody, Error> {
+    fn external_with(&self, body: &StoredBody, publication: &mut Publication) -> Result<StoredBody, NativeObjectsError> {
+        if !unpersisted(body) { return Ok(body.clone()); }
         match body {
             StoredBody::Memory(bytes) => {
                 if bytes.len() as u64 > self.limits.maximum_object_bytes {
-                    return Err(QuotaExceeded.into());
+                    return Err(Error::from(QuotaExceeded).into());
                 }
-                let digest = *blake3::hash(bytes).as_bytes();
-                let (id, offsets) = crate::physical::persist_segment(
+                let digest = publication.codec(0, 0, bytes.len(), || *blake3::hash(bytes).as_bytes())?;
+                let (id, offsets) = crate::physical::persist_segment_measured(
                     &self.root.path,
-                    &[(digest, bytes.clone())],
+                    &[(digest, bytes.as_slice())],
                     self.limits.durability,
-                )
-                .map_err(|_| Error::from(Unavailable))?;
+                    publication,
+                )?;
                 Ok(StoredBody::Local {
                     root: Arc::clone(&self.root),
                     digest,
@@ -630,18 +830,18 @@ impl Journal {
                     },
                 })
             }
-            StoredBody::Composite { parts, length } => Ok(StoredBody::Composite {
-                parts: parts
-                    .iter()
-                    .map(|part| self.external(part))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-                length: *length,
-            }),
+            StoredBody::Composite { parts, length } => {
+                let mut output = Vec::new();
+                publication.reserve(&mut output, parts.len())?;
+                for part in parts.iter() {
+                    output.push(self.external_with(part, publication)?);
+                }
+                composite_publication(output, *length, publication)
+            }
             StoredBody::Local { .. } => Ok(body.clone()),
         }
     }
-    fn write(&self, file: &mut File, frame: &[u8]) -> std::io::Result<()> {
+    fn write_with(&self, file: &mut File, offset: u64, frame: &[u8], publication: &mut Publication) -> Result<(), NativeObjectsError> {
         obs::scoped(
             &obs::span!(
                 DEBUG,
@@ -655,219 +855,182 @@ impl Journal {
                     let cut = self.fault_bytes.swap(u64::MAX, Ordering::AcqRel);
                     if cut != u64::MAX {
                         let count = usize::try_from(cut).unwrap_or(frame.len()).min(frame.len());
-                        file.write_all(
-                            frame
-                                .get(..count)
-                                .ok_or_else(|| std::io::Error::other("invalid fault point"))?,
+                        crate::physical::write_publication(
+                            file, offset,
+                            frame.get(..count).ok_or_else(|| std::io::Error::other("invalid fault point"))?,
+                            publication,
                         )?;
-                        sync(file, self.limits)?;
-                        return Err(std::io::Error::other("injected journal write failure"));
+                        crate::physical::sync_publication(file, self.limits.durability, publication)?;
+                        return Err(std::io::Error::other("injected journal write failure").into());
                     }
                 }
-                file.write_all(frame)?;
+                crate::physical::write_publication(file, offset, frame, publication)?;
                 #[cfg(test)]
                 if self.fault_sync.swap(false, Ordering::AcqRel) {
-                    return Err(std::io::Error::other("injected journal sync failure"));
+                    return Err(std::io::Error::other("injected journal sync failure").into());
                 }
-                sync(file, self.limits)
+                crate::physical::sync_publication(file, self.limits.durability, publication)
             },
         )
     }
 }
 
+#[cfg(test)]
 fn bodies(body: &StoredBody) -> Result<Vec<BodyRecord>, Error> {
-    let mut refs = BTreeSet::<LocalBodyReference>::new();
-    // Preserve leaf order and repeated leaves; a set would change concatenation.
-    fn ordered(body: &StoredBody, out: &mut Vec<BodyRecord>) -> Result<(), Error> {
+    bodies_with(body, &mut Publication::new(None)).map_err(service_error)
+}
+
+fn bodies_with(body: &StoredBody, publication: &mut Publication) -> Result<Vec<BodyRecord>, NativeObjectsError> {
+    fn ordered(body: &StoredBody, out: &mut Vec<BodyRecord>, publication: &mut Publication) -> Result<(), NativeObjectsError> {
         match body {
-            StoredBody::Local {
-                digest,
-                length,
-                location: LocalBodyLocation::Segment { id, offset },
-                ..
-            } => {
-                out.push(BodyRecord {
-                    segment: id.to_vec(),
-                    digest: digest.to_vec(),
-                    length: *length as u64,
-                    offset: *offset,
-                    journal: false,
-                });
-                Ok(())
-            }
-            StoredBody::Local {
-                digest,
-                length,
-                location: LocalBodyLocation::Journal { offset },
-                ..
-            } => {
-                out.push(BodyRecord {
-                    segment: Vec::new(),
-                    digest: digest.to_vec(),
-                    length: *length as u64,
-                    offset: *offset,
-                    journal: true,
-                });
+            StoredBody::Local { digest, length, location, .. } => {
+                let (segment, offset, journal) = match location {
+                    LocalBodyLocation::Segment { id, offset } => (publication.bytes(id)?, *offset, false),
+                    LocalBodyLocation::Journal { offset } => (Vec::new(), *offset, true),
+                };
+                let digest = publication.bytes(digest)?;
+                publication.push(out, BodyRecord { segment, digest, length: *length as u64, offset, journal })?;
                 Ok(())
             }
             StoredBody::Composite { parts, .. } => {
-                for part in parts.iter() {
-                    ordered(part, out)?;
-                }
+                for part in parts.iter() { ordered(part, out, publication)?; }
                 Ok(())
             }
-            _ => Err(Unavailable.into()),
+            _ => Err(Error::from(Unavailable).into()),
         }
     }
-    body.local_references(&mut refs);
-    let mut out = Vec::with_capacity(refs.len());
-    ordered(body, &mut out)?;
-    Ok(out)
+    // Preserve leaf order and repetitions; no set or deduplication allocation.
+    let mut output = Vec::new();
+    ordered(body, &mut output, publication)?;
+    Ok(output)
 }
 
 /// Keys of `next`'s objects that are new or differ from `before`'s, in key order.
-fn changed_keys(before: Option<&Bucket>, next: &Bucket) -> Vec<String> {
-    match before {
-        Some(before) => before
-            .objects
-            .diff(&next.objects)
-            .filter_map(|item| match item {
-                imbl::ordmap::DiffItem::Add(key, _)
-                | imbl::ordmap::DiffItem::Update { new: (key, _), .. } => Some(key.clone()),
-                imbl::ordmap::DiffItem::Remove(..) => None,
-            })
-            .collect(),
-        None => next.objects.keys().cloned().collect(),
+fn changed_keys_with(before: Option<&Bucket>, next: &Bucket, publication: &mut Publication) -> Result<Vec<SharedText>, NativeObjectsError> {
+    let mut output = Vec::new();
+    if let Some(before) = before {
+        for item in before.objects.diff(&next.objects) {
+            if let imbl::ordmap::DiffItem::Add(key, _) | imbl::ordmap::DiffItem::Update { new: (key, _), .. } = item {
+                publication.push(&mut output, key.clone())?;
+            }
+        }
+    } else {
+        for key in next.objects.keys() { publication.push(&mut output, key.clone())?; }
     }
+    Ok(output)
 }
 
 /// Bucket and object changes from `before` to `next`, into `delta`.
-fn bucket_changes(before: &State, next: &State, delta: &mut Delta) -> Result<(), Error> {
-    let changed = |key: &String, value: &Stored| -> Result<ObjectChange, Error> {
+fn bucket_changes(before: &State, next: &State, delta: &mut Delta, publication: &mut Publication) -> Result<(), NativeObjectsError> {
+    fn changed(name: &str, key: &str, value: &Stored, publication: &mut Publication) -> Result<ObjectChange, NativeObjectsError> {
         Ok(ObjectChange {
-            bucket: String::new(),
-            key: key.clone(),
-            info: Some(value.info.clone()),
-            bodies: bodies(&value.body)?,
+            bucket: publication.text(name)?,
+            key: publication.text(key)?,
+            info: Some(publication.info(value.info.as_ref())?),
+            bodies: bodies_with(&value.body, publication)?,
         })
-    };
-    // Removals follow every addition and replacement, bucket by bucket.
+    }
     let mut removed = Vec::new();
     for (name, bucket) in &next.buckets {
         let old = before.buckets.get(name);
         if old.is_none_or(|old| old.info != bucket.info) {
-            delta.buckets.push(BucketChange {
-                name: name.clone(),
-                info: Some(bucket.info.clone()),
-            });
+            let info = wire::Bucket {
+                bucket: bucket.info.bucket.as_ref().map(|bucket| publication.text(&bucket.name).map(|name| wire::BucketRef { name })).transpose()?,
+                created_at: bucket.info.created_at,
+            };
+            let change = BucketChange { name: publication.text(name)?, info: Some(info) };
+            publication.push(&mut delta.buckets, change)?;
         }
         let Some(old) = old else {
             for (key, value) in &bucket.objects {
-                delta.objects.push(ObjectChange {
-                    bucket: name.clone(),
-                    ..changed(key, value)?
-                });
+                let change = changed(name, key.as_str(), value, publication)?;
+                publication.push(&mut delta.objects, change)?;
             }
             continue;
         };
         for item in old.objects.diff(&bucket.objects) {
             match item {
-                imbl::ordmap::DiffItem::Add(key, value) => delta.objects.push(ObjectChange {
-                    bucket: name.clone(),
-                    ..changed(key, value)?
-                }),
-                imbl::ordmap::DiffItem::Update {
-                    old: (_, old),
-                    new: (key, value),
-                } => {
-                    let refs = bodies(&value.body)?;
-                    if old.info != value.info || bodies(&old.body)? != refs {
-                        delta.objects.push(ObjectChange {
-                            bucket: name.clone(),
-                            key: key.clone(),
-                            info: Some(value.info.clone()),
+                imbl::ordmap::DiffItem::Add(key, value) => {
+                    let change = changed(name, key.as_str(), value, publication)?;
+                    publication.push(&mut delta.objects, change)?;
+                }
+                imbl::ordmap::DiffItem::Update { old: (_, old), new: (key, value) } => {
+                    let refs = bodies_with(&value.body, publication)?;
+                    if old.info != value.info || bodies_with(&old.body, publication)? != refs {
+                        let change = ObjectChange {
+                            bucket: publication.text(name)?,
+                            key: publication.text(key.as_str())?,
+                            info: Some(publication.info(value.info.as_ref())?),
                             bodies: refs,
-                        });
+                        };
+                        publication.push(&mut delta.objects, change)?;
                     }
                 }
-                imbl::ordmap::DiffItem::Remove(key, _) => removed.push(ObjectChange {
-                    bucket: name.clone(),
-                    key: key.clone(),
-                    ..Default::default()
-                }),
+                imbl::ordmap::DiffItem::Remove(key, _) => {
+                    let change = ObjectChange { bucket: publication.text(name)?, key: publication.text(key.as_str())?, ..Default::default() };
+                    publication.push(&mut removed, change)?;
+                }
             }
         }
     }
+    publication.reserve(&mut delta.objects, removed.len())?;
     delta.objects.extend(removed);
-    for name in before
-        .buckets
-        .keys()
-        .filter(|name| !next.buckets.contains_key(*name))
-    {
-        delta.buckets.push(BucketChange {
-            name: name.clone(),
-            info: None,
-        });
+    for name in before.buckets.keys().filter(|name| !next.buckets.contains_key(*name)) {
+        let change = BucketChange { name: publication.text(name)?, info: None };
+        publication.push(&mut delta.buckets, change)?;
     }
     Ok(())
 }
 
+#[cfg(test)]
 /// The journal record taking `before` to `next`. Object maps are compared with
 /// `OrdMap::diff`, which skips every subtree the two states share, so the cost
 /// follows the change, not the number of stored objects.
 fn difference(before: &State, next: &State, ordinal: u64) -> Result<Delta, Error> {
-    let mut delta = Delta {
-        sequence: next.sequence,
-        ordinal,
-        ..Default::default()
-    };
-    bucket_changes(before, next, &mut delta)?;
+    difference_with(before, next, ordinal, &mut Publication::new(None)).map_err(service_error)
+}
+fn difference_with(before: &State, next: &State, ordinal: u64, publication: &mut Publication) -> Result<Delta, NativeObjectsError> {
+    let mut delta = Delta { sequence: next.sequence, ordinal, ..Default::default() };
+    bucket_changes(before, next, &mut delta, publication)?;
     for (id, upload) in &next.uploads {
         let old = before.uploads.get(id);
         if old.is_none() {
-            delta.uploads.push(UploadChange {
-                id: id.clone(),
-                bucket: upload.bucket.clone(),
-                key: upload.key.clone(),
-                metadata: upload.metadata.clone(),
+            let metadata = upload.metadata.as_ref().map(|value| publication.metadata(value)).transpose()?;
+            let change = UploadChange {
+                id: publication.text(id)?,
+                bucket: publication.text(&upload.bucket)?,
+                key: publication.text(&upload.key)?,
+                metadata,
                 deleted: false,
-            });
+            };
+            publication.push(&mut delta.uploads, change)?;
         }
         for (number, (receipt, body)) in &upload.parts {
-            let refs = bodies(body)?;
-            if old
-                .and_then(|old| old.parts.get(number))
-                .is_none_or(|(old, _)| old != receipt)
-            {
-                delta.parts.push(PartChange {
-                    upload: id.clone(),
+            let refs = bodies_with(body, publication)?;
+            if old.and_then(|old| old.parts.get(number)).is_none_or(|(old, _)| old != receipt) {
+                let change = PartChange {
+                    upload: publication.text(id)?,
                     number: *number,
-                    receipt: Some(receipt.clone()),
+                    receipt: Some(wire::UploadedPart { etag: publication.text(&receipt.etag)?, part_number: receipt.part_number, size: receipt.size }),
                     bodies: refs,
-                });
+                };
+                publication.push(&mut delta.parts, change)?;
             }
         }
     }
-    for id in before
-        .uploads
-        .keys()
-        .filter(|id| !next.uploads.contains_key(*id))
-    {
-        delta.uploads.push(UploadChange {
-            id: id.clone(),
-            deleted: true,
-            ..Default::default()
-        });
+    for id in before.uploads.keys().filter(|id| !next.uploads.contains_key(*id)) {
+        let change = UploadChange { id: publication.text(id)?, deleted: true, ..Default::default() };
+        publication.push(&mut delta.uploads, change)?;
     }
-    // Receipts are only ever added.
     for item in before.receipts.diff(&next.receipts) {
         if let imbl::ordmap::DiffItem::Add(key, receipt) = item {
-            delta.receipts.push(ReceiptChange {
-                key: key.clone(),
-                digest: receipt.digest.to_vec(),
-                response: receipt.response.clone(),
+            let change = ReceiptChange {
+                key: publication.text(key.as_str())?,
+                digest: publication.bytes(&receipt.digest)?,
+                response: publication.bytes(receipt.response.as_ref())?,
                 kind: receipt.kind,
-            });
+            };
+            publication.push(&mut delta.receipts, change)?;
         }
     }
     Ok(delta)
@@ -975,8 +1138,8 @@ fn apply(
                 return Err(LocalOpenError::Corrupt);
             }
             let body = restore_body(value.bodies, root, info.size)?;
-            bucket.objects.insert(value.key, Stored { info, body });
-        } else if !value.bodies.is_empty() || bucket.objects.remove(&value.key).is_none() {
+            bucket.objects.insert(value.key.into(), Stored { info: info.into(), body });
+        } else if !value.bodies.is_empty() || bucket.objects.remove(value.key.as_str()).is_none() {
             return Err(LocalOpenError::Corrupt);
         }
     }
@@ -1071,12 +1234,18 @@ fn apply_receipts(next: &mut State, changes: Vec<ReceiptChange>) -> Result<(), L
         }))
         .map_err(corrupt)?;
         validate_receipt(value.kind, &value.response)?;
+        let put_info = if value.kind == 2 {
+            Some(wire::ObjectInfo::decode(value.response.as_slice()).map_err(corrupt)?.into())
+        } else {
+            None
+        };
         let receipt = Receipt {
             digest: value.digest.as_slice().try_into().map_err(corrupt)?,
-            response: value.response,
+            response: value.response.into(),
+            put_info,
             kind: value.kind,
         };
-        if next.receipts.insert(value.key, receipt).is_some() {
+        if next.receipts.insert(value.key.into(), receipt).is_some() {
             return Err(LocalOpenError::Corrupt);
         }
     }

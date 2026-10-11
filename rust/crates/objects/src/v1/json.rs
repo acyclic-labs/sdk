@@ -41,12 +41,15 @@ pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
 /// Message names are unqualified Objects v1 type names from the canonical route inventory.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
+    let message = decode_input(name, &value.encode_to_vec())?;
+    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+}
+fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
     let descriptor = pool()?
         .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
         .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let message = DynamicMessage::decode(descriptor, value.encode_to_vec().as_slice())
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+    DynamicMessage::decode(descriptor, bytes)
+        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
 }
 /// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
 pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {
@@ -64,6 +67,66 @@ pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) ->
     message
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
+}
+
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub(crate) fn encode_get_native(
+    query: &wire::GetObjectRequest,
+    controls: &super::response::NativeGetControls,
+) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+    encode_native("GetObjectRequest", query, controls)
+}
+
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub(crate) fn encode_native(
+    name: &str,
+    query: &impl Message,
+    controls: &super::response::NativeGetControls,
+) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+    let maximum = query.encoded_len().checked_mul(12).and_then(|value| value.checked_add(256))
+        .ok_or_else(super::response::invalid)?;
+    let mut allocation = acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, maximum)
+        .map_err(|error| controls.fail(error))?;
+    controls.meter.admit_codec(maximum as u64, 0, 0).map_err(|error| controls.fail(error))?;
+    let binary = controls.binary(query)?;
+    let message = decode_input(name, &binary.0)?;
+    drop(binary);
+    let bytes = serde_json::to_vec(&message).map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    drop(message);
+    if let Err(error) = allocation.reconcile_capacity(bytes.capacity()) {
+        return Err(controls.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation)));
+    }
+    if let Err(error) = controls.meter.record_codec(bytes.len() as u64, 0, 0) {
+        return Err(controls.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation)));
+    }
+    Ok((bytes, allocation))
+}
+
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub(crate) fn decode_get_native(
+    bytes: &[u8],
+    maximum: usize,
+    controls: &super::response::NativeGetControls,
+    mut allocation: acyclic_native_runtime::ReadAllocation,
+) -> Result<(wire::GetObjectResponse, acyclic_native_runtime::ReadAllocation), Error> {
+    let frame: wire::GetObjectResponse = decode("GetObjectResponse", bytes, maximum)?;
+    let capacity = match &frame.frame {
+        Some(wire::get_object_response::Frame::Header(header)) => super::response::header_capacity(header),
+        Some(wire::get_object_response::Frame::Body(body)) => body.data.capacity(),
+        Some(wire::get_object_response::Frame::Error(error)) => error.request_id.capacity(),
+        None => 0,
+    };
+    if let Err(error) = allocation.reconcile_capacity(capacity) {
+        let cause = super::NativeObjectsError::from(error);
+        let cause = match frame.frame {
+            Some(wire::get_object_response::Frame::Header(header)) => cause.with_header(header, allocation),
+            Some(wire::get_object_response::Frame::Body(body)) => cause.with_wire(body.data, allocation),
+            Some(wire::get_object_response::Frame::Error(detail)) => cause.with_wire(detail.request_id.into_bytes(), allocation),
+            None => cause,
+        };
+        return Err(controls.fail(cause));
+    }
+    Ok((frame, allocation))
 }
 
 #[cfg(test)]

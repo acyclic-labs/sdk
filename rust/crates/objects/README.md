@@ -60,6 +60,22 @@ parts never publishes an object. The canonical v1 schema is
 operations against a disposable, immediately visible test fixture. Local tests
 do not establish live service acceptance.
 
+Bodies and publication inputs use `acyclic_stream::OwnedBytes`, preserving the
+original allocation through every clone and range alias. Native memory reads
+share the authentic resident carrier rather than copying or adopting it again.
+Native local reads retain the original meter, read lease and root in their
+owned driver; initialized output buffers and shared controls are prepared before
+physical body IO, and completion freezes them without allocating. Ordered native
+read batches admit one state snapshot and retain their result-vector claim until
+the physical vector iterator is dropped.
+Metadata acknowledgements and ordered batch results retain their original claims,
+including shared original failures for a failed journal group. Native requests
+transfer existing input custody into their owned workers, so observation
+cancellation cannot detach a live request buffer.
+Native memory records its actual table lookup and publication events on the
+original meter. Native local storage records the actual runtime IO events,
+without an additional logical SDK-call charge.
+
 ## Native v1 durability foundation
 
 Enable `local` for `v1::local::LocalObjects`. Its private checksummed journal
@@ -76,10 +92,16 @@ checkpoints. Current objects, staged parts, exact receipts and pagination
 authentication survive checkpoint replacement. Interrupted replacement recovers
 the old or new complete journal; uncertain replacement requires reopen.
 
-The v1 provider inlines bodies up to 64 KiB in authenticated journal records,
-groups native writes, and scans current state when constructing deltas. Native
-filesystem roots now compose this provider through the logical v1 adapter.
-Existing v1 roots fail closed; no old-data upgrade path is provided.
+The v1 provider inlines bodies up to 64 KiB in authenticated journal records.
+Ordinary and native mutations share the same delta, segment and journal engine;
+native batches retain one state lock and grouped records, each with its existing
+durability fence. Publication controls are admitted before allocation, while actual copies,
+hashing, native writes and supported durability attempts use the current original
+invocation meter, not a resident body's allocation payer. Required inline
+maintenance uses that same meter and compaction engine; a no-op maintenance
+check does not manufacture IO. Persistent controls retain their original claims
+until the last physical owner retires. Existing v1 roots fail closed; no old-data
+upgrade path is provided.
 
 ## Current contract
 

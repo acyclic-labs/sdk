@@ -1,7 +1,7 @@
 //! Measure current-key publication and bounded logical Objects v1 pagination.
 
 use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::time::Instant;
 
 #[tokio::main]
@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     object_key: key.clone(),
                     ..Default::default()
                 },
-                Bytes::from_static(b"x"),
+                OwnedBytes::from_static(b"x"),
             )
             .await?;
         expected.push((key, info));

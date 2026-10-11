@@ -1,6 +1,7 @@
 //! Private authenticated immutable segments and journal body reads.
 use crate::body::{BodyError, LocalBodyLocation, LocalBodyReference};
 use crate::{LocalDurability, LocalObjectsGarbageCollection};
+use crate::v1::{NativeObjectsError, Publication};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -37,7 +38,7 @@ pub(crate) struct LocalRoot {
 struct JournalReadGate {
     admitted: std::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    completed: std::sync::mpsc::Sender<Result<bytes::Bytes, BodyError>>,
+    completed: std::sync::mpsc::Sender<Result<acyclic_stream::OwnedBytes, BodyError>>,
 }
 
 /// Roots are equal when they name the same directory; the handle is a cache.
@@ -79,7 +80,7 @@ impl LocalRoot {
         offset: u64,
         expected_digest: &[u8; 32],
         expected_length: usize,
-    ) -> Result<bytes::Bytes, BodyError> {
+    ) -> Result<acyclic_stream::OwnedBytes, BodyError> {
         #[cfg(test)]
         if let Some(gate) = &self.read_gate {
             gate.admitted.send(()).map_err(|_| BodyError::Unavailable)?;
@@ -100,7 +101,7 @@ impl LocalRoot {
         offset: u64,
         expected_digest: &[u8; 32],
         expected_length: usize,
-    ) -> Result<bytes::Bytes, BodyError> {
+    ) -> Result<acyclic_stream::OwnedBytes, BodyError> {
         if let Some(journal) = self
             .journal
             .read()
@@ -136,185 +137,375 @@ pub(crate) enum PhysicalError {
 }
 /// Publishes one segment holding `bodies` and makes its directory entry
 /// durable: the segment's identity and the offset of each body.
-pub(crate) fn persist_segment(
+pub(crate) fn persist_segment<B: AsRef<[u8]>>(
     root: &Path,
-    bodies: &[([u8; 32], bytes::Bytes)],
+    bodies: &[([u8; 32], B)],
     durability: LocalDurability,
 ) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    let span = crate::obs::span!(
-        TRACE,
-        "acyclic.objects.segment.persist",
-        items = bodies.len()
-    );
-    crate::obs::scoped(&span, || {
-        let published = write_segment(root, bodies, durability)?;
-        sync_segment_directory(root, durability)?;
-        Ok(published)
-    })
+    let mut publication = Publication::new(None);
+    persist_segment_measured(root, bodies, durability, &mut publication).map_err(ordinary_write_error)
 }
 
-/// Makes the directory entries of every segment [`write_segment`] published
-/// durable, so one synchronization covers a batch of segments.
+/// The caller retains `publication` until the returned offsets have been freed.
+pub(crate) fn persist_segment_measured<B: AsRef<[u8]>>(
+    root: &Path,
+    bodies: &[([u8; 32], B)],
+    durability: LocalDurability,
+    publication: &mut Publication,
+) -> Result<([u8; 32], Vec<u64>), NativeObjectsError> {
+    let published = write_segment_measured(root, bodies, durability, publication)?;
+    sync_segment_directory_measured(root, durability, publication)?;
+    Ok(published)
+}
+
 pub(crate) fn sync_segment_directory(
     root: &Path,
     durability: LocalDurability,
 ) -> Result<(), PhysicalError> {
-    sync_parent(&root.join("segments"), durability)
+    let mut publication = Publication::new(None);
+    sync_segment_directory_measured(root, durability, &mut publication).map_err(ordinary_write_error)
 }
 
-/// Publishes one synchronized segment holding `bodies`, without making its
-/// directory entry durable: a caller must call [`sync_segment_directory`]
-/// before anything durable refers to the segment. A segment already published
-/// is validated and reused, and needs that synchronization just the same: the
-/// write that published it may not have made its entry durable yet.
-pub(crate) fn write_segment(
+pub(crate) fn sync_segment_directory_measured(
     root: &Path,
-    bodies: &[([u8; 32], bytes::Bytes)],
     durability: LocalDurability,
-) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    let span = crate::obs::span!(TRACE, "acyclic.objects.segment.write", items = bodies.len());
-    crate::obs::scoped(&span, || write_segment_inner(root, bodies, durability))
+    publication: &mut Publication,
+) -> Result<(), NativeObjectsError> {
+    let parent = publication_path(root, "segments", publication)?;
+    if let Some(meter) = &publication.meter {
+        meter.check()?;
+        meter.admit_read(0)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            options.write(true).share_mode(7).custom_flags(0x0200_0000);
+        }
+        let directory = options.open(&parent)?;
+        acyclic_native_runtime::sync_file_measured(
+            &directory, native_durability(durability), meter.as_ref(),
+        )?;
+        #[cfg(test)]
+        tests::PARENT_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
+        Ok(())
+    } else {
+        sync_parent(&parent, durability).map_err(native_write_error)
+    }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered scenario keeps each step next to the state it checks"
-)]
-fn write_segment_inner(
-    root: &Path,
-    bodies: &[([u8; 32], bytes::Bytes)],
+pub(crate) fn sync_publication(
+    file: &File,
     durability: LocalDurability,
-) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    if bodies.is_empty() {
-        return Err(PhysicalError::Invalid("object segment is empty"));
+    publication: &Publication,
+) -> Result<(), NativeObjectsError> {
+    match &publication.meter {
+        Some(meter) => acyclic_native_runtime::sync_file_measured(
+            file, native_durability(durability), meter.as_ref(),
+        )?,
+        None => sync_file(file, durability)?,
     }
-    if bodies.len() > MAXIMUM_SEGMENT_BODIES {
-        return Err(PhysicalError::Invalid("object segment has too many bodies"));
-    }
-    if bodies.len() > 1
-        && bodies
-            .iter()
-            .map(|(_, body)| body.len())
-            .try_fold(0_usize, usize::checked_add)
-            .is_none_or(|bytes| bytes > MAXIMUM_SEGMENT_BYTES)
-    {
-        return Err(PhysicalError::Invalid(
-            "multi-body object segment is too large",
-        ));
-    }
-    let count = u32::try_from(bodies.len())
-        .map_err(|_| PhysicalError::Invalid("object segment has too many bodies"))?;
-    let mut offsets = Vec::new();
-    offsets
-        .try_reserve_exact(bodies.len())
-        .map_err(|_| PhysicalError::Invalid("object segment offset allocation failed"))?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(SEGMENT_MAGIC);
-    hasher.update(&count.to_le_bytes());
-    let table_bytes = bodies
-        .len()
-        .checked_mul(SEGMENT_RECORD_BYTES)
-        .ok_or(PhysicalError::Invalid("object segment length overflowed"))?;
-    let mut position = u64::try_from(
-        SEGMENT_HEADER_BYTES
-            .checked_add(table_bytes)
-            .ok_or(PhysicalError::Invalid("object segment length overflowed"))?,
-    )
-    .map_err(|_| PhysicalError::Invalid("object segment length overflowed"))?;
-    for (digest, body) in bodies {
-        let length = u64::try_from(body.len())
-            .map_err(|_| PhysicalError::Invalid("object segment body is too large"))?;
-        hasher.update(digest);
-        hasher.update(&length.to_le_bytes());
-        offsets.push(position);
-        position = position
-            .checked_add(length)
-            .ok_or(PhysicalError::Invalid("object segment length overflowed"))?;
-    }
-    for (_, body) in bodies {
-        hasher.update(body);
-    }
-    let id = *hasher.finalize().as_bytes();
-    let parent = root.join("segments");
-    let destination = segment_path(root, &id);
-    if destination.exists() {
-        validate_segment_file(&destination, &id, position)?;
-        return Ok((id, offsets));
-    }
-    let identity = hex(&id);
-    let (temporary, mut file) = (0..1_024)
-        .find_map(|_| {
-            let nonce = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!(".{identity}.{}-{nonce}.tmp", std::process::id()));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
-                Ok(file) => Some(Ok((path, file))),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(error) => Some(Err(error)),
+    Ok(())
+}
+
+/// Advances the ordinary append cursor as well as the physical positional
+/// write, so a later unmetered append observes the same journal tail.
+pub(crate) fn write_publication(
+    file: &mut File,
+    offset: u64,
+    bytes: &[u8],
+    publication: &mut Publication,
+) -> Result<(), NativeObjectsError> {
+    if let Some(meter) = &publication.meter {
+        acyclic_native_runtime::write_all_at_measured(file, offset, bytes, meter.as_ref())?;
+        let end = offset.checked_add(bytes.len() as u64)
+            .ok_or_else(|| std::io::Error::other("publication offset overflow"))?;
+        loop {
+            meter.check()?;
+            meter.admit_write(0)?;
+            match file.seek(std::io::SeekFrom::Start(end)) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => { result?; break; }
             }
-        })
-        .transpose()?
-        .ok_or(PhysicalError::Corrupt)?;
-    let write_result = (|| -> std::io::Result<()> {
-        let metadata_capacity = SEGMENT_HEADER_BYTES
-            .checked_add(table_bytes)
-            .ok_or_else(|| std::io::Error::other("object segment metadata is too large"))?;
-        let mut metadata = Vec::with_capacity(metadata_capacity);
+        }
+        meter.check()?;
+    } else {
+        file.write_all(bytes)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn open_publication(
+    path: &Path,
+    publication: &Publication,
+) -> Result<File, NativeObjectsError> {
+    publication_namespace(publication, || {
+        OpenOptions::new().create(true).truncate(true).read(true).write(true).open(path)
+    })
+}
+
+pub(crate) fn write_segment<B: AsRef<[u8]>>(
+    root: &Path,
+    bodies: &[([u8; 32], B)],
+    durability: LocalDurability,
+) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
+    let mut publication = Publication::new(None);
+    write_segment_measured(root, bodies, durability, &mut publication).map_err(ordinary_write_error)
+}
+
+/// Uses the same publication engine as ordinary writes. The shared guard owns
+/// offset capacity until the journal has consumed and dropped the returned Vec.
+pub(crate) fn write_segment_measured<B: AsRef<[u8]>>(
+    root: &Path,
+    bodies: &[([u8; 32], B)],
+    durability: LocalDurability,
+    publication: &mut Publication,
+) -> Result<([u8; 32], Vec<u64>), NativeObjectsError> {
+    let span = crate::obs::span!(TRACE, "acyclic.objects.segment.write", items = bodies.len());
+    crate::obs::scoped(&span, || write_segment_inner(root, bodies, durability, publication))
+}
+
+fn native_write_error(error: PhysicalError) -> NativeObjectsError {
+    match error {
+        PhysicalError::Io(error) => NativeObjectsError::Admission(error),
+        PhysicalError::Invalid(_) | PhysicalError::Corrupt =>
+            NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+    }
+}
+
+fn ordinary_write_error(error: NativeObjectsError) -> PhysicalError {
+    match error {
+        NativeObjectsError::Admission(error) => PhysicalError::Io(error),
+        _ => PhysicalError::Invalid("invalid object segment publication"),
+    }
+}
+
+fn publication_path(
+    parent: &Path,
+    name: &str,
+    publication: &mut Publication,
+) -> Result<PathBuf, NativeObjectsError> {
+    let separator = std::path::MAIN_SEPARATOR_STR;
+    let capacity = parent.as_os_str().len().checked_add(separator.len())
+        .and_then(|length| length.checked_add(name.len()))
+        .ok_or_else(|| native_write_error(PhysicalError::Invalid("publication path overflow")))?;
+    publication.allocate(capacity)?;
+    let mut path = std::ffi::OsString::new();
+    path.try_reserve_exact(capacity).map_err(|error| publication.allocation_failed(error))?;
+    publication.retain_capacity(capacity, path.capacity())?;
+    publication.codec(0, capacity, 0, || {
+        path.push(parent);
+        path.push(separator);
+        path.push(name);
+        PathBuf::from(path)
+    })
+}
+
+fn publication_string(
+    capacity: usize,
+    publication: &mut Publication,
+) -> Result<String, NativeObjectsError> {
+    publication.allocate(capacity)?;
+    let mut value = String::new();
+    value.try_reserve_exact(capacity).map_err(|error| publication.allocation_failed(error))?;
+    publication.retain_capacity(capacity, value.capacity())?;
+    Ok(value)
+}
+
+fn publication_namespace<T>(
+    publication: &Publication,
+    work: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, NativeObjectsError> {
+    if let Some(meter) = &publication.meter {
+        meter.check()?;
+        meter.admit_write(0)?;
+    }
+    let result = work()?;
+    publication.check()?;
+    Ok(result)
+}
+
+fn publication_probe<T>(
+    publication: &Publication,
+    work: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, NativeObjectsError> {
+    if let Some(meter) = &publication.meter {
+        meter.check()?;
+        meter.admit_read(0)?;
+    }
+    let result = work()?;
+    publication.check()?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_lines, reason = "ordered immutable segment publication")]
+fn write_segment_inner<B: AsRef<[u8]>>(
+    root: &Path,
+    bodies: &[([u8; 32], B)],
+    durability: LocalDurability,
+    publication: &mut Publication,
+) -> Result<([u8; 32], Vec<u64>), NativeObjectsError> {
+    let invalid = || native_write_error(PhysicalError::Invalid("invalid object segment"));
+    publication.check()?;
+    if bodies.is_empty() || bodies.len() > MAXIMUM_SEGMENT_BODIES {
+        return Err(invalid());
+    }
+    if bodies.len() > 1 && bodies.iter().map(|(_, body)| body.as_ref().len())
+        .try_fold(0_usize, usize::checked_add)
+        .is_none_or(|bytes| bytes > MAXIMUM_SEGMENT_BYTES) {
+        return Err(invalid());
+    }
+    let count = u32::try_from(bodies.len()).map_err(|_| invalid())?;
+    let table_bytes = bodies.len().checked_mul(SEGMENT_RECORD_BYTES).ok_or_else(invalid)?;
+    let metadata_capacity = SEGMENT_HEADER_BYTES.checked_add(table_bytes).ok_or_else(invalid)?;
+    let mut offsets = Vec::new();
+    publication.reserve(&mut offsets, bodies.len())?;
+    let mut metadata = Vec::new();
+    publication.reserve(&mut metadata, metadata_capacity)?;
+    publication.codec(metadata_capacity, metadata_capacity, 0, || {
         metadata.extend_from_slice(SEGMENT_MAGIC);
         metadata.extend_from_slice(&count.to_le_bytes());
         for (digest, body) in bodies {
             metadata.extend_from_slice(digest);
-            let length = u64::try_from(body.len())
-                .map_err(|_| std::io::Error::other("object segment body is too large"))?;
-            metadata.extend_from_slice(&length.to_le_bytes());
+            metadata.extend_from_slice(&(body.as_ref().len() as u64).to_le_bytes());
         }
-        file.write_all(&metadata)?;
-        for (_, body) in bodies {
-            file.write_all(body)?;
+    })?;
+    let mut position = metadata_capacity as u64;
+    for (_, body) in bodies {
+        offsets.push(position);
+        position = position.checked_add(body.as_ref().len() as u64).ok_or_else(invalid)?;
+    }
+    let mut hasher = blake3::Hasher::new();
+    publication.codec(0, 0, metadata.len(), || { hasher.update(&metadata); })?;
+    for (_, body) in bodies {
+        publication.codec(0, 0, body.as_ref().len(), || { hasher.update(body.as_ref()); })?;
+    }
+    let id = *hasher.finalize().as_bytes();
+    let parent = publication_path(root, "segments", publication)?;
+    let mut identity = publication_string(64, publication)?;
+    publication.codec(64, 0, 0, || {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        for byte in id {
+            identity.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            identity.push(char::from(DIGITS[usize::from(byte & 15)]));
         }
-        sync_file(&file, durability)
+    })?;
+    let mut name = publication_string(72, publication)?;
+    publication.codec(72, 72, 0, || {
+        name.push_str(&identity);
+        name.push_str(".segment");
+    })?;
+    let destination = publication_path(&parent, &name, publication)?;
+    let existing = publication_probe(publication, || fs::metadata(&destination));
+    match existing {
+        Ok(_) => {
+            validate_segment_publication(&destination, &id, position, publication)?;
+            return Ok((id, offsets));
+        }
+        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut opened = None;
+    for _ in 0..1_024 {
+        use std::fmt::Write as _;
+        let nonce = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let name_length = 1 + 64 + 1 + (pid.max(1).ilog10() as usize + 1)
+            + 1 + (nonce.max(1).ilog10() as usize + 1) + 4;
+        let mut temporary_name = publication_string(name_length, publication)?;
+        publication.codec(name_length, name_length, 0, || {
+            let _ = write!(temporary_name, ".{identity}.{pid}-{nonce}.tmp");
+        })?;
+        let temporary = publication_path(&parent, &temporary_name, publication)?;
+        let result = publication_namespace(publication, || {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(windows)]
+            if publication.meter.is_some() {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                options.custom_flags(0x4000_0000);
+            }
+            options.open(&temporary)
+        });
+        match result {
+            Ok(file) => { opened = Some((temporary, file)); break; }
+            Err(NativeObjectsError::Admission(error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let (temporary, mut file) = opened.ok_or_else(invalid)?;
+    let write_result = (|| -> Result<(), NativeObjectsError> {
+        if let Some(meter) = &publication.meter {
+            acyclic_native_runtime::write_all_at_measured_held(&file, 0, &metadata, meter.as_ref())?;
+            for ((_, body), offset) in bodies.iter().zip(&offsets) {
+                acyclic_native_runtime::write_all_at_measured_held(
+                    &file, *offset, body.as_ref(), meter.as_ref(),
+                )?;
+            }
+            acyclic_native_runtime::sync_file_measured(
+                &file, native_durability(durability), meter.as_ref(),
+            )?;
+        } else {
+            file.write_all(&metadata)?;
+            for (_, body) in bodies { file.write_all(body.as_ref())?; }
+            sync_file(&file, durability)?;
+        }
+        Ok(())
     })();
+    drop(file);
     if let Err(error) = write_result {
-        let _ = fs::remove_file(&temporary);
-        return Err(error.into());
+        let _ = publication_namespace(publication, || fs::remove_file(&temporary));
+        return Err(error);
     }
-    match publish_new(&temporary, &destination) {
+    // Both callers share the native no-replace engine; the measured branch
+    // owns and accounts for its actual terminated platform pathname buffers.
+    let published = match &publication.meter {
+        Some(meter) => acyclic_native_runtime::publish_new_measured(
+            &temporary, &destination, meter,
+        ),
+        None => acyclic_native_runtime::publish_new(&temporary, &destination),
+    }.map_err(NativeObjectsError::Admission);
+    match published {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            validate_segment_file(&destination, &id, position)?;
-        }
+        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+            validate_segment_publication(&destination, &id, position, publication)?,
         Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.into());
+            let _ = publication_namespace(publication, || fs::remove_file(&temporary));
+            return Err(error);
         }
     }
-    match fs::remove_file(&temporary) {
+    match publication_namespace(publication, || fs::remove_file(&temporary)) {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     Ok((id, offsets))
 }
 
-fn validate_segment_file(
+fn validate_segment_publication(
     path: &Path,
     expected_id: &[u8; 32],
     expected_length: u64,
-) -> Result<(), PhysicalError> {
-    let mut file = File::open(path)?;
-    if file.metadata()?.len() != expected_length {
-        return Err(PhysicalError::Corrupt);
-    }
+    publication: &mut Publication,
+) -> Result<(), NativeObjectsError> {
+    let mut file = publication_probe(publication, || File::open(path))?;
+    let length = publication_probe(publication, || file.metadata())?.len();
+    if length != expected_length { return Err(native_write_error(PhysicalError::Corrupt)); }
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
+        if let Some(meter) = &publication.meter {
+            meter.check()?;
+            meter.admit_read(buffer.len())?;
         }
-        hasher.update(buffer.get(..read).ok_or(PhysicalError::Corrupt)?);
+        let read = file.read(&mut buffer)?;
+        if let Some(meter) = &publication.meter { meter.record_read(read)?; }
+        if read == 0 { break; }
+        publication.codec(0, 0, read, || { hasher.update(&buffer[..read]); })?;
     }
     if hasher.finalize().as_bytes() != expected_id {
-        return Err(PhysicalError::Corrupt);
+        return Err(native_write_error(PhysicalError::Corrupt));
     }
     Ok(())
 }
@@ -567,7 +758,7 @@ pub(crate) async fn read_body_at_async(
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<bytes::Bytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, BodyError> {
     let backend = match location {
         LocalBodyLocation::Segment { .. } => "segment",
         LocalBodyLocation::Journal { .. } => "journal",
@@ -593,7 +784,7 @@ async fn read_body_at_inner_async(
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<bytes::Bytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, BodyError> {
     if start > end || end > expected_length {
         return Err(BodyError::Unavailable);
     }
@@ -680,7 +871,168 @@ async fn read_body_at_inner_async(
     )? {
         return Err(BodyError::Unavailable);
     }
-    Ok(selected)
+    // Runtime batch buffers are opaque here; preserve honest unknown capacity.
+    Ok(selected.into())
+}
+
+struct NativeBodyPath {
+    path: PathBuf,
+    _allocation: acyclic_native_runtime::ReadAllocation,
+}
+fn native_body_path(
+    root: &Path,
+    suffix: &str,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> std::io::Result<NativeBodyPath> {
+    let maximum = root.as_os_str().len().checked_add(suffix.len()).and_then(|length| length.checked_add(1))
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, maximum)?;
+    let mut path = PathBuf::new();
+    path.try_reserve_exact(maximum).map_err(|error| meter.allocation_failed(error))?;
+    allocation.reconcile_capacity(path.capacity())?;
+    meter.admit_codec(0, maximum as u64, 0)?;
+    path.push(root);
+    path.push(suffix);
+    meter.record_codec(0, path.as_os_str().len() as u64, 0)?;
+    Ok(NativeBodyPath { path, _allocation: allocation })
+}
+
+pub(crate) async fn read_body_at_native(
+    root: &Arc<LocalRoot>,
+    expected_digest: &[u8; 32],
+    expected_length: usize,
+    location: &LocalBodyLocation,
+    start: usize,
+    end: usize,
+    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
+    let backend = match location {
+        LocalBodyLocation::Segment { .. } => "segment",
+        LocalBodyLocation::Journal { .. } => "journal",
+    };
+    let span = crate::obs::span!(
+        TRACE, "acyclic.objects.physical.read",
+        backend, bytes = end.saturating_sub(start), body_bytes = expected_length,
+    );
+    crate::obs::traced(span, read_body_at_native_inner(
+        root, expected_digest, expected_length, location, start, end, meter,
+    )).await
+}
+
+/// The same journal authentication and segment-table selection as ordinary reads,
+/// with original-meter buffers and shared controls prepared before physical IO.
+async fn read_body_at_native_inner(
+    root: &Arc<LocalRoot>,
+    expected_digest: &[u8; 32],
+    expected_length: usize,
+    location: &LocalBodyLocation,
+    start: usize,
+    end: usize,
+    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
+    use crate::v1::{Error, NativeObjectsError, wire::ErrorCode::Unavailable};
+    let unavailable = || NativeObjectsError::from(Error::from(Unavailable));
+    meter.check()?;
+    if start > end || end > expected_length { return Err(unavailable()); }
+    if matches!(location, LocalBodyLocation::Journal { .. }) && expected_length > MAXIMUM_INLINE_BODY_BYTES {
+        return Err(unavailable());
+    }
+    let length = match location {
+        LocalBodyLocation::Journal { .. } => expected_length,
+        LocalBodyLocation::Segment { .. } => end - start,
+    };
+    let storage = crate::body::prepare_native_bytes(length, &meter)?;
+    let maximum_prefix = SEGMENT_HEADER_BYTES + MAXIMUM_SEGMENT_BODIES * SEGMENT_RECORD_BYTES;
+    let prefix = match location {
+        LocalBodyLocation::Segment { .. } => Some(crate::body::prepare_native_bytes(maximum_prefix, &meter)?),
+        LocalBodyLocation::Journal { .. } => None,
+    };
+    let (root, location) = (Arc::clone(root), location.clone());
+    let open_meter = Arc::clone(&meter);
+    let opened = acyclic_native_runtime::run_blocking_io_measured(move || {
+        open_meter.check()?;
+        let file = match &location {
+            LocalBodyLocation::Journal { .. } => {
+                let mut journal = root.journal.write()
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
+                if journal.is_none() {
+                    let path = native_body_path(&root.path, JOURNAL_FILE, &open_meter)?;
+                    open_meter.admit_read(0)?;
+                    *journal = Some(File::open(&path.path)?);
+                    #[cfg(test)]
+                    root.journal_opens.fetch_add(1, Ordering::Relaxed);
+                    drop(path);
+                }
+                open_meter.admit_read(0)?;
+                journal.as_ref().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?.try_clone()?
+            }
+            LocalBodyLocation::Segment { id, .. } => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let mut name = [0u8; 72];
+                open_meter.admit_codec(64, 0, 0)?;
+                for (index, byte) in id.iter().copied().enumerate() {
+                    name[index * 2] = HEX[(byte >> 4) as usize];
+                    name[index * 2 + 1] = HEX[(byte & 15) as usize];
+                }
+                name[64..].copy_from_slice(b".segment");
+                open_meter.record_codec(64, 0, 0)?;
+                let name = std::str::from_utf8(&name)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                let path = native_body_path(&root.path, "segments", &open_meter)?;
+                let file_path = native_body_path(&path.path, name, &open_meter)?;
+                open_meter.admit_read(0)?;
+                let file = File::open(&file_path.path)?;
+                drop(path);
+                file
+            }
+        };
+        open_meter.admit_read(0)?;
+        let file_length = file.metadata()?.len();
+        let file = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, open_meter)?;
+        Ok::<_, std::io::Error>((file, file_length, location))
+    }, Arc::clone(&meter))?;
+    let (file, file_length, location) = opened.await.map_err(|_| unavailable())??;
+    match location {
+        LocalBodyLocation::Journal { offset } => {
+            let (storage, actual) = file.read_prepared_bounded_async(
+                offset, storage, expected_length, true, Arc::clone(&meter),
+            )?.await?;
+            let body = storage.freeze(actual).map_err(|_| unavailable())?;
+            meter.admit_codec(0, 0, actual as u64)?;
+            let digest = blake3::hash(body.as_slice());
+            meter.record_codec(0, 0, actual as u64)?;
+            if actual != expected_length || digest.as_bytes() != expected_digest { return Err(unavailable()); }
+            Ok(body.slice(start..end))
+        }
+        LocalBodyLocation::Segment { offset, .. } => {
+            let prefix = prefix.ok_or_else(unavailable)?;
+            let (prefix, actual) = file.read_prepared_bounded_async(
+                0, prefix, maximum_prefix, false, Arc::clone(&meter),
+            )?.await?;
+            let prefix = prefix.freeze(actual).map_err(|_| unavailable())?;
+            if prefix.len() < SEGMENT_HEADER_BYTES || prefix.get(..SEGMENT_MAGIC.len()) != Some(SEGMENT_MAGIC) {
+                return Err(unavailable());
+            }
+            let count = u32::from_le_bytes(prefix[SEGMENT_MAGIC.len()..SEGMENT_HEADER_BYTES]
+                .try_into().map_err(|_| unavailable())?) as usize;
+            if count == 0 || count > MAXIMUM_SEGMENT_BODIES { return Err(unavailable()); }
+            let table = prefix.get(SEGMENT_HEADER_BYTES..SEGMENT_HEADER_BYTES + count * SEGMENT_RECORD_BYTES)
+                .ok_or_else(unavailable)?;
+            meter.admit_examination(count as u64, 0)?;
+            let mut examined = 0;
+            let matches = segment_table_matches_counted(
+                table, file_length, offset, expected_digest, expected_length as u64, &mut examined,
+            );
+            meter.record_examination(examined, 0)?;
+            let matches = matches.map_err(|_| unavailable())?;
+            if !matches { return Err(unavailable()); }
+            let selected_offset = offset.checked_add(start as u64).ok_or_else(unavailable)?;
+            let (storage, actual) = file.read_prepared_bounded_async(
+                selected_offset, storage, length, true, meter,
+            )?.await?;
+            storage.freeze(actual).map_err(|_| unavailable())
+        }
+    }
 }
 
 fn segment_table_matches(
@@ -690,6 +1042,19 @@ fn segment_table_matches(
     expected_digest: &[u8; 32],
     expected_length: u64,
 ) -> Result<bool, BodyError> {
+    segment_table_matches_counted(
+        table, file_length, expected_offset, expected_digest, expected_length, &mut 0,
+    )
+}
+
+fn segment_table_matches_counted(
+    table: &[u8],
+    file_length: u64,
+    expected_offset: u64,
+    expected_digest: &[u8; 32],
+    expected_length: u64,
+    examined: &mut u64,
+) -> Result<bool, BodyError> {
     let mut offset = u64::try_from(
         SEGMENT_HEADER_BYTES
             .checked_add(table.len())
@@ -697,6 +1062,7 @@ fn segment_table_matches(
     )
     .map_err(|_| BodyError::Unavailable)?;
     for record in table.as_chunks::<SEGMENT_RECORD_BYTES>().0 {
+        *examined += 1;
         let digest: [u8; 32] = record
             .get(..32)
             .ok_or(BodyError::Unavailable)?
@@ -721,14 +1087,15 @@ fn segment_table_matches(
     Ok(false)
 }
 
-/// Reads one whole journal-resident body and proves it matches its digest. Inline bodies are
-/// small, so every read of one, ranged or not, is authenticated.
+/// Reads and authenticates one whole journal-resident body. Inline bodies are
+/// small, so even ranged reads authenticate the whole body. Freezing the actual
+/// vector directly preserves its known original capacity in every range alias.
 fn read_journal_body(
     journal: &File,
     offset: u64,
     expected_digest: &[u8; 32],
     expected_length: usize,
-) -> Result<bytes::Bytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, BodyError> {
     if expected_length > MAXIMUM_INLINE_BODY_BYTES {
         return Err(BodyError::Unavailable);
     }
@@ -801,19 +1168,6 @@ fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
     acyclic_native_runtime::sync_file(file, native_durability(durability))
 }
 
-#[cfg(not(windows))]
-fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::hard_link(temporary, destination)
-}
-
-#[cfg(windows)]
-fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    acyclic_native_runtime::durable_rename(
-        temporary,
-        destination,
-        acyclic_native_runtime::RenameMode::NoReplace,
-    )
-}
 
 pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
@@ -856,6 +1210,16 @@ pub(crate) mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(again, first);
         assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
+        let mut publication = Publication::new(None);
+        let write_only = write_segment_measured(
+            root.path(), &bodies, LocalDurability::FullFlush, &mut publication,
+        ).unwrap_or_else(|_| unreachable!());
+        assert_eq!(write_only, first);
+        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
+        sync_segment_directory_measured(
+            root.path(), LocalDurability::FullFlush, &mut publication,
+        ).unwrap_or_else(|_| unreachable!());
+        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 2);
     }
 
     #[tokio::test]
@@ -881,7 +1245,7 @@ pub(crate) mod tests {
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         tracing::subscriber::with_default(subscriber, || {
             let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-            let bytes = bytes::Bytes::from_static(b"pending private journal body");
+            let bytes = acyclic_stream::OwnedBytes::from_static(b"pending private journal body");
             fs::write(directory.path().join(JOURNAL_FILE), &bytes)
                 .unwrap_or_else(|_| unreachable!());
             let (admitted_tx, admitted_rx) = mpsc::channel();
@@ -921,6 +1285,7 @@ pub(crate) mod tests {
                 .unwrap_or_else(|_| unreachable!())
                 .unwrap_or_else(|_| unreachable!());
             assert_eq!(completed, bytes, "the detached read still finishes safely");
+            assert_eq!(completed.retained_capacity(), Some(bytes.len()));
             assert!(retained_while_blocked, "the admitted worker owns its root");
             for spans in [&logical, &physical] {
                 assert_eq!(spans.len(), 1);
@@ -976,7 +1341,7 @@ pub(crate) mod tests {
             let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
             fs::create_dir_all(directory.path().join("segments"))
                 .unwrap_or_else(|_| unreachable!());
-            let body = bytes::Bytes::from_static(b"private body bytes");
+            let body = acyclic_stream::OwnedBytes::from_static(b"private body bytes");
             let digest = *blake3::hash(&body).as_bytes();
             let (id, offsets) = persist_segment(
                 directory.path(),
@@ -1002,6 +1367,7 @@ pub(crate) mod tests {
             };
             let selected = read(&location, 1, 5).unwrap_or_else(|_| unreachable!());
             assert_eq!(selected, body.slice(1..5));
+            assert_eq!(selected.retained_capacity(), None, "opaque runtime buffers do not invent capacity");
             assert!(read(&location, 5, 1).is_err());
             let references = [LocalBodyReference {
                 digest,

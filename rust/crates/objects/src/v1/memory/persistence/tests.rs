@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn native_composite_controls_retire_after_the_last_physical_alias()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let observed = Arc::new(crate::v1::tests::NativeTransportMeter::new());
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let mut publication = Publication::new(Some(meter));
+    let mut parts = Vec::new();
+    publication.reserve(&mut parts, 1)?;
+    parts.push(StoredBody::memory(OwnedBytes::from_static(b"x")));
+    let body = composite_publication(parts, 1, &mut publication)?;
+    let alias = body.clone();
+    drop(publication);
+    assert!(observed.memory.load(SeqCst) > 0);
+    drop(body);
+    assert!(observed.memory.load(SeqCst) > 0);
+    drop(alias);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    let path = root.path().join("mutations.log");
+    let durable = fs::read(&path)?;
+    let before = core.lock_state()?.clone();
+    let mut next = before.clone();
+    next.buckets.get_mut("recovery").ok_or("missing bucket")?
+        .objects.get_mut("retained").ok_or("missing object")?
+        .body = StoredBody::memory(OwnedBytes::from_static(b"after!"));
+    let observed = Arc::new(crate::v1::tests::NativeTransportMeter::new());
+    observed.limit.store(0, SeqCst);
+    let journal = core.journal.as_ref().ok_or("missing journal")?;
+    let failed = journal.commit_measured(&before, &mut next, observed.clone());
+    assert!(matches!(failed, Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory));
+    assert_eq!(observed.allocations.load(SeqCst), 0);
+    assert_eq!(observed.memory.load(SeqCst), 0);
+    assert_eq!(fs::read(path)?, durable);
+    journal.check()?;
+    assert_eq!(core.get(get("retained"), 6).await?.into_body(), OwnedBytes::from_static(b"before"));
+    Ok(())
+}
+
+#[test]
 fn header_entropy_failure_preserves_empty_journal_and_retry_key()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
@@ -113,7 +160,7 @@ pub(super) async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::er
         mutation: None,
     })
     .await?;
-    core.put(put("retained"), Bytes::from_static(b"before"))
+    core.put(put("retained"), OwnedBytes::from_static(b"before"))
         .await?;
     Ok(core)
 }
@@ -141,7 +188,7 @@ async fn assert_poisoned(core: &MemoryObjects) {
         Some(Unavailable)
     );
     assert_eq!(
-        core.put(put("retained"), Bytes::from_static(b"before"))
+        core.put(put("retained"), OwnedBytes::from_static(b"before"))
             .await
             .err()
             .map(|e| e.code),
@@ -163,7 +210,7 @@ async fn incomplete_final_frames_repair_without_publishing_a_mutation()
             .fault_bytes
             .store(cut, Ordering::Release);
         assert_eq!(
-            core.put(put("interrupted"), Bytes::from_static(b"after"))
+            core.put(put("interrupted"), OwnedBytes::from_static(b"after"))
                 .await
                 .err()
                 .map(|e| e.code),
@@ -174,14 +221,14 @@ async fn incomplete_final_frames_repair_without_publishing_a_mutation()
         let core = reopen(root.path())?;
         assert_eq!(fs::read(&path)?, before);
         assert_eq!(
-            core.get(get("retained"), 6).await?.body,
-            Bytes::from_static(b"before")
+            core.get(get("retained"), 6).await?.into_body(),
+            OwnedBytes::from_static(b"before")
         );
         assert_eq!(
             core.get(get("interrupted"), 5).await.err().map(|e| e.code),
             Some(NotFound)
         );
-        core.put(put("interrupted"), Bytes::from_static(b"after"))
+        core.put(put("interrupted"), OwnedBytes::from_static(b"after"))
             .await?;
     }
     Ok(())
@@ -199,7 +246,7 @@ async fn complete_uncertain_frame_recovers_its_exact_receipt()
         .store(true, Ordering::Release);
     let query = put("uncertain");
     assert_eq!(
-        core.put(query.clone(), Bytes::from_static(b"after"))
+        core.put(query.clone(), OwnedBytes::from_static(b"after"))
             .await
             .err()
             .map(|e| e.code),
@@ -219,7 +266,7 @@ async fn complete_uncertain_frame_recovers_its_exact_receipt()
         .ok_or("missing recovered object")?;
     let before = fs::read(root.path().join("mutations.log"))?;
     assert_eq!(
-        core.put(query, Bytes::from_static(b"after")).await?,
+        core.put(query, OwnedBytes::from_static(b"after")).await?,
         recovered
     );
     assert_eq!(fs::read(root.path().join("mutations.log"))?, before);
@@ -273,8 +320,8 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
         .await?;
     let mut parts = Vec::new();
     for (number, bytes) in [
-        (1, Bytes::from(vec![b'a'; 5 * 1024 * 1024])),
-        (2, Bytes::from_static(b"end")),
+        (1, OwnedBytes::from(vec![b'a'; 5 * 1024 * 1024])),
+        (2, OwnedBytes::from_static(b"end")),
     ] {
         parts.push(
             core.upload_part(
@@ -326,7 +373,7 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
         }),
         ..get("multipart")
     };
-    assert_eq!(core.get(range, 4).await?.body, Bytes::from_static(b"aaen"));
+    assert_eq!(core.get(range, 4).await?.into_body(), OwnedBytes::from_static(b"aaen"));
     core.delete(wire::DeleteObjectRequest {
         bucket: bucket(),
         object_key: "multipart".into(),
@@ -358,12 +405,12 @@ async fn logical_quota_failure_does_not_persist_a_body_or_retry_receipt()
         mutation: None,
     })
     .await?;
-    core.put(put("retained"), Bytes::from_static(b"1234"))
+    core.put(put("retained"), OwnedBytes::from_static(b"1234"))
         .await?;
     let before = fs::read(root.path().join("mutations.log"))?;
     let count = fs::read_dir(root.path().join("segments"))?.count();
     assert_eq!(
-        core.put(put("new"), Bytes::from_static(b"ab"))
+        core.put(put("new"), OwnedBytes::from_static(b"ab"))
             .await
             .err()
             .map(|e| e.code),
@@ -379,10 +426,10 @@ async fn logical_quota_failure_does_not_persist_a_body_or_retry_receipt()
         ..Default::default()
     })
     .await?;
-    core.put(put("new"), Bytes::from_static(b"ab")).await?;
+    core.put(put("new"), OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
-        core.get(get("new"), 2).await?.body,
-        Bytes::from_static(b"ab")
+        core.get(get("new"), 2).await?.into_body(),
+        OwnedBytes::from_static(b"ab")
     );
     Ok(())
 }
@@ -399,9 +446,9 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
         .store(2, Ordering::Release);
     let results = core
         .put_batch(vec![
-            (put("interrupted"), Bytes::from_static(b"after")),
-            (put("retained"), Bytes::from_static(b"before")),
-            (put("later"), Bytes::from_static(b"later")),
+            (put("interrupted"), OwnedBytes::from_static(b"after")),
+            (put("retained"), OwnedBytes::from_static(b"before")),
+            (put("later"), OwnedBytes::from_static(b"later")),
         ])
         .await;
     assert_eq!(results.len(), 3);
@@ -414,8 +461,8 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
-        core.get(get("retained"), 6).await?.body,
-        Bytes::from_static(b"before")
+        core.get(get("retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
     );
     assert_eq!(
         core.get(get("later"), 5).await.err().map(|e| e.code),
@@ -431,13 +478,13 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         let root = tempfile::tempdir()?;
         let core = seeded(root.path()).await?;
         let original = core
-            .put(put("retained"), Bytes::from_static(b"before"))
+            .put(put("retained"), OwnedBytes::from_static(b"before"))
             .await?;
         let mut replacement = put("retained");
         replacement.mutation = Some(wire::MutationIdentity {
             idempotency_key: "replacement".into(),
         });
-        core.put(replacement, Bytes::from_static(b"after")).await?;
+        core.put(replacement, OwnedBytes::from_static(b"after")).await?;
         core.journal
             .as_ref()
             .ok_or("missing journal")?
@@ -451,20 +498,20 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         drop(core);
         let core = reopen(root.path())?;
         assert_eq!(
-            core.get(get("retained"), 5).await?.body,
-            Bytes::from_static(b"after")
+            core.get(get("retained"), 5).await?.into_body(),
+            OwnedBytes::from_static(b"after")
         );
         assert_eq!(
-            core.put(put("retained"), Bytes::from_static(b"before"))
+            core.put(put("retained"), OwnedBytes::from_static(b"before"))
                 .await?,
             original
         );
         core.collect_local_garbage(10)?;
-        core.put(put("next"), Bytes::from_static(b"next")).await?;
+        core.put(put("next"), OwnedBytes::from_static(b"next")).await?;
         drop(core);
         assert_eq!(
-            reopen(root.path())?.get(get("next"), 4).await?.body,
-            Bytes::from_static(b"next")
+            reopen(root.path())?.get(get("next"), 4).await?.into_body(),
+            OwnedBytes::from_static(b"next")
         );
     }
     Ok(())
@@ -481,7 +528,7 @@ async fn checkpoint_packs_multiple_frames_and_preserves_live_pagination()
             content_type: "a".repeat(800),
             ..Default::default()
         });
-        core.put(query, Bytes::new()).await?;
+        core.put(query, OwnedBytes::new()).await?;
     }
     let mut query = wire::ListObjectsRequest {
         bucket: bucket(),
@@ -512,7 +559,7 @@ async fn checkpoint_packs_multiple_frames_and_preserves_live_pagination()
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(core.list(query).await?, expected);
-    core.put(put("after-checkpoint"), Bytes::new()).await?;
+    core.put(put("after-checkpoint"), OwnedBytes::new()).await?;
     Ok(())
 }
 
@@ -525,14 +572,14 @@ async fn compaction_packs_inline_bodies_under_one_directory_synchronization()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
-    let body = |number: usize| Bytes::from(format!("body {number}"));
+    let body = |number: usize| OwnedBytes::from(format!("body {number}"));
     for number in 0..300 {
         core.put(put(&format!("key-{number:03}")), body(number))
             .await?;
     }
     core.put(put("repeated"), body(7)).await?;
-    core.put(put("empty-a"), Bytes::new()).await?;
-    core.put(put("empty-b"), Bytes::new()).await?;
+    core.put(put("empty-a"), OwnedBytes::new()).await?;
+    core.put(put("empty-b"), OwnedBytes::new()).await?;
     let journal = core.journal.as_ref().ok_or("missing journal")?;
     let mut state = core.lock_state()?.clone();
     let syncs = || crate::physical::tests::PARENT_SYNCS.with(std::cell::Cell::get);
@@ -547,10 +594,10 @@ async fn compaction_packs_inline_bodies_under_one_directory_synchronization()
     let core = reopen(root.path())?;
     for number in 0..300 {
         let key = format!("key-{number:03}");
-        assert_eq!(core.get(get(&key), 64).await?.body, body(number));
+        assert_eq!(core.get(get(&key), 64).await?.into_body(), body(number));
     }
-    assert_eq!(core.get(get("repeated"), 64).await?.body, body(7));
-    assert_eq!(core.get(get("empty-b"), 64).await?.body, Bytes::new());
+    assert_eq!(core.get(get("repeated"), 64).await?.into_body(), body(7));
+    assert_eq!(core.get(get("empty-b"), 64).await?.into_body(), OwnedBytes::new());
     assert_eq!(std::fs::read_dir(root.path().join("segments"))?.count(), 1);
     Ok(())
 }
@@ -584,7 +631,7 @@ type View = (
         wire::Bucket,
         Vec<(String, wire::ObjectInfo, Vec<BodyRecord>)>,
     )>,
-    Vec<(String, [u8; 32], Vec<u8>, u32)>,
+    Vec<(String, [u8; 32], Vec<u8>, u32, Option<wire::ObjectInfo>)>,
 );
 
 fn view(state: &State) -> Result<View, Error> {
@@ -602,7 +649,7 @@ fn view(state: &State) -> Result<View, Error> {
     for (name, bucket) in &state.buckets {
         let mut objects = Vec::new();
         for (key, value) in &bucket.objects {
-            objects.push((key.clone(), value.info.clone(), bodies(&value.body)?));
+            objects.push((key.to_string(), value.info.as_ref().clone(), bodies(&value.body)?));
         }
         buckets.push((name.clone(), bucket.info.clone(), objects));
     }
@@ -611,10 +658,11 @@ fn view(state: &State) -> Result<View, Error> {
         .iter()
         .map(|(key, value)| {
             (
-                key.clone(),
+                key.to_string(),
                 value.digest,
-                value.response.clone(),
+                value.response.as_slice().to_vec(),
                 value.kind,
+                value.put_info.as_ref().map(|info| info.as_ref().clone()),
             )
         })
         .collect();
@@ -644,8 +692,8 @@ fn naive_changes(
             if !unchanged {
                 objects.push(ObjectChange {
                     bucket: name.clone(),
-                    key: key.clone(),
-                    info: Some(value.info.clone()),
+                    key: key.to_string(),
+                    info: Some(value.info.as_ref().clone()),
                     bodies: refs,
                 });
             }
@@ -654,7 +702,7 @@ fn naive_changes(
             if !bucket.objects.contains_key(key) {
                 removed.push(ObjectChange {
                     bucket: name.clone(),
-                    key: key.clone(),
+                    key: key.to_string(),
                     ..Default::default()
                 });
             }
@@ -707,7 +755,7 @@ async fn run(core: &MemoryObjects, index: usize, step: &Step) {
                     mutation,
                     ..Default::default()
                 },
-                Bytes::from(vec![u8::try_from(index % 251).unwrap_or_default(); *size]),
+                OwnedBytes::from(vec![u8::try_from(index % 251).unwrap_or_default(); *size]),
             )
             .await
             .map(drop),
@@ -738,8 +786,8 @@ proptest::proptest! {
     })]
 
     /// Every committed delta equals a full-scan diff, replays onto its
-    /// predecessor to the exact successor, and truncating the journal at any
-    /// frame boundary recovers exactly the state after that many steps.
+    /// predecessor including the immutable decoded put acknowledgement, and
+    /// recovers the exact state and retry metadata at every frame boundary.
     #[test]
     fn journal_deltas_replay_and_recover_prefix_states(
         steps in proptest::collection::vec(step(), 1..8),
