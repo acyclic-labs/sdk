@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod mail;
+
 /// Versioned stock model command contract.
 pub const MODEL_TASK_COMMAND_KIND: &str = "acyclic.model.v1";
 /// Versioned pinned-tool command contract.
@@ -356,6 +358,11 @@ where
                     command.kind
                 ))),
             };
+            #[cfg(not(target_arch = "wasm32"))]
+            let progress = match progress {
+                Err(error) if error.is_native_failure() => return Err(error),
+                progress => progress,
+            };
             self.runtime
                 .task_host()
                 .verify_dispatch_owner(task, fence)
@@ -410,28 +417,12 @@ where
                     self.model_command(task, fence.clone(), command.operation_id, payload, true).await
                 }
                 EFFECT_TASK_COMMAND_KIND => {
-                    let plan: crate::effect_host::TaskEffectPlan = serde_json::from_value(payload)
-                        .map_err(|error| Error::Invalid(format!("invalid effect command: {error}")))?;
-                    let effects = self.effects.as_ref().ok_or_else(|| {
-                        Error::Unsupported("effect command provider registry is not selected".into())
-                    })?;
-                    let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?;
-                    match effects.reconcile_task_effect(&owner, command.operation_id, &plan).await? {
-                        crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
-                        crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }),
-                        crate::core::EffectStatus::Planned => Ok(TaskCommandProgress::Ready(Value::Null)),
-                        crate::core::EffectStatus::Dispatched
-                        | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
-                    }
+                    self.effect_command_with_io(
+                        task, &fence, command.operation_id, payload, true, None,
+                    ).await
                 }
                 MAIL_SEND_TASK_COMMAND_KIND => {
-                    let input: MailSendTaskCommand = serde_json::from_value(payload)
-                        .map_err(|error| Error::Invalid(format!("invalid mail send: {error}")))?;
-                    self.runtime.task_host().reconcile_sent_mail(
-                        task, fence.clone(), input.recipient,
-                        super::task_runtime::execution_operation(task, command.operation_id), input.payload,
-                    ).await?;
-                    Ok(TaskCommandProgress::Ready(Value::Null))
+                    self.reconcile_mail_with_io(task, &fence, &command, payload, None).await
                 }
                 TASK_ADMIT_COMMAND_KIND => {
                     let input: TaskAdmitCommand = serde_json::from_value(payload)
@@ -459,6 +450,11 @@ where
                     "stock command kind {} has no effect reconciliation",
                     command.kind
                 ))),
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let progress = match progress {
+                Err(error) if error.is_native_failure() => return Err(error),
+                progress => progress,
             };
             self.runtime.task_host().verify_execution_owner(task, fence).await?;
             progress
@@ -846,17 +842,60 @@ where
         command: OperationId,
         payload: Value,
     ) -> Result<TaskCommandProgress> {
-        let plan: crate::effect_host::TaskEffectPlan = serde_json::from_value(payload)
-            .map_err(|error| Error::Invalid(format!("invalid effect command: {error}")))?;
+        self.effect_command_with_io(task, &fence, command, payload, false, None).await
+    }
+
+    async fn effect_command_with_io(
+        &self,
+        task: TaskId,
+        fence: &LeaseFence,
+        command: OperationId,
+        payload: Value,
+        reconciliation_only: bool,
+        io: Option<&super::PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        let plan: crate::effect_host::TaskEffectPlan = mail::decode_command(payload, io)?;
         let effects = self.effects.as_ref().ok_or_else(|| {
             Error::Unsupported("effect command provider registry is not selected".into())
         })?;
-        let owner = self.runtime.task_host().journal_owner(task, fence).await?;
-        match effects.run_task_effect(&owner, command, plan).await? {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "effect command requires the original native work",
+            })?;
+            let owner = self.runtime.task_host().journal_owner_native(task, fence, work).await?;
+            let (status, custody) = if reconciliation_only {
+                effects.reconcile_task_effect_with_native_work(&owner, command, &plan, work).await?
+            } else {
+                effects.run_task_effect_with_native_work(&owner, command, plan, work).await?
+            };
+            io.absorb_native_custody(custody)?;
+            return match status {
+                crate::core::EffectStatus::Succeeded { result } => {
+                    mail::mail_ready(Outcome::Succeeded(result), Some(io))
+                }
+                crate::core::EffectStatus::Failed { message } => {
+                    mail::mail_ready(Outcome::<Value>::Failed { message }, Some(io))
+                }
+                crate::core::EffectStatus::Planned if reconciliation_only => {
+                    mail::mail_ready(Value::Null, Some(io))
+                }
+                crate::core::EffectStatus::Planned
+                | crate::core::EffectStatus::Dispatched
+                | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
+            };
+        }
+        let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?;
+        let status = if reconciliation_only {
+            effects.reconcile_task_effect(&owner, command, &plan).await?
+        } else {
+            effects.run_task_effect(&owner, command, plan).await?
+        };
+        match status {
             crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
-            crate::core::EffectStatus::Failed { message } => {
-                ready(Outcome::<Value>::Failed { message })
-            }
+            crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }),
+            crate::core::EffectStatus::Planned if reconciliation_only => Ok(TaskCommandProgress::Ready(Value::Null)),
             crate::core::EffectStatus::Planned
             | crate::core::EffectStatus::Dispatched
             | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
@@ -889,8 +928,7 @@ where
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 let input: MailReceiveTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
-                Ok(!items.is_empty())
+                self.wait_mail_with_io(task, context, input.after, None).await
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = serde_json::from_value(payload)
@@ -999,31 +1037,7 @@ where
         command: &WorkflowCommand,
         payload: Value,
     ) -> Result<TaskCommandProgress> {
-        if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
-            let input: MailSendTaskCommand = serde_json::from_value(payload)
-                .map_err(|error| Error::Invalid(format!("invalid mail send: {error}")))?;
-            let ack = self.runtime
-                .task_host()
-                .send_owned(
-                    task,
-                    fence,
-                    input.recipient,
-                    super::task_runtime::execution_operation(task, command.operation_id),
-                    input.payload,
-                )
-                .await?;
-            ready(Outcome::Succeeded(ack))
-        } else {
-            let input: MailReceiveTaskCommand = serde_json::from_value(payload)
-                .map_err(|error| Error::Invalid(format!("invalid mail receive: {error}")))?;
-            let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
-            let Some(item) = items.into_iter().next() else {
-                return Ok(TaskCommandProgress::Pending);
-            };
-            // The immutable first item is stable across a crash before checkpoint
-            // publication. Later appends cannot change this selected result.
-            ready(Outcome::Succeeded(item))
-        }
+        self.mail_command_with_io(task, context, &fence, command, payload, None).await
     }
 
     async fn committed_mail_input(

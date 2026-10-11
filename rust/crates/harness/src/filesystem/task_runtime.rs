@@ -69,6 +69,38 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
             ))
         })
     }
+
+    /// Executes on the original work ledger without constructing a legacy future.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execute_with_native_work<'a>(
+        &'a self,
+        _context: Arc<crate::runtime::NativeTaskContext>,
+        _fence: LeaseFence,
+        _command: WorkflowCommand,
+        _payload: Value,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task command host has no native execution observer",
+        })
+    }
+
+    /// Observes the original dispatch; unsupported hosts fail before allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_with_native_work<'a>(
+        &'a self,
+        _context: Arc<crate::runtime::NativeTaskContext>,
+        _fence: LeaseFence,
+        _command: WorkflowCommand,
+        _payload: Value,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task command host has no native reconciliation observer",
+        })
+    }
 }
 
 /// Explicit dispatch ownership returned by a trusted command adapter.

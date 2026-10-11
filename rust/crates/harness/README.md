@@ -621,6 +621,13 @@ target, never the fresh WRITE publisher; missing receipts do not relaunch a
 started model or copy its parcel. Fresh copies use the original issued writer
 before any selected-output projection, and content-part growth is pre-funded.
 
+Native command callbacks use `NativeFutureBundle` and the same issued shared
+`NativeTaskContext`. Custom hosts without a native observer reject before future
+construction or provider work; ordinary command methods retain their original
+behavior. Stock mail and effect branches accept the original preparation observer
+and encode ready results through its bounded JSON codec. Native first causes
+return before a subsequent owner/deadline check.
+
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.
 These counters describe actual SDK calls and exposed source/encoded bytes, not
