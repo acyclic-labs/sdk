@@ -43,7 +43,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<Self> {
         limits.validate()?;
         let authorization = handle.authorization();
-        host.require_private_directory(&authorization.project, handle.grant(), "")?;
+        Self::require_directory_with_io(&host, &handle, "", &io)?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
         Self::verify_owner(&owner, &io).await?;
         let workspace = bounded_io::open(&host, &reference, &io).await?;
@@ -54,6 +54,28 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Self::verify_owner(&owner, &io).await?;
         Ok(Self { host, owner, handle, generation, workspace_id: workspace.id(), limits, io,
             serial: tokio::sync::Mutex::new(()) })
+    }
+
+    fn require_directory_with_io(
+        host: &FilesystemHost<A, O>, handle: &ProjectSourceReadHandle,
+        path: &str, io: &PreparationIo,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            work.remaining()?;
+            let project = &handle.authorization().project;
+            if project.provider() != &host.provider {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "private directory belongs to another provider or class",
+                });
+            }
+            if !path.is_empty() {
+                crate::conversation::validate_content_path_with_native_work(path, work)?;
+            }
+            return handle.grant().require_directory_path_with_native_work(project, path, work);
+        }
+        host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
 
     pub(super) fn authorization(&self) -> &ProjectSourceAuthorization { self.handle.authorization() }
@@ -319,7 +341,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             code: crate::wire::ErrorCode::Invalid,
             reason: "native selected path must be absolute",
         })?;
-        self.path(&selected.project, "", relative, &selected.generation)
+        if relative.len() > self.limits.path_bytes {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "selected path exceeds original caller limits",
+            });
+        }
+        Self::require_directory_with_io(&self.host, &self.handle, "", io)?;
+        Self::require_directory_with_io(&self.host, &self.handle, relative, io)
     }
 
     pub(super) async fn finish_native<T>(&self,

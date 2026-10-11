@@ -639,17 +639,33 @@ impl ContentGrant {
 
     /// Checks any lazy directory path against the owner-issued read boundary.
     pub fn require_directory_path(&self, volume: &VolumeRef, prefix: &str) -> Result<()> {
-        if self.volume != *volume
-            || self.operation != VolumeOperation::Read
-            || is_internal_path(prefix)
-            || self
-                .directory_prefix
-                .as_deref()
-                .is_none_or(|granted| !path_below(prefix, granted))
-        {
+        if !self.directory_path_allowed(volume, prefix) {
             return Err(Error::Unauthorized(
                 "directory listing is not granted".into(),
             ));
+        }
+        Ok(())
+    }
+
+    fn directory_path_allowed(&self, volume: &VolumeRef, prefix: &str) -> bool {
+        self.volume == *volume
+            && self.operation == VolumeOperation::Read
+            && !is_internal_path(prefix)
+            && self.directory_prefix.as_deref()
+                .is_some_and(|granted| path_below(prefix, granted))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_directory_path_with_native_work(
+        &self, volume: &VolumeRef, path: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        if !self.directory_path_allowed(volume, path) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "directory listing is not granted",
+            });
         }
         Ok(())
     }
@@ -2617,16 +2633,32 @@ fn validate_label(value: &str, limit: usize) -> Result<()> {
 /// Checks a normalized volume-relative content path at every provider boundary.
 /// Backslashes, traversal segments, control characters, and oversized paths are rejected.
 pub fn validate_content_path(path: &str) -> Result<()> {
-    if path.is_empty()
+    if !content_path_is_valid(path) {
+        return Err(Error::Invalid("volume-relative path is invalid".into()));
+    }
+    Ok(())
+}
+
+fn content_path_is_valid(path: &str) -> bool {
+    !(path.is_empty()
         || path.len() as u64 > MAX_PATH_BYTES as u64
         || path.starts_with('/')
         || path.contains('\\')
         || path.chars().any(char::is_control)
-        || path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-    {
-        return Err(Error::Invalid("volume-relative path is invalid".into()));
+        || path.split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == ".."))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn validate_content_path_with_native_work(
+    path: &str, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    work.remaining()?;
+    if !content_path_is_valid(path) {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "volume-relative path is invalid",
+        });
     }
     Ok(())
 }

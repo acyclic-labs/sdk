@@ -361,6 +361,12 @@ keeps the returned lookup and metadata guard together through the final owner
 check; callers drop the lookup before its guard. Native Root project source
 policies likewise return the canonical funded future and reject unsupported
 native verification before constructing a future or calling a backend.
+Native directory-grant and normalized-path checks reuse the ordinary borrowed
+predicates. Their fixed native rejection carriers allocate no diagnostic text
+after cancellation or allocator exhaustion; `.system`, inherited transcripts,
+traversal, cross-volume paths and the original caller's path ceiling remain
+denied before source IO. Native checks never turn the public opaque attestation
+into a generic volume-read capability.
 
 `ForkPreparation.child_result_volume` optionally declares one distinct
 child-owned unmounted result namespace. Its report and seed retain the paired

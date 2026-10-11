@@ -91,6 +91,36 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Read).is_err());
     assert!(handle.grant().require(&project, VolumeOperation::Write).is_err());
     assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Write).is_err());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = creation_control_budget();
+        budget.allocation_operations = 1;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("admitted original ledger with no remaining allocator attempt");
+        handle.grant().require_directory_path_with_native_work(&project, "", &work)?;
+        for path in [".system", ".system/hidden", ".system/inherited-conversation/transcript"] {
+            assert!(matches!(handle.grant().require_directory_path_with_native_work(
+                &project, path, &work,
+            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+        }
+        assert!(matches!(handle.grant().require_directory_path_with_native_work(
+            &policy.bootstrap.project, "", &work,
+        ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+        for path in ["", "../escape", "a/../escape", "/absolute", "back\\slash", "a//b"] {
+            assert!(matches!(crate::conversation::validate_content_path_with_native_work(
+                path, &work,
+            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Invalid, .. })));
+        }
+        crate::conversation::validate_content_path_with_native_work("selected.txt", &work)?;
+        assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        cancellation.cancel();
+        assert!(matches!(handle.grant().require_directory_path_with_native_work(
+            &project, "", &work,
+        ), Err(Error::NativeWork { .. })));
+        assert_eq!(work.receipt().allocation_operations, 1);
+    }
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
     let restored_record: crate::source_authorization::ProjectSourceAuthorization =
         serde_json::from_slice(&serialized).map_err(|error|Error::Invalid(error.to_string()))?;
