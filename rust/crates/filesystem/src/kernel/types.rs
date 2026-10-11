@@ -521,7 +521,9 @@ impl LogicalName {
 const _: () = assert!(matches!(char::UNICODE_VERSION, (17, 0, 0)));
 
 /// The canonical lowercase engine used by ordinary name keys and admitted
-/// native keys. The returned capacity remains owned by the supplied ledger.
+/// native keys. Both accounting adapters observe the same scalar, contextual
+/// ICU-property, allocation, and emission steps; no native scan is unmetered.
+/// The returned capacity remains owned by the supplied ledger.
 pub(crate) fn lowercase_unicode_with_ledger(
     text: &str,
     ledger: &mut AllocationLedger,
@@ -539,64 +541,84 @@ fn lowercase_unicode_with_ledger_inner(
     budget: WorkBudget,
     cancellation: Option<&CancellationToken>,
 ) -> Result<Vec<u8>, NamespacePathError> {
-    struct LowercaseBuffer<'a> {
-        value: Option<Vec<u8>>,
-        ledger: &'a mut AllocationLedger,
-        bytes: u64,
+    let initial_live = ledger.live_bytes();
+    let result = lowercase_unicode_with_steps(text, cancellation, &mut |step| {
+        super::namespace_path::observe_path_ledger(step, ledger, work, budget)
+    });
+    if result.is_err() {
+        ledger.release(ledger.live_bytes() - initial_live)
+            .expect("canonical lowercase ownership balances");
     }
+    result
+}
 
-    impl Drop for LowercaseBuffer<'_> {
-        fn drop(&mut self) {
-            if let Some(value) = self.value.take() {
-                drop(value);
-                self.ledger.release(self.bytes).expect("canonical lowercase ownership balances");
-            }
-        }
-    }
+pub(crate) fn lowercase_unicode_with_accounting(
+    text: &str,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    let mut owned = NamespacePathAccounting::new(accounting)?;
+    let result = lowercase_unicode_with_steps(text, Some(cancellation), &mut |step| owned.observe(step));
+    owned.finish(result)
+}
+
+fn lowercase_unicode_with_steps<E: From<NamespacePathError>>(
+    text: &str,
+    cancellation: Option<&CancellationToken>,
+    steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
+) -> Result<Vec<u8>, E> {
 
     lowercase_check(cancellation)?;
     let mut length = 0_usize;
     let mut scalars = text.chars();
     while !scalars.as_str().is_empty() {
         lowercase_check(cancellation)?;
-        work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+        steps(NamespacePathStep::Charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
         let scalar = scalars.next().expect("the borrowed scalar is present");
         // Contextual sigma changes its spelling, but not its encoded size.
         for mapped in scalar.to_lowercase() {
             lowercase_check(cancellation)?;
-            work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+            steps(NamespacePathStep::Charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
             length = length.checked_add(mapped.len_utf8())
-                .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))?;
+                .ok_or_else(|| E::from(NamespacePathError::Work(crate::WorkError::Overflow)))?;
         }
     }
-    let value = path_vec::<u8>(length, ledger, work, budget)?;
-    let bytes = value.capacity() as u64;
-    let mut output = LowercaseBuffer { value: Some(value), ledger, bytes };
+    let requested = length as u64;
+    steps(NamespacePathStep::Allocation(ReadAllocationStep::Allocate {
+        bytes: requested, operations: u64::from(length != 0),
+    }))?;
+    let mut output = Vec::new();
+    if let Err(error) = output.try_reserve_exact(length) {
+        steps(NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)))?;
+        return Err(E::from(NamespacePathError::AllocationFailed));
+    }
+    steps(NamespacePathStep::Allocation(ReadAllocationStep::Capacity {
+        admitted_bytes: requested, actual_bytes: output.capacity() as u64,
+    }))?;
     let mut scalars = text.chars();
     while !scalars.as_str().is_empty() {
         lowercase_check(cancellation)?;
-        work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+        steps(NamespacePathStep::Charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
         let offset = text.len() - scalars.as_str().len();
         let scalar = scalars.next().expect("the borrowed scalar is present");
         let scalar = if scalar == 'Σ' {
-            lowercase_sigma(text, offset, work, budget, cancellation)?
+            lowercase_sigma(text, offset, cancellation, steps)?
         } else {
             scalar
         };
         for mapped in scalar.to_lowercase() {
             lowercase_check(cancellation)?;
-            work.charge(&WorkCounters {
+            steps(NamespacePathStep::Charge(&WorkCounters {
                 items_examined: 1,
                 bytes_encoded: mapped.len_utf8() as u64,
                 ..WorkCounters::UNCHARGED
-            }, &budget).map_err(NamespacePathError::Work)?;
+            }))?;
             let mut encoded = [0_u8; 4];
-            output.value.as_mut().expect("lowercase output is live")
-                .extend_from_slice(mapped.encode_utf8(&mut encoded).as_bytes());
+            output.extend_from_slice(mapped.encode_utf8(&mut encoded).as_bytes());
         }
     }
     lowercase_check(cancellation)?;
-    Ok(output.value.take().expect("lowercase output transfers once"))
+    Ok(output)
 }
 
 fn lowercase_check(cancellation: Option<&CancellationToken>) -> Result<(), NamespacePathError> {
@@ -606,25 +628,23 @@ fn lowercase_check(cancellation: Option<&CancellationToken>) -> Result<(), Names
     Ok(())
 }
 
-fn lowercase_sigma(
+fn lowercase_sigma<E: From<NamespacePathError>>(
     text: &str,
     offset: usize,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
     cancellation: Option<&CancellationToken>,
-) -> Result<char, NamespacePathError> {
-    fn non_ignorable_is_cased(
+    steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
+) -> Result<char, E> {
+    fn non_ignorable_is_cased<E: From<NamespacePathError>>(
         mut scalars: std::str::Chars<'_>,
         reverse: bool,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<bool, NamespacePathError> {
+        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
+    ) -> Result<bool, E> {
         let ignorable = icu_properties::CodePointSetData::new::<icu_properties::props::CaseIgnorable>();
         let cased = icu_properties::CodePointSetData::new::<icu_properties::props::Cased>();
         while !scalars.as_str().is_empty() {
             lowercase_check(cancellation)?;
-            work.charge_items(1, &budget).map_err(NamespacePathError::Work)?;
+            steps(NamespacePathStep::Charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
             let scalar = if reverse { scalars.next_back() } else { scalars.next() }
                 .expect("the contextual scalar is present");
             if !ignorable.contains(scalar) {
@@ -635,10 +655,10 @@ fn lowercase_sigma(
     }
 
     let preceded_by_cased = non_ignorable_is_cased(
-        text[..offset].chars(), true, work, budget, cancellation,
+        text[..offset].chars(), true, cancellation, steps,
     )?;
     let final_sigma = preceded_by_cased && !non_ignorable_is_cased(
-        text[offset + 'Σ'.len_utf8()..].chars(), false, work, budget, cancellation,
+        text[offset + 'Σ'.len_utf8()..].chars(), false, cancellation, steps,
     )?;
     Ok(if final_sigma { 'ς' } else { 'σ' })
 }
