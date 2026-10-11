@@ -6,6 +6,27 @@ Most applications should depend on a higher-level crate such as
 [`acyclic-fs`](https://docs.rs/acyclic-fs) instead. This crate is public so the
 other Acyclic crates can be installed from crates.io without Git dependencies.
 
+The optional `account-holder` feature provides the pure `account` module for
+customer-held Ed25519 leaves. `mint` and nonextractable-key `prepare`/`finish`
+share the same canonical account JWS encoding and exact expiry calculation.
+The holder checks its own public key, account and certificate window; signed
+birth/certificate data stays opaque and this is **not** a permission authorizer.
+Only the server verifies Root signatures, the current keyring and permissions.
+`inspect_holder` permits inspecting an expired certificate for genuine renewal,
+but minting and finishing refuse expired windows. No issuer keys, certification,
+keyring mutation, private Original proofs or provider credentials are exported.
+
+The native `customer-custody` feature seals one own Ed25519 leaf and its distinct
+SQL login session as an atomic OS-vault item: Windows Credential Manager,
+macOS Keychain, or Linux Secret Service. A locked or unavailable vault returns
+an explicit error; there is no plaintext file or environment fallback. Handles
+are generation-bound and every use checks the actual vault item, so replacement
+or local deletion invalidates stale handles. The namespace includes the original
+login origin, environment, account and certificate key ID. Only the public key
+is exportable. The SQL-session callback is Rust-transport-only, not a JS binding
+or an account bearer. Local deletion does not revoke already issued bearers or
+an already admitted request; server revocation remains a separate operation.
+
 The implementation selects a platform backend at compile time, with runtime
 fallback where needed:
 

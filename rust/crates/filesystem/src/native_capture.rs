@@ -235,6 +235,12 @@ impl CapturePolicy {
         })
     }
 
+    /// Canonical excluded prefixes retained with an original native capture.
+    #[must_use]
+    pub fn excluded_prefixes(&self) -> &[NamespacePath] {
+        &self.excluded_prefixes
+    }
+
     /// Returns whether a path is excluded by an exact prefix.
     #[must_use]
     pub fn excludes(&self, path: &NamespacePath) -> bool {
@@ -1706,6 +1712,30 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_baseline_with_policy_root(checkout, options, policy, None, budget, cancellation).await
+}
+
+/// Capture through an already held directory capability, without reopening its path.
+/// The expected identity must belong to that capability, not a caller descriptor.
+pub async fn capture_baseline_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    root: &HostRoot,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_baseline_with_policy_root(checkout, options, policy, Some(root), budget, cancellation).await
+}
+
+async fn capture_baseline_with_policy_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    held_root: Option<&HostRoot>,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let span = crate::obs::span!(
         INFO,
         "acyclic.fs.native_capture.baseline_with_policy",
@@ -1724,7 +1754,16 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
             if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
                 return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
             }
-            let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+            let opened_root;
+            let source_root = if let Some(root) = held_root {
+                if root.identity() != options.expected_root_identity {
+                    return Err(OperationFailure::before_work(CaptureError::RootChanged));
+                }
+                root
+            } else {
+                opened_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+                &opened_root
+            };
             let limits = checkout.volume_config().limits;
             let profile = checkout.volume_config().profile;
             let maximum = usize::try_from(options.maximum_paths)
@@ -1732,7 +1771,7 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
             let mut paths = Vec::new();
             let mut work = WorkCounters::default();
             let observed = collect_host_observations(
-                &source_root,
+                source_root,
                 profile,
                 limits,
                 maximum,
@@ -1761,7 +1800,7 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
                 checkout,
                 ordered,
                 options.maximum_extent_spans,
-                &source_root,
+                source_root,
                 remaining,
                 cancellation,
                 None,
@@ -3751,7 +3790,7 @@ fn append_staged_regular_state(
 }
 
 #[derive(Clone, Copy)]
-struct HostSnapshot {
+pub(crate) struct HostSnapshot {
     identity: NativeRootIdentity,
     length: u64,
     metadata: FileMetadata,
@@ -3789,7 +3828,7 @@ fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError
 }
 
 impl HostSnapshot {
-    fn from_metadata(metadata: &cap_std::fs::Metadata) -> Result<Self, CaptureError> {
+    pub(crate) fn from_metadata(metadata: &cap_std::fs::Metadata) -> Result<Self, CaptureError> {
         Ok(Self {
             identity: NativeRootIdentity::from_metadata(metadata)?,
             length: metadata.len(),
@@ -3844,7 +3883,7 @@ fn ensure_same_host_snapshot(
     Ok(())
 }
 
-fn ensure_current_host_node(
+pub(crate) fn ensure_current_host_node(
     source_root: &HostRoot,
     host_path: &Path,
     expected: &HostSnapshot,
@@ -4614,7 +4653,7 @@ fn unrestorable_metadata() -> FileMetadata {
     }
 }
 
-fn capture_metadata(metadata: &cap_std::fs::Metadata) -> FileMetadata {
+pub(crate) fn capture_metadata(metadata: &cap_std::fs::Metadata) -> FileMetadata {
     let mut result = FileMetadata {
         posix_mode: MetadataField::Unavailable,
         posix_uid: MetadataField::Unavailable,

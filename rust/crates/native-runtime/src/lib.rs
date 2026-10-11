@@ -1,6 +1,14 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
 #![doc = include_str!("../README.md")]
 
+/// Canonical own-leaf holder signing shared by native and browser bindings.
+#[cfg(feature = "account-holder")]
+pub mod account;
+
+/// OS-sealed customer leaf and distinct SQL-session custody; no file fallback.
+#[cfg(all(feature = "customer-custody", any(windows, target_os = "macos", target_os = "linux")))]
+pub mod customer_custody;
+
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 use std::cell::{Cell, RefCell};
@@ -1055,12 +1063,16 @@ pub fn run_blocking_io<T: Send + 'static>(
     );
     BlockingIoTask {
         pending: Some(NativeJob::Task(Box::new(move || {
-            span.scope(|| {
+            let result = span.scope(|| {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
                     .map_err(|_| io::Error::other("native blocking I/O task panicked"));
                 span.record_result(&result);
-                finish_job(&completion, result, None)
-            })
+                result
+            });
+            // Completion must not wake the caller while this worker still owns
+            // its operation/caller tracing context.
+            drop(span);
+            finish_job(&completion, result, None)
         }))),
         state,
         waiter: None,
