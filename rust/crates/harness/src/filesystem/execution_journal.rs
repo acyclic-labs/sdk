@@ -423,60 +423,23 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     {
         let io = PreparationIo::from_native_work(work)?;
         owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
-        Self::validate_configuration(
-            &host, volume, verifier, scope, maximum_payload_bytes, Some(&io),
-        )?;
-        // StreamClient's only owned field is its provider Arc.
         let stream = owner.stream_with_native_work(work)?.clone();
-        let schemas = SchemaRegistry::new();
-        let interactions = match verifier.audience().kind {
-            crate::core::AggregateKind::Conversation => {
-                let source = verifier.audience();
-                io.claim(source.id.capacity() as u64)?;
-                let authority = Authority {
-                    kind: source.kind,
-                    id: crate::resources::copy_metadata_string(&source.id, &io)?,
-                };
-                io.release(source.id.capacity().checked_sub(authority.id.capacity())
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "authority clone exceeds admitted capacity" })? as u64)?;
-                let (interaction_verifier, custody) = verifier.clone_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                let (interaction_scope, custody) = scope.clone_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                let interaction_volume = volume.clone_with_io(&io)?;
-                Some(FilesystemInteractionHost::new_with_io(
-                    stream.clone(), Arc::clone(&host), authority, interaction_verifier,
-                    schemas.clone(), interaction_scope, interaction_volume,
-                    maximum_payload_bytes, Some(&io),
-                )?)
-            }
-            _ => None,
-        };
-        let volume = volume.clone_with_io(&io)?;
-        let (verifier, custody) = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let (scope, custody) = scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let retained = io.owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok(Self {
-            stream, host, volume, verifier, scope, schemas, maximum_payload_bytes,
-            input_verifier: None, interactions, owner: Some((owner, operation_id)),
-            execution: Some(TaskExecutionIdentity { operation: operation_id, turn: turn_operation }),
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
-            conversation_projection: tokio::sync::Mutex::new(None),
-            history_read_limits: None,
-            _native_metadata: Some(custody),
-        })
+        let mut journal = Self::new_native_configuration(
+            stream, host, volume, verifier, scope, maximum_payload_bytes, &io,
+        )?;
+        journal.owner = Some((owner, operation_id));
+        journal.execution = Some(TaskExecutionIdentity {
+            operation: operation_id,
+            turn: turn_operation,
+        });
+        Ok(journal)
     }
 
     /// Admits the SDK Arc attempt while keeping metadata custody intrinsic.
     /// Known Self ownership is logical; opaque Arc backing/RSS is excluded.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(
-        self, work: &acyclic_fs::NativeMaterializationWork,
+        mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         if !self._native_metadata.as_ref().is_some_and(|custody|
             custody.work().shares_ledger(work))
@@ -487,6 +450,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             });
         }
         let io = PreparationIo::from_native_work(work)?;
+        let mut body = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self._native_metadata.as_mut().expect("original funded metadata checked")
+            .absorb(&mut body)
+            .map_err(|cause| Error::NativeWork { cause, custody: Some(body) })?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Arc::new(self))
     }
@@ -1243,6 +1211,44 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         )
     }
 
+    /// Binds passive service wiring on the original ledger without creating a
+    /// task owner or lease. The ordinary constructor's RW policy is unchanged.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let io = PreparationIo::from_native_work(work)?;
+        Self::new_native_configuration(
+            stream, host, volume, verifier, scope, maximum_payload_bytes, &io,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new_native_configuration(
+        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        maximum_payload_bytes: u64, io: &PreparationIo,
+    ) -> Result<Self>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        Self::validate_configuration(
+            &host, volume, verifier, scope, maximum_payload_bytes, Some(io),
+        )?;
+        let volume = volume.clone_with_io(io)?;
+        let mut observer = io.history_io();
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+        let verifier = verifier.clone_with_work(&mut work)?;
+        let scope = scope.clone_with_work(&mut work)?;
+        Self::assemble_validated_configuration(
+            stream, host, volume, verifier, SchemaRegistry::new(), scope,
+            maximum_payload_bytes, Some(io),
+        )
+    }
+
     /// Binds the exact pinned extension registry used by the conversation reducer.
     pub fn new_with_schemas(
         stream: StreamClient<P>,
@@ -1261,24 +1267,47 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Self::validate_configuration(
             &host, &volume, &verifier, &scope, maximum_payload_bytes, None,
         )?;
+        Self::assemble_validated_configuration(
+            stream, host, volume, verifier, schemas, scope, maximum_payload_bytes, None,
+        )
+    }
+
+    // Every caller has authenticated the exact borrowed or moved configuration
+    // above. This is one field/interaction graph for ordinary and finite wiring.
+    fn assemble_validated_configuration(
+        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef, verifier: AuthorityVerifier, schemas: SchemaRegistry,
+        scope: Scope, maximum_payload_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Self>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
         let interactions = match verifier.audience().kind {
-            crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
-                stream.clone(),
-                Arc::clone(&host),
-                verifier.audience().clone(),
-                verifier.clone(),
-                schemas.clone(),
-                scope.clone(),
-                volume.clone(),
-                maximum_payload_bytes,
-            )?),
-            crate::core::AggregateKind::Task => None,
-            _ => {
-                return Err(Error::Invalid(
-                    "execution journal requires a task or conversation authority".into(),
-                ));
+            crate::core::AggregateKind::Conversation => {
+                let mut observer = io.map(PreparationIo::history_io);
+                let mut work = observer.as_mut()
+                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+                let authority = match work.as_deref_mut() {
+                    Some(work) => work.clone_authority(verifier.audience())?,
+                    None => verifier.audience().clone(),
+                };
+                let interaction_verifier = verifier.clone_with_work(&mut work)?;
+                let interaction_scope = scope.clone_with_work(&mut work)?;
+                let interaction_volume = match io {
+                    Some(io) => volume.clone_with_io(io)?,
+                    None => volume.clone(),
+                };
+                Some(FilesystemInteractionHost::new_with_io(
+                    stream.clone(), Arc::clone(&host), authority, interaction_verifier,
+                    schemas.clone(), interaction_scope, interaction_volume,
+                    maximum_payload_bytes, io,
+                )?)
             }
+            crate::core::AggregateKind::Task => None,
+            _ => unreachable!("execution authority validated before assembly"),
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = io.filter(|io| io.uses_native_work())
+            .map(|io| io.take_native_custody(io.owned_bytes()?)).transpose()?;
         Ok(Self {
             stream,
             host,
@@ -1295,7 +1324,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: None,
+            _native_metadata,
         })
     }
 

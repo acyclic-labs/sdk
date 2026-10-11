@@ -226,6 +226,14 @@ journal's owned fields. Stream and schema sharing is Arc-only; opaque Arc weak
 backing and allocator-node/RSS footprint are not claimed. Native fresh workflow
 admission uses the same staged admission identity, append and retry engine as
 ordinary admission, with the original cancellation and owner tail fences.
+`FilesystemExecutionJournal::new_with_native_work` uses that same configuration
+and interaction assembler without manufacturing a task owner or pulling a lease.
+It preserves `new`'s exact private-volume READ and WRITE grant checks, including
+the original conversation audience. Its by-value native constructor, like
+`for_task_with_native_work`, retains only admitted deep metadata. The known
+execution-journal `Self` body is reserved and absorbed into its intrinsic guard
+immediately before the actual SDK `Arc::new` in `into_native_shared`, not invoiced
+as a second allocation while inline in an already-funded future frame.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
