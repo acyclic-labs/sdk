@@ -8185,6 +8185,25 @@ impl TaskContext {
         }
     }
 
+    /// Pure support discovery for the original binding, before callback boxing
+    /// or constructing an owned interaction request. This grants no authority.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn supports_native_interactions(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.require_original_native_work(work)?;
+        if self.durable_task.is_some() {
+            if let Some(router) = &self.owned_interactions {
+                return router.supports_native_interactions(work);
+            }
+            self.harness.state.as_ref().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "durable task state is not bound",
+            })?.supports_native_interactions(work)
+        } else {
+            self.harness.interactions.as_ref().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "local interaction router is not bound",
+            })?.supports_native_interactions(work)
+        }
+    }
+
     /// Routes an already-paid request through this context's original binding.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn interact_with_native_work(
