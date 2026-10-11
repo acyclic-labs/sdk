@@ -4252,10 +4252,6 @@ async fn load_preparation_bytes_with_io(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
         let bytes = journal.load_with_native_work(reference, work)?.await?;
-        if !bytes.matches_meter(&work.runtime_meter_owner()) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
-                "journal payload returned unowned or foreign native bytes"));
-        }
         reference.descriptor().verify_with_native_work(&bytes, work)?;
         return Ok(bytes);
     }

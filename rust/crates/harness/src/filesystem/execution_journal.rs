@@ -1098,10 +1098,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("matched original native work");
                     let bytes = self.load_with_native_work(&summary.output, work)?.await?;
-                    if !bytes.matches_meter(&work.runtime_meter_owner()) {
-                        return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
-                            "canonical summary returned unowned or foreign native bytes"));
-                    }
                     bytes
                 }
                 Some(io) => io.receive_content(self.load_measured(

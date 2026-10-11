@@ -2171,9 +2171,6 @@ impl PreparedModelRequest {
                     let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
                     ).await?;
-                    if !bytes.matches_meter(&work.runtime_meter_owner()) {
-                        return Err(io.invalid("model prefix bytes differ from the original native ledger"));
-                    }
                     bytes
                 }
                 #[cfg(feature = "filesystem")]

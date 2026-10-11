@@ -927,10 +927,6 @@ impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for N
             self.authorize_native(reference, maximum_bytes, work).await?;
             let output = self.context.context.read_file_with_native_work(reference, work).await?;
             self.authorize_native(reference, maximum_bytes, work).await?;
-            if !output.matches_meter(&work.runtime_meter_owner()) {
-                return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                    "content reader returned unowned or foreign native bytes"));
-            }
             Ok(output)
         })
     }

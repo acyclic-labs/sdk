@@ -7945,10 +7945,6 @@ impl TaskContext {
             let output = reader.read_with_native_work(
                 file,self.scope.limits.file_bytes,work,
             )?.await?;
-            if !output.matches_meter(&work.runtime_meter_owner()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "content reader returned unowned or foreign native bytes" });
-            }
             if file.descriptor().byte_length() != output.len() as u64 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
                     reason: "content reader returned another file length" });
