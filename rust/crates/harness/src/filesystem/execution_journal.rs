@@ -330,6 +330,9 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
+    // Metadata payloads physically drop before their original-ledger custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -383,6 +386,97 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         self.execution
             .as_ref()
             .map_or(operation, |identity| identity.turn)
+    }
+
+    /// Binds the original task owner while admitting newly owned metadata.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_task_with_native_work(
+        owner: TaskJournalOwner<P>, operation_id: OperationId,
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_payload_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let io = PreparationIo::from_native_work(work)?;
+        owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
+        Self::validate_configuration(
+            &host, volume, verifier, scope, maximum_payload_bytes, Some(&io),
+        )?;
+        // StreamClient's only owned field is its provider Arc.
+        let stream = owner.stream_with_native_work(work)?.clone();
+        let schemas = SchemaRegistry::new();
+        let interactions = match verifier.audience().kind {
+            crate::core::AggregateKind::Conversation => {
+                let source = verifier.audience();
+                io.claim(source.id.capacity() as u64)?;
+                io.allocation_attempt(source.id.len() as u64)?;
+                let copy = acyclic_fs::WorkCounters {
+                    bytes_copied: source.id.len() as u64, ..Default::default()
+                };
+                io.preflight(copy)?;
+                let authority = source.clone();
+                io.charge(copy)?;
+                io.release(source.id.capacity().checked_sub(authority.id.capacity())
+                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                        reason: "authority clone exceeds admitted capacity" })? as u64)?;
+                let (interaction_verifier, custody) = verifier.clone_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                let (interaction_scope, custody) = scope.clone_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                let interaction_volume = Self::clone_volume_with_io(volume, &io)?;
+                Some(FilesystemInteractionHost::new_with_io(
+                    stream.clone(), Arc::clone(&host), authority, interaction_verifier,
+                    schemas.clone(), interaction_scope, interaction_volume,
+                    maximum_payload_bytes, Some(&io),
+                )?)
+            }
+            _ => None,
+        };
+        let volume = Self::clone_volume_with_io(volume, &io)?;
+        let (verifier, custody) = verifier.clone_with_native_work(work)?;
+        io.absorb_native_custody(custody)?;
+        let (scope, custody) = scope.clone_with_native_work(work)?;
+        io.absorb_native_custody(custody)?;
+        let retained = io.owned_bytes()?;
+        let custody = io.into_native_custody(retained)?;
+        Ok(Self {
+            stream, host, volume, verifier, scope, schemas, maximum_payload_bytes,
+            input_verifier: None, interactions, owner: Some((owner, operation_id)),
+            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            conversation_projection: tokio::sync::Mutex::new(None),
+            history_read_limits: None,
+            _native_metadata: Some(custody),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn clone_volume_with_io(volume: &VolumeRef, io: &PreparationIo) -> Result<VolumeRef> {
+        // Audited VolumeRef Clone copies only these five possible String fields.
+        let owner = match volume.owner() {
+            crate::conversation::VolumeOwner::Project(id)
+            | crate::conversation::VolumeOwner::Session(id) => id.as_str(),
+            crate::conversation::VolumeOwner::Agent(_) => "",
+        };
+        let fields = [volume.provider().namespace(), volume.provider().family(),
+            volume.provider().version(), volume.id(), owner];
+        let copied = fields.iter().try_fold(0_u64, |bytes, field| {
+            bytes.checked_add(field.len() as u64).ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid, reason: "volume clone ownership overflow",
+            })
+        })?;
+        let admitted = volume.logical_owned_bytes()?;
+        io.claim(admitted)?;
+        let copy = acyclic_fs::WorkCounters { bytes_copied: copied, ..Default::default() };
+        io.preflight(copy)?;
+        for field in fields { io.allocation_attempt(field.len() as u64)?; }
+        let cloned = volume.clone();
+        io.charge(copy)?;
+        io.release(admitted.checked_sub(cloned.logical_owned_bytes()?).ok_or(
+            Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "volume clone exceeds admitted capacities" },
+        )?)?;
+        Ok(cloned)
     }
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
@@ -521,23 +615,54 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         traced(span, self.suspend_untraced(revision, command)).await
     }
 
+    /// Publishes the same suspension CAS under the caller's original work.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn suspend_workflow_command_if_quiescent_with_native_work(
+        &self, revision: u64, command: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let io = PreparationIo::from_native_work(work)?;
+        let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
+        traced(span, async {
+            // Native summaries are attempt-local: no retained cache can escape
+            // the original ledger or outlive its transient replay custody.
+            let mut summary = ExecutionSummary::default();
+            self.suspend_with_summary(revision, command, &mut summary, Some(&io)).await
+        }).await
+    }
+
     async fn suspend_untraced(&self, revision: u64, command: OperationId) -> Result<()>
-    where
-        P: StreamProvider,
-        A: AsyncAuthorityStore + 'static,
-        O: AsyncObjectStore + 'static,
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
+        let mut summary = self.verified.lock().await;
+        self.suspend_with_summary(revision, command, &mut summary, None).await
+    }
+
+    async fn suspend_with_summary(
+        &self, revision: u64, command: OperationId,
+        summary: &mut ExecutionSummary, io: Option<&PreparationIo>,
+    ) -> Result<()>
+    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.is_some_and(|io| io.original_native_work().is_some()) {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "quiescence requires a task-owned execution journal" };
+            }
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        let mut summary = self.verified.lock().await;
-        Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
-        if !summary.quiescent(None)? {
+        self.refresh_summary_with_io(*operation, summary, io).await?;
+        if !summary.quiescent(io)? {
             return Err(Error::Indeterminate(*operation));
         }
-        owner
-            .suspend_quiescent_execution(*operation, summary.tail, revision, command)
-            .await
+        let mut borrowed = io.map(PreparationIo::history_io);
+        owner.suspend_quiescent_execution_with_work(
+            *operation, summary.tail, revision, command,
+            &mut borrowed.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo),
+        ).await
     }
 
     async fn append_validated(
@@ -984,16 +1109,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        if volume.class() != VolumeClass::AgentPrivate
-            || volume.provider() != &host.provider
-            || maximum_payload_bytes == 0
-        {
-            return Err(Error::Invalid(
-                "execution journal requires a private volume and positive limit".into(),
-            ));
-        }
-        ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+        Self::validate_configuration(
+            &host, &volume, &verifier, &scope, maximum_payload_bytes, None,
+        )?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(),
@@ -1027,7 +1145,44 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata: None,
         })
+    }
+
+    fn validate_configuration(
+        host: &FilesystemHost<A, O>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_payload_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let invalid = |reason: &'static str| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.is_some_and(|io| io.original_native_work().is_some()) {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+            }
+            Error::Invalid(reason.into())
+        };
+        super::fork_preparer_io::item(io, 0)?;
+        if volume.class() != VolumeClass::AgentPrivate
+            || volume.provider() != &host.provider
+            || maximum_payload_bytes == 0
+        {
+            return Err(invalid("execution journal requires a private volume and positive limit"));
+        }
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            match io {
+                Some(io) => ContentGrant::verify_original_volume_with_io(
+                    verifier, scope, volume, operation, io,
+                )?,
+                None => { ContentGrant::verify(verifier, scope, volume, operation)?; }
+            }
+        }
+        if !matches!(verifier.audience().kind,
+            crate::core::AggregateKind::Conversation | crate::core::AggregateKind::Task)
+        {
+            return Err(invalid("execution journal requires a task or conversation authority"));
+        }
+        Ok(())
     }
 
     /// Binds approval/question tickets to an existing conversation owner on the

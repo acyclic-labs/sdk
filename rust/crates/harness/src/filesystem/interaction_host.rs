@@ -167,29 +167,59 @@ where
         private_volume: VolumeRef,
         maximum_bytes: u64,
     ) -> Result<Self> {
+        Self::new_with_io(
+            stream, host, authority, verifier, schemas, owner_scope,
+            private_volume, maximum_bytes, None,
+        )
+    }
+
+    // Incoming owned metadata is already covered by the constructing
+    // execution journal's original ledger and intrinsic, last-field custody.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_io(
+        stream: StreamClient<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        authority: Authority,
+        verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        owner_scope: Scope,
+        private_volume: VolumeRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            verifier.verify_audience_with_native_work(&authority, work)?;
+        } else {
+            verifier.verify_audience(&authority)?;
+        }
+        #[cfg(target_arch = "wasm32")]
         verifier.verify_audience(&authority)?;
         if authority.kind != crate::core::AggregateKind::Conversation
             || private_volume.class() != VolumeClass::AgentPrivate
             || private_volume.provider() != &host.provider
             || maximum_bytes == 0
         {
-            return Err(Error::Invalid(
-                "interaction host requires a conversation, private volume, and positive limit"
-                    .into(),
+            return Err(super::fork_preparer_io::invalid(
+                io,
+                "interaction host requires a conversation, private volume, and positive limit",
             ));
         }
-        ContentGrant::verify(
-            &verifier,
-            &owner_scope,
-            &private_volume,
-            VolumeOperation::Read,
-        )?;
-        ContentGrant::verify(
-            &verifier,
-            &owner_scope,
-            &private_volume,
-            VolumeOperation::Write,
-        )?;
+        if let Some(io) = io {
+            ContentGrant::verify_original_volume_with_io(
+                &verifier, &owner_scope, &private_volume, VolumeOperation::Read, io,
+            )?;
+            ContentGrant::verify_original_volume_with_io(
+                &verifier, &owner_scope, &private_volume, VolumeOperation::Write, io,
+            )?;
+        } else {
+            ContentGrant::verify(
+                &verifier, &owner_scope, &private_volume, VolumeOperation::Read,
+            )?;
+            ContentGrant::verify(
+                &verifier, &owner_scope, &private_volume, VolumeOperation::Write,
+            )?;
+        }
         Ok(Self {
             stream,
             host,

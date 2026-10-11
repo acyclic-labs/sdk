@@ -5631,6 +5631,19 @@ pub(crate) mod tests {
         fn initialize(&self, input: &Value) -> Result<Value> {
             Ok(input.clone())
         }
+
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        fn initialize_with_native_work(
+            &self, input: &Value, work: &acyclic_fs::NativeMaterializationWork,
+        ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+            let number = input.as_i64().map(serde_json::Number::from)
+                .or_else(|| input.as_u64().map(serde_json::Number::from))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native fixture requires a fixed-width integer input" })?;
+            let custody = work.retain_owned(0)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            Ok((Value::Number(number), custody))
+        }
         fn transition(&self, state: &Value, _input: &Value) -> Result<MachineTransition> {
             Ok(MachineTransition {
                 state: state.clone(),
@@ -6230,7 +6243,7 @@ pub(crate) mod tests {
             assert_eq!(work.live_allocation_bytes(), baseline + observed.1.bytes());
             drop(observed);
             assert_eq!(work.live_allocation_bytes(), baseline);
-            let admitted = workflow.admission_with_native_work(&work).await?;
+            let admitted = workflow.admission_with_native_work(&work)?.await?;
             assert_eq!(admitted.0.as_ref(), Some(owner.workflow_admission()));
             assert!(admitted.1.bytes() > 0);
             assert_eq!(work.live_allocation_bytes(), baseline + admitted.1.bytes());
@@ -6268,7 +6281,7 @@ pub(crate) mod tests {
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let prefix = cancelled_work.receipt();
             cancelled.cancel();
-            assert!(matches!(workflow.admission_with_native_work(&cancelled_work).await,
+            assert!(matches!(workflow.admission_with_native_work(&cancelled_work),
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
             assert_eq!(cancelled_work.receipt(), prefix);
             assert!(matches!(workflow.replay_with_native_work(0, 1, &cancelled_work),

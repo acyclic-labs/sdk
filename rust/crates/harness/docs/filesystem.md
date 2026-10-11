@@ -202,6 +202,14 @@ missing/unknown versions or substituted lineage on reopen. Selected context and
 canonical conversation source validation use the original turn, not the derived
 execution namespace or per-step retry operation.
 
+Native task constructors borrow the original volume, verifier and scope, move
+the original task owner, and fund their known metadata copies on that owner's
+native work ledger before copying. Intrinsic metadata custody drops after the
+journal's owned fields. Stream and schema sharing is Arc-only; opaque Arc weak
+backing and allocator-node/RSS footprint are not claimed. Native fresh workflow
+admission uses the same staged admission identity, append and retry engine as
+ordinary admission, with the original cancellation and owner tail fences.
+
 Pass a task-bound workflow journal to `AgentHarness::open_task(task_id, &definition, fence, journal).await` to recover a registered resumable task. The same path is available through `TaskContext::open_resumable_task` and `TaskDefinition::open`. It verifies the registered definition and the retained input, schemas and scope before opening the existing workflow host. `ResumableTaskSession::step` validates completed values against the admitted output schema and checks uncancelled ownership even for cached exact retries. `latest_transition` reads the latest committed status and outbox without retaining historical bodies; opening an existing checkpoint after cancellation is permitted for recovery, but advancing it is rejected. This session does not dispatch commands or settle scheduler outcomes, and live futures have no durable checkpoint.
 
 `TaskJournalOwner::authenticated_binding_agent` selects the executing agent from current sealed creation provenance; a declaring parent's scope cannot substitute for a child. A proofless root retains its canonical verified `BindConversation` result on that same owner handle. An uncertain binding choice only rejects conflicting operation, intent or audience retries and grants no publication authority. Native fence and volume checks borrow the caller's original `NativeMaterializationWork` ledger and cancellation token. `outcome_with_native_work` reads an authenticated terminal outcome without granting a settlement lease; nonterminal/uncertain work returns no result. Native result consumers must still verify their actual publication receipt and frozen-view snapshot.
