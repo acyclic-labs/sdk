@@ -1,188 +1,248 @@
-//! Single-key authenticated lookup through a persistent B+tree that shares
-//! decoded pages with every other kernel reader.
+//! Single-key authenticated lookup sharing the canonical page and clone leaves.
 
-use super::DecodeLimits;
+use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_batch::Error;
 use super::persistent_btree::{Format, Page, children_within, leaf_within};
-use super::persistent_io;
-use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
+use super::{DecodeLimits, persistent_io};
+use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
-use crate::storage::{ObjectId, ObjectStoreError};
-use std::collections::HashSet;
-use std::sync::Arc;
+use crate::storage::ObjectId;
 
-/// Exact value for one key, or its authenticated absence, and the work spent.
 pub(crate) struct Receipt<V> {
     pub(crate) value: Option<V>,
     pub(crate) work: WorkCounters,
 }
-
 pub(crate) type Failure = OperationFailure<Error>;
 
-/// Looks `key` up from `root` one page per level.
-///
-/// A page already decoded by any reader of `store` is used without reading
-/// or decoding it again; a page read here is offered to the decoded cache.
-/// Each level charges one page read plus the backend's own work for a page
-/// it reads, verifies its routing bounds against the parent, and rejects
-/// cycles and excess height.
+/// Data precedes its original allocation guard in physical destruction order.
+pub(crate) struct Owned<T> {
+    pub(crate) value: T,
+    pub(crate) bytes: u64,
+    pub(crate) allocation: KernelOwnedAllocation,
+}
+
+impl<T> Owned<T> {
+    pub(crate) fn new(value: T, allocation: KernelOwnedAllocation, bytes: u64) -> Self {
+        Self { value, allocation, bytes }
+    }
+
+    pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        let Self { value, allocation, bytes } = self;
+        drop(value);
+        retire_allocation(allocation, bytes, accounting)
+    }
+}
+
+impl<T> Owned<Vec<T>> {
+    pub(crate) fn allocate(count: usize, accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
+        let requested = crate::foundation::usize_to_u64(
+            count.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?,
+        );
+        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
+        let mut values = Vec::new();
+        if let Err(error) = values.try_reserve_exact(count) {
+            drop(values);
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
+            retire_allocation(allocation, requested, accounting)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))); }
+            drop(error);
+            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        }
+        let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
+        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
+        let owned = Self::new(values, allocation, actual);
+        if let Err(error) = checked { owned.retire(accounting)?; return Err(error); }
+        Ok(owned)
+    }
+
+    pub(crate) fn ensure_for_push(&mut self, maximum: usize, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        if self.value.len() >= maximum { return Err(super::CanonicalDecodeError::AllocationFailed.into()); }
+        if self.value.len() < self.value.capacity() { return Ok(()); }
+        let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
+        let previous = self.value.capacity();
+        let requested = crate::foundation::usize_to_u64(
+            (next - previous).checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?,
+        );
+        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
+        if let Err(error) = self.value.try_reserve_exact(next - self.value.len()) {
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
+            retire_allocation(allocation, requested, accounting)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native { return Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))); }
+            drop(error);
+            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        }
+        let actual = crate::foundation::usize_to_u64((self.value.capacity() - previous) * std::mem::size_of::<T>());
+        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
+        absorb(&mut self.allocation, allocation)?;
+        self.bytes = self.bytes.checked_add(actual).ok_or(crate::WorkError::Overflow)?;
+        checked
+    }
+}
+
+pub(super) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+    match allocation {
+        KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(bytes)?)),
+    }
+}
+
+pub(crate) fn retire_allocation(
+    allocation: KernelOwnedAllocation,
+    bytes: u64,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    match allocation {
+        KernelOwnedAllocation::Standalone => match accounting {
+            KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),
+            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.release(bytes),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } => unreachable!("standalone allocation has standalone custody"),
+        }.map_err(|error| error.into_work_or(crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed))),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(guard) => { drop(guard); Ok(()) }
+    }
+}
+
+pub(super) fn absorb(
+    destination: &mut KernelOwnedAllocation,
+    mut source: KernelOwnedAllocation,
+) -> Result<(), crate::FsError> {
+    match (destination, &mut source) {
+        (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => Ok(()),
+        #[cfg(not(target_arch = "wasm32"))]
+        (KernelOwnedAllocation::NativeOriginal(destination), KernelOwnedAllocation::NativeOriginal(source)) => {
+            destination.absorb(source)?;
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        _ => unreachable!("one query never crosses allocation ledgers"),
+    }
+}
+
+
 pub(crate) async fn lookup_async<S, F>(
-    store: &S,
-    root: ObjectId,
-    key: &F::Key,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
+    store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
+    budget: WorkBudget, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Receipt<F::Value>, Failure>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    if root.kind != F::kind() {
-        return Err(OperationFailure::before_work(Error::WrongRootKind));
-    }
-    if !limits.page_limits_valid(1) {
-        return Err(OperationFailure::before_work(Error::InvalidLimits));
-    }
-    let mut work = WorkCounters::default();
-    let mut visited = HashSet::new();
+where S: AsyncObjectStore, F: Format {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = lookup_async_with_accounting::<S, F>(
+        store, root, key, limits, &mut accounting, cancellation, data_custody,
+    ).await;
+    let work = accounting.spent();
+    result.map(|(value, _)| Receipt { value, work })
+        .map_err(|error| OperationFailure::new(project_failure(error), work))
+}
+
+/// The standalone projection and native invocation walk exactly this body.
+pub(crate) async fn lookup_async_with_accounting<S, F>(
+    store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Option<F::Value>, KernelOwnedAllocation), crate::FsError>
+where S: AsyncObjectStore, F: Format {
+    accounting.check()?;
+    if root.kind != F::kind() { return Err(query_error(Error::WrongRootKind)); }
+    if !limits.page_limits_valid(1) { return Err(query_error(Error::InvalidLimits)); }
+    let mut visited = VisitedObjectSet::new_with_accounting(
+        usize::from(limits.maximum_page_height), accounting,
+    )?;
+    let mut lower: Option<Owned<F::Key>> = None;
+    let mut upper: Option<Owned<F::Key>> = None;
     let mut page = root;
-    let mut lower: Option<F::Key> = None;
-    let mut upper: Option<F::Key> = None;
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(OperationFailure::new(Error::Cancelled, work));
-        }
-        if visited.len() >= usize::from(limits.maximum_page_height) {
-            return Err(OperationFailure::new(Error::HeightExceeded, work));
-        }
-        if !visited.insert(page) {
-            return Err(OperationFailure::new(Error::CycleOrAlias, work));
-        }
-        // Charging the page read in place is exactly `checked_add` then
-        // `remaining`'s verification, and leaves `work` unchanged on failure.
-        work.charge(&PAGE_READ, &budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let key_for_cache = DecodedCacheKey::new::<Page<F>>(page, limits);
-        let cached = store
-            .decoded_cache_get(key_for_cache)
-            .map_err(|error| OperationFailure::new(Error::Storage(error), work))?;
-        let decoded = if let Some(cached) = cached {
-            cached.value.downcast::<Page<F>>().map_err(|_| {
-                OperationFailure::new(Error::Storage(ObjectStoreError::Corrupt), work)
-            })?
-        } else {
-            // A cache miss awaits the backend in its own heap frame, so a
-            // lookup the decoded cache answers, which is nearly every one,
-            // never builds or moves that future.
-            let (decoded, spent) = in_heap(|| {
-                read_uncached::<S, F>(
-                    store,
-                    page,
-                    key_for_cache,
-                    limits,
-                    work,
-                    budget,
-                    cancellation,
-                )
-            })
-            .await?;
-            work = spent;
-            decoded
-        };
-        match &*decoded {
-            Page::Leaf(values) => {
-                if !leaf_within::<F>(values, lower.as_ref(), upper.as_ref()) {
-                    return Err(OperationFailure::new(Error::ChildBoundsMismatch, work));
-                }
-                let value = values
-                    .binary_search_by(|value| F::key(value).cmp(key))
-                    .ok()
-                    .and_then(|index| values.get(index).cloned());
-                return Ok(Receipt { value, work });
+    let mut height = 0_usize;
+    let result = async {
+        loop {
+            cancellation.check()?;
+            accounting.check()?;
+            if height >= usize::from(limits.maximum_page_height) {
+                return Err(query_error(Error::HeightExceeded));
             }
-            Page::Internal(children) => {
-                if !children_within(children, lower.as_ref(), upper.as_ref()) {
-                    return Err(OperationFailure::new(Error::ChildBoundsMismatch, work));
+            height += 1;
+            let inserted = VisitedObjectSet::insert_with_accounting(&mut visited, page, accounting)?;
+            if !inserted.inserted { return Err(query_error(Error::CycleOrAlias)); }
+            let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
+                store, page, limits, accounting, cancellation, data_custody,
+            ).await?;
+            let decoded_bytes = decoded.logical_bytes;
+            let decoded = Owned::new(decoded, allocation, decoded_bytes);
+            let view = match &decoded.value.page {
+                persistent_io::PageLease::Owned(page) => page,
+                persistent_io::PageLease::Shared { page, .. } => page.as_ref(),
+            };
+            let step = (|| {
+                match view {
+                    Page::Leaf(values) => {
+                        if !leaf_within::<F>(values, lower.as_ref().map(|key| &key.value), upper.as_ref().map(|key| &key.value)) {
+                            return Err(query_error(Error::ChildBoundsMismatch));
+                        }
+                        let position = super::search::binary_search_with_accounting(values, accounting, |value| F::key(value).cmp(key))?;
+                        let result = position.ok()
+                            .and_then(|index| values.get(index))
+                            .map(|value| persistent_io::clone_value_with_accounting_and_custody::<F>(value, limits.maximum_name_bytes, accounting, data_custody, 0))
+                            .transpose()?;
+                        Ok(Some(match result {
+                            Some((value, allocation)) => (Some(value), allocation),
+                            None => (None, accounting.claim_owned(0, 0)?),
+                        }))
+                    }
+                    Page::Internal(children) => {
+                        if !children_within(children, lower.as_ref().map(|key| &key.value), upper.as_ref().map(|key| &key.value)) {
+                            return Err(query_error(Error::ChildBoundsMismatch));
+                        }
+                        let selected = super::search::partition_point_with_accounting(children, accounting, |child| child.first <= *key)?.saturating_sub(1);
+                        let child = children.get(selected).ok_or_else(|| query_error(Error::InvalidRouting))?;
+                        if let Some(previous) = lower.take() { previous.retire(accounting)?; }
+                        let (value, allocation) = persistent_io::clone_key_with_accounting_and_custody::<F>(&child.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
+                        let bytes = F::key_owned_bytes(&value);
+                        lower = Some(Owned::new(value, allocation, bytes));
+                        if let Some(next) = children.get(selected + 1) {
+                            if let Some(previous) = upper.take() { previous.retire(accounting)?; }
+                            let (value, allocation) = persistent_io::clone_key_with_accounting_and_custody::<F>(&next.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
+                            let bytes = F::key_owned_bytes(&value);
+                            upper = Some(Owned::new(value, allocation, bytes));
+                        }
+                        page = child.page;
+                        Ok(None)
+                    }
                 }
-                let selected = children
-                    .partition_point(|child| child.first <= *key)
-                    .saturating_sub(1);
-                let child = children
-                    .get(selected)
-                    .ok_or_else(|| OperationFailure::new(Error::InvalidRouting, work))?;
-                lower = Some(child.first.clone());
-                if let Some(next) = children.get(selected + 1) {
-                    upper = Some(next.first.clone());
-                }
-                page = child.page;
-            }
+            })();
+            decoded.retire(accounting)?;
+            if let Some(result) = step? { return Ok(result); }
         }
+    }.await;
+    if let Some(lower) = lower { lower.retire(accounting)?; }
+    if let Some(upper) = upper { upper.retire(accounting)?; }
+    visited.retire(accounting)?;
+    result
+}
+
+pub(super) fn query_error(error: Error) -> crate::FsError {
+    crate::FsError::FileRecord(super::file_table::map_batch_error(error))
+}
+
+pub(super) fn project_failure(error: crate::FsError) -> Error {
+    match error {
+        crate::FsError::FileRecord(error) => super::file_table::unmap_batch_error(error),
+        crate::FsError::Cancelled(_) => Error::Cancelled,
+        crate::FsError::Work(error) => Error::Work(error),
+        crate::FsError::Object(error) => Error::Storage(error),
+        crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed) => Error::AllocationFailed,
+        crate::FsError::PendingMutationAllocationFailed => Error::AllocationFailed,
+        crate::FsError::Decode(error) => Error::Decode(error),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => Error::Storage(crate::ObjectStoreError::Native(error)),
+        _ => unreachable!("canonical query leaves return only typed query, object, decode, work or cancellation errors"),
     }
 }
 
-/// One authenticated page read, as charged before any backend work.
-const PAGE_READ: WorkCounters = WorkCounters {
-    page_reads: 1,
-    ..WorkCounters::UNCHARGED
-};
-
-/// One page the decoded cache did not hold, read, decoded, and offered to
-/// the cache, with the work spent: `prospective` (which already charges the
-/// page read) plus the backend's work.
-async fn read_uncached<S, F>(
-    store: &S,
-    page: ObjectId,
-    key: DecodedCacheKey,
-    limits: DecodeLimits,
-    prospective: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(Arc<Page<F>>, WorkCounters), Failure>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    let storage =
-        |error: ObjectStoreError, work| OperationFailure::new(Error::Storage(error), work);
-    let remaining = prospective
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), prospective))?;
-    let receipt = store
-        .read(
-            page,
-            limits.maximum_page_object_bytes(),
-            remaining,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| match prospective.checked_add(*failure.work) {
-            Ok(spent) => storage(failure.error, spent),
-            Err(error) => OperationFailure::new(error.into(), prospective),
-        })?;
-    let work = prospective
-        .checked_add(receipt.work)
-        .map_err(|error| OperationFailure::new(error.into(), prospective))?;
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let decoded = persistent_io::decoded_cache_value::<F>(&receipt.value.bytes, limits)
-        .map_err(|error| OperationFailure::new(Error::Decode(error), work))?;
-    let decoded = match store
-        .decoded_cache_admit(key, decoded)
-        .map_err(|error| storage(error, work))?
-    {
-        crate::async_storage::DecodedCacheAdmission::Shared(value)
-        | crate::async_storage::DecodedCacheAdmission::Uncached(value) => value,
-    };
-    let decoded = decoded
-        .value
-        .downcast::<Page<F>>()
-        .map_err(|_| storage(ObjectStoreError::Corrupt, work))?;
-    Ok((decoded, work))
-}
-
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 #[path = "tests/persistent_point.rs"]
 mod tests;

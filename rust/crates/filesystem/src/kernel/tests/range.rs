@@ -600,66 +600,27 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         kind: ObjectKind::ExtentPage,
         digest: crate::foundation::Digest::from_bytes([91; 32]),
     };
-    let machine = RangeMachine::new(
-        root,
-        PlanInput {
-            file_size: 4,
-            range: ByteRange {
-                offset: 0,
-                length: 4,
-            },
-            maximum_spans: 1,
-        },
-        TraversalMode::Plan,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let incomplete = {
-        let mut machine = machine;
-        machine
-            .finish()
-            .err()
-            .ok_or("incomplete range machine produced a plan")?
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let request = ExtentRangeRequest {
+        root, file_size: 4, range: ByteRange { offset: 0, length: 4 },
+        maximum_spans: 1, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED,
     };
-    assert!(matches!(
-        incomplete.error,
-        ExtentReadError::IncompleteCoverage
-    ));
+    let machine = RangeMachine::new(request, TraversalMode::Plan, &mut accounting)?;
+    let incomplete = machine.finish(&mut accounting).err()
+        .ok_or("incomplete range machine produced a plan")?;
+    assert!(matches!(range_error(incomplete), ExtentReadError::IncompleteCoverage));
 
-    let machine = RangeMachine::new(
-        root,
-        PlanInput {
-            file_size: 4,
-            range: ByteRange {
-                offset: 0,
-                length: 4,
-            },
-            maximum_spans: 1,
-        },
-        TraversalMode::Plan,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let cancelled = frontier::Machine::cancelled(&machine);
-    assert!(matches!(cancelled.error, ExtentReadError::Cancelled));
+    let cancelled = range_error(crate::FsError::Cancelled(crate::cancellation::CancellationError));
+    assert!(matches!(cancelled, ExtentReadError::Cancelled));
 
-    let prospective = WorkCounters {
-        object_probes: u64::MAX,
-        ..WorkCounters::default()
-    };
-    let backend = crate::storage::ObjectFailure::new(
-        ObjectStoreError::Missing,
-        WorkCounters {
-            object_probes: 1,
-            ..WorkCounters::default()
-        },
-    );
-    let overflow = frontier::Machine::storage_failure(&machine, prospective, backend);
-    assert!(matches!(
-        overflow.error,
-        ExtentReadError::Work(WorkError::Overflow)
-    ));
-    assert_eq!(*overflow.work, prospective);
+    let prospective = WorkCounters { object_probes: u64::MAX, ..WorkCounters::default() };
+    if let KernelAccounting::Standalone { work, .. } = &mut accounting { *work = prospective; }
+    let overflow = super::super::file_read::completed_read_work(
+        &mut accounting, WorkCounters { object_probes: 1, ..WorkCounters::default() },
+    ).err().ok_or("overflowing backend prefix was accepted")?;
+    assert!(matches!(range_error(overflow), ExtentReadError::Work(WorkError::Overflow)));
+    assert_eq!(accounting.spent(), prospective);
     Ok(())
 }
 

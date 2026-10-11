@@ -679,23 +679,17 @@ fn persistent_key_and_value_clones_have_exact_allocation_and_copy_lifetimes()
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cloned_key =
-        clone_key::<TreeFormat>(&key, 8, WorkBudget::UNBOUNDED, &mut allocations, &mut work)?;
+        clone_key::<TreeFormat>(&key, 8, WorkBudget::UNBOUNDED, &mut allocations, &mut work, None, 0)?;
     assert_eq!(cloned_key, key);
     assert_eq!(allocations.live_bytes(), 4);
     allocations.release(4)?;
-    let cloned_value = clone_value::<TreeFormat>(
-        &value,
-        8,
-        WorkBudget::UNBOUNDED,
-        &mut allocations,
-        &mut work,
-    )?;
+    let cloned_value = clone_value::<TreeFormat>(&value, 8, WorkBudget::UNBOUNDED, &mut allocations, &mut work, None, 0)?;
     assert_eq!(cloned_value, value);
     assert_eq!(allocations.live_bytes(), 4);
     allocations.release(4)?;
 
     assert!(matches!(
-        clone_key::<TreeFormat>(&key, 0, WorkBudget::UNBOUNDED, &mut allocations, &mut work,),
+        clone_key::<TreeFormat>(&key, 0, WorkBudget::UNBOUNDED, &mut allocations, &mut work, None, 0),
         Err(Error::Decode(_))
     ));
     assert_eq!(allocations.live_bytes(), 0);
@@ -706,6 +700,8 @@ fn persistent_key_and_value_clones_have_exact_allocation_and_copy_lifetimes()
             WorkBudget::UNBOUNDED,
             &mut allocations,
             &mut work,
+            None,
+            0,
         ),
         Err(Error::Decode(_))
     ));
@@ -714,7 +710,7 @@ fn persistent_key_and_value_clones_have_exact_allocation_and_copy_lifetimes()
     let mut denied = WorkBudget::UNBOUNDED;
     denied.bytes_copied = work.bytes_copied;
     assert!(matches!(
-        clone_key::<TreeFormat>(&key, 8, denied, &mut allocations, &mut work),
+        clone_key::<TreeFormat>(&key, 8, denied, &mut allocations, &mut work, None, 0),
         Err(Error::Work(WorkError::BudgetExceeded {
             counter: "bytes_copied",
             ..
@@ -849,7 +845,9 @@ fn shared_copy_and_batch_retention_failures_release_every_logical_byte()
         DecodeLimits::default(),
     );
     assert!(matches!(
-        admit_decoded(&store, key, Ok(invalid_lease), &mut allocations),
+        admit_decoded(
+            &store, key, Ok(invalid_lease), &mut allocations, WorkBudget::UNBOUNDED, &mut work, None, 0,
+        ),
         Err(Error::Storage(ObjectStoreError::Corrupt))
     ));
     assert_eq!(allocations.live_bytes(), 0);
@@ -940,5 +938,70 @@ fn corrupted_batch_state_releases_resources_and_fails_closed()
         overflowing.release_pending(&mut allocations),
         Err(Error::AllocationFailed)
     ));
+    Ok(())
+}
+
+#[test]
+fn decoded_cache_arc_admission_precedes_allocation_and_retires_real_control()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let make_owned = || -> Result<OwnedPage<TreeFormat>, Box<dyn std::error::Error>> {
+        let mut name_bytes = Vec::with_capacity(64);
+        name_bytes.extend_from_slice(b"entry");
+        let name = LogicalName::new(NameEncoding::Utf8, name_bytes, 255)?;
+        let mut values = Vec::with_capacity(3);
+        values.push(TreeEntry { name, file_id: FileId::from_bytes([7; 16]), kind: FileKind::Regular });
+        let logical_bytes = (values.capacity() * size_of::<TreeEntry>()) as u64
+            + values[0].name.retained_bytes() as u64;
+        Ok(OwnedPage {
+            page: PageLease::Owned(Page::Leaf(values)), logical_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        })
+    };
+    let key = DecodedCacheKey::new::<Page<TreeFormat>>(
+        ObjectId { kind: ObjectKind::TreePage, digest: crate::foundation::Digest::ZERO },
+        DecodeLimits::default(),
+    );
+    let control = size_of::<Page<TreeFormat>>() as u64;
+    for allocation_denied in [true, false] {
+        let decoded = make_owned()?;
+        let owned = decoded.logical_bytes;
+        let mut allocations = AllocationLedger::default();
+        let mut work = WorkCounters::default();
+        allocations.claim_bytes(owned, 0, &mut work, WorkBudget::UNBOUNDED)?;
+        let prefix = work;
+        let budget = if allocation_denied {
+            WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }
+        } else {
+            WorkBudget { peak_allocation_bytes: owned + control - 1, ..WorkBudget::UNBOUNDED }
+        };
+        let owner = crate::kernel::ProofDataCustody::default();
+        let failure = admit_decoded(
+            &store, key, Ok(decoded), &mut allocations, budget, &mut work, Some(&owner), 0,
+        ).err().ok_or("decoded cache Arc allocated beyond its permit")?;
+        assert!(matches!(failure, Error::Work(WorkError::BudgetExceeded { .. })));
+        assert_eq!(work, prefix);
+        assert_eq!(allocations.live_bytes(), 0, "denied Arc drops and retires the owned decoded buffers");
+        assert_eq!(owner.pending_data_work(), WorkCounters::default());
+    }
+    let decoded = make_owned()?;
+    let owned = decoded.logical_bytes;
+    let mut allocations = AllocationLedger::default();
+    let mut work = WorkCounters::default();
+    allocations.claim_bytes(owned, 0, &mut work, WorkBudget::UNBOUNDED)?;
+    let owner = crate::kernel::ProofDataCustody::default();
+    let decoded = admit_decoded(
+        &store, key, Ok(decoded), &mut allocations, WorkBudget::UNBOUNDED, &mut work, Some(&owner), 0,
+    )?;
+    assert!(matches!(&decoded.page, PageLease::Owned(_)));
+    assert_eq!(work.allocation_operations, 1);
+    assert_eq!(work.peak_allocation_bytes, owned + control);
+    assert_eq!(owner.pending_data_work().allocation_operations, 1);
+    assert_eq!(owner.pending_data_work().peak_allocation_bytes, owned + control);
+    assert_eq!(allocations.live_bytes(), owned, "try_unwrap physically retires only the Arc payload");
+    drop(decoded);
+    allocations.release(owned)?;
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }

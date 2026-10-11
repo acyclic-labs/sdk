@@ -1,4 +1,5 @@
 use super::*;
+use super::super::allocation::{AllocationError, AllocationLedger};
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
@@ -13,6 +14,60 @@ use crate::storage::{
 };
 use bytes::Bytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// A direct provider fixture has no enclosing query ledger. Its callbacks must
+/// include the whole existing cache backing, not subtract an external claim.
+fn setup_cache<'a, S>(
+    store: &'a S, entries: usize, budget: WorkBudget,
+    custody: Option<&'a super::super::ProofDataCustody>,
+) -> Result<(OperationReadCache<'a, S>, WorkCounters), PathLookupFailure> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+    let result = OperationReadCache::new(store, entries, &mut accounting, custody);
+    let work = accounting.spent();
+    let mut cache = result.map_err(|error| OperationFailure::new(path_error(error), work))?;
+    let state = cache.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.accounted_bytes = 0;
+    state.accounted_slot_bytes = 0;
+    Ok((cache, work))
+}
+
+fn cache_resident<S>(cache: &OperationReadCache<'_, S>) -> Result<u64, WorkError> {
+    let state = cache.lock_state();
+    OperationReadCache::<S>::slot_bytes(&state)?.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow)
+}
+
+/// Exercises the same original-context leaf as read, put and contains callbacks.
+fn completed_backend(
+    prior: WorkCounters, backend: WorkCounters, resident: u64, budget: WorkBudget,
+) -> Result<WorkCounters, OperationFailure<crate::FsError>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::Standalone {
+        allocations: AllocationLedger::default(), work: prior, budget, cancellation: &cancellation,
+    };
+    let result = compose_backend(&mut accounting, backend, resident);
+    let work = accounting.spent();
+    result.map(|()| work).map_err(|error| OperationFailure::new(error, work))
+}
+
+fn completed_backend_failure(
+    prior: WorkCounters, backend: WorkCounters, resident: u64, error: crate::FsError,
+) -> OperationFailure<crate::FsError> {
+    match completed_backend(prior, backend, resident, WorkBudget::UNBOUNDED) {
+        Ok(work) => OperationFailure::new(error, work),
+        Err(failure) => failure,
+    }
+}
+
+fn remaining_callback(
+    prior: WorkCounters, budget: WorkBudget, resident: u64,
+) -> Result<WorkBudget, OperationFailure<crate::FsError>> {
+    let cancellation = CancellationToken::new();
+    let accounting = KernelAccounting::Standalone {
+        allocations: AllocationLedger::default(), work: prior, budget, cancellation: &cancellation,
+    };
+    provider_remaining(&accounting, resident).map_err(|error| OperationFailure::new(error, accounting.spent()))
+}
 
 fn config() -> VolumeConfig {
     VolumeConfig {
@@ -468,17 +523,27 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
-    let cache_entries = maximum_cache_entries(&path, config())?;
+    let cache_entries = maximum_cache_entries_for_components((&path).depth(), config())?;
     let (cache, cache_work) =
-        OperationReadCache::new(&store, cache_entries, WorkBudget::UNBOUNDED)?;
+        setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)
         .ok_or("dependency byte count overflowed")?;
-    let required_peak = cache
-        .metadata_bytes
-        .checked_add(dependency_bytes)
-        .ok_or("combined resident byte count overflowed")?;
+    let cache_bytes = cache_resident(&cache)?;
     drop(cache);
+    // The same canonical path frame is a real simultaneous allocation too.
+    let cancellation = CancellationToken::new();
+    let zero_peak = async_storage::poll_immediate(observe_path_async(
+        &store, &generation, &path, config(),
+        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    )).expect_err("the original path frame must be admitted before allocation");
+    let PathLookupError::Work(WorkError::BudgetExceeded {
+        counter: "peak_allocation_bytes", observed: frame_bytes, maximum: 0,
+    }) = zero_peak.error else { return Err("zero-peak request did not reject the actual path frame".into()); };
+    assert_eq!(zero_peak.work.backend_read_operations, 0);
+    let required_peak = frame_bytes.checked_add(cache_bytes)
+        .and_then(|bytes| bytes.checked_add(dependency_bytes))
+        .ok_or("combined resident byte count overflowed")?;
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = required_peak - 1;
@@ -507,32 +572,34 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
         cache_work.allocation_operations + 1
     );
 
-    let first_name_bytes = u64::try_from(path.components()[0].as_bytes().len())?;
-    let required_name_peak = required_peak
-        .checked_add(first_name_bytes)
+    // Isolate the actual name leaf, retaining the real cache/dependency backing.
+    // A prior page's higher historical peak cannot disguise this field boundary.
+    let (cache, _) = setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
+    let root = async_storage::poll_immediate(super::super::file_table::lookup_file_record_async(
+        &cache, generation.file_table, generation.root_file_id, DecodeLimits::for_volume(config()),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ))?;
+    assert!(root.work.backend_read_operations > 0);
+    let cache_bytes = cache_resident(&cache)?;
+    let first_name_bytes = u64::try_from(path.components()[0].retained_bytes())?;
+    let required_name_peak = cache_bytes.checked_add(dependency_bytes)
+        .and_then(|bytes| bytes.checked_add(first_name_bytes))
         .ok_or("dependency name byte count overflowed")?;
-    let mut name_budget = WorkBudget::UNBOUNDED;
-    name_budget.peak_allocation_bytes = required_name_peak - 1;
-    let failure = async_storage::poll_ready(observe_path_async(
-        &store,
-        &generation,
-        &path,
-        config(),
-        name_budget,
-        &CancellationToken::new(),
-    ))
-    .ok_or("name-budgeted observation remained pending")?
-    .err()
-    .ok_or("unadmitted dependency name unexpectedly succeeded")?;
+    let name_budget = WorkBudget { peak_allocation_bytes: required_name_peak - 1, ..WorkBudget::UNBOUNDED };
+    let mut accounting = KernelAccounting::standalone(name_budget, &cancellation);
+    let (_cache_allocation, completed) = accounting.record_actual_owned(cache_bytes)?;
+    completed?;
+    let dependencies = reserve_slots::<Dependency>(path.depth().saturating_add(1), &mut accounting, None)?;
+    let failure = copy_name(&path.components()[0], config().limits.maximum_component_bytes, &mut accounting, None)
+        .err().ok_or("unadmitted dependency name unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
-        PathLookupError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum,
+        failure,
+        crate::FsError::Work(WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", observed, maximum,
         }) if observed == required_name_peak && maximum == required_name_peak - 1
     ));
-    assert!(failure.work.backend_read_operations > 0);
+    assert_eq!(accounting.spent().bytes_copied, 0);
+    assert_eq!(dependencies.capacity(), path.depth().saturating_add(1));
     Ok(())
 }
 
@@ -939,8 +1006,8 @@ fn failed_cached_backend_work_includes_simultaneous_resident_peak() {
         peak_allocation_bytes: 17,
         ..WorkCounters::default()
     };
-    let failure = merge_backend_failure(prior, backend, 101, ObjectStoreError::Corrupt);
-    assert!(matches!(failure.error, ObjectStoreError::Corrupt));
+    let failure = completed_backend_failure(prior,backend,101,(ObjectStoreError::Corrupt).into());
+    assert!(matches!(failure.error, crate::FsError::Object(ObjectStoreError::Corrupt)));
     assert_eq!(failure.work.items_examined, 3);
     assert_eq!(failure.work.backend_read_operations, 1);
     assert_eq!(failure.work.peak_allocation_bytes, 118);
@@ -960,7 +1027,7 @@ fn operation_cache_preserves_backend_failures_resident_peak_and_poison_recovery(
         inner,
         fail: AtomicBool::new(false),
     };
-    let (cache, _) = OperationReadCache::new(&store, 2, WorkBudget::UNBOUNDED)?;
+    let (cache, _) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
     let cold = async_storage::poll_ready(AsyncObjectStore::read(
         &cache,
@@ -972,9 +1039,9 @@ fn operation_cache_preserves_backend_failures_resident_peak_and_poison_recovery(
     .ok_or("owned cache fill remained pending")??;
     assert!(matches!(
         cold.value.retention,
-        ObjectReadRetention::Owned { .. }
+        ObjectReadRetention::Shared
     ));
-    let resident = cache.resident_bytes()?;
+    let resident = cache_resident(&cache)?;
     assert!(resident > u64::try_from(cached_bytes.len())?);
 
     store.fail.store(true, Ordering::Relaxed);
@@ -1061,7 +1128,7 @@ fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
         digest: object_digest(ObjectKind::Blob, &bytes),
     };
     ObjectStore::put(&store, object_id, bytes.clone(), WorkBudget::UNBOUNDED)?;
-    let (cache, setup) = OperationReadCache::new(&store, 2, WorkBudget::UNBOUNDED)?;
+    let (cache, setup) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     assert_eq!(setup.allocation_operations, 1);
     assert!(setup.peak_allocation_bytes > 0);
     let cancellation = CancellationToken::new();
@@ -1142,7 +1209,7 @@ fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
 fn operation_cache_forwards_writes_and_uncached_presence_probes_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (cache, setup) = OperationReadCache::new(&store, 2, WorkBudget::UNBOUNDED)?;
+    let (cache, setup) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
     let bytes = Bytes::from_static(b"cache-forwarded-object");
     let object_id = ObjectId {
@@ -1281,21 +1348,21 @@ fn borrowed_sync_paths_and_private_accounting_helpers_are_total()
         AllocationError::CapacityExceeded,
         AllocationError::AllocationFailed,
     ] {
-        let failure = allocation_failure(allocation, prior);
+        let failure = OperationFailure::new(path_error((allocation).into_work_or(crate::FsError::HandleAllocationFailed)),prior);
         assert_eq!(failure.work.items_examined, 7);
         assert!(matches!(
             failure.error,
             PathLookupError::Work(WorkError::Overflow) | PathLookupError::AllocationFailed
         ));
     }
-    let mapped = allocation_failure(AllocationError::Work(WorkError::Overflow), prior);
+    let mapped = OperationFailure::new(path_error((AllocationError::Work(WorkError::Overflow)).into_work_or(crate::FsError::HandleAllocationFailed)),prior);
     assert!(matches!(
         mapped.error,
         PathLookupError::Work(WorkError::Overflow)
     ));
     assert_eq!(*mapped.work, prior);
 
-    let overflow = OperationReadCache::new(&store, usize::MAX, WorkBudget::UNBOUNDED)
+    let overflow = setup_cache(&store, usize::MAX, WorkBudget::UNBOUNDED, None)
         .err()
         .ok_or("overflowing cache size unexpectedly succeeded")?;
     assert!(matches!(
@@ -1310,26 +1377,26 @@ fn borrowed_sync_paths_and_private_accounting_helpers_are_total()
         PathLookupError::Work(WorkError::Overflow)
     ));
     assert!(matches!(
-        map_cache_error(ObjectStoreError::Work(WorkError::Overflow)),
+        path_error(ObjectStoreError::Work(WorkError::Overflow).into()),
         PathLookupError::Work(WorkError::Overflow)
     ));
     assert!(matches!(
-        map_cache_error(ObjectStoreError::Corrupt),
+        path_error(ObjectStoreError::Corrupt.into()),
         PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Corrupt))
     ));
-    let reduced = batch_sub_budget(prior, WorkBudget::UNBOUNDED, 17)?;
+    let reduced = remaining_callback(prior, WorkBudget::UNBOUNDED, 17)?;
     assert_eq!(
         reduced.peak_allocation_bytes,
         WorkBudget::UNBOUNDED.peak_allocation_bytes - 17
     );
     let mut insufficient = WorkBudget::UNBOUNDED;
     insufficient.peak_allocation_bytes = 16;
-    let failure = batch_sub_budget(prior, insufficient, 17)
+    let failure = remaining_callback(prior, insufficient, 17)
         .err()
         .ok_or("orchestration peak underflow unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        PathLookupError::Work(WorkError::BudgetExceeded {
+        crate::FsError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             observed: 17,
             maximum: 16,
@@ -1372,7 +1439,7 @@ fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
     };
     ObjectStore::put(&store, first, first_bytes, WorkBudget::UNBOUNDED)?;
     ObjectStore::put(&store, second, second_bytes, WorkBudget::UNBOUNDED)?;
-    let (cache, _) = OperationReadCache::new(&store, 1, WorkBudget::UNBOUNDED)?;
+    let (cache, _) = setup_cache(&store, 1, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
 
     for object_id in [first, second, second] {
@@ -1472,167 +1539,136 @@ fn scalar_and_batch_peak_accounting_fail_closed_at_every_boundary()
         peak_allocation_bytes: 17,
         ..WorkCounters::default()
     };
-    let reduced = budget_after_resident(WorkBudget::UNBOUNDED, 29)?;
+    let reduced = remaining_callback(WorkCounters::UNCHARGED,WorkBudget::UNBOUNDED,29)?;
     assert_eq!(
         reduced.peak_allocation_bytes,
         WorkBudget::UNBOUNDED.peak_allocation_bytes - 29
     );
-    let rejected = budget_after_resident(
-        WorkBudget {
-            peak_allocation_bytes: 28,
-            ..WorkBudget::UNBOUNDED
-        },
-        29,
-    )
+    let rejected = remaining_callback(WorkCounters::UNCHARGED,WorkBudget {
+        peak_allocation_bytes: 28,
+        ..WorkBudget::UNBOUNDED
+    },29)
     .err()
     .ok_or("resident bytes exceeded the admitted peak")?;
     assert!(matches!(
         rejected.error,
-        ObjectStoreError::Work(WorkError::BudgetExceeded {
+        crate::FsError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             observed: 29,
             maximum: 28
         })
     ));
 
-    let scalar = merge_backend_peak(prior, nested, 101, WorkBudget::UNBOUNDED)?;
+    let scalar = completed_backend(prior, nested, 101, WorkBudget::UNBOUNDED)?;
     assert_eq!(scalar.items_examined, 3);
     assert_eq!(scalar.backend_read_operations, 1);
     assert_eq!(scalar.peak_allocation_bytes, 118);
-    let scalar_peak = merge_backend_peak(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-    )
+    let scalar_peak = completed_backend(prior,
+    WorkCounters {
+        peak_allocation_bytes: u64::MAX,
+        ..WorkCounters::default()
+    },
+    1,
+    WorkBudget::UNBOUNDED,)
     .err()
     .ok_or("scalar simultaneous peak overflow succeeded")?;
     assert!(matches!(
         scalar_peak.error,
-        ObjectStoreError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let scalar_counter = merge_backend_peak(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        WorkBudget::UNBOUNDED,
-    )
+    let scalar_counter = completed_backend(WorkCounters {
+        bytes_hashed: u64::MAX,
+        ..WorkCounters::default()
+    },
+    WorkCounters {
+        bytes_hashed: 1,
+        ..WorkCounters::default()
+    },
+    0,
+    WorkBudget::UNBOUNDED,)
     .err()
     .ok_or("scalar counter overflow succeeded")?;
     assert!(matches!(
         scalar_counter.error,
-        ObjectStoreError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let scalar_failure_peak = merge_backend_failure(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        ObjectStoreError::Corrupt,
-    );
+    let scalar_failure_peak = completed_backend_failure(prior,WorkCounters {
+        peak_allocation_bytes: u64::MAX,
+        ..WorkCounters::default()
+    },1,(ObjectStoreError::Corrupt).into());
     assert!(matches!(
         scalar_failure_peak.error,
-        ObjectStoreError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let scalar_failure_counter = merge_backend_failure(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        ObjectStoreError::Corrupt,
-    );
+    let scalar_failure_counter = completed_backend_failure(WorkCounters {
+        bytes_hashed: u64::MAX,
+        ..WorkCounters::default()
+    },WorkCounters {
+        bytes_hashed: 1,
+        ..WorkCounters::default()
+    },0,(ObjectStoreError::Corrupt).into());
     assert!(matches!(
         scalar_failure_counter.error,
-        ObjectStoreError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
 
-    let batch = merge_batch_work(prior, nested, 101, WorkBudget::UNBOUNDED)?;
+    let batch = completed_backend(prior, nested, 101, WorkBudget::UNBOUNDED)?;
     assert_eq!(batch.items_examined, 3);
     assert_eq!(batch.backend_read_operations, 1);
     assert_eq!(batch.peak_allocation_bytes, 118);
-    let batch_peak = merge_batch_work(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-    )
+    let batch_peak = completed_backend(prior,
+    WorkCounters {
+        peak_allocation_bytes: u64::MAX,
+        ..WorkCounters::default()
+    },
+    1,
+    WorkBudget::UNBOUNDED,)
     .err()
     .ok_or("batch simultaneous peak overflow succeeded")?;
     assert!(matches!(
         batch_peak.error,
-        PathLookupError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let batch_counter = merge_batch_work(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        WorkBudget::UNBOUNDED,
-    )
+    let batch_counter = completed_backend(WorkCounters {
+        bytes_hashed: u64::MAX,
+        ..WorkCounters::default()
+    },
+    WorkCounters {
+        bytes_hashed: 1,
+        ..WorkCounters::default()
+    },
+    0,
+    WorkBudget::UNBOUNDED,)
     .err()
     .ok_or("batch counter overflow succeeded")?;
     assert!(matches!(
         batch_counter.error,
-        PathLookupError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let batch_failure = merge_batch_failure(prior, nested, 101, PathLookupError::MissingRootRecord);
+    let batch_failure = completed_backend_failure(prior,nested,101,(PathLookupError::MissingRootRecord).into());
     assert!(matches!(
         batch_failure.error,
-        PathLookupError::MissingRootRecord
+        crate::FsError::Path(PathLookupError::MissingRootRecord)
     ));
     assert_eq!(batch_failure.work.peak_allocation_bytes, 118);
-    let batch_failure_peak = merge_batch_failure(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        PathLookupError::MissingRootRecord,
-    );
+    let batch_failure_peak = completed_backend_failure(prior,WorkCounters {
+        peak_allocation_bytes: u64::MAX,
+        ..WorkCounters::default()
+    },1,(PathLookupError::MissingRootRecord).into());
     assert!(matches!(
         batch_failure_peak.error,
-        PathLookupError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
-    let batch_failure_counter = merge_batch_failure(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        PathLookupError::MissingRootRecord,
-    );
+    let batch_failure_counter = completed_backend_failure(WorkCounters {
+        bytes_hashed: u64::MAX,
+        ..WorkCounters::default()
+    },WorkCounters {
+        bytes_hashed: 1,
+        ..WorkCounters::default()
+    },0,(PathLookupError::MissingRootRecord).into());
     assert!(matches!(
         batch_failure_counter.error,
-        PathLookupError::Work(WorkError::Overflow)
+        crate::FsError::Work(WorkError::Overflow)
     ));
     Ok(())
 }
@@ -1702,7 +1738,7 @@ fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn
         failure.error,
         PathLookupError::UnsupportedNameEncoding
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED });
     Ok(())
 }
 
@@ -1887,11 +1923,18 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
     let mut small_component = config();
     small_component.limits.maximum_component_bytes = 3;
     for candidate in [shallow, small_component] {
+        let examined = if path.depth() > usize::from(candidate.limits.maximum_path_depth) {
+            0
+        } else {
+            u64::try_from(path.components().iter().position(|component|
+                component.as_bytes().len() > usize::try_from(candidate.limits.maximum_component_bytes).unwrap_or(usize::MAX)
+            ).ok_or("component-bound fixture no longer rejects a reached component")? + 1)?
+        };
         let failure = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED)
             .err()
             .ok_or("unsupported path semantics unexpectedly succeeded")?;
         assert!(matches!(failure.error, PathLookupError::PathBounds));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work, WorkCounters { items_examined: examined, ..WorkCounters::UNCHARGED });
     }
 
     let large_component = LogicalName::new(NameEncoding::Utf8, vec![b'x'; 200], 255)?;
@@ -1928,7 +1971,7 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
         failure.error,
         PathLookupError::UnsupportedNameEncoding
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED });
     Ok(())
 }
 
@@ -1956,7 +1999,7 @@ fn exact_lookup_succeeds_regardless_of_case_and_unicode_policy()
 fn cache_and_fixed_vector_admission_fail_before_impossible_allocations()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let cache = OperationReadCache::new(&store, 1_usize << 61, WorkBudget::UNBOUNDED)
+    let cache = setup_cache(&store, 1_usize << 61, WorkBudget::UNBOUNDED, None)
         .err()
         .ok_or("cache admitted an overflowing slot table")?;
     assert!(matches!(
@@ -1966,15 +2009,369 @@ fn cache_and_fixed_vector_admission_fail_before_impossible_allocations()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let fixed = reserve_fixed::<u8>(
-        usize::MAX,
-        &mut allocations,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("impossible fixed vector allocation succeeded")?;
-    assert!(matches!(fixed.error, PathLookupError::AllocationFailed));
+    let cancellation = CancellationToken::new();
+    let fixed = {
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        );
+        reserve_slots::<u8>(usize::MAX, &mut accounting, None)
+            .err().ok_or("impossible fixed vector allocation succeeded")?
+    };
+    assert!(matches!(fixed, crate::FsError::HandleAllocationFailed));
     assert_eq!(allocations.live_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, main) = fixture(&store)?;
+    let child = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
+    let impossible = main.child_measured(
+        &child, config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
+    )?.value;
+    let missing = NamespacePath::new(vec![
+        LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?, child,
+    ], config().limits)?;
+    let queries = [impossible.clone(), main.clone(), missing, impossible.clone()];
+    let selected = async_storage::poll_immediate(lookup_paths_selected_async(
+        &store, &generation, &queries, config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    ))?;
+    assert_eq!(selected.entries.len(), queries.len());
+    assert!(selected.entries[0].record.is_none());
+    assert!(selected.entries[0].parent.is_none());
+    assert_eq!(selected.entries[0].resolved_components, main.depth() as u16);
+    assert_eq!(selected.entries[0], selected.entries[3]);
+    assert_eq!(selected.entries[1].record.map(|record| record.kind), Some(FileKind::Regular));
+    assert!(selected.entries[2].record.is_none());
+    assert_eq!(selected.entries[2].resolved_components, 0);
+    assert!(selected.work.backend_read_operations > 0);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let live_before = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let actual = async_storage::poll_immediate(lookup_paths_selected_async_with_accounting(
+            &store, &generation, &queries, config(), &mut accounting, &cancellation, None,
+        ))?;
+        assert_eq!(actual.value().entries, selected.entries);
+        let (value, allocation) = actual.into_parts();
+        let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+            return Err("selected original lookup returned standalone custody".into());
+        };
+        assert_eq!(allocation.bytes(), value.retained_allocation_bytes);
+        assert_eq!(original.live_allocation_bytes(), live_before + allocation.bytes());
+        drop(value);
+        drop(allocation);
+        assert_eq!(original.live_allocation_bytes(), live_before);
+    }
+    let ordinary = lookup_paths(&store, &generation, &[impossible], config(), WorkBudget::UNBOUNDED)
+        .expect_err("ordinary no-follow semantics remain an error");
+    assert!(matches!(ordinary.error, PathLookupError::NotDirectory));
+    assert!(ordinary.work.backend_read_operations > 0);
+    Ok(())
+}
+
+#[test]
+fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, path) = binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory))?;
+    let query = path.child_measured(
+        &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+        config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
+    )?.value;
+    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+        &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    )).expect_err("a malformed binding is not authenticated absence");
+    assert!(matches!(failure.error, PathLookupError::KindMismatch));
+    assert!(failure.work.backend_read_operations > 0);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+        &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &cancellation,
+    )).expect_err("cancelled selected batch must fail before allocation/read");
+    assert_eq!(failure.work.allocation_operations, 0);
+    assert_eq!(failure.work.backend_read_operations, 0);
+    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+        &store, &generation, &[query], config(),
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
+    )).expect_err("unadmitted selected batch must fail before allocation/read");
+    assert_eq!(failure.work.allocation_operations, 0);
+    assert_eq!(failure.work.backend_read_operations, 0);
+    Ok(())
+}
+
+#[test]
+fn observer_cache_admits_only_actual_initial_slots_and_growth_before_reservation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let custody = super::super::ProofDataCustody::default();
+    let (cache, setup) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody),)?;
+    let initial_bytes = {
+        let state = cache.lock_state();
+        assert_eq!(state.slots.len(), INITIAL_CACHE_SLOTS);
+        u64::try_from(state.slots.capacity() * size_of::<Option<CachedObject>>())?
+    };
+    assert_eq!(setup.allocation_operations, 1, "unallocated future tables spend nothing");
+    assert_eq!(setup.peak_allocation_bytes, initial_bytes);
+    assert_eq!(custody.pending_data_work(), setup);
+    let bytes = Bytes::from_static(b"retained-shared-cache-value");
+    let cancellation = CancellationToken::new();
+    for index in 0..INITIAL_CACHE_SLOTS / 2 {
+        let id = ObjectId {
+            kind: ObjectKind::TreePage,
+            digest: crate::Digest::from_bytes([u8::try_from(index)?; 32]),
+        };
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        assert!(cache.admit(id, &bytes, 0, &mut accounting)?);
+    }
+    let original_capacity = cache.lock_state().slots.capacity();
+    let next = ObjectId {
+        kind: ObjectKind::TreePage, digest: crate::Digest::from_bytes([99; 32]),
+    };
+    let mut probe_accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    probe_slots(&cache.lock_state().slots, next, &mut probe_accounting, None)?;
+    let expected_items = probe_accounting.spent().items_examined;
+    let mut allocations = AllocationLedger::default();
+    let mut work = WorkCounters::default();
+    allocations.record_owned_bytes(initial_bytes, &mut work)?;
+    let failure = {
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut allocations, &mut work,
+            WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        );
+        cache.admit(next, &bytes, 0, &mut accounting).expect_err("growth must be admitted before allocation")
+    };
+    assert!(matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. })));
+    assert_eq!(work, WorkCounters { items_examined: expected_items, peak_allocation_bytes: initial_bytes, ..WorkCounters::UNCHARGED });
+    assert_eq!(cache.lock_state().slots.capacity(), original_capacity);
+    assert_eq!(custody.pending_data_work(), setup);
+    {
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+        );
+        assert!(cache.admit(next, &bytes, 0, &mut accounting)?);
+    }
+    assert_eq!(work.allocation_operations, 1);
+    let state = cache.lock_state();
+    let actual = u64::try_from(state.slots.capacity() * size_of::<Option<CachedObject>>())?;
+    assert_eq!(allocations.live_bytes(), actual, "old slots actually retired");
+    assert_eq!(work.peak_allocation_bytes, initial_bytes + actual);
+    drop(state);
+    assert_eq!(custody.completed_data_work().allocation_operations, 2);
+    assert_eq!(custody.retained_bytes(), 0, "cache/frame work is not retained proof DATA");
+    Ok(())
+}
+
+#[test]
+fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_retention()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct PanicAfterAdmission<'a>(&'a AtomicBool);
+    impl Future for PanicAfterAdmission<'_> {
+        type Output = Result<crate::OperationReceipt<()>, PathLookupFailure>;
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            panic!("cold backend unwind after the canonical physical frame allocation");
+        }
+    }
+    impl Drop for PanicAfterAdmission<'_> {
+        fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+    }
+
+    let store = MemoryObjectStore::default();
+    let custody = super::super::ProofDataCustody::default();
+    let (cache, setup) = setup_cache(&store, 64, WorkBudget::UNBOUNDED, Some(&custody),)?;
+    let dropped = AtomicBool::new(false);
+    let observer = |event| {
+        if matches!(event, crate::heap_future::HeapFutureEvent::Released(_)) {
+            assert!(dropped.load(Ordering::Acquire), "whole box dies before frame retirement");
+        }
+        custody.record_heap_future_event(event)
+    };
+    let cancellation = CancellationToken::new();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        async_storage::poll_immediate(crate::heap_future::in_heap_measured(
+            |_| PanicAfterAdmission(&dropped),
+            WorkBudget::UNBOUNDED, &cancellation,
+            PathLookupError::Tree(TreeReadError::Cancelled), Some(&observer),
+        ))
+    }));
+    assert!(unwind.is_err());
+    let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
+    let completed = custody.pending_data_work();
+    assert_eq!(completed.allocation_operations, 2);
+    assert_eq!(completed.peak_allocation_bytes, setup.peak_allocation_bytes + frame_bytes);
+    assert_eq!(custody.retained_bytes(), 0, "cache and frames are not retained proof keys");
+    drop(cache);
+    assert_eq!(custody.take_completed_data_work(), completed);
+    let next_observer = |event| custody.record_heap_future_event(event);
+    let next = async_storage::poll_immediate(crate::heap_future::in_heap_measured(
+        |_| std::future::ready(Ok::<_, PathLookupFailure>(crate::OperationReceipt {
+            value: (), work: WorkCounters::default(),
+        })),
+        WorkBudget::UNBOUNDED, &cancellation,
+        PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
+    ))?;
+    assert_eq!(custody.pending_data_work(), next.work, "dead cache backing is not carried forward");
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_path_lookup_observation_and_borrowed_batch_keep_physical_output_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, path) = fixture(&store)?;
+    let root = NamespacePath::new(Vec::new(), config().limits)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let live_before = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let ordinary = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED)?;
+    let native = async_storage::poll_immediate(lookup_path_async_with_accounting(
+        &store, &generation, &path, config(), &mut accounting, &cancellation, None,
+    ))?;
+    assert_eq!(native.record, ordinary.record);
+    assert_eq!(native.parent, ordinary.parent);
+    assert_eq!(native.resolved_components, ordinary.resolved_components);
+    assert!(original.receipt().backend_read_operations > 0);
+    assert_eq!(original.live_allocation_bytes(), live_before);
+
+    let ordinary = async_storage::poll_immediate(observe_path_async(
+        &store, &generation, &path, config(), WorkBudget::UNBOUNDED, &cancellation,
+    ))?;
+    let observed = async_storage::poll_immediate(observe_path_async_with_accounting(
+        &store, &generation, &path, config(), &mut accounting, &cancellation, None, true,
+    ))?;
+    assert_eq!(observed.value().dependencies, ordinary.dependencies);
+    let (value, allocation) = observed.into_parts();
+    let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+        return Err("original observation returned a standalone custody token".into());
+    };
+    let owned = dependency_bytes(&value.dependencies, value.dependencies.capacity())?;
+    assert_eq!(allocation.bytes(), owned);
+    assert_eq!(original.live_allocation_bytes(), live_before + owned);
+    drop(value);
+    assert_eq!(original.live_allocation_bytes(), live_before + owned,
+        "destroying the payload precedes retiring the original guard");
+    drop(allocation);
+    assert_eq!(original.live_allocation_bytes(), live_before);
+
+    let paths = [&path, &path, &root];
+    let batch = async_storage::poll_immediate(lookup_path_refs_async_with_accounting(
+        &store, &generation, &paths, config(), &mut accounting, &cancellation, None,
+    ))?;
+    assert_eq!(batch.value().entries.len(), paths.len());
+    assert_eq!(batch.value().entries[0], batch.value().entries[1]);
+    assert_eq!(batch.value().entries[0].record, native.record);
+    assert_eq!(batch.value().entries[2].record.map(|record| record.file_id), Some(generation.root_file_id));
+    let (value, allocation) = batch.into_parts();
+    let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+        return Err("original batch returned a standalone custody token".into());
+    };
+    assert_eq!(allocation.bytes(), value.retained_allocation_bytes);
+    assert_eq!(original.live_allocation_bytes(), live_before + allocation.bytes());
+    drop(value);
+    drop(allocation);
+    assert_eq!(original.live_allocation_bytes(), live_before);
+    let expected = async_storage::poll_immediate(observe_paths_async(
+        &store, &generation, &[path.clone(), path.clone(), root.clone()], config(),
+        WorkBudget::UNBOUNDED, &cancellation,
+    ))?;
+    let observed = async_storage::poll_immediate(observe_path_refs_async_with_accounting(
+        &store, &generation, &paths, config(), &mut accounting, &cancellation, None,
+    ))?;
+    assert_eq!(observed.value().lookup.entries, expected.lookup.entries);
+    assert_eq!(observed.value().dependencies, expected.dependencies);
+    let (value, allocation) = observed.into_parts();
+    let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+        return Err("borrowed original observation returned standalone custody".into());
+    };
+    let owned = value.lookup.retained_allocation_bytes.checked_add(
+        dependency_bytes(&value.dependencies, value.dependencies.capacity())?,
+    ).ok_or("borrowed observation ownership overflowed")?;
+    assert_eq!(allocation.bytes(), owned);
+    assert_eq!(original.live_allocation_bytes(), live_before + owned);
+    drop(value);
+    drop(allocation);
+    assert_eq!(original.live_allocation_bytes(), live_before);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_path_frame_refusal_preserves_successful_prefix_without_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, path) = fixture(&store)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let live_before = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let failure = async_storage::poll_immediate(lookup_path_async_with_accounting(
+        &store, &generation, &path, config(), &mut accounting, &cancellation, None,
+    )).expect_err("a refused original frame cannot start a backend read");
+    assert!(matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded {
+        counter: "allocation_operations", observed: 2, maximum: 1,
+    })));
+    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
+    assert!(original.receipt().items_examined > before.items_examined);
+    assert_eq!(original.live_allocation_bytes(), live_before);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_path_item_effect_runs_without_root_loan_and_survives_late_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let inspected = examine_item(&mut accounting, None, || original.receipt())?;
+    assert_eq!(inspected, before, "the actual inspection precedes the item completion");
+    let mut expected = before;
+    expected.items_examined += 1;
+    assert_eq!(original.receipt(), expected);
+    let failure = examine_item(&mut accounting, None, || cancellation.cancel());
+    assert!(failure.is_err(), "late cancellation refuses only after recording the actual item");
+    expected.items_examined += 1;
+    assert_eq!(original.receipt(), expected);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_path_slot_reserve_failure_keeps_actual_cause_and_retires_only_claimed_backing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let live_before = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let count = (isize::MAX as usize).checked_add(1).ok_or("reserve bound overflowed")?;
+    let failure = reserve_slots::<u8>(count, &mut accounting, None)
+        .err().ok_or("an impossible physical reserve unexpectedly succeeded")?;
+    assert!(matches!(failure, crate::FsError::NativeKernel(
+        crate::NativeTreeMaterializationError::AllocationFailed(_),
+    )));
+    let mut expected = before;
+    expected.allocation_operations += 1;
+    expected.peak_allocation_bytes = expected.peak_allocation_bytes.max(live_before + count as u64);
+    assert_eq!(original.receipt(), expected);
+    assert_eq!(original.live_allocation_bytes(), live_before);
     Ok(())
 }

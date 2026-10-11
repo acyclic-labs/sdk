@@ -399,6 +399,35 @@ pub(crate) fn decode_file_metadata_with_steps<E: From<CanonicalDecodeError>>(
     Ok(metadata)
 }
 
+/// Projects the same stack-only decoder through the operation's original accounting.
+pub(crate) fn decode_file_metadata_with_accounting(
+    bytes: &[u8], limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
+) -> Result<FileMetadata, crate::FsError> {
+    use super::file_read::{OriginalReadAccounting, ReadDecodeError};
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = accounting.native_work().is_some();
+    let mut observed = OriginalReadAccounting::new(accounting)?;
+    let decoded = decode_file_metadata_with_steps::<ReadDecodeError>(
+        bytes, limits, &mut |step| observed.observe(step),
+    );
+    match decoded {
+        Ok(metadata) => {
+            drop(observed.into_allocation());
+            Ok(metadata)
+        }
+        Err(error) => {
+            observed.release_failed()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native { return Err(error.into_original_fs_error()); }
+            Err(match error {
+                ReadDecodeError::Canonical(error) => error.into(),
+                ReadDecodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
+                ReadDecodeError::Accounting(error) => error,
+            })
+        }
+    }
+}
+
 /// Computes the typed authenticated identity of canonical metadata.
 ///
 /// # Errors

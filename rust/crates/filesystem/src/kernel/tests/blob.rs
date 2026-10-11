@@ -483,30 +483,30 @@ fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
         page_bytes: 1,
         maximum_blob_bytes: 1,
     };
-    let (mut batch, batch_work) = BlobBatchStore::new(&store, WorkBudget::UNBOUNDED)?;
-    assert_eq!(batch_work.allocation_operations, 1);
-    let mut work = WorkCounters::default();
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
+    let before = accounting.spent();
+    assert_eq!(before.allocation_operations, 1);
     let failure = crate::async_storage::poll_ready(put_blob_page(
         &mut batch,
         &page,
         options,
-        0,
-        WorkBudget::UNBOUNDED,
-        &mut work,
-        &CancellationToken::new(),
+        &mut accounting,
+        &cancellation,
     ))
     .ok_or("blob page publication blocked")?
     .err()
     .ok_or("oversized blob page unexpectedly published")?;
     assert!(matches!(
-        failure.error,
-        BlobBuildError::PageTooLarge {
+        failure,
+        FsError::BlobBuild(BlobBuildError::PageTooLarge {
             observed,
             maximum: 1,
-        } if observed > 1
+        }) if observed > 1
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
-    assert_eq!(work, WorkCounters::default());
+    assert_eq!(accounting.spent(), before);
+    batch.release(&mut accounting)?;
     Ok(())
 }
 
@@ -519,36 +519,29 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
     };
     let retained_per_object = 3_u64;
     let vector_bytes = u64::try_from(BLOB_BATCH_OBJECTS)?
-        * u64::try_from(size_of::<crate::storage::ObjectWrite>())?;
+        * u64::try_from(size_of::<HashedObject>())?;
     let total_live = vector_bytes + retained_per_object * u64::try_from(BLOB_BATCH_OBJECTS)?;
     let total_budget = WorkBudget {
         peak_allocation_bytes: total_live + store.peak,
         ..WorkBudget::UNBOUNDED
     };
-    let (mut batch, _) = BlobBatchStore::new(&store, total_budget)?;
     let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(total_budget, &cancellation);
+    let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
     for value in 0..BLOB_BATCH_OBJECTS {
         let bytes = Bytes::from(vec![
             u8::try_from(value)?;
             usize::try_from(retained_per_object)?
         ]);
         let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
-        let residual = WorkBudget {
-            peak_allocation_bytes: total_budget
-                .peak_allocation_bytes
-                .checked_sub(vector_bytes + retained_per_object * u64::try_from(value + 1)?)
-                .ok_or("invalid residual peak")?,
-            ..WorkBudget::UNBOUNDED
-        };
-        crate::async_storage::poll_ready(batch.put_with_retained(
-            object,
-            retained_per_object,
-            residual,
-            &cancellation,
+        let _custody = accounting.claim_owned(retained_per_object, 0)?;
+        crate::async_storage::poll_ready(batch.put(
+            object, retained_per_object, &mut accounting, &cancellation,
         ))
         .ok_or("batch write blocked")??;
     }
     assert_eq!(store.calls.load(Ordering::Relaxed), 1);
+    batch.release(&mut accounting)?;
 
     let final_store = PeakRecordingStore {
         calls: AtomicU64::new(0),
@@ -559,25 +552,21 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         peak_allocation_bytes: final_live + final_store.peak,
         ..WorkBudget::UNBOUNDED
     };
-    let (mut final_batch, _) = BlobBatchStore::new(&final_store, final_budget)?;
-    let object = HashedObject::new(ObjectKind::BlobChunk, Bytes::from_static(b"one"));
-    crate::async_storage::poll_ready(final_batch.put_with_retained(
-        object,
-        retained_per_object,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
+    let mut final_accounting = KernelAccounting::standalone(final_budget, &cancellation);
+    let mut final_batch = BlobBatchStore::new(&final_store, &mut final_accounting)?;
+    let object = HashedObject::new(ObjectKind::BlobChunk, Bytes::from(vec![b'o', b'n', b'e']));
+    let _custody = final_accounting.claim_owned(retained_per_object, 0)?;
+    crate::async_storage::poll_ready(final_batch.put(
+        object, retained_per_object, &mut final_accounting, &cancellation,
     ))
     .ok_or("retained batch write blocked")??;
     assert_eq!(final_store.calls.load(Ordering::Relaxed), 0);
-    crate::async_storage::poll_ready(final_batch.finish(
-        WorkBudget {
-            peak_allocation_bytes: final_store.peak,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
+    crate::async_storage::poll_ready(final_batch.flush(
+        &mut final_accounting, &cancellation,
     ))
     .ok_or("final batch flush blocked")??;
     assert_eq!(final_store.calls.load(Ordering::Relaxed), 1);
+    final_batch.release(&mut final_accounting)?;
     Ok(())
 }
 
@@ -1132,7 +1121,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
             if self.returned {
                 self.work = Some(WorkCounters::default());
-                return Ok(Some(OwnedSourceChunk { bytes: Bytes::new(), logical_owned_bytes: 0 }));
+                return Ok(Some(OwnedSourceChunk::claimed(Bytes::new(), 0)));
             }
             self.returned = true;
             self.work = Some(WorkCounters {
@@ -1140,7 +1129,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
                 source_path_components: 7,
                 ..WorkCounters::default()
             });
-            Ok(Some(OwnedSourceChunk { bytes: Bytes::from_static(b"abc"), logical_owned_bytes: 0 }))
+            Ok(Some(OwnedSourceChunk::claimed(Bytes::from_static(b"abc"), 0)))
         }
 
         fn take_work(&mut self) -> Option<WorkCounters> {
@@ -1210,10 +1199,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
             _budget: WorkBudget,
             _cancellation: &CancellationToken,
         ) -> std::io::Result<Option<OwnedSourceChunk>> {
-            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk {
-                bytes: Bytes::new(),
-                logical_owned_bytes: 0,
-            })))
+            Ok(Some(self.0.take().unwrap_or(OwnedSourceChunk::claimed(Bytes::new(), 0))))
         }
     }
 
@@ -1224,10 +1210,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
         let mut bytes = Vec::with_capacity(65_536);
         bytes.extend_from_slice(b"abc");
         let capacity = usize_to_u64(bytes.capacity());
-        (RetainedSource(Some(OwnedSourceChunk {
-            bytes: Bytes::from(bytes),
-            logical_owned_bytes: capacity,
-        })), capacity)
+        (RetainedSource(Some(OwnedSourceChunk::claimed(Bytes::from(bytes), capacity))), capacity)
     };
     let options = BlobBuildOptions {
         chunk_bytes: 3,
@@ -1731,87 +1714,243 @@ fn defensive_blob_machine_states_fail_closed_with_exact_work()
         kind: ObjectKind::Blob,
         digest: Digest::ZERO,
     };
-    let mut machine = BlobRangeMachine::new(
-        root,
-        ByteRange {
-            offset: 0,
-            length: 1,
-        },
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let incomplete = machine
-        .finish()
-        .err()
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let machine = BlobRangeMachine::new(root, ByteRange { offset: 0, length: 1 }, DecodeLimits::default(), &mut accounting)?;
+    let incomplete = machine.finish(&mut accounting).err()
         .ok_or("incomplete blob traversal unexpectedly finished")?;
-    assert!(matches!(
-        incomplete.error,
-        BlobReadError::IncompleteCoverage
-    ));
+    assert!(matches!(blob_error(incomplete), BlobReadError::IncompleteCoverage));
 
+    let mut machine = BlobRangeMachine::new(root, ByteRange { offset: 0, length: 1 }, DecodeLimits::default(), &mut accounting)?;
     machine.pending.clear();
-    let empty = machine
-        .prepare_read()
-        .err()
+    let empty = machine.prepare(&mut accounting).err()
         .ok_or("empty blob frontier unexpectedly prepared a read")?;
-    assert!(matches!(empty.error, BlobReadError::TraversalState));
+    assert!(matches!(blob_error(empty), BlobReadError::TraversalState));
 
-    let chunk = BlobChunkRef {
-        first_offset: 0,
-        end_offset: 1,
-        chunk: ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: Digest::ZERO,
-        },
-    };
-    machine.awaiting = Some(PendingBlobRead::Chunk(chunk));
-    let cached = DecodedCacheValue {
-        value: Arc::new(BlobPage {
-            first_offset: 0,
-            end_offset: 1,
-            node: BlobNode::Leaf(vec![chunk]),
-        }),
+    let chunk = BlobChunkRef { first_offset: 0, end_offset: 1,
+        chunk: ObjectId { kind: ObjectKind::BlobChunk, digest: Digest::ZERO } };
+    let cached = crate::async_storage::DecodedCacheValue {
+        value: std::sync::Arc::new(BlobPage { first_offset: 0, end_offset: 1, node: BlobNode::Leaf(vec![chunk]) }),
         logical_bytes: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody: None,
     };
-    let wrong_cached = machine
-        .accept_cached_page(cached)
-        .err()
-        .ok_or("cached page accepted a pending chunk")?;
-    assert!(matches!(wrong_cached.error, BlobReadError::TraversalState));
+    let page = cached.value.clone().downcast::<BlobPage>().map_err(|_| "wrong cache type")?;
+    let wrong_cached = machine.accept_decoded_page(&page, 1, Some(2), 1, &mut accounting).err()
+        .ok_or("cached page accepted mismatched authenticated bounds")?;
+    assert!(matches!(blob_error(wrong_cached), BlobReadError::ChildBoundsMismatch));
+    drop(page);
+    drop(cached);
 
-    let short = ObjectReceipt {
-        value: ObjectRead {
-            bytes: Bytes::new(),
-            retention: ObjectReadRetention::Shared,
-        },
-        work: WorkCounters::default(),
-    };
-    let mismatch = machine
-        .accept_chunk(&short, chunk)
-        .err()
+    let mismatch = machine.accept_chunk(&[], chunk, &mut accounting).err()
         .ok_or("short chunk unexpectedly satisfied its authenticated range")?;
-    assert!(matches!(mismatch.error, BlobReadError::ChunkLengthMismatch));
+    assert!(matches!(blob_error(mismatch), BlobReadError::ChunkLengthMismatch));
 
-    let cancelled = frontier::Machine::cancelled(&machine);
-    assert!(matches!(cancelled.error, BlobReadError::Cancelled));
-    let storage = frontier::Machine::storage_failure(
-        &machine,
-        WorkCounters {
-            object_probes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        ObjectFailure::new(
-            ObjectStoreError::Missing,
-            WorkCounters {
-                object_probes: 1,
-                ..WorkCounters::default()
-            },
-        ),
-    );
-    assert!(matches!(
-        storage.error,
-        BlobReadError::Work(WorkError::Overflow)
-    ));
+    let cancelled = blob_error(crate::FsError::Cancelled(crate::cancellation::CancellationError));
+    assert!(matches!(cancelled, BlobReadError::Cancelled));
+    if let KernelAccounting::Standalone { work, .. } = &mut accounting {
+        *work = WorkCounters { object_probes: u64::MAX, ..WorkCounters::default() };
+    }
+    let storage = completed_read_work(&mut accounting, WorkCounters { object_probes: 1, ..WorkCounters::default() })
+        .err().ok_or("overflowing backend prefix was accepted")?;
+    assert!(matches!(blob_error(storage), BlobReadError::Work(WorkError::Overflow)));
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_stream_builds_the_same_multilevel_root_and_releases_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    static CONTENT: [u8; 4097] = [0xa7; 4097];
+    let options = BlobBuildOptions {
+        chunk_bytes: 127, page_items: 2, page_bytes: 256, maximum_blob_bytes: 4097,
+    };
+    let ordinary_store = MemoryObjectStore::default();
+    let ordinary = build_blob(&ordinary_store, &mut std::io::Cursor::new(&CONTENT[..]),
+        options, WorkBudget::UNBOUNDED)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let store = MemoryObjectStore::default();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let native = crate::async_storage::poll_ready(build_blob_with_accounting(
+        &store, &mut std::io::Cursor::new(&CONTENT[..]), options, &mut accounting, &cancellation,
+    )).ok_or("native streaming build blocked")??;
+    assert_eq!(native.root, ordinary.root);
+    assert_eq!(native.logical_bytes, 4097);
+    assert_eq!(original.receipt().source_bytes_read, 4097);
+    assert!(original.receipt().page_writes > 1);
+    assert!(original.receipt().backend_write_operations > 1);
+    let read = read_blob_range(&store, native.root, ByteRange { offset: 125, length: 130 },
+        DecodeLimits::default(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(read.bytes.as_ref(), &CONTENT[125..255]);
+    drop(read);
+    drop(store);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut source = ScriptedSource {
+        bytes: Bytes::from_static(b"abcdef"), position: 0, maximum_per_read: 1,
+        fail_after: None, cancel_at: None,
+    };
+    let error = crate::async_storage::poll_ready(build_blob_with_accounting(
+        &MemoryObjectStore::default(), &mut source,
+        BlobBuildOptions { chunk_bytes: 4, page_items: 2, page_bytes: 256, maximum_blob_bytes: 6 },
+        &mut accounting, &cancellation,
+    )).ok_or("native source refusal blocked")?.err().ok_or("custom source used ordinary I/O")?;
+    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::NativeSourceUnavailable)));
+    assert_eq!(source.position, 0);
+    assert_eq!(original.receipt().source_bytes_read, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativePartialBlobSource {
+    source: std::io::Cursor<&'static [u8]>,
+    fail_at: Option<u64>,
+    cancel_at: Option<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AsyncBlobSource for NativePartialBlobSource {
+    async fn read<'a>(
+        &'a mut self, _destination: &'a mut [u8], _budget: WorkBudget,
+        _cancellation: &'a CancellationToken,
+    ) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
+    async fn read_with_native_work<'a>(
+        &'a mut self, destination: &'a mut [u8], original: &'a crate::NativeMaterializationWork,
+        cancellation: &'a CancellationToken,
+    ) -> Result<usize, FsError> {
+        if self.fail_at.is_some_and(|at| self.source.position() >= at) {
+            return Err(BlobBuildError::Source(std::io::ErrorKind::PermissionDenied.into()).into());
+        }
+        let length = destination.len().min(1);
+        let read = self.source.read_with_native_work(
+            destination.get_mut(..length).ok_or(BlobBuildError::TooLarge)?, original, cancellation,
+        ).await?;
+        if self.cancel_at.is_some_and(|at| self.source.position() >= at) { cancellation.cancel(); }
+        Ok(read)
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_partial_reads_retain_source_failure_and_cancellation_prefixes()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut source = NativePartialBlobSource {
+            source: std::io::Cursor::new(b"abcdef"),
+            fail_at: (!cancelled).then_some(3), cancel_at: cancelled.then_some(3),
+        };
+        let error = crate::async_storage::poll_ready(build_blob_with_accounting(
+            &MemoryObjectStore::default(), &mut source,
+            BlobBuildOptions { chunk_bytes: 4, page_items: 2, page_bytes: 256, maximum_blob_bytes: 6 },
+            &mut accounting, &cancellation,
+        )).ok_or("native partial-source build blocked")?.err().ok_or("source failure was erased")?;
+        if cancelled {
+            assert!(matches!(error, FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
+                | FsError::Cancelled(_)));
+        } else {
+            assert!(matches!(error, FsError::BlobBuild(BlobBuildError::Source(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied));
+        }
+        assert_eq!(source.source.position(), 3);
+        assert_eq!(original.receipt().source_bytes_read, 3);
+        assert_eq!(original.receipt().backend_write_operations, 0);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_late_capacity_denial_keeps_actual_peak_and_data_before_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget { peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes() + 1,
+        ..WorkBudget::UNBOUNDED };
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut owner = ReadOwned {
+        value: Vec::<u8>::new(),
+        custody: KernelOwnedAllocation::NativeOriginal(original.claim(1)?),
+    };
+    owner.value.try_reserve_exact(8)?;
+    let capacity = usize_to_u64(owner.value.capacity());
+    let KernelOwnedAllocation::NativeOriginal(guard) = &mut owner.custody else { unreachable!() };
+    let error = guard.reconcile_capacity(capacity).err().ok_or("physical excess escaped its original bound")?;
+    assert!(matches!(error, crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. })));
+    assert_eq!(guard.bytes(), capacity);
+    assert_eq!(original.live_allocation_bytes(), baseline + capacity);
+    assert!(original.receipt().peak_allocation_bytes >= baseline + capacity);
+    drop(owner);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_source_error_holder_is_prepaid_and_keeps_its_original_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let prepared = PreparedBlobDemandFailure::new(&original)?;
+    assert!(prepared.shares_ledger(&original));
+    let bytes = usize_to_u64(size_of::<Option<crate::DemandError>>());
+    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    let paid = original.receipt();
+    let mut failure = prepared.failed(crate::DemandError::StaleVersion);
+    assert!(matches!(failure.error(), crate::DemandError::StaleVersion));
+    *failure.error_mut() = crate::DemandError::StaleSource;
+    assert!(matches!(failure.error(), crate::DemandError::StaleSource));
+    assert_eq!(original.receipt(), paid, "publishing or visiting the actual cause must not allocate");
+    drop(failure);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_source_error_holder_denies_before_its_actual_box_attempt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let bytes = usize_to_u64(size_of::<Option<crate::DemandError>>());
+    let budget = WorkBudget {
+        peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes() + bytes - 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let error = PreparedBlobDemandFailure::new(&original).err()
+        .ok_or("error storage escaped its original admission")?;
+    assert!(matches!(error, FsError::NativeKernel(
+        crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+    assert_eq!(original.receipt(), before);
     Ok(())
 }
 
@@ -1819,30 +1958,46 @@ fn defensive_blob_machine_states_fail_closed_with_exact_work()
 #[cfg(target_pointer_width = "64")]
 fn impossible_blob_buffers_fail_before_allocation_and_preserve_accounting()
 -> Result<(), Box<dyn std::error::Error>> {
-    let chunk = allocate_chunk_buffer(
-        usize::MAX,
-        0,
-        0,
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("impossible chunk allocation succeeded")?;
-    assert!(matches!(chunk.error, BlobBuildError::AllocationFailed));
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut chunk = empty_blob_vec::<u8>();
+    let error = reserve_blob_vec(&mut chunk, usize::MAX, &mut accounting)
+        .err().ok_or("impossible chunk allocation succeeded")?;
+    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::ReserveFailed(_))));
+    release_blob_vec(chunk, &mut accounting)?;
+    let mut items = empty_blob_vec::<u8>();
+    let error = reserve_blob_vec(&mut items, usize::MAX, &mut accounting)
+        .err().ok_or("impossible page item allocation succeeded")?;
+    assert!(matches!(error, FsError::BlobBuild(BlobBuildError::ReserveFailed(_))));
+    release_blob_vec(items, &mut accounting)?;
+    let KernelAccounting::Standalone { allocations, work, .. } = accounting else { unreachable!() };
+    assert_eq!(allocations.live_bytes(), 0);
+    assert_eq!(work.allocation_operations, 2);
+    Ok(())
+}
 
-    let mut items = Vec::<u8>::new();
-    let mut live = 0;
-    let mut work = WorkCounters::default();
-    let page = reserve_page_items(
-        &mut items,
-        usize::MAX,
-        &mut live,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("impossible page item allocation succeeded")?;
-    assert!(matches!(page.error, BlobBuildError::AllocationFailed));
-    assert_eq!(live, 0);
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_blob_decode_records_only_completed_items()
+-> Result<(), Box<dyn std::error::Error>> {
+    let page = BlobPage { first_offset: 0, end_offset: 2, node: BlobNode::Leaf(vec![
+        BlobChunkRef { first_offset: 0, end_offset: 1,
+            chunk: ObjectId { kind: ObjectKind::BlobChunk, digest: Digest::ZERO } },
+        BlobChunkRef { first_offset: 1, end_offset: 2,
+            chunk: ObjectId { kind: ObjectKind::BlobChunk, digest: Digest::ZERO } },
+    ]) };
+    let mut bytes = encode_blob_page(&page, 8)?;
+    let _ = bytes.pop();
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let error = decode_blob_page_with_accounting(&bytes, DecodeLimits::default(), &mut accounting)
+        .err().ok_or("truncated chunk reference was accepted")?;
+    assert!(matches!(error, FsError::BlobRead(BlobReadError::Decode(_))));
+    assert_eq!(original.receipt().items_examined, 1);
+    assert_eq!(original.receipt().bytes_copied, 87);
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }

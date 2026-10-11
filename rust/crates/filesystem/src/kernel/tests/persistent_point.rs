@@ -138,6 +138,7 @@ fn cached_pages_answer_identically_without_backend_reads() -> Result<(), Box<dyn
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
+            None,
         ))
     };
     let cold = lookup(record(6).file_id)?;
@@ -152,5 +153,104 @@ fn cached_pages_answer_identically_without_backend_reads() -> Result<(), Box<dyn
         "decoded pages are shared between lookups"
     );
     assert_eq!(lookup(record(3).file_id)?.value, None);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_point_uses_the_original_counters_and_retires_scratch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (value, allocation) = crate::async_storage::poll_immediate(
+        lookup_async_with_accounting::<_, FileTableFormat>(
+            &store, root, &record(2).file_id, DecodeLimits::default(),
+            &mut accounting, &cancellation, None,
+        ),
+    )?;
+    assert_eq!(value, Some(record(2)));
+    assert_eq!(original.receipt().page_reads, 1);
+    assert!(original.receipt().backend_read_operations > 0);
+    drop(value);
+    drop(allocation);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_point_denies_scratch_before_provider_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1)]))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = crate::async_storage::poll_immediate(
+        lookup_async_with_accounting::<_, FileTableFormat>(
+            &store, root, &record(1).file_id, DecodeLimits::default(),
+            &mut accounting, &cancellation, None,
+        ),
+    );
+    assert!(result.is_err());
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_owned_reserve_preserves_the_actual_allocator_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(
+        isize::MAX as usize + 1, &mut accounting,
+    );
+    assert!(matches!(
+        result,
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::AllocationFailed(_)
+        ))
+    ));
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+fn owned_push_respects_the_logical_limit_with_spare_capacity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut values = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(2, &mut accounting)?;
+    values.value.push(1);
+    assert!(values.ensure_for_push(1, &mut accounting).is_err());
+    values.retire(&mut accounting)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_zero_sized_vector_does_not_charge_a_heap_operation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let before = original.receipt();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let values = crate::kernel::persistent_point::Owned::<Vec<()>>::allocate(1, &mut accounting)?;
+    assert_eq!(original.receipt(), before);
+    values.retire(&mut accounting)?;
     Ok(())
 }

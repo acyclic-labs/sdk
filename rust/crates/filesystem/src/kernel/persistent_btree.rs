@@ -1,13 +1,15 @@
 //! Shared immutable path-copy mechanics for authenticated B+tree formats.
+//! Original native claims are structural; sorting and producers run outside root loans.
 
-use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
+use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::codec::DecodedPageShape;
-use super::persistent_io::{self, OwnedPage};
+use super::persistent_io::{self, PageLease};
+use super::persistent_point::{Owned, absorb, retire_allocation};
 use super::search::counted_binary_search;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
@@ -25,16 +27,18 @@ pub(crate) trait Format: Send + Sync + 'static {
     fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError>
     where
         Self: Sized;
+    /// Observes the canonical parser's actual owned-allocation and item boundaries.
+    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+        bytes: &[u8],
+        limits: DecodeLimits,
+        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Page<Self>, E>
+    where
+        Self: Sized;
     fn decode_shape(
         bytes: &[u8],
         limits: DecodeLimits,
     ) -> Result<DecodedPageShape, CanonicalDecodeError>;
-    fn encode(
-        page: &PageRef<'_, Self>,
-        maximum_items: u32,
-    ) -> Result<Vec<u8>, CanonicalDecodeError>
-    where
-        Self: Sized;
     fn page_encoded_length(
         page: &PageRef<'_, Self>,
         maximum_items: u32,
@@ -45,6 +49,9 @@ pub(crate) trait Format: Send + Sync + 'static {
     fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError>;
     fn key_nested_bytes(key: &Self::Key) -> u64;
     fn value_nested_bytes(value: &Self::Value) -> u64;
+    /// Actual capacity of this one moved key/value's owned name buffer.
+    fn key_owned_bytes(key: &Self::Key) -> u64;
+    fn value_owned_bytes(value: &Self::Value) -> u64;
     fn try_clone_key(
         key: &Self::Key,
         maximum_bytes: u32,
@@ -53,6 +60,22 @@ pub(crate) trait Format: Send + Sync + 'static {
         value: &Self::Value,
         maximum_bytes: u32,
     ) -> Result<Self::Value, CanonicalDecodeError>;
+    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+        key: &Self::Key,
+        maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self::Key, E>;
+    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+        value: &Self::Value,
+        maximum_bytes: u32,
+        steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Self::Value, E>;
+    fn encode_with_accounting(
+        page: &PageRef<'_, Self>,
+        maximum_items: u32,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError>
+    where Self: Sized;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,33 +109,31 @@ pub(crate) trait Mutation<F: Format>: Clone {
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
-    fn apply_current(&self, current: &mut Option<F::Value>) -> Result<(), Self::Error>;
+    /// Checks semantic preconditions without copying the current value.
+    fn replacement<'a>(&'a self, current: Option<&F::Value>) -> Result<Option<&'a F::Value>, Self::Error>;
+    fn map_error(error: Error<Self::Error>) -> crate::FsError;
+    fn apply_current(&self, current: &mut Option<F::Value>) -> Result<(), Self::Error> {
+        let replacement = self.replacement(current.as_ref())?;
+        *current = replacement.cloned();
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
-struct IndexedMutation<M> {
+struct IndexedMutation<'a, M> {
     ordinal: usize,
-    mutation: M,
+    mutation: &'a M,
 }
 
-impl<F, M> Mutation<F> for IndexedMutation<M>
-where
-    F: Format,
-    M: Mutation<F>,
-{
+impl<F, M> Mutation<F> for IndexedMutation<'_, M>
+where F: Format, M: Mutation<F> {
     type Error = M::Error;
-
-    fn key(&self) -> &F::Key {
-        self.mutation.key()
+    fn key(&self) -> &F::Key { self.mutation.key() }
+    fn changes_cardinality(&self) -> bool { self.mutation.changes_cardinality() }
+    fn replacement<'a>(&'a self, current: Option<&F::Value>) -> Result<Option<&'a F::Value>, Self::Error> {
+        self.mutation.replacement(current)
     }
-
-    fn changes_cardinality(&self) -> bool {
-        self.mutation.changes_cardinality()
-    }
-
-    fn apply_current(&self, current: &mut Option<F::Value>) -> Result<(), Self::Error> {
-        self.mutation.apply_current(current)
-    }
+    fn map_error(error: Error<Self::Error>) -> crate::FsError { M::map_error(error) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,159 +178,85 @@ pub(crate) enum Error<E: std::error::Error> {
 
 type Summary<K> = Child<K>;
 
-struct OwnedValues<F: Format> {
-    values: Vec<F::Value>,
-    logical_bytes: u64,
-}
-
 struct NodeRequest<K> {
     page: ObjectId,
-    lower: Option<K>,
-    upper: Option<K>,
+    lower: Owned<Option<K>>,
+    upper: Owned<Option<K>>,
     mutations: Range<usize>,
     height: u16,
 }
 
 struct InternalFrame<F: Format> {
     original: ObjectId,
-    children: Vec<Child<F::Key>>,
-    inherited_upper: Option<F::Key>,
+    children: Owned<Vec<Child<F::Key>>>,
+    inherited_upper: Owned<Option<F::Key>>,
     next_child: usize,
     mutation_cursor: usize,
     mutation_end: usize,
     height: u16,
-    rewritten: Vec<Summary<F::Key>>,
-    logical_bytes: u64,
+    rewritten: Owned<Vec<Summary<F::Key>>>,
 }
 
 enum EnteredNode<F: Format> {
-    Complete(Vec<Summary<F::Key>>),
+    Complete(Owned<Vec<Summary<F::Key>>>),
     Internal(InternalFrame<F>),
 }
 
-struct Context<'a, S, F, M>
-where
-    F: Format,
-    M: Mutation<F>,
-{
+struct Context<'a, 'accounting, 'work, S, F, M>
+where F: Format, M: Mutation<F> {
     store: &'a S,
     limits: DecodeLimits,
-    budget: WorkBudget,
-    work: WorkCounters,
-    allocations: AllocationLedger,
-    visited: VisitedObjectSet,
+    accounting: &'accounting mut KernelAccounting<'work>,
+    visited: Owned<VisitedObjectSet>,
     maximum_seen_height: u16,
     cancellation: &'a CancellationToken,
     marker: PhantomData<(F, M)>,
 }
 
-pub(crate) fn apply<S, F, M>(
+/// The ordinary and original-native callers drive this one path-copy body.
+/// Inputs remain borrowed under their caller's custody; only indices are sorted.
+pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
     root: ObjectId,
-    mutations: Vec<M>,
+    mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<Receipt, OperationFailure<Error<M::Error>>>
-where
-    S: crate::ImmediateObjectStore,
-    F: Format,
-    M: Mutation<F>,
-{
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_async::<S, F, M>(
-        store,
-        root,
-        mutations,
-        maximum_mutations,
-        limits,
-        budget,
-        &cancellation,
-    ))
-}
-
-pub(crate) async fn apply_async<S, F, M>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<M>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<Receipt, OperationFailure<Error<M::Error>>>
-where
-    S: crate::AsyncObjectStore,
-    F: Format,
-    M: Mutation<F>,
-{
-    validate::<F, M>(root, &mutations, maximum_mutations, limits)?;
-    let mut allocations = AllocationLedger::default();
-    let mut initial_work = WorkCounters::default();
-    let ordered_allocation = allocations
-        .claim_elements::<IndexedMutation<M>>(mutations.len(), &mut initial_work, budget)
-        .map_err(|error| OperationFailure::new(Error::Allocation(error), initial_work))?;
-    let mut ordered = Vec::new();
-    if ordered.try_reserve_exact(mutations.len()).is_err() {
-        return Err(OperationFailure::new(Error::AllocationFailed, initial_work));
-    }
-    ordered.extend(
-        mutations
-            .into_iter()
-            .enumerate()
-            .map(|(ordinal, mutation)| IndexedMutation { ordinal, mutation }),
-    );
-    sort_indexed::<F, M>(&mut ordered, &mut initial_work, budget)
-        .map_err(|error| OperationFailure::new(Error::Work(error), initial_work))?;
-    let maximum_visited = ordered
-        .len()
+) -> Result<Receipt, crate::FsError>
+where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
+    accounting.check()?;
+    validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
+    let copied = WorkCounters {
+        bytes_copied: usize_to_u64(mutations.len().checked_mul(std::mem::size_of::<IndexedMutation<'_, M>>()).ok_or(WorkError::Overflow)?),
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copied)?;
+    let mut ordered = Owned::allocate(mutations.len(), accounting)?;
+    ordered.value.extend(mutations.iter().enumerate().map(|(ordinal, mutation)| IndexedMutation { ordinal, mutation }));
+    accounting.record_completed(copied)?;
+    sort_indexed::<F, M>(&mut ordered.value, accounting)?;
+    let maximum_visited = mutations.len()
         .checked_mul(usize::from(limits.maximum_page_height))
         .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| OperationFailure::before_work(Error::InvalidLimits))?
-        .min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| OperationFailure::before_work(Error::InvalidLimits))?,
-        );
-    let visited =
-        VisitedObjectSet::new(maximum_visited, &mut allocations, &mut initial_work, budget)
-            .map_err(|error| OperationFailure::new(Error::Allocation(error), initial_work))?;
-    let mut context = Context::<S, F, IndexedMutation<M>> {
-        store,
-        limits,
-        budget,
-        work: initial_work,
-        allocations,
-        visited,
-        maximum_seen_height: 0,
-        cancellation,
-        marker: PhantomData,
+        .ok_or_else(|| M::map_error(Error::InvalidLimits))?
+        .min(usize::try_from(limits.maximum_visited_pages).map_err(|_| M::map_error(Error::InvalidLimits))?);
+    let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+    let mut context = Context::<S, F, IndexedMutation<'_, M>> {
+        store, limits, accounting, visited,
+        maximum_seen_height: 0, cancellation, marker: PhantomData,
     };
-    let summaries = context
-        .rewrite(root, &ordered)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    let new_root = context
-        .finish_root(summaries)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    context
-        .visited
-        .release(&mut context.allocations)
-        .map_err(|error| OperationFailure::new(Error::Allocation(error), context.work))?;
-    context
-        .allocations
-        .release(ordered_allocation)
-        .map_err(|error| OperationFailure::new(Error::Allocation(error), context.work))?;
-    Ok(Receipt {
-        root: new_root,
-        work: context.work,
-    })
+    let summaries = context.rewrite(root, &ordered.value).await?;
+    let root = context.finish_root(summaries).await?;
+    context.visited.retire(context.accounting)?;
+    ordered.retire(context.accounting)?;
+    Ok(Receipt { root, work: context.accounting.spent() })
 }
 
 fn sort_indexed<F, M>(
     mutations: &mut [IndexedMutation<M>],
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), WorkError>
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError>
 where
     F: Format,
     M: Mutation<F>,
@@ -319,11 +266,10 @@ where
         return Ok(());
     }
     let scan_bound = usize_to_u64(count - 1);
-    work.checked_add(WorkCounters {
+    accounting.admit(WorkCounters {
         items_examined: scan_bound,
         ..WorkCounters::default()
-    })?
-    .verify(budget)?;
+    })?;
     let mut scan_comparisons = 0_u64;
     let mut ordered = true;
     for adjacent in mutations.windows(2) {
@@ -335,7 +281,7 @@ where
             break;
         }
     }
-    *work = work.checked_add(WorkCounters {
+    accounting.record_completed(WorkCounters {
         items_examined: scan_comparisons,
         ..WorkCounters::default()
     })?;
@@ -348,11 +294,10 @@ where
         .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(WorkError::Overflow)?;
-    work.checked_add(WorkCounters {
+    accounting.admit(WorkCounters {
         items_examined: maximum_comparisons,
         ..WorkCounters::default()
-    })?
-    .verify(budget)?;
+    })?;
 
     let mut comparisons = 0_u64;
     for start in (0..count / 2).rev() {
@@ -362,7 +307,7 @@ where
         mutations.swap(0, end);
         sift_down::<F, M>(mutations, 0, end, &mut comparisons)?;
     }
-    *work = work.checked_add(WorkCounters {
+    accounting.record_completed(WorkCounters {
         items_examined: comparisons,
         ..WorkCounters::default()
     })?;
@@ -434,7 +379,7 @@ fn validate<F, M>(
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
-) -> Result<(), OperationFailure<Error<M::Error>>>
+) -> Result<(), Error<M::Error>>
 where
     F: Format,
     M: Mutation<F>,
@@ -453,37 +398,63 @@ where
         None
     };
     match error {
-        Some(error) => Err(OperationFailure::before_work(error)),
+        Some(error) => Err(error),
         None => Ok(()),
     }
 }
 
-impl<S, F, M> Context<'_, S, F, M>
-where
-    S: crate::AsyncObjectStore,
-    F: Format,
-    M: Mutation<F>,
-{
-    async fn rewrite(
-        &mut self,
-        root: ObjectId,
-        mutations: &[M],
-    ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
-        let mut stack = Vec::new();
+impl<S, F, M> Context<'_, '_, '_, S, F, M>
+where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
+    fn error(error: Error<M::Error>) -> crate::FsError { M::map_error(error) }
+
+    fn empty<T>(&mut self, value: T) -> Result<Owned<T>, crate::FsError> {
+        let allocation = self.accounting.claim_owned(0, 0)?;
+        Ok(Owned::new(value, allocation, 0))
+    }
+
+    fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, crate::FsError> {
+        let (value, allocation) = persistent_io::clone_key_with_accounting::<F>(
+            key, self.limits.maximum_name_bytes, self.accounting,
+        )?;
+        let bytes = F::key_owned_bytes(&value);
+        Ok(Owned::new(value, allocation, bytes))
+    }
+
+    fn clone_bound(&mut self, key: Option<&F::Key>) -> Result<Owned<Option<F::Key>>, crate::FsError> {
+        match key {
+            Some(key) => {
+                let Owned { value, allocation, bytes } = self.clone_key(key)?;
+                Ok(Owned::new(Some(value), allocation, bytes))
+            }
+            None => self.empty(None),
+        }
+    }
+
+    fn clone_value(&mut self, value: &F::Value) -> Result<Owned<Option<F::Value>>, crate::FsError> {
+        let (value, allocation) = persistent_io::clone_value_with_accounting::<F>(
+            value, self.limits.maximum_name_bytes, self.accounting,
+        )?;
+        let bytes = F::value_owned_bytes(&value);
+        Ok(Owned::new(Some(value), allocation, bytes))
+    }
+
+    fn charge_items(&mut self, count: u64) -> Result<(), crate::FsError> {
+        self.accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED })
+    }
+
+    async fn rewrite(&mut self, root: ObjectId, mutations: &[M]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+        let mut stack = Owned::<Vec<InternalFrame<F>>>::allocate(0, self.accounting)?;
         let mut request = NodeRequest {
-            page: root,
-            lower: None,
-            upper: None,
-            mutations: 0..mutations.len(),
-            height: 1,
+            page: root, lower: self.empty(None)?, upper: self.empty(None)?,
+            mutations: 0..mutations.len(), height: 1,
         };
         'traverse: loop {
-            let entered = self.enter_node(request, mutations).await?;
-            let mut result = match entered {
+            let mut result = match self.enter_node(request, mutations).await? {
                 EnteredNode::Complete(result) => result,
                 EnteredNode::Internal(mut frame) => {
                     if let Some(next) = self.advance_frame(&mut frame, mutations)? {
-                        stack.push(frame);
+                        stack.ensure_for_push(usize::from(self.limits.maximum_page_height), self.accounting)?;
+                        stack.value.push(frame);
                         request = next;
                         continue;
                     }
@@ -491,12 +462,14 @@ where
                 }
             };
             loop {
-                let Some(mut frame) = stack.pop() else {
+                let Some(mut frame) = stack.value.pop() else {
+                    stack.retire(self.accounting)?;
                     return Ok(result);
                 };
-                frame.rewritten.extend(result);
+                append_owned(&mut frame.rewritten, result, self.accounting)?;
                 if let Some(next) = self.advance_frame(&mut frame, mutations)? {
-                    stack.push(frame);
+                    stack.ensure_for_push(usize::from(self.limits.maximum_page_height), self.accounting)?;
+                    stack.value.push(frame);
                     request = next;
                     continue 'traverse;
                 }
@@ -505,111 +478,49 @@ where
         }
     }
 
-    async fn enter_node(
-        &mut self,
-        request: NodeRequest<F::Key>,
-        mutations: &[M],
-    ) -> Result<EnteredNode<F>, Error<M::Error>> {
-        if request.height > self.limits.maximum_page_height {
-            return Err(Error::HeightExceeded);
-        }
+    async fn enter_node(&mut self, request: NodeRequest<F::Key>, mutations: &[M]) -> Result<EnteredNode<F>, crate::FsError> {
+        if request.height > self.limits.maximum_page_height { return Err(Self::error(Error::HeightExceeded)); }
         self.maximum_seen_height = self.maximum_seen_height.max(request.height);
-        let visited = self.visited.insert(
-            request.page,
-            &mut self.allocations,
-            &mut self.work,
-            &self.budget,
-        )?;
-        if !visited.inserted {
-            return Err(Error::CycleOrAlias);
-        }
+        let inserted = VisitedObjectSet::insert_with_accounting(&mut self.visited, request.page, self.accounting)?;
+        if !inserted.inserted { return Err(Self::error(Error::CycleOrAlias)); }
         let decoded = self.read_page(request.page).await?;
-        let (page, decoded_bytes) = decoded
-            .into_owned(self.budget, &mut self.allocations, &mut self.work)
-            .map_err(map_io)?;
+        let Owned { value: page, allocation, bytes } = decoded;
         match page {
             Page::Leaf(entries) => {
-                if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
-                    return Err(Error::ChildBoundsMismatch);
+                let entries = Owned::new(entries, allocation, bytes);
+                if !leaf_within::<F>(&entries.value, request.lower.value.as_ref(), request.upper.value.as_ref()) {
+                    return Err(Self::error(Error::ChildBoundsMismatch));
                 }
-                // `request.mutations` is a `Range<usize>` into this same
-                // `mutations` slice, threaded unchanged through the whole
-                // traversal (`rewrite` -> `enter_node`/`advance_frame`).
-                // The root request starts at `0..mutations.len()` (see
-                // `rewrite`), and every subsequent request is built in
-                // `advance_frame` as `selected_start..frame.mutation_cursor`,
-                // where `mutation_cursor` only ever advances while `<
-                // frame.mutation_end`, itself inherited from a prior
-                // request's (already valid) `.mutations.end`. So by
-                // induction every `request.mutations` satisfies `start <=
-                // end <= mutations.len()`.
-                #[allow(
-                    clippy::indexing_slicing,
-                    reason = "request.mutations is bounded by mutations.len() by induction from rewrite's root request and advance_frame's mutation_cursor bookkeeping"
-                )]
-                let result = self
-                    .rewrite_leaf(request.page, entries, &mutations[request.mutations])
-                    .await;
-                self.allocations.release(decoded_bytes)?;
-                Ok(EnteredNode::Complete(result?))
+                request.lower.retire(self.accounting)?;
+                request.upper.retire(self.accounting)?;
+                let selected = mutations.get(request.mutations).ok_or_else(|| Self::error(Error::MutationContract))?;
+                Ok(EnteredNode::Complete(self.rewrite_leaf(request.page, entries, selected).await?))
             }
             Page::Internal(children) => {
-                if !children_within(&children, request.lower.as_ref(), request.upper.as_ref()) {
-                    return Err(Error::ChildBoundsMismatch);
+                let children = Owned::new(children, allocation, bytes);
+                if !children_within(&children.value, request.lower.value.as_ref(), request.upper.value.as_ref()) {
+                    return Err(Self::error(Error::ChildBoundsMismatch));
                 }
+                request.lower.retire(self.accounting)?;
                 Ok(EnteredNode::Internal(InternalFrame {
-                    original: request.page,
-                    children,
-                    inherited_upper: request.upper,
-                    next_child: 0,
-                    mutation_cursor: request.mutations.start,
-                    mutation_end: request.mutations.end,
-                    height: request.height,
-                    rewritten: Vec::new(),
-                    logical_bytes: decoded_bytes,
+                    original: request.page, children, inherited_upper: request.upper,
+                    next_child: 0, mutation_cursor: request.mutations.start, mutation_end: request.mutations.end,
+                    height: request.height, rewritten: Owned::allocate(0, self.accounting)?,
                 }))
             }
         }
     }
 
-    fn advance_frame(
-        &mut self,
-        frame: &mut InternalFrame<F>,
-        mutations: &[M],
-    ) -> Result<Option<NodeRequest<F::Key>>, Error<M::Error>> {
-        while frame.next_child < frame.children.len() {
+    fn advance_frame(&mut self, frame: &mut InternalFrame<F>, mutations: &[M]) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
+        while let Some(child) = frame.children.value.get(frame.next_child) {
             let index = frame.next_child;
             frame.next_child += 1;
-            // `index` was captured as `frame.next_child` before the
-            // increment, while the loop guard above already established
-            // `frame.next_child < frame.children.len()`.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "index captured from frame.next_child while the loop guard above holds next_child < frame.children.len()"
-            )]
-            let child = &frame.children[index];
-            let child_upper = frame
-                .children
-                .get(index + 1)
-                .map(|next| next.first.clone())
-                .or_else(|| frame.inherited_upper.clone());
             let selected_start = frame.mutation_cursor;
-            if let Some(next) = frame.children.get(index + 1) {
+            if let Some(next) = frame.children.value.get(index + 1) {
                 while frame.mutation_cursor < frame.mutation_end {
                     self.charge_items(1)?;
-                    // The loop guard establishes `frame.mutation_cursor <
-                    // frame.mutation_end`, and `frame.mutation_end` is
-                    // inherited from a prior `NodeRequest.mutations.end`,
-                    // which is bounded by `mutations.len()` (see the
-                    // invariant documented at the `enter_node` leaf-rewrite
-                    // call site).
-                    #[allow(
-                        clippy::indexing_slicing,
-                        reason = "frame.mutation_cursor < frame.mutation_end <= mutations.len(), per the loop guard and the request.mutations invariant"
-                    )]
-                    if mutations[frame.mutation_cursor].key() >= &next.first {
-                        break;
-                    }
+                    let mutation = mutations.get(frame.mutation_cursor).ok_or_else(|| Self::error(Error::MutationContract))?;
+                    if mutation.key() >= &next.first { break; }
                     frame.mutation_cursor += 1;
                 }
             } else {
@@ -617,401 +528,317 @@ where
             }
             self.charge_items(1)?;
             if selected_start == frame.mutation_cursor {
-                frame.rewritten.push(Summary {
-                    first: child.first.clone(),
-                    page: child.page,
-                });
+                let first = self.clone_key(&child.first)?;
+                push_summary(&mut frame.rewritten, first, child.page, self.accounting)?;
                 continue;
             }
+            let lower = self.clone_bound(Some(&child.first))?;
+            let upper = self.clone_bound(frame.children.value.get(index + 1).map(|next| &next.first).or(frame.inherited_upper.value.as_ref()))?;
             return Ok(Some(NodeRequest {
-                page: child.page,
-                lower: Some(child.first.clone()),
-                upper: child_upper,
-                mutations: selected_start..frame.mutation_cursor,
-                height: frame.height.checked_add(1).ok_or(Error::HeightExceeded)?,
+                page: child.page, lower, upper, mutations: selected_start..frame.mutation_cursor,
+                height: frame.height.checked_add(1).ok_or_else(|| Self::error(Error::HeightExceeded))?,
             }));
         }
         Ok(None)
     }
 
-    async fn finish_frame(
-        &mut self,
-        frame: InternalFrame<F>,
-    ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
-        // This branch is only reached when `frame.rewritten` is non-empty
-        // (the `is_empty()` branch above already handled that case), and
-        // `unchanged` requires `rewritten.len() == children.len()`, so
-        // `frame.children` is non-empty here too.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "unchanged() requires children.len() == rewritten.len(), and rewritten is non-empty in this branch"
-        )]
-        let result = if frame.rewritten.is_empty() {
-            Ok(Vec::new())
-        } else if unchanged(&frame.rewritten, &frame.children) {
-            Ok(vec![Summary {
-                first: frame.children[0].first.clone(),
-                page: frame.original,
-            }])
-        } else if frame.height == 1 && frame.rewritten.len() == 1 {
-            Ok(frame.rewritten)
+    async fn finish_frame(&mut self, frame: InternalFrame<F>) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+        let result = if frame.rewritten.value.is_empty() {
+            frame.rewritten
+        } else if unchanged(&frame.rewritten.value, &frame.children.value) {
+            let mut result = Owned::allocate(1, self.accounting)?;
+            let first = frame.children.value.first().ok_or_else(|| Self::error(Error::MutationContract))?;
+            let first = self.clone_key(&first.first)?;
+            push_summary(&mut result, first, frame.original, self.accounting)?;
+            frame.rewritten.retire(self.accounting)?;
+            result
+        } else if frame.height == 1 && frame.rewritten.value.len() == 1 {
+            frame.rewritten
         } else {
-            self.write_internal_chunks(&frame.rewritten).await
+            let result = self.write_internal_chunks(&frame.rewritten.value).await?;
+            frame.rewritten.retire(self.accounting)?;
+            result
         };
-        self.allocations.release(frame.logical_bytes)?;
-        result
+        frame.children.retire(self.accounting)?;
+        frame.inherited_upper.retire(self.accounting)?;
+        Ok(result)
     }
 
-    async fn rewrite_leaf(
-        &mut self,
-        original: ObjectId,
-        mut entries: Vec<F::Value>,
-        mutations: &[M],
-    ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
-        let mut structural_allocation = 0_u64;
-        let changed = if mutations
-            .iter()
-            .all(|mutation| !mutation.changes_cardinality())
-        {
-            self.apply_point_mutations(&mut entries, mutations)?
+    async fn rewrite_leaf(&mut self, original: ObjectId, mut entries: Owned<Vec<F::Value>>, mutations: &[M]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+        let changed;
+        if mutations.iter().all(|mutation| !mutation.changes_cardinality()) {
+            changed = self.apply_point_mutations(&mut entries, mutations)?;
         } else {
-            let original = entries;
-            let rewritten = self.apply_structural_mutations(&original, mutations)?;
-            entries = rewritten.values;
-            structural_allocation = rewritten.logical_bytes;
-            entries != original
-        };
-        // Guarded by the `entries.is_empty()` branch above: this branch is
-        // only reached when `entries` is non-empty.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "guarded by the preceding entries.is_empty() branch of this same if-chain"
-        )]
-        let result = if entries.is_empty() {
-            Ok(Vec::new())
+            let rewritten = self.apply_structural_mutations(&entries.value, mutations)?;
+            changed = rewritten.value != entries.value;
+            entries.retire(self.accounting)?;
+            entries = rewritten;
+        }
+        let result = if entries.value.is_empty() {
+            Owned::allocate(0, self.accounting)?
         } else if !changed {
-            Ok(vec![Summary {
-                first: F::key(&entries[0]).clone(),
-                page: original,
-            }])
+            let mut result = Owned::allocate(1, self.accounting)?;
+            let first = self.clone_key(F::key(entries.value.first().ok_or_else(|| Self::error(Error::MutationContract))?))?;
+            push_summary(&mut result, first, original, self.accounting)?;
+            result
         } else {
-            self.write_leaf_chunks(&entries).await
+            self.write_leaf_chunks(&entries.value).await?
         };
-        self.allocations.release(structural_allocation)?;
-        result
+        entries.retire(self.accounting)?;
+        Ok(result)
     }
 
-    fn apply_point_mutations(
-        &mut self,
-        entries: &mut [F::Value],
-        mutations: &[M],
-    ) -> Result<bool, Error<M::Error>> {
+    fn apply_mutation(&mut self, mutation: &M, current: &mut Owned<Option<F::Value>>) -> Result<(), crate::FsError> {
+        let next = mutation.replacement(current.value.as_ref()).map_err(|error| Self::error(Error::Semantic(error)))?;
+        let replacement = match next { Some(next) => self.clone_value(next)?, None => self.empty(None)? };
+        let prior = std::mem::replace(current, replacement);
+        prior.retire(self.accounting)
+    }
+
+    fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[M]) -> Result<bool, crate::FsError> {
         let mut changed = false;
         for mutation in mutations {
-            let (found, comparisons) = search::<F>(entries, mutation.key());
+            let (found, comparisons) = search::<F>(&entries.value, mutation.key());
             self.charge_items(comparisons)?;
-            let index = found.ok();
-            // `search` only returns `Ok(middle)` when `entries[middle]`
-            // compared equal to the key, where `middle` was proven `<
-            // entries.len()` by that function's binary-search invariant.
-            // `entries` is not resliced or shortened between here and the
-            // indexing below.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "index came from search()'s Ok(middle), which is always < entries.len() by its binary search invariant"
-            )]
-            let prior = index.map(|index| entries[index].clone());
-            let mut current = prior.clone();
-            mutation
-                .apply_current(&mut current)
-                .map_err(Error::Semantic)?;
-            if prior.is_some() != current.is_some() {
-                return Err(Error::MutationContract);
-            }
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "same search()-derived index as above, still < entries.len()"
-            )]
-            if let (Some(index), Some(replacement)) = (index, current) {
-                changed |= prior.as_ref() != Some(&replacement);
-                entries[index] = replacement;
+            let prior = found.ok().and_then(|index| entries.value.get(index));
+            let next = mutation.replacement(prior).map_err(|error| Self::error(Error::Semantic(error)))?;
+            if prior.is_some() != next.is_some() { return Err(Self::error(Error::MutationContract)); }
+            if prior == next { continue; }
+            changed = true;
+            if let (Ok(index), Some(next)) = (found, next) {
+                let mut current = self.clone_value(next)?;
+                let replacement = current.value.take().ok_or_else(|| Self::error(Error::MutationContract))?;
+                let slot = entries.value.get_mut(index).ok_or_else(|| Self::error(Error::MutationContract))?;
+                let old_bytes = F::value_owned_bytes(slot);
+                let old_allocation = split_guard(&mut entries.allocation, old_bytes)?;
+                drop(std::mem::replace(slot, replacement));
+                retire_allocation(old_allocation, old_bytes, self.accounting)?;
+                absorb(&mut entries.allocation, current.allocation)?;
+                entries.bytes = entries.bytes.checked_sub(old_bytes).and_then(|bytes| bytes.checked_add(current.bytes)).ok_or(WorkError::Overflow)?;
             }
         }
         Ok(changed)
     }
 
-    fn apply_structural_mutations(
-        &mut self,
-        entries: &[F::Value],
-        mutations: &[M],
-    ) -> Result<OwnedValues<F>, Error<M::Error>> {
-        let capacity = entries
-            .len()
-            .checked_add(mutations.len())
-            .ok_or(Error::AllocationFailed)?;
-        let logical_bytes =
-            self.allocations
-                .claim_elements::<F::Value>(capacity, &mut self.work, self.budget)?;
-        let mut output = Vec::new();
-        if output.try_reserve_exact(capacity).is_err() {
-            self.allocations.release(logical_bytes)?;
-            return Err(Error::AllocationFailed);
-        }
-
-        let mut entry_index = 0_usize;
-        let mut mutation_index = 0_usize;
+    fn apply_structural_mutations(&mut self, entries: &[F::Value], mutations: &[M]) -> Result<Owned<Vec<F::Value>>, crate::FsError> {
+        let capacity = entries.len().checked_add(mutations.len()).ok_or_else(|| Self::error(Error::AllocationFailed))?;
+        let mut output = Owned::allocate(capacity, self.accounting)?;
+        let mut entry_index = 0;
+        let mut mutation_index = 0;
         while entry_index < entries.len() || mutation_index < mutations.len() {
-            // The outer while guard failed on the `mutation_index ==
-            // mutations.len()` disjunct being false only if this if is not
-            // taken; when it IS taken, the outer guard was satisfied via its
-            // other disjunct, `entry_index < entries.len()`.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "when mutation_index == mutations.len(), the enclosing while guard's other disjunct entry_index < entries.len() must hold"
-            )]
-            if mutation_index == mutations.len() {
+            let Some(mutation) = mutations.get(mutation_index) else {
                 self.charge_items(1)?;
-                output.push(entries[entry_index].clone());
+                let entry = entries.get(entry_index).ok_or_else(|| Self::error(Error::MutationContract))?;
+                let cloned = self.clone_value(entry)?;
+                push_value(&mut output, cloned)?;
                 entry_index += 1;
                 continue;
-            }
-            // Falling through the `if` above means `mutation_index !=
-            // mutations.len()`; `mutation_index` only ever increases and is
-            // never set past `mutations.len()`, so it is `< mutations.len()`
-            // here.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "mutation_index != mutations.len() here (the branch above already handled equality), and it never exceeds mutations.len()"
-            )]
-            let mutation_key = mutations[mutation_index].key();
-            let ordering = entries
-                .get(entry_index)
-                .map(|entry| F::key(entry).cmp(mutation_key));
-            self.charge_items(u64::from(ordering.is_some()))?;
-            // `ordering` is `Some(_)` only when `entries.get(entry_index)`
-            // returned `Some`, i.e. `entry_index < entries.len()`.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "matches!(ordering, Some(Less)) implies entries.get(entry_index) was Some, i.e. entry_index < entries.len()"
-            )]
-            if matches!(ordering, Some(std::cmp::Ordering::Less)) {
-                output.push(entries[entry_index].clone());
-                entry_index += 1;
-                continue;
-            }
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "matches!(ordering, Some(Equal)) implies entries.get(entry_index) was Some, i.e. entry_index < entries.len()"
-            )]
-            let mut current = if matches!(ordering, Some(std::cmp::Ordering::Equal)) {
-                let value = entries[entry_index].clone();
-                entry_index += 1;
-                Some(value)
-            } else {
-                None
             };
-            let key = mutation_key.clone();
-            // `mutation_index < mutations.len()` is checked immediately to
-            // the left of `&&` in this same condition (guaranteed
-            // short-circuit evaluation order), and the loop body only runs
-            // after that same condition succeeded, so the indexing in the
-            // body is covered by the same check.
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "mutation_index < mutations.len() is checked by the left operand of && in this same while condition (short-circuit evaluation)"
-            )]
-            while mutation_index < mutations.len() && mutations[mutation_index].key() == &key {
+            let entry = entries.get(entry_index);
+            let ordering = entry.map(|entry| F::key(entry).cmp(mutation.key()));
+            self.charge_items(u64::from(ordering.is_some()))?;
+            if matches!(ordering, Some(std::cmp::Ordering::Less)) {
+                let cloned = self.clone_value(entry.ok_or_else(|| Self::error(Error::MutationContract))?)?;
+                push_value(&mut output, cloned)?;
+                entry_index += 1;
+                continue;
+            }
+            let mut current = if matches!(ordering, Some(std::cmp::Ordering::Equal)) {
+                entry_index += 1;
+                self.clone_value(entry.ok_or_else(|| Self::error(Error::MutationContract))?)?
+            } else { self.empty(None)? };
+            let key = mutation.key();
+            while let Some(mutation) = mutations.get(mutation_index).filter(|mutation| mutation.key() == key) {
                 self.charge_items(1)?;
-                mutations[mutation_index]
-                    .apply_current(&mut current)
-                    .map_err(Error::Semantic)?;
+                self.apply_mutation(mutation, &mut current)?;
                 mutation_index += 1;
             }
-            if let Some(value) = current {
-                output.push(value);
-            }
+            if current.value.is_some() { push_value(&mut output, current)?; }
+            else { current.retire(self.accounting)?; }
         }
-        Ok(OwnedValues {
-            values: output,
-            logical_bytes,
-        })
+        Ok(output)
     }
 
-    fn charge_items(&mut self, count: u64) -> Result<(), Error<M::Error>> {
-        Ok(self.work.charge_items(count, &self.budget)?)
-    }
-
-    async fn write_leaf_chunks(
-        &mut self,
-        entries: &[F::Value],
-    ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
-        let (mut chunks, examined) =
-            PageChunks::new(entries, self.limits, F::leaf_item_encoded_length)?;
+    async fn write_leaf_chunks(&mut self, entries: &[F::Value]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+        let (mut chunks, examined) = PageChunks::new(entries, self.limits, F::leaf_item_encoded_length).map_err(Self::error)?;
         self.charge_items(examined)?;
-        let mut result = Vec::new();
-        while let Some((chunk, examined)) = chunks.next()? {
+        let mut result = Owned::allocate(0, self.accounting)?;
+        while let Some((chunk, examined)) = chunks.next().map_err(Self::error)? {
             self.charge_items(examined)?;
-            let first = chunk.first().ok_or(Error::MutationContract)?;
-            result.push(Summary {
-                first: F::key(first).clone(),
-                page: self.write_page(&PageRef::<F>::Leaf(chunk)).await?,
-            });
+            let first = self.clone_key(F::key(chunk.first().ok_or_else(|| Self::error(Error::MutationContract))?))?;
+            result.ensure_for_push(entries.len(), self.accounting)?;
+            let page = self.write_page(&PageRef::<F>::Leaf(chunk)).await?;
+            push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
     }
 
-    async fn write_internal_chunks(
-        &mut self,
-        children: &[Summary<F::Key>],
-    ) -> Result<Vec<Summary<F::Key>>, Error<M::Error>> {
+    async fn write_internal_chunks(&mut self, children: &[Summary<F::Key>]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
         let child_length = |child: &Summary<F::Key>| F::internal_item_encoded_length(&child.first);
-        let (mut counted, examined) = PageChunks::new(children, self.limits, child_length)?;
+        let (mut counted, examined) = PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
         self.charge_items(examined)?;
-        let mut pages = 0_usize;
-        while let Some((_, examined)) = counted.next()? {
+        let mut pages = 0;
+        while let Some((_, examined)) = counted.next().map_err(Self::error)? {
             self.charge_items(examined)?;
             pages += 1;
         }
-        if children.len() > 1 && pages >= children.len() {
-            return Err(Error::PageItemTooLarge);
-        }
-        let (mut chunks, examined) = PageChunks::new(children, self.limits, child_length)?;
+        if children.len() > 1 && pages >= children.len() { return Err(Self::error(Error::PageItemTooLarge)); }
+        let (mut chunks, examined) = PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
         self.charge_items(examined)?;
-        let mut result = Vec::new();
-        while let Some((chunk, examined)) = chunks.next()? {
+        let mut result = Owned::allocate(pages, self.accounting)?;
+        while let Some((chunk, examined)) = chunks.next().map_err(Self::error)? {
             self.charge_items(examined)?;
-            let first = chunk.first().ok_or(Error::MutationContract)?;
-            result.push(Summary {
-                first: first.first.clone(),
-                page: self.write_page(&PageRef::<F>::Internal(chunk)).await?,
-            });
+            let first = self.clone_key(&chunk.first().ok_or_else(|| Self::error(Error::MutationContract))?.first)?;
+            let page = self.write_page(&PageRef::<F>::Internal(chunk)).await?;
+            push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
     }
 
-    async fn finish_root(
-        &mut self,
-        mut summaries: Vec<Summary<F::Key>>,
-    ) -> Result<ObjectId, Error<M::Error>> {
-        if summaries.is_empty() {
+    async fn finish_root(&mut self, mut summaries: Owned<Vec<Summary<F::Key>>>) -> Result<ObjectId, crate::FsError> {
+        if summaries.value.is_empty() {
+            summaries.retire(self.accounting)?;
             return self.write_page(&PageRef::<F>::Leaf(&[])).await;
         }
         let mut height = self.maximum_seen_height;
-        while summaries.len() > 1 {
-            height = height.checked_add(1).ok_or(Error::HeightExceeded)?;
-            if height > self.limits.maximum_page_height {
-                return Err(Error::HeightExceeded);
-            }
-            summaries = self.write_internal_chunks(&summaries).await?;
+        while summaries.value.len() > 1 {
+            height = height.checked_add(1).ok_or_else(|| Self::error(Error::HeightExceeded))?;
+            if height > self.limits.maximum_page_height { return Err(Self::error(Error::HeightExceeded)); }
+            let next = self.write_internal_chunks(&summaries.value).await?;
+            summaries.retire(self.accounting)?;
+            summaries = next;
         }
-        // The early `summaries.is_empty()` return above rules out an
-        // initial empty vector, and each loop iteration calls
-        // `write_internal_chunks` only while `summaries.len() > 1`
-        // (i.e. non-empty input), which itself never returns an empty
-        // result for non-empty input (its two internal chunking loops each
-        // cut at least one non-empty `PageChunks` page and push at
-        // least one summary). So the loop can only terminate with
-        // `summaries.len() == 1`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "the loop above only exits with summaries.len() == 1: write_internal_chunks never returns empty for non-empty input, and the pre-loop check ruled out an initially empty vector"
-        )]
-        Ok(summaries[0].page)
+        let root = summaries.value.first().ok_or_else(|| Self::error(Error::MutationContract))?.page;
+        summaries.retire(self.accounting)?;
+        Ok(root)
     }
 
-    async fn read_page(&mut self, page: ObjectId) -> Result<OwnedPage<F>, Error<M::Error>> {
-        persistent_io::read_page_mutable::<S, F>(
-            self.store,
-            page,
-            self.limits,
-            self.budget,
-            self.cancellation,
-            &mut self.allocations,
-            &mut self.work,
-        )
-        .await
-        .map_err(map_io)
+    async fn read_page(&mut self, page: ObjectId) -> Result<Owned<Page<F>>, crate::FsError> {
+        let mut pages = persistent_io::read_pages_with_accounting::<S, F, _>(
+            self.store, std::iter::once(page), self.limits, self.accounting, self.cancellation, None,
+        ).await?;
+        let (decoded, allocation) = pages.next_with_accounting(self.limits, self.accounting, self.cancellation)?;
+        let bytes = decoded.logical_bytes;
+        match decoded.page {
+            PageLease::Owned(page) => Ok(Owned::new(page, allocation, bytes)),
+            PageLease::Shared { page, .. } => {
+                let result = match page.as_ref() {
+                    Page::Leaf(entries) => {
+                        let mut output = Owned::allocate(entries.len(), self.accounting)?;
+                        for entry in entries { let cloned = self.clone_value(entry)?; push_value(&mut output, cloned)?; }
+                        let Owned { value, allocation, bytes } = output;
+                        Owned::new(Page::Leaf(value), allocation, bytes)
+                    }
+                    Page::Internal(children) => {
+                        let mut output = Owned::allocate(children.len(), self.accounting)?;
+                        for child in children {
+                            let first = self.clone_key(&child.first)?;
+                            push_summary(&mut output, first, child.page, self.accounting)?;
+                        }
+                        let Owned { value, allocation, bytes } = output;
+                        Owned::new(Page::Internal(value), allocation, bytes)
+                    }
+                };
+                drop(page);
+                retire_allocation(allocation, bytes, self.accounting)?;
+                Ok(result)
+            }
+        }
     }
 
-    async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, Error<M::Error>> {
+    async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, crate::FsError> {
+        self.accounting.check()?;
+        self.accounting.admit(PAGE_WRITE)?;
         let encoded_length = F::page_encoded_length(page, self.limits.maximum_page_items)?;
-        let encoded_bytes = usize_to_u64(encoded_length);
-        if encoded_bytes > self.limits.maximum_page_object_bytes() {
-            return Err(Error::PageItemTooLarge);
-        }
-        let allocation =
-            self.allocations
-                .claim_elements::<u8>(encoded_length, &mut self.work, self.budget)?;
-        // Each charge below is admitted before its work runs and added in
-        // place after it succeeds, exactly as the prospective sums it
-        // replaces, without copying the counters.
-        let encoding = WorkCounters {
-            bytes_encoded: encoded_bytes,
-            ..WorkCounters::UNCHARGED
-        };
-        if let Err(error) = self.work.admit(&encoding, &self.budget) {
-            if error != WorkError::Overflow {
-                self.allocations.release(allocation)?;
-            }
-            return Err(Error::Work(error));
-        }
-        let encoded = F::encode(page, self.limits.maximum_page_items)?;
-        self.work.charge(&encoding, &self.budget)?;
-        if encoded.len() != encoded_length {
-            self.allocations.release(allocation)?;
-            return Err(Error::MutationContract);
+        if usize_to_u64(encoded_length) > self.limits.maximum_page_object_bytes() { return Err(Self::error(Error::PageItemTooLarge)); }
+        let (encoded, allocation) = F::encode_with_accounting(page, self.limits.maximum_page_items, self.accounting)?;
+        let capacity = usize_to_u64(encoded.capacity());
+        let mut encoded = Owned::new(encoded, allocation, capacity);
+        if encoded.value.len() != encoded_length { return Err(Self::error(Error::MutationContract)); }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = self.accounting.native_work() {
+            let KernelOwnedAllocation::NativeOriginal(allocation) = &mut encoded.allocation else {
+                return Err(Self::error(Error::MutationContract));
+            };
+            let hashed = HashedObject::from_native_vec(F::kind(), &mut encoded.value, allocation, work, self.cancellation)
+                .map_err(storage_error)?;
+            let object = hashed.object_id();
+            self.accounting.charge(PAGE_WRITE)?;
+            crate::AsyncObjectStore::put_hashed_with_native_work(self.store, hashed, work, self.cancellation)
+                .await.map_err(storage_error)?;
+            drop(encoded);
+            return Ok(object);
         }
         let hashing = WorkCounters {
-            bytes_hashed: encoded_bytes
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(WorkError::Overflow)?,
+            bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES).ok_or(WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         };
-        if let Err(error) = self.work.admit(&hashing, &self.budget) {
-            if error != WorkError::Overflow {
-                self.allocations.release(allocation)?;
-            }
-            return Err(Error::Work(error));
-        }
-        let hashed = HashedObject::new(F::kind(), Bytes::from(encoded));
+        self.accounting.admit(hashing)?;
+        let hashed = HashedObject::new(F::kind(), Bytes::from(std::mem::take(&mut encoded.value)));
         let object = hashed.object_id();
-        self.work.charge(&hashing, &self.budget)?;
-        // On a failure before the backend runs, or on an overflowing
-        // receipt, `work` returns to the hashed total by removing exactly
-        // the page write added here.
-        self.work.try_add_assign(&PAGE_WRITE)?;
-        let remaining = match self.work.remaining(self.budget) {
-            Ok(remaining) => remaining,
-            Err(error) => {
-                self.work.page_writes -= 1;
-                return Err(Error::Work(error));
-            }
-        };
-        let receipt = match crate::AsyncObjectStore::put_hashed(
-            self.store,
-            hashed,
-            remaining,
-            self.cancellation,
-        )
-        .await
-        {
-            Ok(receipt) => receipt,
+        self.accounting.charge(hashing)?;
+        self.accounting.charge(PAGE_WRITE)?;
+        let remaining = self.accounting.remaining()?;
+        match crate::AsyncObjectStore::put_hashed(self.store, hashed, remaining, self.cancellation).await {
+            Ok(receipt) => self.accounting.charge(receipt.work)?,
             Err(failure) => {
-                self.allocations.release(allocation)?;
-                return match self.work.try_add_assign(&failure.work) {
-                    Ok(()) => Err(Error::Storage(failure.error)),
-                    Err(error) => Err(Error::Work(error)),
-                };
+                self.accounting.charge(*failure.work)?;
+                encoded.retire(self.accounting)?;
+                return Err(storage_error(failure.error));
             }
-        };
-        if let Err(error) = self.work.try_add_assign(&receipt.work) {
-            self.work.page_writes -= 1;
-            return Err(Error::Work(error));
         }
-        self.work.verify_ref(&self.budget)?;
-        self.allocations.release(allocation)?;
+        encoded.retire(self.accounting)?;
         Ok(object)
     }
+}
+
+fn storage_error(error: ObjectStoreError) -> crate::FsError {
+    match error {
+        #[cfg(not(target_arch = "wasm32"))]
+        ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
+        error => error.into(),
+    }
+}
+
+fn split_guard(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+    match allocation {
+        KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(allocation) => Ok(KernelOwnedAllocation::NativeOriginal(allocation.split_off(bytes)?)),
+    }
+}
+
+fn push_summary<K>(output: &mut Owned<Vec<Child<K>>>, first: Owned<K>, page: ObjectId, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    output.ensure_for_push(usize::MAX, accounting)?;
+    let Owned { value, allocation, bytes } = first;
+    output.value.push(Child { first: value, page });
+    absorb(&mut output.allocation, allocation)?;
+    output.bytes = output.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+    Ok(())
+}
+
+fn push_value<V>(output: &mut Owned<Vec<V>>, mut value: Owned<Option<V>>) -> Result<(), crate::FsError> {
+    let entry = value.value.take().ok_or(CanonicalDecodeError::AllocationFailed)?;
+    output.value.push(entry);
+    absorb(&mut output.allocation, value.allocation)?;
+    output.bytes = output.bytes.checked_add(value.bytes).ok_or(WorkError::Overflow)?;
+    Ok(())
+}
+
+fn append_owned<T>(output: &mut Owned<Vec<T>>, mut source: Owned<Vec<T>>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    let buffer_bytes = usize_to_u64(source.value.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(WorkError::Overflow)?);
+    while !source.value.is_empty() {
+        output.ensure_for_push(usize::MAX, accounting)?;
+        let spare = output.value.capacity() - output.value.len();
+        let count = spare.min(source.value.len());
+        output.value.extend(source.value.drain(..count));
+    }
+    let buffer_allocation = split_guard(&mut source.allocation, buffer_bytes)?;
+    drop(source.value);
+    retire_allocation(buffer_allocation, buffer_bytes, accounting)?;
+    absorb(&mut output.allocation, source.allocation)?;
+    output.bytes = output.bytes.checked_add(source.bytes.checked_sub(buffer_bytes).ok_or(WorkError::Overflow)?).ok_or(WorkError::Overflow)?;
+    Ok(())
 }
 
 /// One authenticated page written, as charged before the backend's work.
@@ -1020,15 +847,6 @@ const PAGE_WRITE: WorkCounters = WorkCounters {
     ..WorkCounters::UNCHARGED
 };
 
-fn map_io<E: std::error::Error>(error: persistent_io::Error) -> Error<E> {
-    match error {
-        persistent_io::Error::AllocationFailed => Error::AllocationFailed,
-        persistent_io::Error::Allocation(error) => Error::Allocation(error),
-        persistent_io::Error::Storage(error) => Error::Storage(error),
-        persistent_io::Error::Decode(error) => Error::Decode(error),
-        persistent_io::Error::Work(error) => Error::Work(error),
-    }
-}
 
 /// Soft encoded size of every rewritten page.
 ///

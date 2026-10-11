@@ -238,14 +238,14 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn sparse_file_read_composes_clipped_content_holes_and_allocated_zero()
+fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = build_blob(
         &store,
         &mut Cursor::new(b"ABCDEFGHIJ"),
         BlobBuildOptions {
-            chunk_bytes: 4,
+            chunk_bytes: 2,
             page_items: 4,
             page_bytes: 1024,
             maximum_blob_bytes: 10,
@@ -343,5 +343,206 @@ fn sparse_file_read_composes_clipped_content_holes_and_allocated_zero()
     assert!(read.work.page_reads >= 3);
     assert!(read.work.backend_read_operations >= 3);
     assert!(read.work.peak_allocation_bytes >= 8);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let native = poll_ready(read_file_range_with_accounting(
+            &store, FileRangeRequest { record, range: ByteRange { offset: 1, length: 8 },
+                maximum_spans: 5, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED },
+            &mut accounting, &cancellation,
+        )).ok_or("original sparse read blocked")??;
+        assert_eq!(native.bytes, read.bytes);
+        assert_eq!(original.receipt().output_bytes, 8);
+        assert!(original.receipt().backend_read_operations >= 3);
+        let alias = native.bytes.slice(1..4);
+        drop(native);
+        assert!(original.live_allocation_bytes() > baseline, "a physical Bytes alias retains original custody");
+        drop(alias);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_inline_budget_refuses_before_copy_and_keeps_alias_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let request = FileRangeRequest { record: inline_record(b"abcdef")?,
+        range: ByteRange { offset: 1, length: 3 }, maximum_spans: 1, limits: limits(),
+        budget: WorkBudget::UNBOUNDED };
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let denied = poll_ready(read_file_range_with_accounting(&store, request, &mut accounting, &cancellation))
+        .ok_or("denied original inline read blocked")?.err().ok_or("zero copy budget accepted inline data")?;
+    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
+    assert_eq!(original.receipt().bytes_copied, 0);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let read = poll_ready(read_file_range_with_accounting(&store, request, &mut accounting, &cancellation))
+        .ok_or("original inline read blocked")??;
+    assert_eq!(&read.bytes[..], b"bcd");
+    let alias = read.bytes.clone();
+    drop(read);
+    assert!(original.live_allocation_bytes() > baseline);
+    drop(alias);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_decode_completion_survives_cancellation_after_the_copy()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::codec::ReadAllocationStep;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut observed = OriginalReadAccounting::new(&mut accounting)?;
+    let mut bytes = Vec::<u8>::new();
+    let result = (|| -> Result<(), FsError> {
+        reserve_decoded_items_with_steps(&mut bytes, 4, &mut |step| observed.observe(step))
+            .map_err(ReadDecodeError::into_original_fs_error)?;
+        observed.observe(ReadAllocationStep::BeforeCopy(4))
+            .map_err(ReadDecodeError::into_original_fs_error)?;
+        bytes.extend_from_slice(b"data");
+        cancellation.cancel();
+        observed.observe(ReadAllocationStep::Copied(4))
+            .map_err(ReadDecodeError::into_original_fs_error)?;
+        observed.observe(ReadAllocationStep::BeforeItem)
+            .map_err(ReadDecodeError::into_original_fs_error)
+    })();
+    drop(bytes);
+    observed.release_failed()?;
+    assert!(matches!(result, Err(FsError::Cancelled(_))));
+    assert_eq!(original.receipt().bytes_copied, 4);
+    assert_eq!(original.receipt().items_examined, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+fn late_backend_retention_refusal_releases_only_returned_backing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget { peak_allocation_bytes: 4, ..WorkBudget::UNBOUNDED };
+    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+    let existing = allocate_read_buffer(4, &mut accounting)?;
+    let receipt = crate::performance::OperationReceipt {
+        value: crate::storage::ObjectRead {
+            bytes: Bytes::from(vec![1, 2, 3]),
+            retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
+        },
+        work: WorkCounters { allocation_operations: 1, peak_allocation_bytes: 3, ..WorkCounters::UNCHARGED },
+    };
+    let error = accept_standalone_object_read(Ok(receipt), &mut accounting)
+        .err().ok_or("over-budget returned backing was accepted")?;
+    assert!(matches!(error, FsError::Work(WorkError::BudgetExceeded { .. })));
+    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 4);
+    assert_eq!(accounting.spent().allocation_operations, 2);
+    assert_eq!(accounting.spent().peak_allocation_bytes, 7);
+    drop(existing.value);
+    release_read_allocation(4, existing.custody, &mut accounting)?;
+    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn backend_merge_failure_does_not_release_unregistered_returned_backing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let existing = allocate_read_buffer(4, &mut accounting)?;
+    accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
+    let receipt = crate::performance::OperationReceipt {
+        value: crate::storage::ObjectRead {
+            bytes: Bytes::from(vec![1, 2, 3]),
+            retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
+        },
+        work: WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED },
+    };
+    let error = accept_standalone_object_read(Ok(receipt), &mut accounting)
+        .err().ok_or("overflowing backend work was accepted")?;
+    assert!(matches!(error, FsError::Work(WorkError::Overflow)));
+    assert_eq!(accounting.standalone_parts().ok_or("standalone parts unavailable")?.0.live_bytes(), 4);
+    drop(existing.value);
+    release_read_allocation(4, existing.custody, &mut accounting)?;
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn owned_read_error_scope_drops_payload_before_original_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Payload<'a> {
+        bytes: Vec<u8>,
+        original: &'a crate::NativeMaterializationWork,
+        baseline: u64,
+        dropped: &'a std::cell::Cell<bool>,
+    }
+    impl Drop for Payload<'_> {
+        fn drop(&mut self) {
+            assert_eq!(self.original.live_allocation_bytes(), self.baseline + usize_to_u64(self.bytes.capacity()));
+            self.dropped.set(true);
+        }
+    }
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let dropped = std::cell::Cell::new(false);
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let buffer = allocate_read_buffer(4, &mut accounting)?;
+    let owner = ReadOwned {
+        value: Payload { bytes: buffer.value, original: &original, baseline, dropped: &dropped },
+        custody: buffer.custody,
+    };
+    let fail = |owner: ReadOwned<Payload<'_>>| -> Result<(), FsError> {
+        let _owner = owner;
+        Err(FileRangeReadError::InvalidRange.into())
+    };
+    assert!(fail(owner).is_err());
+    assert!(dropped.get());
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn refused_native_byte_owner_control_keeps_only_the_real_copy_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget {
+        peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes() + 3,
+        ..WorkBudget::UNBOUNDED
+    };
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let request = FileRangeRequest { record: inline_record(b"abc")?,
+        range: ByteRange { offset: 0, length: 3 }, maximum_spans: 1, limits: limits(),
+        budget: WorkBudget::UNBOUNDED };
+    let failure = poll_ready(read_file_range_with_accounting(
+        &MemoryObjectStore::default(), request, &mut accounting, &cancellation,
+    )).ok_or("native control refusal blocked")?.err().ok_or("byte-owner control was admitted beyond the original peak budget")?;
+    assert!(matches!(failure, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
+    assert_eq!(original.receipt().bytes_copied, 3);
+    assert_eq!(original.receipt().output_bytes, 0);
+    assert_eq!(original.receipt().items_returned, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
