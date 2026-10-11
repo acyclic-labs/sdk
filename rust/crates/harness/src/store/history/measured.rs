@@ -383,6 +383,10 @@ impl HistoryIo for HistoryWork<'_> {
         self.admit_owned(bytes)?;
         self.planned(WorkCounters { allocation_operations: u64::from(bytes != 0), ..WorkCounters::default() })
     }
+    fn admit_copy(&self, bytes: u64) -> Result<()> {
+        self.check_cancellation()?;
+        self.verify(self.combined(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?)
+    }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> { self.planned(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }) }
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()> { self.observed(WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }) }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
@@ -402,6 +406,7 @@ impl HistoryIo for HistoryWork<'_> {
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
             JsonCodecCharge::Release { bytes } => self.release_record(bytes),
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            JsonCodecCharge::CopyAdmission { bytes } => self.admit_copy(bytes),
             JsonCodecCharge::AllocationOperation { .. } => self.planned(WorkCounters {
                 allocation_operations: 1, ..WorkCounters::default()
             }),

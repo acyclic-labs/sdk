@@ -41,6 +41,7 @@ pub(crate) trait HistoryIo: Send {
     fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()>;
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()>;
     fn admit_allocation(&mut self, bytes: u64) -> Result<()>;
+    fn admit_copy(&self, bytes: u64) -> Result<()>;
     fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
     fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
