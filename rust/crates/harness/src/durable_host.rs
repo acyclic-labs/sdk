@@ -544,7 +544,7 @@ pub struct TaskJournalOwner<P> {
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
     invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
-    readonly_original: Option<crate::distributed::OriginalReservationProof>,
+    readonly_original: Option<(OperationSpec, LeaseFence)>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_shared: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -689,9 +689,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(extensions) = &self.extensions { add(extensions.logical_owned_bytes()?)?; }
         if self.root_binding.is_some() { add(std::mem::size_of::<TaskRootBinding>() as u64)?; }
         if let Some(original) = &self.readonly_original {
-            add(original.declaration().logical_owned_bytes()?)?;
-            add(original.original_fence().reservation_id.capacity() as u64)?;
-            add(original.original_fence().placement.capacity() as u64)?;
+            add(original.0.logical_owned_bytes()?)?;
+            add(original.1.reservation_id.capacity() as u64)?;
+            add(original.1.placement.capacity() as u64)?;
         }
         Ok(bytes)
     }
@@ -1312,8 +1312,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     fn verify_original_read_witness(&self) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &self.readonly_original {
-            if original.declaration().operation_id != self.operation_id()
-                || original.original_fence() != &self.fence {
+            if original.0.operation_id != self.operation_id()
+                || (&original.1) != &self.fence {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "READ owner differs from its protected original reservation",
@@ -2636,7 +2636,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker)
+            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, None)
             .await
     }
 
@@ -2774,9 +2774,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, worker: &crate::distributed::Worker, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::distributed::WorkPull> {
-        self.coordinator.lock().await.pull_owned_operation_with_work(
-            &self.owner, &self.owner_scope, &self.verifier, worker, operation_id, work,
-        ).await
+        self.coordinator.lock().await.pull_owned_with_work(&self.owner, &self.owner_scope, &self.verifier, worker, Some(operation_id), work).await
     }
 
     /// Recovers the coordinator's original reservation after a lost pull response.
@@ -3519,17 +3517,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_command_with_work(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation,
-                revision,
-                input,
-                IdempotencyKey::new(key)?,
-                waiting,
-                work,
-            )
+            .resume_workflow_with_work(&self.owner, &self.owner_scope, &self.verifier, operation, revision, input, IdempotencyKey::new(key)?, Some(waiting), work)
             .await?;
         Ok(())
     }
@@ -3580,16 +3568,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_workflow_with_work(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-                revision,
-                input,
-                key,
-                work,
-            )
+            .resume_workflow_with_work(&self.owner, &self.owner_scope, &self.verifier, operation_id, revision, input, key, None, work)
             .await?;
         Ok(())
     }
@@ -3880,18 +3859,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
-        &self, original: &crate::distributed::OriginalReservationProof,
+        &self, original: &(OperationSpec, LeaseFence),
         root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        let declaration = original.declaration();
+        let declaration = (&original.0);
         declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
-            || binding.fence() != original.original_fence()
+            || binding.fence() != (&original.1)
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
@@ -4176,7 +4155,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn journal_owner_with_work(
         self: &Arc<Self>, task_id: TaskId,
         fence: std::borrow::Cow<'_, crate::scheduler::LeaseFence>,
-        original: Option<crate::distributed::OriginalReservationProof>,
+        original: Option<(OperationSpec, LeaseFence)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskJournalOwner<P>> {
         let operation = OperationId::from_bytes(task_id.into_bytes());
@@ -4191,12 +4170,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
-            if original.declaration().operation_id != operation || original.original_fence() != fence.as_ref() {
+            if original.0.operation_id != operation || (&original.1) != fence.as_ref() {
                 return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "original READ reservation differs from its protected native preparation"));
             }
-            (self.read_declared_admission_counted(original.declaration(), work).await.map(|(record, _)| record)?,
-                original.declaration().owner_scope.agent())
+            (self.read_declared_admission_counted(&original.0, work).await.map(|(record, _)| record)?,
+                original.0.owner_scope.agent())
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             if native.is_some() {

@@ -3849,10 +3849,9 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         ).await?;
         let mut native_io = crate::store::history::native_work_io(&self.work)
             .map_err(native_root_error)?;
-        let prepared = crate::distributed::PreparedMaterializationCommit::new(
-            template, proof, reservation, &self.work, &mut Some(&mut native_io),
-        )?;
-        let prepared = prepared.prepare_sdk(owner.stream()).await?;
+        let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
+            owner.stream(), template, proof, reservation, &self.work, &mut Some(&mut native_io),
+        ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let counters = prepared.completion_work()?;
             prepared.finish(owner.stream(), counters, None).await
