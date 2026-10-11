@@ -383,14 +383,13 @@ async fn accepted_builtin_io(
                     context.authorize_working_file_with_native_work(&path.0, VolumeOperation::Write, work).await?;
                 }
                 match context.read_working_file_with_native_work(&path.0, *maximum_bytes as usize, work).await {
-                    Ok((bytes, custody)) => {
+                    Ok(bytes) => {
                         let result = match context.authorize_working_file_with_native_work(
                             &path.0, VolumeOperation::Read, work).await {
-                            Ok(()) => read_response(&bytes, candidate, volume_role, work),
+                            Ok(()) => read_response(bytes.as_ref(), candidate, volume_role, work),
                             Err(error) => Err(error),
                         };
                         drop(bytes);
-                        drop(custody);
                         found = Some(result?);
                         break;
                     }

@@ -189,21 +189,19 @@ async fn genuine_held_sdk_leaf_preserves_allowed_read_write_and_exact_edit() {
     let guard = || authorize_owner(context.context(), &owner, owner.task_id(), &work);
     work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
         "before", true, None, guard).await.unwrap();
-    let (bytes, custody) = work.read_working_file_guarded(temporary.path(), identity,
+    let bytes = work.read_working_file_guarded(temporary.path(), identity,
         Path::new("nested/file.txt"), 32, guard).await.unwrap();
-    assert_eq!(bytes, b"before");
-    let expected: [u8; 32] = Sha256::digest(&bytes).into();
+    assert_eq!(bytes.as_ref(), b"before");
+    let expected: [u8; 32] = Sha256::digest(bytes.as_ref()).into();
     drop(bytes);
-    drop(custody);
     work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
         "after", false, Some(expected), guard).await.unwrap();
     assert!(work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
         "must not overwrite", false, Some(expected), guard).await.is_err());
-    let (bytes, custody) = work.read_working_file_guarded(temporary.path(), identity,
+    let bytes = work.read_working_file_guarded(temporary.path(), identity,
         Path::new("nested/file.txt"), 32, guard).await.unwrap();
-    assert_eq!(bytes, b"after");
+    assert_eq!(bytes.as_ref(), b"after");
     drop(bytes);
-    drop(custody);
     assert!(work.read_working_file_guarded(temporary.path(), identity,
         Path::new("nested/file.txt"), 2, guard).await.is_err());
 }

@@ -186,9 +186,11 @@ An uncertain original allocation cannot be replaced with a fresh one.
 `pi_root_provider.rs` implements that allocation as the first-party at-most-once
 effect: lazy native project attachments use the original volume storage names,
 and scratch uses a real portable durable workspace's original creation generation.
-Its original fresh task owner first commits the real `BindConversation` action
-under the same protected key, task fence and Conversation tail guard. This does
-not mirror Pi-native model history or invent project/resource publication events.
+Its original fresh task owner uses the SDK's canonical original `BindConversation`
+publisher/reopen under the same protected key, fence and Conversation tail guard.
+Pi checks its actual task/audience association and retains the SDK-owned command
+bytes through publication; it neither duplicates that engine nor invents history
+or project/resource publication events.
 One immutable attachment input pins all selected source/native identities before
 any project creation. Canonical upload metadata and original Filesystem creation
 operations, not stored paths or mutable heads, authenticate the immutable result.
