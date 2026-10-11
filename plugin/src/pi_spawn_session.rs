@@ -1,6 +1,8 @@
 //! SpawnCommit consumes the original SDK cut and ordinary fork preparation.
 //! The catalog barriers precede creator execution and native background dispatch.
 //! SDK reply custody spans source decoding, catalog saves and native registration.
+//! Cached pending/routes retain independent original-ledger custody in the actor;
+//! backing custody outlives its physical deque, and failed promotion restores both.
 
 use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};

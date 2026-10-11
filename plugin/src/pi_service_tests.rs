@@ -693,6 +693,11 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
         .split("pub(crate) async fn close(").next().unwrap();
     assert!(attach.contains("let mut owned = (self, custody)"));
     assert!(attach.contains("existing.absorb(&mut owned.1)"));
+    let host_attach = attach.split("Self::HostManaged(control) => {").nth(1).unwrap();
+    assert!(host_attach.contains("control.retain_original_input(owned.1)"));
+    assert!(host_attach.find("drop(owned.0)").unwrap()
+        < host_attach.find("RootError::NativeWork { cause, custody: Some(custody) }").unwrap());
+    assert!(!attach.contains("Pi startup custody requires its original Pi actor"));
     assert!(session.contains("adapter_state::load_state_with_native_work("));
     assert!(session.contains("&resources.private_state_root, relative_directory, work,"));
     assert!(session.contains("relative_directory: PathBuf"));
@@ -711,6 +716,23 @@ fn pi_native_session_source_preserves_value_before_guard_destruction_order() {
     assert!(!lifecycle.contains("routes.remove(") && !lifecycle.contains("pending.remove("));
     assert!(!lifecycle.contains("take_native_catalog_custody("),
         "cancel/drain must retain original component guards while their DTOs remain resident");
+    assert!(session.contains("work: Option<&acyclic_fs::NativeMaterializationWork>"));
+    assert!(session.contains("Pi close requires its original native query span"));
+    assert!(session.contains("self.drain_native(deactivate, work).await?"));
+    let pi_close = session.split("async fn close(mut self, deactivate: bool, work:").nth(1).unwrap();
+    assert!(!pi_close.contains("NativeMaterializationWork::new")
+        && !pi_close.contains("CancellationToken::new"));
+    let drain = lifecycle.split("pub(super) async fn drain_native(").nth(1).unwrap()
+        .split("async fn drain_native_tasks(").next().unwrap();
+    assert!(!drain.contains("NativeMaterializationWork::new")
+        && !drain.contains("CancellationToken::new"));
+    assert!(drain.find("self.drain_native_tasks(native").unwrap()
+        < drain.find("self.state.active = false").unwrap());
+    let terminal = drain.split("if deactivate && authenticated {").last().unwrap();
+    assert!(terminal.find("if failure.is_none()").unwrap()
+        < terminal.find("self.state.active = false").unwrap());
+    assert!(terminal.find("self.state.active = false").unwrap()
+        < terminal.find("self.slots.save_with_native_work(").unwrap());
     let open = session.split("impl SessionController {").nth(1).unwrap()
         .split("pub(crate) fn state(").next().unwrap();
     assert!(open.find("drop(loaded.0)").unwrap() < open.find("drop(loaded.1)").unwrap());
