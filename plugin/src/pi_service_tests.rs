@@ -140,7 +140,8 @@ async fn pi_service_actor_cold_reopens_original_pending_and_reserved_tasks_witho
         let service = ConcurrentServiceControl::from_parts(
             resources,
             BTreeMap::from([(state.root_session_id.clone(), controller)]),
-        );
+            &native_query_work(),
+        ).unwrap();
         let expected = json!({
             "session": state.root_session_id,
             "native_session": match &state.task_binding {PluginTaskBinding::Pi(binding) => &binding.native_session_id, _ => unreachable!()},
@@ -221,7 +222,8 @@ async fn pi_service_deactivation_cancels_original_task_before_persisting_inactiv
     let service = ConcurrentServiceControl::from_parts(
         resources,
         BTreeMap::from([(state.root_session_id.clone(), controller)]),
-    );
+        &native_query_work(),
+    ).unwrap();
     service.begin_drain();
     service.shutdown().await.unwrap();
     let saved = load_saved_state(&session).unwrap();
@@ -292,7 +294,7 @@ async fn pi_registration_failure_releases_catalog_reservation_without_replacing_
     let owner_file = session.join("pi-owner.v1");
     let corrupt = b"retained original owner is corrupt";
     fs::write(&owner_file, corrupt).unwrap();
-    let service = ConcurrentServiceControl::from_parts(resources, BTreeMap::new());
+    let service = ConcurrentServiceControl::from_parts(resources, BTreeMap::new(), &native_query_work()).unwrap();
     for _ in 0..2 {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -374,28 +376,44 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     fs::write(project.join("user.txt"), b"unchanged native content").unwrap();
     let (_service_lock, resources, existing) = open_service_resources(directory.path().join("service")).await;
     assert!(existing.is_empty());
-    let prepared = pi_registration::register(&resources, "pi-registered-root", project.clone(), None, &native_query_work()).await.unwrap();
-    let before = prepared.state().clone();
+    let work = native_query_work();
+    let prepared = pi_registration::register(&resources, "pi-registered-root", project.clone(), None, &work).await.unwrap();
+    let before = prepared.state();
     assert!(before.pending_root_registration);
     assert!(before.roots.values().all(|root| matches!(root.allocation, RootAllocation::Preparing)));
     assert!(before.require_created_roots().is_err());
     let PluginTaskBinding::Pi(original) = &before.task_binding else { panic!("original Pi binding"); };
+    let original_task = original.task_id;
     assert!(matches!(original.scratch.allocation, PiScratchAllocation::Preparing));
-    assert!(resources.fs.open_workspace(original.scratch.volume.storage_name().unwrap()).await.is_err());
+    let original_scratch = original.scratch.volume.clone_with_native_work(&work).unwrap();
+    let scratch_name = original_scratch.0.storage_name_with_native_work(&work).unwrap();
+    assert!(resources.fs.open_workspace_with_native_work(
+        &scratch_name.0, &work, work.cancellation(),
+    ).await.is_err());
     assert_eq!(resources.shared_roots.live_roots().await, 0);
     let owner_path = resources.session_directory(&before.root_session_id).join("pi-owner.v1");
     let original_owner = fs::read(&owner_path).unwrap();
+    let session_key = work.display(&before.root_session_id).unwrap();
     let service = ConcurrentServiceControl::from_parts(resources,
-        BTreeMap::from([(before.root_session_id.clone(), prepared)]));
+        BTreeMap::from([(session_key.0, prepared)]), &work).unwrap();
     let (first, status) = service.start_session("pi-registered-root", "pi", project.clone(), json!({}), &mut None).await.unwrap();
     assert_eq!(status.0.pointer("/tasks/0/state").unwrap(), "pending");
-    let state = first.snapshot().unwrap().unwrap();
-    assert!(!state.pending_root_registration);
-    state.require_created_roots().unwrap();
-    let PluginTaskBinding::Pi(binding) = &state.task_binding else { panic!("original Pi binding"); };
-    assert_eq!(binding.task_id, original.task_id);
-    assert!(matches!(binding.scratch.allocation, PiScratchAllocation::Created(_)));
-    assert!(service.fs.open_workspace(binding.scratch.volume.storage_name().unwrap()).await.is_ok());
+    first.with_snapshot(|snapshot| {
+        let crate::service::SessionSnapshot::Pi {
+            original_task_id, pending_root_registration, roots_created, scratch_created, ..
+        } = snapshot.expect("original Pi snapshot") else { panic!("original Pi snapshot"); };
+        assert_eq!(*original_task_id, original_task);
+        assert!(!*pending_root_registration);
+        assert!(*roots_created);
+        assert!(*scratch_created);
+    }).unwrap();
+    assert!(service.fs.open_workspace_with_native_work(
+        &scratch_name.0, &work, work.cancellation(),
+    ).await.is_ok());
+    drop(scratch_name.0);
+    drop(scratch_name.1);
+    drop(original_scratch.0);
+    drop(original_scratch.1);
     assert_eq!(service.shared_roots.live_roots().await, 1);
     let (second, repeated) = service.start_session("pi-registered-root", "pi", project.clone(), json!({}), &mut None).await.unwrap();
     assert!(Arc::ptr_eq(&first, &second));
@@ -408,12 +426,14 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     let cancelled = first.dispatch(ControlRequest {
         version: 1, command: ControlCommand::Hook, cwd: project,
         argv: Vec::new(), name: "pi:TaskCancel".to_owned(),
-        arguments: json!({"session_id": state.root_session_id, "task": binding.task_id,
+        arguments: json!({"session_id": "pi-registered-root", "task": original_task,
             "caller":status.0.get("caller").unwrap()}),
     }, &mut None).await.unwrap();
     assert_eq!(cancelled.0.pointer("/tasks/0/state").unwrap(), "outcome");
     assert_eq!(original_owner, fs::read(owner_path).unwrap());
     service.shutdown().await.unwrap();
+    drop(service);
+    drop(session_key.1);
 }
 
 #[tokio::test]
@@ -426,7 +446,7 @@ async fn interrupted_pi_registration_never_regenerates_missing_original_owner() 
     let session = resources.session_directory("pi-interrupted-original");
     fs::create_dir_all(&session).unwrap();
     let stream = LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap();
-    let service = ConcurrentServiceControl::from_parts(resources, BTreeMap::new());
+    let service = ConcurrentServiceControl::from_parts(resources, BTreeMap::new(), &native_query_work()).unwrap();
     let error = service.start_session("pi-interrupted-original", "pi", selected, json!({}), &mut None).await
         .err().expect("missing original owner cannot be bootstrapped again");
     assert!(matches!(error, acyclic_harness::Error::Invalid(message) | acyclic_harness::Error::Storage(message)

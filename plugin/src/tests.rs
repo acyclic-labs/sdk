@@ -7,6 +7,39 @@ use super::*;
 use acyclic_fs::GitCommand;
 use acyclic_fs::kernel::NameEncoding;
 
+pub(crate) async fn configured_test_service_bootstrap(
+    data: &Path,
+) -> acyclic_harness::Result<(
+    ServiceLock,
+    ServiceConfiguredInfrastructure,
+    acyclic_fs::materializer::NativeHostPrivateStateRoot,
+    acyclic_fs::NativeMaterializationWork,
+)> {
+    let lock = acquire_service_lock(data).map_err(acyclic_harness::Error::Storage)?
+        .ok_or_else(|| acyclic_harness::Error::Conflict("configured test service already holds its bootstrap lock".to_owned()))?;
+    let configured = ServiceResources::configure(data).await?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        pi_root_provider::allocation_budget(), &cancellation,
+    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        data, &work,
+    ).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    Ok((lock, configured, root, work))
+}
+
+pub(crate) async fn test_service_control(data: PathBuf) -> acyclic_harness::Result<(ServiceLock, ServiceControl)> {
+    let (lock, configured, root, work) = configured_test_service_bootstrap(&data).await?;
+    let control = ServiceControl::open(data, configured, root, &work).await?;
+    Ok((lock, control))
+}
+
+async fn test_concurrent_service(data: PathBuf) -> acyclic_harness::Result<(ServiceLock, ConcurrentServiceControl)> {
+    let (lock, configured, root, work) = configured_test_service_bootstrap(&data).await?;
+    let control = ConcurrentServiceControl::open(data, configured, root, &work).await?;
+    Ok((lock, control))
+}
+
 fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
     control.state.roots[&root_key(WorkspaceRootId::from_bytes(control.state.root_id))]
         .created()
@@ -142,9 +175,7 @@ async fn terminal_save_case() {
     let root = temporary.path().join("root");
     let data = temporary.path().join("state");
     fs::create_dir_all(&root).expect("root");
-    let service = ConcurrentServiceControl::open(data.clone())
-        .await
-        .expect("service");
+    let (_service_lock, service) = test_concurrent_service(data.clone()).await.expect("service");
     for (event, extra) in [
         ("SessionStart", json!({})),
         // Saved unflushed, the last effect of its request.
@@ -152,8 +183,7 @@ async fn terminal_save_case() {
         // Nothing is mounted or leased, so only its terminal save flushes.
         ("SessionEnd", json!({})),
     ] {
-        service
-            .dispatch_request(native_hook_request("codex", event, "session", &root, extra))
+        service.dispatch_request(native_hook_request("codex", event, "session", &root, extra), &mut None)
             .await
             .expect(event);
     }
@@ -181,18 +211,15 @@ async fn concurrent_service_case() {
     let root_b = temporary.path().join("root-b");
     fs::create_dir_all(&root_a).expect("root a");
     fs::create_dir_all(&root_b).expect("root b");
-    let service = ConcurrentServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, service) = test_concurrent_service(temporary.path().join("state")).await.expect("service");
     for (session, root) in [("a", &root_a), ("b", &root_b)] {
-        service
-            .dispatch_request(native_hook_request(
-                "claude-code",
-                "SessionStart",
-                session,
-                root,
-                json!({}),
-            ))
+        service.dispatch_request(native_hook_request(
+            "claude-code",
+            "SessionStart",
+            session,
+            root,
+            json!({}),
+        ), &mut None)
             .await
             .expect("session start");
     }
@@ -212,7 +239,7 @@ async fn concurrent_service_case() {
     // bound, only what turns such a queue into a failure instead of a hang.
     tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        service.dispatch_request(request_b),
+        service.dispatch_request(request_b, &mut None),
     )
     .await
     .expect("session b must not queue behind session a")
@@ -220,22 +247,21 @@ async fn concurrent_service_case() {
     let _ = resume_a.send(());
 
     let first_epoch = handle_a.key.epoch;
-    service.end_session("a", true).await.expect("end a");
-    service
-        .dispatch_request(native_hook_request(
-            "claude-code",
-            "SessionStart",
-            "a",
-            &root_a,
-            json!({}),
-        ))
+    assert_eq!(service.end_session("a", true, &mut None).await.expect("end a"), SessionCloseState::Closed);
+    service.dispatch_request(native_hook_request(
+        "claude-code",
+        "SessionStart",
+        "a",
+        &root_a,
+        json!({}),
+    ), &mut None)
         .await
         .expect("resume a");
     let resumed = service.session("a").await.expect("resumed a");
     assert!(resumed.key.epoch > first_epoch);
     assert!(!handle_a.is_active());
 
-    service.drain_sessions(true).await.expect("service drain");
+    assert_eq!(service.drain_sessions(true).await.expect("service drain"), SessionCloseState::Closed);
 }
 
 #[test]
@@ -250,19 +276,14 @@ async fn accepted_session_operation_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir_all(&root).expect("root");
-    let service = Arc::new(
-        ConcurrentServiceControl::open(temporary.path().join("state"))
-            .await
-            .expect("service"),
-    );
-    service
-        .dispatch_request(native_hook_request(
-            "codex",
-            "SessionStart",
-            "session",
-            &root,
-            json!({}),
-        ))
+    let (_service_lock, service) = test_concurrent_service(temporary.path().join("state")).await.map(|(lock, service)| (lock, Arc::new(service))).expect("service");
+    service.dispatch_request(native_hook_request(
+        "codex",
+        "SessionStart",
+        "session",
+        &root,
+        json!({}),
+    ), &mut None)
         .await
         .expect("session start");
     let handle = service.session("session").await.expect("session");
@@ -270,14 +291,13 @@ async fn accepted_session_operation_case() {
     let service_for_request = Arc::clone(&service);
     let root_for_request = root.clone();
     let waiter = tokio::spawn(async move {
-        service_for_request
-            .dispatch_request(native_hook_request(
-                "codex",
-                "UserPromptSubmit",
-                "session",
-                &root_for_request,
-                json!({"turn_id":"durable-turn"}),
-            ))
+        service_for_request.dispatch_request(native_hook_request(
+            "codex",
+            "UserPromptSubmit",
+            "session",
+            &root_for_request,
+            json!({"turn_id":"durable-turn"}),
+        ), &mut None)
             .await
     });
     tokio::task::yield_now().await;
@@ -286,9 +306,11 @@ async fn accepted_session_operation_case() {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             if handle
-                .snapshot()
+                .with_snapshot(|snapshot| match snapshot {
+                    Some(crate::service::SessionSnapshot::HostManaged(state)) => state.root_turns.contains("durable-turn"),
+                    _ => false,
+                })
                 .expect("snapshot")
-                .is_some_and(|state| state.root_turns.contains("durable-turn"))
             {
                 break;
             }
@@ -297,7 +319,7 @@ async fn accepted_session_operation_case() {
     })
     .await
     .expect("accepted operation must complete after waiter cancellation");
-    service.drain_sessions(true).await.expect("service drain");
+    assert_eq!(service.drain_sessions(true).await.expect("service drain"), SessionCloseState::Closed);
 }
 
 #[test]
@@ -310,17 +332,14 @@ async fn stop_before_drain_case() {
     let root = temporary.path().join("root");
     let data = temporary.path().join("state");
     fs::create_dir_all(&root).expect("root");
-    let service = ConcurrentServiceControl::open(data.clone())
-        .await
-        .expect("service");
-    service
-        .dispatch_request(native_hook_request(
-            "codex",
-            "SessionStart",
-            "session",
-            &root,
-            json!({}),
-        ))
+    let (_service_lock, service) = test_concurrent_service(data.clone()).await.expect("service");
+    service.dispatch_request(native_hook_request(
+        "codex",
+        "SessionStart",
+        "session",
+        &root,
+        json!({}),
+    ), &mut None)
         .await
         .expect("session start");
     let handle = service.session("session").await.expect("session");
@@ -334,11 +353,11 @@ async fn stop_before_drain_case() {
     tokio::task::yield_now().await;
     assert!(!drain.is_finished(), "paused actor must delay actual drain");
     resume.send(()).expect("resume session actor");
-    tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), drain)
         .await
         .expect("drain completes")
         .expect("drain task")
-        .expect("service shutdown");
+        .expect("service shutdown"), SessionCloseState::Closed);
     let state = load_saved_state(
         &data
             .join("sessions")
@@ -362,19 +381,14 @@ async fn session_saturated_close_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir_all(&root).expect("root");
-    let service = Arc::new(
-        ConcurrentServiceControl::open(temporary.path().join("state"))
-            .await
-            .expect("service"),
-    );
-    service
-        .dispatch_request(native_hook_request(
-            "codex",
-            "SessionStart",
-            "session",
-            &root,
-            json!({}),
-        ))
+    let (_service_lock, service) = test_concurrent_service(temporary.path().join("state")).await.map(|(lock, service)| (lock, Arc::new(service))).expect("service");
+    service.dispatch_request(native_hook_request(
+        "codex",
+        "SessionStart",
+        "session",
+        &root,
+        json!({}),
+    ), &mut None)
         .await
         .expect("session start");
     let handle = service.session("session").await.expect("session");
@@ -384,15 +398,14 @@ async fn session_saturated_close_case() {
         let handle = Arc::clone(&handle);
         let root = root.clone();
         operations.push(tokio::spawn(async move {
-            handle
-                .dispatch(ControlRequest {
-                    version: 1,
-                    command: ControlCommand::Ping,
-                    cwd: root,
-                    argv: Vec::new(),
-                    name: String::new(),
-                    arguments: Value::Null,
-                })
+            handle.dispatch(ControlRequest {
+                version: 1,
+                command: ControlCommand::Ping,
+                cwd: root,
+                argv: Vec::new(),
+                name: String::new(),
+                arguments: Value::Null,
+            }, &mut None)
                 .await
         }));
     }
@@ -403,22 +416,21 @@ async fn session_saturated_close_case() {
     })
     .await
     .expect("data queue saturation");
-    let overflow = handle
-        .dispatch(ControlRequest {
-            version: 1,
-            command: ControlCommand::Ping,
-            cwd: root,
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: Value::Null,
-        })
+    let overflow = handle.dispatch(ControlRequest {
+        version: 1,
+        command: ControlCommand::Ping,
+        cwd: root,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    }, &mut None)
         .await;
-    assert_eq!(
-        overflow.expect_err("overflow must fail"),
-        "Acyclic session operation queue is full"
-    );
+    assert!(matches!(
+        overflow.err().expect("overflow must fail"),
+        acyclic_harness::Error::Invalid(message) if message == "Acyclic session operation queue is full"
+    ));
     let close_service = Arc::clone(&service);
-    let close = tokio::spawn(async move { close_service.end_session("session", true).await });
+    let close = tokio::spawn(async move { close_service.end_session("session", true, &mut None).await });
     tokio::task::yield_now().await;
     assert_eq!(
         handle.state.load(std::sync::atomic::Ordering::Acquire),
@@ -428,7 +440,7 @@ async fn session_saturated_close_case() {
     for operation in operations {
         operation.await.expect("operation task").expect("operation");
     }
-    close.await.expect("close task").expect("close");
+    assert_eq!(close.await.expect("close task").expect("close"), SessionCloseState::Closed);
     assert_eq!(
         handle.state.load(std::sync::atomic::Ordering::Acquire),
         SESSION_CLOSED
@@ -439,19 +451,14 @@ async fn session_close_order_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir_all(&root).expect("root");
-    let service = Arc::new(
-        ConcurrentServiceControl::open(temporary.path().join("state"))
-            .await
-            .expect("service"),
-    );
-    service
-        .dispatch_request(native_hook_request(
-            "codex",
-            "SessionStart",
-            "session",
-            &root,
-            json!({}),
-        ))
+    let (_service_lock, service) = test_concurrent_service(temporary.path().join("state")).await.map(|(lock, service)| (lock, Arc::new(service))).expect("service");
+    service.dispatch_request(native_hook_request(
+        "codex",
+        "SessionStart",
+        "session",
+        &root,
+        json!({}),
+    ), &mut None)
         .await
         .expect("session start");
     let handle = service.session("session").await.expect("session");
@@ -460,35 +467,33 @@ async fn session_close_order_case() {
     let operation_service = Arc::clone(&service);
     let operation_root = root.clone();
     let operation = tokio::spawn(async move {
-        operation_service
-            .dispatch_request(native_hook_request(
-                "codex",
-                "UserPromptSubmit",
-                "session",
-                &operation_root,
-                json!({"turn_id":"before-close"}),
-            ))
+        operation_service.dispatch_request(native_hook_request(
+            "codex",
+            "UserPromptSubmit",
+            "session",
+            &operation_root,
+            json!({"turn_id":"before-close"}),
+        ), &mut None)
             .await
     });
     tokio::task::yield_now().await;
     let close_service = Arc::clone(&service);
-    let close = tokio::spawn(async move { close_service.end_session("session", true).await });
+    let close = tokio::spawn(async move { close_service.end_session("session", true, &mut None).await });
     tokio::task::yield_now().await;
     let duplicate_service = Arc::clone(&service);
     let duplicate =
-        tokio::spawn(async move { duplicate_service.end_session("session", true).await });
+        tokio::spawn(async move { duplicate_service.end_session("session", true, &mut None).await });
     let _ = resume.send(());
 
     operation.await.expect("operation task").expect("operation");
-    close.await.expect("close task").expect("close");
-    duplicate
+    assert_eq!(close.await.expect("close task").expect("close"), SessionCloseState::Closed);
+    assert_eq!(duplicate
         .await
         .expect("duplicate task")
-        .expect("duplicate close");
-    service
-        .end_session("session", true)
+        .expect("duplicate close"), SessionCloseState::Closed);
+    assert_eq!(service.end_session("session", true, &mut None)
         .await
-        .expect("late duplicate close");
+        .expect("late duplicate close"), SessionCloseState::Closed);
 
     let state = load_saved_state(
         &service
@@ -556,9 +561,7 @@ async fn nested_root_routing_case() {
     let nested = parent.join("nested");
     let nested_child = nested.join("child");
     fs::create_dir_all(&nested_child).expect("nested roots");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     for (session_id, cwd) in [("parent", &parent), ("nested", &nested)] {
         service
             .dispatch_native_hook(
@@ -738,20 +741,19 @@ async fn shared_service_case() {
     let state = temporary.path().join("state");
     fs::create_dir(&root_a).expect("root a");
     fs::create_dir(&root_b).expect("root b");
-    let mut service = ServiceControl::open(state.clone()).await.expect("service");
+    let (_service_lock, mut service) = test_service_control(state.clone()).await.expect("service");
     for (session_id, root) in [("a", &root_a), ("b", &root_b)] {
-        service
-            .dispatch_request(ControlRequest {
-                version: 1,
-                command: ControlCommand::Hook,
-                cwd: root.clone(),
-                argv: Vec::new(),
-                name: "codex:SessionStart".to_owned(),
-                arguments: json!({
-                    "session_id": session_id,
-                    "cwd": root.display().to_string(),
-                }),
-            })
+        service.dispatch_request(ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: root.clone(),
+            argv: Vec::new(),
+            name: "codex:SessionStart".to_owned(),
+            arguments: json!({
+                "session_id": session_id,
+                "cwd": root.display().to_string(),
+            }),
+        }, &mut None)
             .await
             .expect("session start");
     }
@@ -764,15 +766,14 @@ async fn shared_service_case() {
         service.session_for_cwd(&root_b).expect("route b"),
         Some("b".to_owned())
     );
-    service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Hook,
-            cwd: root_a.clone(),
-            argv: Vec::new(),
-            name: "codex:SessionStart".to_owned(),
-            arguments: json!({"session_id":"same-root","cwd":root_a}),
-        })
+    service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Hook,
+        cwd: root_a.clone(),
+        argv: Vec::new(),
+        name: "codex:SessionStart".to_owned(),
+        arguments: json!({"session_id":"same-root","cwd":root_a}),
+    }, &mut None)
         .await
         .expect("second session on same root");
     let first_context = service.sessions["a"]
@@ -823,18 +824,17 @@ async fn shared_service_case() {
 
     let outside = temporary.path().join("outside");
     fs::create_dir(&outside).expect("outside root");
-    let error = service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Agents,
-            cwd: outside,
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: Value::Null,
-        })
+    let error = service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Agents,
+        cwd: outside,
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    }, &mut None)
         .await
-        .expect_err("an active service must reject an unregistered root");
-    assert!(error.contains("outside every registered"), "{error}");
+        .err().expect("an active service must reject an unregistered root");
+    assert!(error.to_string().contains("outside every registered"), "{error}");
     assert_eq!(service.sessions.len(), 3);
     assert_eq!(service.shared_roots.live_roots().await, 2);
 
@@ -871,42 +871,39 @@ async fn shared_service_case() {
             .is_err(),
         "a child mount must never be registered as another session's physical root"
     );
-    let error = service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Agents,
-            cwd: child_path.clone(),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: cli_routing(root_a.clone()),
-        })
+    let error = service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Agents,
+        cwd: child_path.clone(),
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: cli_routing(root_a.clone()),
+    }, &mut None)
         .await
-        .expect_err("a child must not select its parent with -C");
-    assert!(error.contains("authority boundaries"), "{error}");
-    let error = service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Agents,
-            cwd: root_a.clone(),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: cli_routing(child_path.clone()),
-        })
+        .err().expect("a child must not select its parent with -C");
+    assert!(error.to_string().contains("authority boundaries"), "{error}");
+    let error = service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Agents,
+        cwd: root_a.clone(),
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: cli_routing(child_path.clone()),
+    }, &mut None)
         .await
-        .expect_err("a root must inspect descendants through agent refs, not -C");
+        .err().expect("a root must inspect descendants through agent refs, not -C");
     assert!(
-        error.contains("authority boundaries") || error.contains("multiple Acyclic sessions"),
+        error.to_string().contains("authority boundaries") || error.to_string().contains("multiple Acyclic sessions"),
         "{error}"
     );
-    service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Agents,
-            cwd: child_path.clone(),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: cli_routing(child_path.clone()),
-        })
+    service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Agents,
+        cwd: child_path.clone(),
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: cli_routing(child_path.clone()),
+    }, &mut None)
         .await
         .expect("a child may select its own mounted context");
     {
@@ -1025,8 +1022,9 @@ async fn shared_service_case() {
     let shared_roots = service.shared_roots.clone();
     service.shutdown().await.expect("shutdown");
     assert_eq!(shared_roots.live_roots().await, 0);
+    drop(_service_lock);
 
-    let resumed = ServiceControl::open(state).await.expect("resume service");
+    let (_service_lock, resumed) = test_service_control(state).await.expect("resume service");
     assert_eq!(resumed.sessions.len(), 2);
     assert!(!resumed.sessions.contains_key("a"));
     assert_eq!(resumed.shared_roots.live_roots().await, 2);
@@ -1043,7 +1041,7 @@ async fn sequential_same_root_case() {
     let root = temporary.path().join("root");
     let state = temporary.path().join("state");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(state.clone()).await.expect("service");
+    let (_service_lock, mut service) = test_service_control(state.clone()).await.expect("service");
     service
         .dispatch_native_hook(
             "codex",
@@ -1082,10 +1080,9 @@ async fn sequential_same_root_case() {
         first_identity
     );
     service.shutdown().await.expect("shutdown");
+    drop(_service_lock);
 
-    let resumed = ServiceControl::open(state)
-        .await
-        .expect("both durable sessions reopen without an identity collision");
+    let (_service_lock, resumed) = test_service_control(state).await.expect("both durable sessions reopen without an identity collision");
     assert_eq!(resumed.sessions.keys().collect::<Vec<_>>(), vec!["second"]);
     resumed.shutdown().await.expect("resumed shutdown");
 }
@@ -1100,7 +1097,7 @@ async fn conflicting_same_root_case() {
     let root = temporary.path().join("root");
     let state = temporary.path().join("state");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(state.clone()).await.expect("service");
+    let (_service_lock, mut service) = test_service_control(state.clone()).await.expect("service");
     for session_id in ["older", "newer"] {
         service
             .dispatch_native_hook(
@@ -1139,9 +1136,8 @@ async fn conflicting_same_root_case() {
     current.active = true;
     save_state(&newer, &current, Survives::PowerLoss).expect("refresh newer state");
 
-    let resumed = ServiceControl::open(state)
-        .await
-        .expect("service replay discards the older conflict");
+    drop(_service_lock);
+    let (_service_lock, resumed) = test_service_control(state).await.expect("service replay discards the older conflict");
     assert!(!older.exists());
     assert!(newer.exists());
     assert_eq!(resumed.sessions.keys().collect::<Vec<_>>(), vec!["newer"]);
@@ -1157,20 +1153,18 @@ async fn fresh_cwd_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
-    let agents = service
-        .dispatch_request(ControlRequest {
-            version: 1,
-            command: ControlCommand::Agents,
-            cwd: root.clone(),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: Value::Null,
-        })
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
+    let (agents, allocation) = service.dispatch_request(ControlRequest {
+        version: 1,
+        command: ControlCommand::Agents,
+        cwd: root.clone(),
+        argv: Vec::new(),
+        name: String::new(),
+        arguments: Value::Null,
+    }, &mut None)
         .await
         .expect("implicit registration");
+    assert!(allocation.is_none());
     assert!(agents["agents"].as_array().is_some_and(Vec::is_empty));
     assert_eq!(service.sessions.len(), 1);
     assert_eq!(
@@ -1313,9 +1307,7 @@ async fn cursor_hook_case() {
     fs::create_dir(&root).expect("root");
     let hook_directory = temporary.path().join("cursor-config");
     fs::create_dir(&hook_directory).expect("hook directory");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     let output = service
         .dispatch_native_hook(
             "cursor",
@@ -1350,9 +1342,7 @@ async fn copilot_hook_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     service
         .dispatch_native_hook(
             "copilot",
@@ -1609,20 +1599,17 @@ async fn codex_session_answers(mcp: bool) -> Vec<Result<Value, String>> {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
-    let service = ConcurrentServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
-    service
-        .dispatch_request(super::native_hook_request(
-            "codex",
-            "SessionStart",
-            root.clone(),
-            json!({
-                "session_id":"root-thread","transcript_path":null,"cwd":root,
-                "hook_event_name":"SessionStart","model":"gpt-5.6-sol",
-                "permission_mode":"bypassPermissions","source":"startup"
-            }),
-        ))
+    let (_service_lock, service) = test_concurrent_service(temporary.path().join("state")).await.expect("service");
+    service.dispatch_request(super::native_hook_request(
+        "codex",
+        "SessionStart",
+        root.clone(),
+        json!({
+            "session_id":"root-thread","transcript_path":null,"cwd":root,
+            "hook_event_name":"SessionStart","model":"gpt-5.6-sol",
+            "permission_mode":"bypassPermissions","source":"startup"
+        }),
+    ), &mut None)
         .await
         .expect("session start");
     let mut answers = Vec::new();
@@ -1640,7 +1627,11 @@ async fn codex_session_answers(mcp: bool) -> Vec<Result<Value, String>> {
             let cwd = PathBuf::from(event.fields["cwd"].as_str().expect("cwd"));
             super::native_hook_request("codex", event.name, cwd, event.fields)
         };
-        answers.push(service.dispatch_request(request).await);
+        answers.push(service.dispatch_request(request, &mut None).await
+            .map(|(value, allocation)| {
+                assert!(allocation.is_none());
+                value
+            }).map_err(|error| error.to_string()));
     }
     service.shutdown().await.expect("service shutdown");
     // Each run has its own directory and freshly generated workspace,
@@ -1710,9 +1701,7 @@ async fn claude_hook_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     service
         .dispatch_native_hook(
             "claude-code",
@@ -1941,9 +1930,7 @@ async fn codex_hook_turn_identity_case() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let root = temporary.path().join("root");
     fs::create_dir(&root).expect("root");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     service
         .dispatch_native_hook(
             "codex",
@@ -2305,9 +2292,7 @@ fn failed_identity_publication_releases_endpoint_service_and_root() {
                         .expect("service lifecycle lock")
                         .expect("failed startup released the service lifecycle");
                     drop(fence);
-                    let reopened = ServiceControl::open(data)
-                        .await
-                        .expect("reopen root after failed service startup");
+                    let (_service_lock, reopened) = test_service_control(data).await.expect("reopen root after failed service startup");
                     reopened.shutdown().await.expect("reopened shutdown");
                 });
         })
@@ -2569,9 +2554,7 @@ fn service_handoff_durably_drains_live_sessions_before_replacement() {
                         .expect("service exit deadline")
                         .expect("service task")
                         .expect("clean service shutdown");
-                    let reopened = ServiceControl::open(data.clone())
-                        .await
-                        .expect("reopen drained service state");
+                    let (_service_lock, reopened) = test_service_control(data.clone()).await.expect("reopen drained service state");
                     assert!(
                         reopened.sessions.is_empty(),
                         "handoff-drained sessions must not reopen"
@@ -2588,7 +2571,7 @@ fn explicit_shutdown_processes_sessions_after_an_earlier_failure() {
     run_large_stack("complete-service-shutdown", || async {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("state");
-        let mut service = ServiceControl::open(data.clone()).await.expect("service");
+        let (_service_lock, mut service) = test_service_control(data.clone()).await.expect("service");
 
         {
             let broken = service
@@ -3334,9 +3317,8 @@ async fn concurrent_hook_endpoint_case() {
     let data = temporary.path().join("plugin-data");
     let root = temporary.path().join("root");
     fs::create_dir_all(&root).expect("root directory");
-    let service = Arc::new(AsyncMutex::new(
-        ServiceControl::open(data.clone()).await.expect("service"),
-    ));
+    let (_service_lock, service) = test_service_control(data.clone()).await.expect("service");
+    let service = Arc::new(AsyncMutex::new(service));
     let endpoint = start_control_endpoint(Arc::clone(&service), &data)
         .await
         .expect("control endpoint");
@@ -3451,9 +3433,7 @@ async fn rustc_child_mount_case() {
     let state = tempfile::tempdir_in("/dev/shm").expect("temporary state");
     #[cfg(windows)]
     let state = tempfile::tempdir().expect("temporary state");
-    let mut service = ServiceControl::open(state.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(state.path().join("state")).await.expect("service");
     service
         .dispatch_native_hook(
             "claude-code",
@@ -3624,9 +3604,7 @@ async fn real_lean_child_mount_case() {
         .trim()
         .to_owned();
     let temporary = tempfile::tempdir_in("/dev/shm").expect("temporary state");
-    let mut service = ServiceControl::open(temporary.path().join("state"))
-        .await
-        .expect("service");
+    let (_service_lock, mut service) = test_service_control(temporary.path().join("state")).await.expect("service");
     service
         .dispatch_native_hook(
             "claude-code",
@@ -3751,10 +3729,10 @@ struct ObservedControlDispatcher {
 }
 
 impl ConcurrentControlRequestDispatcher for ObservedControlDispatcher {
-    async fn dispatch_request(&self, request: ControlRequest) -> Result<Value, String> {
-        let result = self.control.dispatch_request(request).await;
+    async fn dispatch_request(&self, request: ControlRequest, original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
+        let result = self.control.dispatch_request(request, original_native_work).await;
         self.completed
-            .try_send(result.clone())
+            .try_send(result.as_ref().map(|(value, _)| value.clone()).map_err(ToString::to_string))
             .expect("observe the single real dispatch result");
         result
     }
@@ -3765,21 +3743,21 @@ struct ReplayCountingDispatcher {
 }
 
 impl ConcurrentControlRequestDispatcher for ReplayCountingDispatcher {
-    async fn dispatch_request(&self, _request: ControlRequest) -> Result<Value, String> {
+    async fn dispatch_request(&self, _request: ControlRequest, _original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
         let execution = self
             .executions
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-        Ok(json!({"execution": execution}))
+        Ok((json!({"execution": execution}), None))
     }
 }
 
 impl ControlRequestDispatcher for ControlledDispatcher {
-    async fn dispatch_request(&mut self, _request: ControlRequest) -> Result<Value, String> {
+    async fn dispatch_request(&mut self, _request: ControlRequest, _original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
         self.started.notify_one();
         self.release.notified().await;
         self.completed.notify_one();
-        Ok(json!({}))
+        Ok((json!({}), None))
     }
 }
 
@@ -3926,10 +3904,14 @@ async fn durable_hook_response_is_replayed_without_reexecution_after_restart() {
     });
 
     let first_ledger = Arc::new(ControlLedger::open(&data).expect("first ledger"));
-    let first = dispatch_control_envelope(&dispatcher, &first_ledger, envelope.clone()).await;
+    let (first, first_allocation, first_error) = dispatch_control_envelope(&dispatcher, &first_ledger, envelope.clone(), &mut None).await.expect("first bounded response");
     drop(first_ledger);
     let reopened = Arc::new(ControlLedger::open(&data).expect("reopened ledger"));
-    let replay = dispatch_control_envelope(&dispatcher, &reopened, envelope).await;
+    let (replay, replay_allocation, replay_error) = dispatch_control_envelope(&dispatcher, &reopened, envelope, &mut None).await.expect("replayed bounded response");
+    assert!(first_error.is_none());
+    assert!(replay_error.is_none());
+    assert!(first_allocation.is_none());
+    assert!(replay_allocation.is_none());
 
     let executed: Value = serde_json::from_slice(&first).expect("first response");
     assert_eq!(executed["ok"], true, "first hook must execute: {executed}");
@@ -3979,7 +3961,7 @@ fn tracing_is_opt_in_and_traces_requests_without_touching_standard_output() {
             .expect("runtime")
             .block_on(async {
                 let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
-                dispatch_control_envelope(&dispatcher, &ledger, envelope).await;
+                dispatch_control_envelope(&dispatcher, &ledger, envelope, &mut None).await.expect("bounded dispatch response");
                 run_rpc_proxy(&data, &input[..], &mut output, false)
                     .await
                     .expect("rpc proxy");
@@ -4061,7 +4043,7 @@ async fn unledgered_control_commands_still_require_exact_protocol_negotiation() 
         });
         envelope.protocol.major = envelope.protocol.major.saturating_add(1);
         let response: Value = serde_json::from_slice(
-            &dispatch_control_envelope(&dispatcher, &ledger, envelope).await,
+            &dispatch_control_envelope(&dispatcher, &ledger, envelope, &mut None).await.expect("bounded rejection response").0,
         )
         .expect("response");
         assert_eq!(response["ok"], false, "mismatched protocol was accepted");
@@ -4258,6 +4240,7 @@ async fn spawn_preparation_case() {
     let incomplete_key = [9; 16];
     control.state.pending.push_back(PendingSpawn {
         task_binding: PluginTaskBinding::HostManaged,
+        agent_id: None,
         parent_agent_id: control.state.root_agent_id.clone(),
         tool_use_id: "incomplete".to_owned(),
         active_root_id: None,
@@ -4963,17 +4946,14 @@ async fn authenticated_control_protocol_case() {
         "&&".to_owned(),
         "push".to_owned(),
     ]] {
-        let rejected = dispatch_control_request(
-            &shared,
-            ControlRequest {
-                version: 1,
-                command: ControlCommand::Git,
-                cwd: child_cwd.clone(),
-                argv,
-                name: String::new(),
-                arguments: Value::Null,
-            },
-        )
+        let rejected = dispatch_control_request(&shared, ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            cwd: child_cwd.clone(),
+            argv,
+            name: String::new(),
+            arguments: Value::Null,
+        }, &mut None)
         .await;
         assert!(rejected.is_err(), "strict Git argv must fail closed");
     }
@@ -5129,7 +5109,7 @@ async fn authenticated_control_protocol_case() {
         arguments: Value::Null,
     };
     drop(control);
-    assert!(dispatch_control_request(&shared, stale).await.is_err());
+    assert!(dispatch_control_request(&shared, stale, &mut None).await.is_err());
     let control = match Arc::try_unwrap(shared) {
         Ok(control) => control.into_inner(),
         Err(_) => panic!("response cancellation retained the control plane"),
@@ -6099,12 +6079,85 @@ fn control_responses_are_bounded() {
     );
 
     let request_id = control_protocol::RequestId::fresh();
-    let encoded = control_response_for(&request_id, Ok(json!({"payload": payload})));
+    let (encoded, allocation, _) = control_response_for(&request_id, Ok((json!({"payload": payload}), None)), None).expect("legacy bounded response");
+    assert!(allocation.is_none());
     assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
     let response: Value = serde_json::from_slice(&encoded).expect("v2 response JSON");
     assert_eq!(response["version"], 2);
     assert_eq!(response["requestId"], request_id.as_str());
     assert_eq!(response["ok"], false);
+}
+
+#[test]
+fn native_control_query_denial_does_not_encode_an_unfunded_fallback() {
+    let cancellation = CancellationToken::new();
+    let mut budget = pi_root_provider::allocation_budget();
+    // The real SDK accounting state consumes the sole admitted allocation.
+    budget.allocation_operations = 1;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .expect("actual query meter construction");
+    let result = control_response_for(
+        &control_protocol::RequestId::fresh(),
+        Ok((json!({"result": "query-owned payload"}), None)),
+        Some(&work),
+    );
+    assert!(matches!(
+        result,
+        Err(acyclic_harness::Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { .. },
+            ),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn native_constructor_failure_without_query_work_keeps_its_actual_cause_and_prefix() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let (cause, work) = acyclic_fs::NativeMaterializationWork::new(
+        pi_root_provider::allocation_budget(), &cancellation,
+    ).err().expect("actual SDK construction cancellation");
+    let expected_work = work;
+    let result = control_response_for(
+        &control_protocol::RequestId::fresh(),
+        Err(acyclic_harness::Error::NativeConstruction { cause, work }),
+        None,
+    );
+    match result {
+        Err(acyclic_harness::Error::NativeConstruction {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            work,
+        }) => assert_eq!(work, expected_work),
+        _ => panic!("the actual constructor denial must propagate without a new response"),
+    }
+}
+
+#[test]
+fn query_encoding_denial_does_not_replace_the_original_native_failure() {
+    let execution_cancellation = CancellationToken::new();
+    execution_cancellation.cancel();
+    let (cause, prefix) = acyclic_fs::NativeMaterializationWork::new(
+        pi_root_provider::allocation_budget(), &execution_cancellation,
+    ).err().expect("actual execution constructor denial");
+    let query_cancellation = CancellationToken::new();
+    let mut query_budget = pi_root_provider::allocation_budget();
+    query_budget.allocation_operations = 1;
+    let query_work = acyclic_fs::NativeMaterializationWork::new(query_budget, &query_cancellation)
+        .expect("independent original query meter");
+    let result = control_response_for(
+        &control_protocol::RequestId::fresh(),
+        Err(acyclic_harness::Error::NativeConstruction { cause, work: prefix }),
+        Some(&query_work),
+    );
+    match result {
+        Err(acyclic_harness::Error::NativeConstruction {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            work,
+        }) => assert_eq!(work, prefix),
+        _ => panic!("query encoding must retain the actual first native failure"),
+    }
 }
 
 #[test]
@@ -6117,9 +6170,9 @@ fn malformed_v2_requests_keep_their_correlation_identity() {
     .expect("invalid envelope fixture");
     let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request)
         .expect_err("fixture must not be a valid envelope");
-    let response: Value =
-        serde_json::from_slice(&invalid_control_request_response(&request, &error))
-            .expect("correlated response");
+    let (encoded, allocation, _) = invalid_control_request_response(&request, &error).expect("correlated invalid response");
+    assert!(allocation.is_none());
+    let response: Value = serde_json::from_slice(&encoded).expect("correlated response");
     assert_eq!(response["version"], 2);
     assert_eq!(response["requestId"], request_id.as_str());
     assert_eq!(response["ok"], false);
@@ -6127,7 +6180,8 @@ fn malformed_v2_requests_keep_their_correlation_identity() {
     let uncorrelated = br#"{"unexpected":true}"#;
     let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(uncorrelated)
         .expect_err("fixture must not be a valid envelope");
-    let encoded = invalid_control_request_response(uncorrelated, &error);
+    let (encoded, allocation, _) = invalid_control_request_response(uncorrelated, &error).expect("uncorrelated invalid response");
+    assert!(allocation.is_none());
     let response: Value = serde_json::from_slice(&encoded).expect("uncorrelated response");
     assert_eq!(response["version"], 2);
     assert!(response.get("requestId").is_none());
