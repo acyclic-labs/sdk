@@ -3539,6 +3539,18 @@ mod physical_clones {
     }
 
     impl Capture {
+        /// Copies this closed capture on the original native ledger. Drop the
+        /// returned capture before releasing its separately owned custody.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        pub fn clone_with_native_work(
+            &self, original: &acyclic_fs::NativeMaterializationWork,
+        ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+            let mut io = crate::store::history::native_work_io(original)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            let (value, _) = self.clone_with_work_and_custody(&mut Some(&mut io))?;
+            Ok((value, io.into_custody()))
+        }
         pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
             self.clone_with_work_and_custody(work).map(|(value, _)| value)
         }
@@ -3724,6 +3736,34 @@ mod tests {
         assert!(matches!(error, Error::NativeBoundary { .. }));
         assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(native.receipt().bytes_copied, before.bytes_copied);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capture_public_copy_keeps_funded_fields_and_rejects_copy_denial() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let original = Capture::Captured(seed.resources[0].clone());
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("original capture copy ledger");
+        let (copied, custody) = original.clone_with_native_work(&native)?;
+        assert_eq!(copied, original);
+        assert!(custody.bytes() >= std::mem::size_of::<Capture>() as u64);
+        assert!(native.receipt().bytes_copied > 0);
+        assert_eq!(native.receipt().bytes_encoded, 0);
+        drop(copied);
+        drop(custody);
+
+        let mut denied_budget = physical_fork_clone_budget();
+        denied_budget.bytes_copied = 0;
+        let denied = NativeMaterializationWork::new(denied_budget, &cancellation)
+            .expect("original denied capture ledger");
+        assert!(matches!(original.clone_with_native_work(&denied), Err(Error::NativeWork { .. })));
+        assert_eq!(denied.receipt().bytes_copied, 0);
+        assert_eq!(original, Capture::Captured(seed.resources[0].clone()));
         Ok(())
     }
 
