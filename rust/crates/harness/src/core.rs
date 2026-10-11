@@ -314,6 +314,9 @@ impl AuthorityIssuer {
         quota.transfer();
         Ok(cloned)
     }
+    /// Borrows the original configured issuer identity without exposing its key.
+    #[must_use]
+    pub fn id(&self) -> &str { &self.id }
 
     /// Returns a verifier safe to give to reducers but not untrusted clients.
     #[must_use]

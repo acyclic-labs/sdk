@@ -287,4 +287,53 @@ mod tests {
         assert!(unsafe_proof.validate().is_err());
         Ok(())
     }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_merge_receipt_physical_copy_preserves_proof_and_rejects_before_denied_allocation() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkBudget};
+        let receipt: ProjectMergeReceipt = serde_json::from_str(
+            include_str!("../fixtures/v2/project-merge-receipt.json"),
+        ).map_err(|error| Error::Invalid(error.to_string()))?;
+        let budget = WorkBudget {
+            allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
+            bytes_copied: 1_048_576, items_examined: 4096,
+            ..WorkBudget::default()
+        };
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget, &cancellation)?;
+        let mut observer = crate::store::history::native_work_io(&work)?;
+        let before = work.receipt();
+        let (copied, produced) = receipt.clone_with_work_and_custody(&mut Some(&mut observer))?;
+        assert_eq!(copied, receipt);
+        let custody = observer.into_custody();
+        assert_eq!(custody.bytes(), produced);
+        assert!(custody.work().shares_ledger(&work));
+        assert!(work.receipt().bytes_copied > before.bytes_copied);
+        assert!(work.receipt().allocation_operations > before.allocation_operations);
+        assert_eq!(work.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+        drop(copied);
+        drop(custody);
+        let mut forged = receipt.clone(); // Hostile caller-owned input.
+        forged.provider_proof.statement = serde_json::json!({"unsafe": 9_007_199_254_740_992_u64});
+        let mut observer = crate::store::history::native_work_io(&work)?;
+        assert!(matches!(forged.validate_shape_with_work(&mut Some(&mut observer)),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        drop(observer);
+        cancellation.cancel();
+        let before = work.receipt();
+        assert!(matches!(crate::store::history::native_work_io(&work),
+            Err(NativeTreeMaterializationError::Cancelled)));
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        let token = CancellationToken::new();
+        let denied = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 1, ..budget
+        }, &token)?;
+        let mut observer = crate::store::history::native_work_io(&denied)?;
+        assert!(matches!(receipt.clone_with_work_and_custody(&mut Some(&mut observer)),
+            Err(Error::NativeWork { .. })));
+        assert_eq!(denied.receipt().allocation_operations, 1);
+        Ok(())
+    }
 }

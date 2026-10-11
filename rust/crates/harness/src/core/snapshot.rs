@@ -388,72 +388,44 @@ pub(crate) fn resource_creation_clone_reservation(
     Ok(bytes)
 }
 
-pub(crate) fn resource_creation_proof_clone_reservation(
+/// Copies the concrete proof fields physically; the caller owns its Vec shell.
+pub(crate) fn resource_creation_proof_clone_with_custody(
     proof: &crate::resource_preparation::ResourceCreationProofRef,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<u64> {
-    let mut inventory = CloneInventory {
-        work: work.as_deref_mut().map(|io| io as &mut dyn HistoryIo), ..Default::default()
-    };
-    let result = proof.serialize(&mut inventory);
-    if let Some(error) = inventory.failure.take() { return Err(error); }
-    result.map_err(|_| resource_creation_proof_inventory_error())?;
-    let bytes = inventory.bytes;
-    drop(inventory);
-    if let Some(io) = work.as_deref_mut() {
-        let mut buffers = [0_u64; 13];
-        let mut next = 0;
-        // The closed DTO owns nine provider Strings, two resource key Vecs and
-        // at most two version Strings. UUID inventory formatting is stack-only.
-        for provider in [&proof.provider, proof.resource.provider(), proof.evidence.provider()] {
-            for text in [provider.namespace(), provider.family(), provider.version()] {
-                buffers[next] = text.len() as u64;
-                next += 1;
-            }
-        }
-        for resource in [&proof.resource, &proof.evidence] {
-            buffers[next] = resource.key().len() as u64;
-            next += 1;
-            buffers[next] = resource.version().map_or(0, |version| version.len() as u64);
-            next += 1;
-        }
-        let copied = buffers.iter().try_fold(0_u64, |bytes, length|
-            bytes.checked_add(*length).ok_or_else(resource_creation_proof_inventory_error))?;
-        io.admit_owned(bytes)?;
-        io.admit_copy(copied)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = io.original_native_work() {
-            native.admit(acyclic_fs::WorkCounters {
-                allocation_operations: buffers.iter().filter(|length| **length != 0).count() as u64,
-                bytes_copied: copied, ..Default::default()
-            }).map_err(Error::from)?;
-        }
-        // No allocation/copy observation precedes retained quota admission.
-        io.retain_owned(bytes)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = io.original_native_work() {
-            native.charge(acyclic_fs::WorkCounters {
-                allocation_operations: buffers.iter().filter(|length| **length != 0).count() as u64,
-                bytes_copied: copied, ..Default::default()
-            }).map_err(Error::from)?;
-            return Ok(bytes);
-        }
-        for bytes in buffers.into_iter().filter(|length| *length != 0) {
-            io.codec_charge(crate::contract::JsonCodecCharge::AllocationOperation { bytes })?;
-        }
-        io.copy_bytes(copied)?;
+) -> Result<(crate::resource_preparation::ResourceCreationProofRef, u64)> {
+    if work.is_none() { return Ok((proof.clone(), 0)); }
+    fn provider(
+        source: &crate::resources::ProviderRef,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<crate::resources::ProviderRef> {
+        let namespace = super::native_custody::copy_text(source.namespace(), quota)?;
+        let family = super::native_custody::copy_text(source.family(), quota)?;
+        let version = super::native_custody::copy_text(source.version(), quota)?;
+        crate::resources::ProviderRef::new(namespace, family, version)
     }
-    Ok(bytes)
-}
-
-
-fn resource_creation_proof_inventory_error() -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    { Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid, reason: "closed creator proof clone inventory rejected",
-    } }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    { Error::Invalid("closed creator proof clone inventory rejected".into()) }
+    fn reference(
+        source: &crate::resources::ResourceRef,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<crate::resources::ResourceRef> {
+        let provider = provider(source.provider(), quota)?;
+        let key = super::copy_copy_vector(source.key(), quota)?;
+        let version = match source.version() {
+            Some(version) => Some(super::native_custody::copy_text(version, quota)?),
+            None => None,
+        };
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version)
+    }
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
+    let provider = provider(&proof.provider, &mut quota)?;
+    let resource = reference(&proof.resource, &mut quota)?;
+    let evidence = reference(&proof.evidence, &mut quota)?;
+    let copied = crate::resource_preparation::ResourceCreationProofRef {
+        provider, preparation: proof.preparation, resource, evidence,
+    };
+    let retained = quota.retained();
+    quota.transfer();
+    Ok((copied, retained))
 }
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.

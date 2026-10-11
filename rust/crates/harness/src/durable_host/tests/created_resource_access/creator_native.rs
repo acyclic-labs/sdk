@@ -295,7 +295,7 @@ async fn genuine_created_proof_quota_denial_precedes_any_deep_clone_allocation_o
         .expect("only the real original ledger's known accounting body is admitted");
     let mut observer = crate::store::history::native_work_io(&work)?;
     let prefix = work.receipt();
-    assert!(matches!(crate::core::resource_creation_proof_clone_reservation(
+    assert!(matches!(crate::core::resource_creation_proof_clone_with_custody(
         &created.request.child.resource_proofs[0], &mut Some(&mut observer),
     ), Err(Error::NativeWork { .. })));
     assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
