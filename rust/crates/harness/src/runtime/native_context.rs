@@ -553,11 +553,13 @@ impl ToolContext {
 
     /// Reads the exact held mount selection under this accepted invocation's
     /// effective READ scope; no broader namespace resource escapes the check.
+    /// The physical producer installs intrinsic byte custody before its first
+    /// read; forwarding preserves that custody through the final byte alias.
     #[cfg(feature = "native-execution")]
     pub async fn read_working_file_with_native_work(
         &self, relative: &std::path::Path, maximum: usize,
         work: &NativeMaterializationWork,
-    ) -> Result<(Vec<u8>, NativeAllocation)> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let view = self.native_working_view_with_native_work(
             relative, crate::conversation::VolumeOperation::Read, work,
         ).await?;

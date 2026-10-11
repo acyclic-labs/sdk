@@ -289,6 +289,10 @@ per-action read/write facades keep that selection fixed; no broader namespace
 resource escapes an attenuated READ check. The accepted marker is fixed inline
 metadata, not freshness or filesystem authority; ordinary context clones clear
 both marker and native funding.
+Working-file reads return the physical producer's intrinsic `OwnedBytes`
+directly. Its control and original byte claim are funded before content IO,
+not adopted after a returned vector; the caller retains custody through its
+last alias without a separate byte allocation guard.
 The marker retains all eight original producer limit scalars and the exact
 accepted request digest. Nested Stock/Durable dispatch recomputes that same
 immutable request under the original limits; stricter local execution policy
