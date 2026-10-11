@@ -165,13 +165,10 @@ fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<Obser
                 | if commit.is_some() { RETAINS_COMMIT } else { 0 },
         ])?;
         if let Some((key, replay)) = replay {
-            let observation = CanonicalWire::Observation(key, &replay.digest, &replay.result);
-            let encoded = writer.funding.message(&observation)?;
-            writer.bytes(&encoded)?;
+            writer.message(&CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
         }
         if let Some(envelope) = commit {
-            let encoded = writer.funding.message(&CanonicalWire::Envelope(envelope))?;
-            writer.bytes(&encoded)?;
+            writer.message(&CanonicalWire::Envelope(envelope))?;
         }
     }
     Ok(writer.funding.finish(writer.out))
@@ -235,6 +232,30 @@ impl SnapshotWriter<'_> {
     fn bytes(&mut self, value: &[u8]) -> std::io::Result<()> {
         self.len(value.len())?;
         self.write(value)
+    }
+
+    fn message(&mut self, value: &CanonicalWire<'_>) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() { meter.admit_examination(1, 0)?; }
+        let length = value.encoded_len()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() {
+            meter.record_examination(1, 0)?;
+            meter.check()?;
+        }
+        self.len(length)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() {
+            meter.admit_codec(length as u64, length as u64, 0)?;
+        }
+        self.funding.ensure_vector(&mut self.out, length)?;
+        value.encode(&mut self.out)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = self.funding.meter() {
+            meter.record_codec(length as u64, length as u64, 0)?;
+            meter.check()?;
+        }
+        Ok(())
     }
 }
 

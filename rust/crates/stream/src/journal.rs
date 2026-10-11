@@ -54,8 +54,13 @@ pub(crate) fn journal_command_observed<'a>(
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> std::io::Result<wire_codec::ObservedWire<wire_codec::CanonicalWire<'a>>> {
     let funding = wire_codec::WireFunding::new(meter);
-    funding.examine(1)?;
-    Ok(funding.finish(journal_command(command)))
+    if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
+    let command = journal_command(command);
+    if let Some(meter) = meter {
+        meter.record_examination(1, 0)?;
+        meter.check()?;
+    }
+    Ok(funding.finish(command))
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
@@ -132,6 +137,25 @@ mod tests {
         });
         for command in [append, fork, commit] {
             let encoded = journal_command(&command).encode_to_vec().map_err(|_| StreamError::Capacity)?;
+            // Compare the ONE borrowed writer against the unchanged generated
+            // schema, not merely against itself on canonical decode.
+            let operation = match &command {
+                Command::Append(request) => journal_command::Operation::Append(crate::wire::AppendRequest {
+                    path: request.path.to_string(),
+                    records: request.records.iter().map(|value| bytes::Bytes::copy_from_slice(value)).collect(),
+                    if_tail: request.if_tail,
+                    idempotency_key: request.idempotency_key.as_ref()
+                        .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+                }),
+                Command::Fork(request) => journal_command::Operation::Fork(crate::wire::ForkRequest {
+                    source: request.source.to_string(), destination: request.destination.to_string(),
+                    at_tail: request.at_tail,
+                    idempotency_key: request.idempotency_key.as_ref()
+                        .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+                }),
+                Command::Commit(request) => journal_command::Operation::Commit(wire_codec::commit_to_wire(request)),
+            };
+            assert_eq!(encoded, JournalCommand { operation: Some(operation) }.encode_to_vec());
             assert_eq!(
                 journal_command(&decode_command(&encoded)?).encode_to_vec().map_err(|_| StreamError::Capacity)?,
                 encoded

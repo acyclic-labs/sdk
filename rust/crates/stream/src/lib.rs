@@ -898,6 +898,7 @@ struct NativeCommitRecordState {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeCommitRecordSlot {
     state: std::sync::Mutex<NativeCommitRecordState>,
+    ready: std::sync::Condvar,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
 
@@ -913,6 +914,7 @@ impl NativeCommitRecordSlot {
             state: std::sync::Mutex::new(NativeCommitRecordState {
                 record: None, closed: false, waiter: None,
             }),
+            ready: std::sync::Condvar::new(),
             _allocation: allocation,
         });
         meter.record_codec(0, bytes as u64, 0)?;
@@ -935,6 +937,22 @@ impl NativeCommitRecordSlot {
         }).await
     }
 
+    /// The already submitted Local journal worker waits without holding a
+    /// provider visibility or journal lock. Its cell/control existed at issue.
+    #[cfg(feature = "local")]
+    pub(crate) fn receive_blocking(&self) -> Result<OwnedBytes, StreamError> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some(record) = state.record.take() {
+                state.closed = true;
+                return record;
+            }
+            if state.closed { return Err(StreamError::Unavailable); }
+            state = self.ready.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+
     fn supply(&self, record: Result<OwnedBytes, StreamError>) {
         let waiter = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -942,15 +960,17 @@ impl NativeCommitRecordSlot {
             state.waiter.take()
         };
         if let Some(waiter) = waiter { waiter.wake(); }
+        self.ready.notify_one();
     }
 
-    fn close(&self) {
+    pub(crate) fn close(&self) {
         let waiter = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.closed = true;
             state.waiter.take()
         };
         if let Some(waiter) = waiter { waiter.wake(); }
+        self.ready.notify_one();
     }
 }
 

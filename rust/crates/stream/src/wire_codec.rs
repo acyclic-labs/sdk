@@ -150,21 +150,6 @@ impl<'a> WireFunding<'a> {
         self.owned_bytes(owned)
     }
 
-    pub(crate) fn message(&mut self, value: &CanonicalWire<'_>) -> std::io::Result<Bytes> {
-        self.examine(1)?;
-        let length = value.encoded_len()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter { meter.admit_codec(length as u64, length as u64, 0)?; }
-        let mut owned = self.vector(length)?;
-        value.encode(&mut owned)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
-            meter.record_codec(owned.len() as u64, owned.len() as u64, 0)?;
-            meter.check()?;
-        }
-        self.owned_bytes(owned)
-    }
 
     /// Ready immutable transport aliases retain the canonical payload owner.
     /// This bridge is constructed before wire IO, never by a prepared finisher.
@@ -187,7 +172,11 @@ impl<'a> WireFunding<'a> {
 
     pub(crate) fn wire_records(&mut self, values: &[crate::OwnedBytes]) -> std::io::Result<Vec<Bytes>> {
         let mut records = self.vector(values.len())?;
-        for value in values { records.push(self.wire_bytes(value)?); }
+        for value in values {
+            self.copy_admission(std::mem::size_of::<Bytes>())?;
+            records.push(self.wire_bytes(value)?);
+            self.copy_completed(std::mem::size_of::<Bytes>())?;
+        }
         Ok(records)
     }
     fn owned_bytes(&mut self, owned: Vec<u8>) -> std::io::Result<Bytes> {
@@ -324,6 +313,7 @@ pub(crate) enum CanonicalWire<'a> {
 struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
+    maximum_record: Option<usize>,
 }
 
 impl WireSink<'_> {
@@ -368,9 +358,23 @@ impl WireSink<'_> {
         Ok(())
     }
 
+    fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
+        if let Some(length) = self.maximum_record {
+            self.varint((tag << 3) | 2)?;
+            self.varint(length as u64)?;
+            self.length = self.length.checked_add(length)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+            Ok(())
+        } else {
+            self.field(tag, value.as_ref(), true)
+        }
+    }
+
     fn nested(&mut self, tag: u64, value: CanonicalWire<'_>) -> std::io::Result<()> {
         self.varint((tag << 3) | 2)?;
-        self.varint(value.encoded_len()? as u64)?;
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
+        value.write(&mut count)?;
+        self.varint(count.length as u64)?;
         value.write(self)
     }
 
@@ -379,7 +383,7 @@ impl WireSink<'_> {
         tag: u64,
         write: impl Fn(&mut WireSink<'_>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        let mut count = WireSink { output: None, length: 0 };
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
         write(&mut count)?;
         self.varint((tag << 3) | 2)?;
         self.varint(count.length as u64)?;
@@ -389,13 +393,21 @@ impl WireSink<'_> {
 
 impl CanonicalWire<'_> {
     pub(crate) fn encoded_len(&self) -> std::io::Result<usize> {
-        let mut sink = WireSink { output: None, length: 0 };
+        let mut sink = WireSink { output: None, length: 0, maximum_record: None };
+        self.write(&mut sink)?;
+        Ok(sink.length)
+    }
+
+    /// Sizes the exact closed request with its late record at the admitted
+    /// bound using the SAME field visitor, without allocating or copying bytes.
+    pub(crate) fn encoded_len_for_record_maximum(&self, maximum: usize) -> std::io::Result<usize> {
+        let mut sink = WireSink { output: None, length: 0, maximum_record: Some(maximum) };
         self.write(&mut sink)?;
         Ok(sink.length)
     }
 
     pub(crate) fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
-        self.write(&mut WireSink { output: Some(output), length: 0 })
+        self.write(&mut WireSink { output: Some(output), length: 0, maximum_record: None })
     }
 
     pub(crate) fn encode_to_vec(&self) -> std::io::Result<Vec<u8>> {
@@ -414,7 +426,7 @@ impl CanonicalWire<'_> {
             },
             Self::Append(value) => {
                 sink.field(1, value.path.as_str().as_bytes(), false)?;
-                for record in &value.records { sink.field(2, record.as_ref(), true)?; }
+                for record in &value.records { sink.record(2, record)?; }
                 if let Some(tail) = value.if_tail { sink.integer(3, tail, true)?; }
                 if let Some(key) = &value.idempotency_key { sink.field(4, key.as_bytes(), true)?; }
             }
@@ -441,14 +453,14 @@ impl CanonicalWire<'_> {
             Self::Mutation(value) => match value {
                 CommitMutation::Append { path, records } => sink.message(1, |sink| {
                     sink.field(1, path.as_str().as_bytes(), false)?;
-                    for value in records { sink.field(2, value.as_ref(), true)?; }
+                    for value in records { sink.record(2, value)?; }
                     Ok(())
                 })?,
                 CommitMutation::Fork { source, destination, at_tail, records } => sink.message(2, |sink| {
                     sink.field(1, source.as_str().as_bytes(), false)?;
                     sink.field(2, destination.as_str().as_bytes(), false)?;
                     sink.integer(3, *at_tail, false)?;
-                    for value in records { sink.field(4, value.as_ref(), true)?; }
+                    for value in records { sink.record(4, value)?; }
                     Ok(())
                 })?,
             },
