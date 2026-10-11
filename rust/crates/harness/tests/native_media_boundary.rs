@@ -1530,7 +1530,9 @@ async fn live_original_options_and_actual_native_parts_reach_adapter_without_con
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn live_original_options_and_actual_native_parts_reach_adapter_without_conversion()
 -> std::result::Result<(), wasm_bindgen::JsValue> {
-    exercise_live_native_boundary()
+    // Browser live tasks use Tokio's local executor rather than a native runtime.
+    tokio::task::LocalSet::new()
+        .run_until(exercise_live_native_boundary())
         .await
         .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }

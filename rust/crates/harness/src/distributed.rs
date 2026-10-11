@@ -24,11 +24,9 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{collections::BTreeMap, sync::Arc};
 
 const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "3";
@@ -1980,6 +1978,7 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, Sche
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn current_time_millis() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1987,6 +1986,18 @@ fn current_time_millis() -> Result<u64> {
         .as_millis()
         .try_into()
         .map_err(|_| Error::Invalid("coordinator clock exceeds supported range".into()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_time_millis() -> Result<u64> {
+    use acyclic_stream::UnixMillisClock as _;
+    let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
+    if now == 0 || now == u64::MAX {
+        return Err(Error::Invalid(
+            "coordinator clock exceeds supported range".into(),
+        ));
+    }
+    Ok(now)
 }
 
 fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
