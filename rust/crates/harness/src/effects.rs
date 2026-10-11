@@ -532,10 +532,10 @@ impl EffectRegistry {
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let bytes = content.work().as_deref_mut().expect("observer")
-                    .read_content(resolver.as_ref(), result).await?;
+                    .read_content(resolver.as_ref(), result)?.await?;
                 content.adopt(bytes.capacity() as u64)?;
                 let schema_bytes = content.work().as_deref_mut().expect("observer")
-                    .read_content(resolver.as_ref(), &effect.result_schema).await?;
+                    .read_content(resolver.as_ref(), &effect.result_schema)?.await?;
                 content.adopt(schema_bytes.capacity() as u64)?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
