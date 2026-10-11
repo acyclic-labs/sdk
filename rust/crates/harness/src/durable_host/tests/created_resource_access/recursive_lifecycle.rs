@@ -22,8 +22,6 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     let admitted = machine.transition(&initial, &Value::Null)?;
     assert_eq!(admitted.commands, [command]);
     assert!(matches!(admitted.status, MachineStatus::Suspended));
-    // An independently reopened machine consumes the serialized checkpoint,
-    // not the original Rust async stack or a reconstructed allocation.
     let reopened = ForkPreparationMachine::new();
     let receipt = serde_json::json!({"commands":[{"operation_id":operation,
         "value":Outcome::Succeeded(created.report.clone())}]});
@@ -36,8 +34,6 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     assert_eq!(report, created.report);
     assert!(reopened.transition(&settled.state, &receipt).is_err());
 
-    // Exhaustively vary receipt multiplicity and command identity around the
-    // same production transition. Accept only one exact original observation.
     for count in 0..=3 {
         for changed_identity in [false, true] {
             let observation = serde_json::json!({"operation_id": if changed_identity {
@@ -48,8 +44,6 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
             assert_eq!(result.is_ok(), count == 1 && !changed_identity);
         }
     }
-    // Mutating a structurally valid source/publisher field must fail the exact
-    // request digest, independently of schema validity.
     for field in ["parent_revision", "inherited_bytes", "child_agent", "source_project"] {
         let mut changed = created.report.clone();
         match field {
@@ -81,9 +75,6 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
         "value":Outcome::<crate::fork::ForkReport>::Indeterminate { operation_id: operation }}]});
     assert!(reopened.transition(&admitted.state, &uncertain).is_err());
 
-    // The real owner rejects adding/changing an outbox to an already admitted
-    // direct creator request. None is a separate real low-level composition,
-    // never a license to replace the supported request after admission.
     let preparation_task = TaskId::from_bytes([83;16]);
     let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(preparation_task).await? else {
         return Err(Error::NotFound("original preparation lease".into()));

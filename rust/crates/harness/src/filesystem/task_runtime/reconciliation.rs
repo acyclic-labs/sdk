@@ -11,9 +11,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Reconciles only the original retained outbox under its exact lease. The
-    /// wait allowance bounds observation, never extends the admitted deadline.
-    /// No machine step, command dispatch, lease replacement or queue is created.
+    /// Reconciles only the original retained outbox under its exact lease.
     pub async fn reconcile_task(
         &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
         maximum_commands: u32, maximum_wait_millis: u32,

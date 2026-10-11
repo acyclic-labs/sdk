@@ -1,11 +1,4 @@
 //! Complete effect-head observations at immutable canonical publication cuts.
-//!
-//! The certificate authenticates the entire compressed index root, including
-//! absence. Nodes confer no authority; original effect events still undergo
-//! their existing admission/atomic-index checks and core projection.
-//! Native source strings, path payloads, and encoded vectors remain on the
-//! original ledger until physical drop; serde failures retain their diagnostic
-//! reservation with the original typed cause.
 
 use super::{checkpoints, operations, history::HistoryIo};
 use crate::{
@@ -46,7 +39,6 @@ fn decode_certificate_with_work(
         operations::validate_canonical_json_with_work(bytes, MAX_CERTIFICATE_BYTES, work)?;
     }
     let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
-    // This concrete schema owns only Authority.id and canonical_path strings.
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -155,9 +147,6 @@ fn decode_node_with_work(
                     observer.codec_charge(charge)
                 }
                 crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
-                    // One internally tagged enum buffers actual serde Content.
-                    // Minimum Vec slots and geometric growth are admitted from
-                    // the lexical item count, never guessed input/heap ratios.
                     let slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
                         .max(std::mem::size_of::<(
                             serde::__private229::de::Content<'static>,
@@ -217,10 +206,6 @@ fn certificate_path_with_work(
         authority, "harness/v2/effect-heads/", Some((&"cuts", 4)), work)
 }
 
-#[cfg(test)]
-fn certificate_path(authority: &Authority) -> Result<StreamPath> {
-    certificate_path_with_work(authority, &mut None).map(|(path, _)| path)
-}
 
 fn node_path_with_work(
     authority: &Authority, hash: Digest, work: &mut Option<&mut dyn HistoryIo>,
@@ -691,16 +676,6 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     release_after_drop(result, owned, work)
 }
 
-pub(super) async fn select<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    effect: EffectId,
-    revision: u64,
-    maximum_bytes: u64,
-) -> Result<Selection> {
-    select_with_work(client, authority, verifier, effect, revision, maximum_bytes, &mut None).await
-}
 
 pub(super) async fn select_with_work<P: StreamProvider>(
     client: &StreamClient<P>,

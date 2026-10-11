@@ -252,7 +252,6 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reference: FileRef = serde_json::from_slice(&records[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(reference.descriptor().media_type(), "application/json");
-    // Read and reopen more than one page through the real Filesystem/Stream journal.
     let paged = Arc::new(FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
@@ -333,8 +332,6 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         Ok(record)
     };
     let first = candidate(13, "concurrent-first", 15)?;
-    // Both independent hosts race the same CAS revision and emit the same
-    // command identity. Exactly one may retain that command operation.
     let second = candidate(14, "concurrent-second", 15)?;
     let (first_result, second_result) = tokio::join!(
         journal.commit(2, first.idempotency_key.clone(), first.clone()),

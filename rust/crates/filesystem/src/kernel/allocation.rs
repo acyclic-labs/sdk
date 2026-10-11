@@ -453,7 +453,7 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, cancellation } => {
-                let (allocation, result) = work.record_completed_allocation(bytes);
+                let (allocation, result) = work.record_completed_allocation(bytes, None);
                 Ok((KernelOwnedAllocation::NativeOriginal(allocation),
                     result.map_err(crate::FsError::from)
                         .and_then(|()| cancellation.check().map_err(Into::into))))

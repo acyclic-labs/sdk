@@ -45,8 +45,6 @@ use uuid::Uuid;
 
 const DEPTH: u8 = 3;
 
-// A deterministic planning tool, followed by the fixture's real prepare/spawn
-// transaction. This is not a substitute implementation of the fork runtime.
 struct ForkPlan;
 impl ToolExecutor for ForkPlan {
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -140,8 +138,6 @@ where
             &IdempotencyKey::new(format!("scratch-{level}"))?,
         )
         .await?;
-    // Exact file capabilities are explicit owner approvals in this fixture.
-    // The generic fork controller cannot delegate arbitrary ancestor files.
     let mut capabilities = local_scope
         .capabilities()
         .iter()
@@ -699,8 +695,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             .await?;
         assert_eq!(seed.child, child_authority);
         if level == 1 {
-            // Close the live providers, reopen their on-disk roots, and then
-            // recover both durable Stream aggregates before the child appends.
             drop(preparer);
             drop(aggregate);
             drop(child_aggregate);
@@ -819,7 +813,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     sibling_scope.clone(),
                 )
                 .await?;
-            // A later parent write changes the head, not the selected version.
             let changed = host
                 .put_content(
                     &root_private,
@@ -919,8 +912,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .as_ref(),
             format!("child attachment {level}").as_bytes(),
         );
-        // Revoking only the inheritance grant, with bytes still resident, fails
-        // before any model dispatch. The normal own-private scope is insufficient.
         let denied = FilesystemContentVerifier::new(
             host.clone(),
             child_issuer.verifier(),
@@ -1110,8 +1101,6 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         };
         aggregate = child_aggregate;
 
-        // Preserve the exact attachment grant at the first boundary for the
-        // owner-controlled delegation assertion below.
         if level == 1 {
             let reference_issuer = child_issuer.clone();
             let child_scope_with_reference = reference_issuer.root_for_agent(
@@ -1249,8 +1238,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     Ok(())
 }
 
-/// Keep this chain deliberately small enough for regular CI while exercising
-/// the same-path allocation and reference rules far beyond a shallow fork.
+/// Keep this chain deliberately small enough for regular CI while exercising the same-path allocation and reference rules far beyond a shallow fork.
 #[tokio::test]
 async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<()> {
     const DEPTH: u8 = 64;
@@ -1370,8 +1358,6 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             id: format!("deep-child-{level}"),
         };
         let child_issuer = AuthorityIssuer::new("local-deep-e2e", [9; 32], child_authority.clone());
-        // Deliberately reuse both storage paths. The owner identity must keep
-        // each private volume distinct despite identical logical names.
         let child_private = volume(
             &provider,
             VolumeClass::AgentPrivate,

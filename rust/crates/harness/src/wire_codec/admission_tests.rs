@@ -53,8 +53,7 @@ fn concrete_wire_guard_preserves_original_bytes_and_reencode_work() -> Result<()
 #[test]
 fn typed_payload_quota_rejects_before_original_serde_error() -> Result<()> {
     let mut envelope = encode_event_envelope(&authority(), &event())?;
-    // Valid JSON that would fail the original concrete enum deserializer. The
-    // finite live quota must reject first, before that error can be produced.
+    // Valid JSON that would fail the original concrete enum deserializer.
     envelope.canonical_payload_json = br#"{"type":"not_an_event","untrusted":["owned","strings"]}"#.to_vec();
     let bytes = envelope.encode_to_vec();
     let carrier = admission::decode_quota(&bytes, &mut None)?;
@@ -81,8 +80,6 @@ fn duplicate_carrier_and_unknown_field_are_not_canonical() -> Result<()> {
     duplicate.extend_from_slice(&[0x18, 0x01]);
     assert!(decode_event(&duplicate).is_err());
     let mut unknown = bytes;
-    // Unknown scalar field 15 is accepted by prost framing but cannot survive
-    // the original canonical envelope re-encoding.
     unknown.extend_from_slice(&[0x78, 0x01]);
     assert!(decode_event(&unknown).is_err());
     Ok(())

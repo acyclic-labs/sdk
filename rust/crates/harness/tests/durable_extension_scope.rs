@@ -9,8 +9,6 @@ use acyclic_stream::BoxProviderFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
-// The generic provider deliberately returns a different admission selection.
-// This is fault injection at the state seam, not a fabricated native adapter.
 struct ResumedScope(RuntimeScope);
 
 impl TaskStateProvider for ResumedScope {

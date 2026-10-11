@@ -96,8 +96,6 @@ impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
         }
         let result = self.inner.commit(request).await?;
         if fault.is_some() {
-            // Hide the immediate keyed observation as well, so this is
-            // an unknown commit rather than a recovered lost reply.
             self.hide_next_inspection
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             return Err(acyclic_stream::StreamError::Unavailable);
@@ -252,7 +250,6 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .stderr(Stdio::null());
     let mut host = acyclic_native_runtime::spawn_process_tree(&mut command)?;
     let ready = host_ready(&mut host, storage.path()).await;
-    // Stop and reap this exact contained host even when setup never becomes ready.
     let status = host.terminate_after(Duration::from_millis(250))?;
     if status.success() || !host.is_reaped() {
         return Err("host termination did not produce a reaped failure status".into());

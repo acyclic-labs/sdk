@@ -1,5 +1,4 @@
 //! Native definitions and serializer fixtures for current file-tool consumers.
-//! This emits actual public contracts; it does not execute a filesystem effect.
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::{
@@ -131,7 +130,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let exact_result = ToolResult {
         value: value(source)?,
     };
-    // A valid serialized FileResult shape, not a claim that this example published it.
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,
     };
