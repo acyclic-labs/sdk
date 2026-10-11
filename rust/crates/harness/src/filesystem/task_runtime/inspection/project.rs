@@ -81,6 +81,59 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) fn authorization(&self) -> &ProjectSourceAuthorization { self.handle.authorization() }
     pub(super) fn work(&self) -> WorkCounters { self.io.receipt() }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) async fn require_native_project_selection_with_native_work(
+        &self, source: TaskId, project: &VolumeRef, generation: &GenerationRef,
+        frozen: Option<LazySnapshotRef>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let original = self.io.original_native_work().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native source loan requires an originally funded selected reader",
+        })?;
+        work.remaining()?;
+        if !original.shares_ledger(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source selection belongs to another original ledger" });
+        }
+        original.remaining()?;
+        self.io.cancellation.check()
+            .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        let selected = self.authorization();
+        self.handle.require_selection_with_native_work(
+            selected.operation_id, source, project, generation,
+            selected.native_snapshot.as_ref(), work,
+        )?;
+        self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
+        let io = PreparationIo::from_native_work(work)?;
+        Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
+        if let Some(frozen) = frozen {
+            if frozen.workspace_id != self.workspace_id || frozen.authored_generation != self.generation.id() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native source snapshot differs from the protected immutable project" });
+            }
+            if let Some(native) = &selected.native_snapshot {
+                let mut history = io.history_io();
+                let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                let expected = crate::contract::canonical_json_digest_with_work(
+                    native, selected.maximum_bytes, &mut observed,
+                )?;
+                let actual = crate::contract::canonical_json_digest_with_work(
+                    &frozen, selected.maximum_bytes, &mut observed,
+                )?;
+                if actual != expected {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "native source snapshot changed its sealed operation selection" });
+                }
+            }
+        }
+        self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
+        original.remaining()?;
+        self.io.cancellation.check()
+            .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+        work.remaining()?;
+        Ok(())
+    }
+
     pub(super) async fn guard(&self) -> Result<()> {
         Self::verify_owner(&self.owner, &self.io).await
     }

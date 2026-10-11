@@ -410,6 +410,13 @@ configured native Root policy before sealing an operation-specific selection.
 retained original selection and task owner without reading a newer head or
 issuing replacement authority. Both return a funded future before allocation
 and keep the opaque read handle's produced metadata under its original ledger.
+The crate-private native source-loan verifier retains that same opaque handle and
+original caller owner. It checks READ, exact source/project/pinned generation and
+the current owner before and after SDK work. A pre-freeze `None` grants no future
+snapshot; loans pass the actual frozen snapshot and the SDK authenticates its
+overlay/source identity on current caller resource work. Source data and its old
+resource custody remain separate. Root selection authenticates protected original
+bootstrap access, not project labels or an unverified descriptor.
 Internal mailbox task bindings now borrow the original owner fence. Native
 validation does not copy a retry key or reconstruct a lease merely to inspect it;
 the public `owned_task_fence` still explicitly returns a copy of that exact fence.

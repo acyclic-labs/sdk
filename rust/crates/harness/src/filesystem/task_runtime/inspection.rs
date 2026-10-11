@@ -120,6 +120,30 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
+    /// Authenticates only the original selected Project READ before or after an
+    /// SDK source boundary. `None` is a pre-freeze check, not a snapshot grant;
+    /// actual readonly loans must pass `Some` and authenticate the SDK snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn require_native_project_selection_with_native_work(
+        &self, source: TaskId, project: &VolumeRef, generation: &GenerationRef,
+        frozen: Option<acyclic_fs::LazySnapshotRef>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        if self.source.task_id() != source {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source loan changed its authenticated source task" });
+        }
+        match &self.reader {
+            SourceReader::Project(reader) => reader.require_native_project_selection_with_native_work(
+                source, project, generation, frozen, work,
+            ).await,
+            SourceReader::Caller(_) => Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native source loan requires the private operation-bound Project reader",
+            }),
+        }
+    }
+
     /// Cumulative measured filesystem/SDK-buffer work for this selected reader,
     /// including failed boundaries. Coordinator journal authentication is separate.
     #[must_use]

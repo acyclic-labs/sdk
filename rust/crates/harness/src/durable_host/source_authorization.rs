@@ -539,6 +539,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, source: &TaskAdmissionRecord, project: &crate::conversation::VolumeRef,
         budget: &mut SourceBudget, original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
+        if source.parent.is_none() && source.resource_proofs.is_empty() {
+            budget.charge_with_native_work(1, 0, original)?;
+            let access = self.verify_root_bootstrap_access_with_native_work(source, original).await?;
+            let read = project.capability_with_native_work(crate::conversation::VolumeOperation::Read, original)?;
+            let selected = project.class() == crate::conversation::VolumeClass::Project
+                && access.as_ref().is_some_and(|access|
+                    access.grants.contains(&read.0)
+                        && access.content.iter().any(|binding| &binding.volume == project));
+            drop(access);
+            drop(read);
+            return Ok(selected);
+        }
         use std::borrow::Cow;
         let io = crate::filesystem::PreparationIo::from_native_work(original)?;
         let mut pending = Vec::new();
