@@ -82,8 +82,9 @@ impl Fixture {
         let startup_work = acyclic_fs::NativeMaterializationWork::new(budget(), CancellationToken::new()).unwrap();
         let command = crate::pi_root_inputs::stage_root_command(&owner, &filesystem, &request, &startup_work).await.unwrap();
         let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
-        let runtime = Arc::new(Runtime::open(stream.clone(), filesystem.clone(), journal_volume, owner.authority().unwrap()).await.unwrap());
-        runtime.admit_root(root_binding, request.root.clone(), command.0).await.unwrap();
+        let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
+            owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
+        let _root_admission = runtime.admit_root_with_native_work(root_binding, request.root.clone(), command.0, &startup_work).await.unwrap();
         let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
         let first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
@@ -439,8 +440,9 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
         &plan, fixture.source.clone(), budget(), CancellationToken::new()).await.unwrap().unwrap();
     let stream = StreamClient::new(Arc::new(LocalStream::open(fixture.resources.session_directory("fork-root").join("stream"),
         LocalStreamLimits::default()).await.unwrap()));
-    let runtime = Arc::new(Runtime::open(stream.clone(), fixture.filesystem.clone(),
-        fixture.owner.policy().journal.clone(), fixture.owner.authority().unwrap()).await.unwrap());
+    let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), fixture.filesystem.clone(),
+        &fixture.owner.policy().journal, fixture.owner.authority_with_native_work(&observation_work).unwrap(),
+        &observation_work).await.unwrap());
     let journal = Arc::new(runtime.runtime.task_host().journal_owner(fixture.journal.task_id(), fixture.fence.clone()).await.unwrap());
     let context = runtime.runtime.task_context(journal.task_id(), fixture.fence.clone()).await.unwrap();
     let root: PiTaskInput = serde_json::from_value(runtime.runtime.task_host().observe_admission(journal.task_id()).await.unwrap().input).unwrap();

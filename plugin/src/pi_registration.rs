@@ -77,9 +77,21 @@ pub(crate) async fn register(
     let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
     let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id))).map_err(native_error)?;
     let owner_label = work.display(&root_label.0).map_err(native_error)?;
-    let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-    let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-    let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(owner_label.0))?;
+    // Each original volume identity and its custody travel together. All
+    // consumers borrow it until their actual native field-copy producer runs.
+    let journal_metadata = VolumeRef::new_with_native_work(
+        &provider, "journal", VolumeClass::AgentPrivate, &VolumeOwner::Agent(agent), work,
+    )?;
+    let journal = &journal_metadata.0;
+    let scratch_metadata = VolumeRef::new_with_native_work(
+        &provider, "scratch", VolumeClass::AgentPrivate, &VolumeOwner::Agent(agent), work,
+    )?;
+    let scratch = &scratch_metadata.0;
+    let project_owner = VolumeOwner::Project(owner_label.0);
+    let project_metadata = VolumeRef::new_with_native_work(
+        &provider, "project", VolumeClass::Project, &project_owner, work,
+    )?;
+    let project = &project_metadata.0;
     let binding_session = work.display(session).map_err(native_error)?;
     let project_key = work.display(&root_label.0).map_err(native_error)?;
     let project_copy = project.clone_with_native_work(work)?;
@@ -127,8 +139,6 @@ pub(crate) async fn register(
         },
         policy_journal.1, capabilities.1,
     );
-    drop(scratch);
-    drop(project);
     let owner = if directory.join("pi-owner.v1").exists() {
         let original = PiOwnerConfig::load_with_native_work(&directory, work)?;
         if original.policy() != &policy.0 { return Err(acyclic_harness::Error::Unauthorized("Pi original root policy differs".to_owned())); }
@@ -145,7 +155,9 @@ pub(crate) async fn register(
         owner.save_new_with_native_work(&directory, work)?;
         owner
     };
-    let filesystem = Arc::new(acyclic_harness::filesystem::FilesystemHost::new(resources.fs.clone(), provider)?);
+    let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
+        resources.fs.clone(), &provider, work,
+    )?.into_native_shared(work)?;
     // Journal storage is owner infrastructure, not a selected task allocation.
     // Its creation operation is fixed, and its grant is not exposed to Pi.
     let journal_name = journal.storage_name_with_native_work(work)?;
