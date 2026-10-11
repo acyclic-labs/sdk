@@ -8,7 +8,9 @@ use crate::WorkError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
+use std::{io, sync::Arc};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::NativeOperationKind;
 
 /// Opaque identity and invalidation epoch of an attached source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -123,7 +125,6 @@ pub struct SourceCursor {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub(crate) struct NativeCursorOwnership {
-    custody: Option<NativeMountAllocationCustody>,
     borrowed: bool,
     allocation: Option<crate::NativeAllocation>,
     raw_payload: Option<SourcePayloadOwnership>,
@@ -132,11 +133,11 @@ pub(crate) struct NativeCursorOwnership {
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeCursorOwnership {
     pub(crate) fn mark_input_borrowed(&mut self) {
-        if self.custody.is_none() && self.allocation.is_none() && self.raw_payload.is_none() { self.borrowed = true; }
+        if self.allocation.is_none() && self.raw_payload.is_none() { self.borrowed = true; }
     }
 
     pub(crate) fn unclaimed_retained_bytes(&self, bytes: u64) -> u64 {
-        if self.borrowed || self.custody.is_some() || self.allocation.is_some() || self.raw_payload.is_some() { 0 } else { bytes }
+        if self.borrowed || self.allocation.is_some() || self.raw_payload.is_some() { 0 } else { bytes }
     }
 
 }
@@ -184,7 +185,7 @@ impl SourceCursor {
     pub(crate) fn attach_native_allocation(
         &mut self, allocation: &mut crate::NativeAllocation,
     ) -> Result<(), crate::NativeTreeMaterializationError> {
-        if self.native_ownership.custody.is_some() || self.native_ownership.allocation.is_some()
+        if self.native_ownership.allocation.is_some()
             || self.native_ownership.raw_payload.is_some() || self.native_ownership.borrowed {
             return Err(crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow));
         }
@@ -204,30 +205,7 @@ impl SourceCursor {
             .checked_add(16 + 8 + 32 + 8).ok_or(DemandError::InvalidRequest)
     }
 
-    /// Preserves the provider's original opaque resume evidence. The containing
     pub(crate) fn encode_cursor_into(
-        &self,
-        encoder: &mut crate::kernel::Encoder,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(), DemandError> {
-        use crate::kernel::NamespacePathStep;
-        self.encode_cursor_into_with_steps(encoder, cancellation, &mut |step| {
-            match step {
-                NamespacePathStep::Admit(delta) => work.admit(delta, &budget)?,
-                NamespacePathStep::Charge(delta) => work.charge(delta, &budget)?,
-                NamespacePathStep::Performed(delta) => {
-                    work.try_add_assign(delta)?;
-                    work.verify_ref(&budget)?;
-                }
-                NamespacePathStep::Allocation(_) => return Err(DemandError::InvalidRequest),
-            }
-            cancellation.check().map_err(|_| DemandError::Cancelled)
-        })
-    }
-
-    pub(crate) fn encode_cursor_into_with_accounting(
         &self,
         encoder: &mut crate::kernel::Encoder,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -235,74 +213,37 @@ impl SourceCursor {
     ) -> Result<(), DemandError> {
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
         accounting.check().map_err(Self::cursor_accounting_error)?;
-        self.encode_cursor_into_with_steps(encoder, cancellation, &mut |step| {
-            use crate::kernel::NamespacePathStep;
-            match step {
-                NamespacePathStep::Admit(delta) => accounting.admit(*delta),
-                NamespacePathStep::Charge(delta) => accounting.charge(*delta),
-                NamespacePathStep::Performed(delta) => accounting.record_completed(*delta),
-                NamespacePathStep::Allocation(_) => return Err(DemandError::InvalidRequest),
-            }.map_err(Self::cursor_accounting_error)
-        })
-    }
-
-    fn encode_cursor_into_with_steps(
-        &self,
-        encoder: &mut crate::kernel::Encoder,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(crate::kernel::NamespacePathStep<'_>) -> Result<(), DemandError>,
-    ) -> Result<(), DemandError> {
-        use crate::kernel::NamespacePathStep;
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
         if encoder.remaining_capacity() < self.cursor_encoded_len()? {
             return Err(DemandError::InvalidRequest);
         }
         let identity = WorkCounters { bytes_encoded: 16, bytes_copied: 16, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&identity))?;
+        accounting.admit(identity).map_err(Self::cursor_accounting_error)?;
         encoder.fixed(&self.source.identity);
-        steps(NamespacePathStep::Performed(&identity))?;
+        accounting.record_completed(identity).map_err(Self::cursor_accounting_error)?;
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
         let scalar = WorkCounters { bytes_encoded: 8, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&scalar))?;
+        accounting.admit(scalar).map_err(Self::cursor_accounting_error)?;
         encoder.u64(self.source.epoch);
-        steps(NamespacePathStep::Performed(&scalar))?;
-        self.directory.encode_cursor_into_with_steps(encoder, cancellation, steps)?;
+        accounting.record_completed(scalar).map_err(Self::cursor_accounting_error)?;
+        self.directory.encode_cursor_into_with_accounting(encoder, accounting, cancellation)
+            .map_err(Self::cursor_accounting_error)?;
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
         let version = WorkCounters { bytes_encoded: 32, bytes_copied: 32, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&version))?;
+        accounting.admit(version).map_err(Self::cursor_accounting_error)?;
         encoder.fixed(&self.directory_version.0);
-        steps(NamespacePathStep::Performed(&version))?;
+        accounting.record_completed(version).map_err(Self::cursor_accounting_error)?;
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
-        steps(NamespacePathStep::Admit(&scalar))?;
+        accounting.admit(scalar).map_err(Self::cursor_accounting_error)?;
         encoder.u64(self.token);
-        steps(NamespacePathStep::Performed(&scalar))?;
+        accounting.record_completed(scalar).map_err(Self::cursor_accounting_error)?;
         cancellation.check().map_err(|_| DemandError::Cancelled)
     }
 
-    /// Decoding does not authorize a resume: the source's existing epoch,
-    pub(crate) fn decode_cursor_with_ledger(
-        decoder: &mut crate::kernel::Decoder<'_>,
-        expected_source: SourceReference,
-        expected_directory: &NamespacePath,
-        profile: crate::FilesystemProfile,
-        limits: crate::VolumeLimits,
-        ledger: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, DemandError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-            ledger, work, budget, cancellation,
-        );
-        Self::decode_cursor_with_accounting(
-            decoder, expected_source, expected_directory, profile, limits, &mut accounting, cancellation,
-        ).map(|(cursor, _allocation)| cursor)
-    }
-
-    pub(crate) fn decode_cursor_with_accounting(
+    pub(crate) fn decode_cursor(
         decoder: &mut crate::kernel::Decoder<'_>,
         expected_source: SourceReference,
         expected_directory: &NamespacePath,
@@ -312,76 +253,71 @@ impl SourceCursor {
         cancellation: &CancellationToken,
     ) -> Result<(Self, crate::kernel::allocation::KernelOwnedAllocation), DemandError> {
         cancellation.check().map_err(|_| DemandError::Cancelled)?;
-        let mut owned = SourceCursorAccounting::new(accounting)?;
-        let result = Self::decode_cursor_with_steps(
-            decoder, expected_source, expected_directory, profile, limits, cancellation,
-            &mut |step| owned.observe(step),
-        );
-        owned.finish(result)
-    }
-
-    fn decode_cursor_with_steps(
-        decoder: &mut crate::kernel::Decoder<'_>,
-        expected_source: SourceReference,
-        expected_directory: &NamespacePath,
-        profile: crate::FilesystemProfile,
-        limits: crate::VolumeLimits,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(crate::kernel::NamespacePathStep<'_>) -> Result<(), DemandError>,
-    ) -> Result<Self, DemandError> {
-        use crate::kernel::NamespacePathStep;
-        cancellation.check().map_err(|_| DemandError::Cancelled)?;
+        let mut allocation = accounting.claim_owned(0, 0).map_err(Self::cursor_accounting_error)?;
         let identity_bytes = decoder.take_exact(16).map_err(|_| DemandError::InvalidRequest)?;
         let identity_work = WorkCounters { bytes_copied: 16, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&identity_work))?;
+        accounting.admit(identity_work).map_err(Self::cursor_accounting_error)?;
         let identity = <[u8; 16]>::try_from(identity_bytes).map_err(|_| DemandError::InvalidRequest)?;
-        steps(NamespacePathStep::Performed(&identity_work))?;
+        accounting.record_completed(identity_work).map_err(Self::cursor_accounting_error)?;
         let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Charge(&item))?;
+        accounting.charge(item).map_err(Self::cursor_accounting_error)?;
         let epoch = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
         let source = SourceReference { identity, epoch };
         if source != expected_source {
             return Err(DemandError::StaleCursor);
         }
-        let directory = NamespacePath::decode_cursor_with_steps(
-            decoder, profile, limits, cancellation, steps,
-        )?;
-        steps(NamespacePathStep::Charge(&item))?;
-        if directory.depth() != expected_directory.depth() {
-            return Err(DemandError::StaleCursor);
-        }
-        for (actual, expected) in directory.components().iter().zip(expected_directory.components()) {
-            cancellation.check().map_err(|_| DemandError::Cancelled)?;
-            steps(NamespacePathStep::Charge(&item))?;
-            if actual.encoding() != expected.encoding() || actual.as_bytes().len() != expected.as_bytes().len() {
+        let (directory, mut path_allocation) = NamespacePath::decode_cursor_with_accounting(
+            decoder, profile, limits, accounting, cancellation,
+        ).map_err(Self::cursor_accounting_error)?;
+        let owned_bytes = directory.retained_bytes();
+        let result = (|| {
+            accounting.charge(item).map_err(Self::cursor_accounting_error)?;
+            if directory.depth() != expected_directory.depth() {
                 return Err(DemandError::StaleCursor);
             }
-            for (actual, expected) in actual.as_bytes().iter().zip(expected.as_bytes()) {
+            for (actual, expected) in directory.components().iter().zip(expected_directory.components()) {
                 cancellation.check().map_err(|_| DemandError::Cancelled)?;
-                steps(NamespacePathStep::Charge(&item))?;
-                if actual != expected {
+                accounting.charge(item).map_err(Self::cursor_accounting_error)?;
+                if actual.encoding() != expected.encoding() || actual.as_bytes().len() != expected.as_bytes().len() {
                     return Err(DemandError::StaleCursor);
                 }
+                for (actual, expected) in actual.as_bytes().iter().zip(expected.as_bytes()) {
+                    cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                    accounting.charge(item).map_err(Self::cursor_accounting_error)?;
+                    if actual != expected {
+                        return Err(DemandError::StaleCursor);
+                    }
+                }
+            }
+            cancellation.check().map_err(|_| DemandError::Cancelled)?;
+            let version_bytes = decoder.take_exact(32).map_err(|_| DemandError::InvalidRequest)?;
+            let version_work = WorkCounters { bytes_copied: 32, items_examined: 1,
+                ..WorkCounters::UNCHARGED };
+            accounting.admit(version_work).map_err(Self::cursor_accounting_error)?;
+            let directory_version = SourceVersion(<[u8; 32]>::try_from(version_bytes)
+                .map_err(|_| DemandError::InvalidRequest)?);
+            accounting.record_completed(version_work).map_err(Self::cursor_accounting_error)?;
+            accounting.charge(item).map_err(Self::cursor_accounting_error)?;
+            let token = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+            cancellation.check().map_err(|_| DemandError::Cancelled)?;
+            accounting.record_completed(WorkCounters::UNCHARGED).map_err(Self::cursor_accounting_error)?;
+            Ok(Self {
+                source, directory, directory_version, token,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_ownership: NativeCursorOwnership::default(),
+            })
+        })();
+        match result {
+            Ok(cursor) => {
+                allocation.absorb(&mut path_allocation).map_err(Self::cursor_accounting_error)?;
+                Ok((cursor, allocation))
+            }
+            Err(error) => {
+                accounting.release_owned(&mut path_allocation, owned_bytes).map_err(Self::cursor_accounting_error)?;
+                Err(error)
             }
         }
-        cancellation.check().map_err(|_| DemandError::Cancelled)?;
-        let version_bytes = decoder.take_exact(32).map_err(|_| DemandError::InvalidRequest)?;
-        let version_work = WorkCounters { bytes_copied: 32, items_examined: 1,
-            ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&version_work))?;
-        let directory_version = SourceVersion(<[u8; 32]>::try_from(version_bytes)
-            .map_err(|_| DemandError::InvalidRequest)?);
-        steps(NamespacePathStep::Performed(&version_work))?;
-        steps(NamespacePathStep::Charge(&item))?;
-        let token = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
-        cancellation.check().map_err(|_| DemandError::Cancelled)?;
-        steps(NamespacePathStep::Performed(&WorkCounters::UNCHARGED))?;
-        Ok(Self {
-            source, directory, directory_version, token,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_ownership: NativeCursorOwnership::default(),
-        })
     }
 
     fn cursor_path_error(error: NamespacePathError) -> DemandError {
@@ -410,210 +346,54 @@ impl SourceCursor {
     }
 }
 
-/// Exact claims of this codec only, including an unfinished physical buffer.
-struct SourceCursorAccounting<'a, 'b> {
-    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'b>,
-    allocation: crate::kernel::allocation::KernelOwnedAllocation,
-    owned_bytes: u64,
-}
-
-impl<'a, 'b> SourceCursorAccounting<'a, 'b> {
-    fn new(accounting: &'a mut crate::kernel::allocation::KernelAccounting<'b>) -> Result<Self, DemandError> {
-        let allocation = accounting.claim_owned(0, 0).map_err(SourceCursor::cursor_accounting_error)?;
-        Ok(Self { accounting, allocation, owned_bytes: 0 })
-    }
-
-    fn observe(&mut self, step: crate::kernel::NamespacePathStep<'_>) -> Result<(), DemandError> {
-        use crate::kernel::{NamespacePathStep, ReadAllocationStep};
-        let result = match step {
-            NamespacePathStep::Admit(delta) => self.accounting.admit(*delta),
-            NamespacePathStep::Charge(delta) => self.accounting.charge(*delta),
-            NamespacePathStep::Performed(delta) => self.accounting.record_completed(*delta),
-            NamespacePathStep::Allocation(step) => match step {
-                ReadAllocationStep::Allocate { bytes, operations } => {
-                    let next = self.owned_bytes.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
-                    let mut incoming = self.accounting.claim_owned(bytes, operations)
-                        .map_err(SourceCursor::cursor_accounting_error)?;
-                    if let Err(error) = self.allocation.absorb(&mut incoming) {
-                        self.accounting.release_owned(&mut incoming, bytes)
-                            .map_err(SourceCursor::cursor_accounting_error)?;
-                        return Err(SourceCursor::cursor_accounting_error(error));
-                    }
-                    self.owned_bytes = next;
-                    Ok(())
-                }
-                ReadAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-                    self.owned_bytes = self.owned_bytes.checked_sub(admitted_bytes)
-                        .and_then(|bytes| bytes.checked_add(actual_bytes)).ok_or(crate::WorkError::Overflow)?;
-                    self.accounting.reconcile_owned(&mut self.allocation, admitted_bytes, actual_bytes)
-                }
-                ReadAllocationStep::ReserveFailed(error) => return Err(DemandError::Allocation(error)),
-                ReadAllocationStep::BeforeCopy(bytes) => self.accounting.admit(
-                    WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED },
-                ),
-                ReadAllocationStep::Copied(bytes) => self.accounting.record_completed(
-                    WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED },
-                ),
-                ReadAllocationStep::BeforeHash(bytes) => self.accounting.check().and_then(|()| self.accounting.admit(
-                    WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
-                )),
-                ReadAllocationStep::Hashed(bytes) => self.accounting.record_completed(
-                    WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
-                ).and_then(|()| self.accounting.check()),
-                ReadAllocationStep::BeforeItem => self.accounting.admit(
-                    WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
-                ),
-                ReadAllocationStep::Item => self.accounting.record_completed(
-                    WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
-                ),
-            },
-        };
-        result.map_err(SourceCursor::cursor_accounting_error)
-    }
-
-    fn finish<T>(mut self, result: Result<T, DemandError>)
-    -> Result<(T, crate::kernel::allocation::KernelOwnedAllocation), DemandError> {
-        match result {
-            Ok(value) => Ok((value, self.allocation)),
-            Err(error) => {
-                // Partial data has already dropped before its exact claim retires.
-                self.accounting.release_owned(&mut self.allocation, self.owned_bytes)
-                    .map_err(SourceCursor::cursor_accounting_error)?;
-                Err(error)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod source_cursor_codec_tests {
     use super::*;
-    use crate::kernel::allocation::AllocationLedger;
+    use crate::kernel::allocation::{AllocationLedger, KernelAccounting};
     use crate::kernel::{Decoder, Encoder, LogicalName, NameEncoding};
 
-    const DOMAIN: &[u8] = b"source-cursor-control";
-
-    fn cursor(token: u64) -> Result<SourceCursor, NamespacePathError> {
+    #[test]
+    fn cursors_preserve_opaque_tokens_and_reject_foreign_bindings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DOMAIN: &[u8] = b"source-cursor-control";
         let limits = crate::VolumeLimits::default();
-        Ok(SourceCursor {
-            source: SourceReference { identity: [4; 16], epoch: 7 },
-            directory: NamespacePath::new(vec![LogicalName::new(
-                NameEncoding::WindowsUtf16Le, vec![0, 0xd8], limits.maximum_component_bytes,
-            ).map_err(NamespacePathError::Name)?], limits)?,
-            directory_version: SourceVersion([9; 32]),
-            token,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_ownership: NativeCursorOwnership::default(),
-        })
-    }
-
-    fn encoded(cursor: &SourceCursor) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let capacity = DOMAIN.len() + 2 + cursor.cursor_encoded_len()?;
-        let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, capacity)?;
-        let mut work = WorkCounters::default();
-        cursor.encode_cursor_into(&mut encoder, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-        assert_eq!(work.bytes_encoded, cursor.cursor_encoded_len()? as u64);
-        Ok(encoder.finish())
-    }
-
-    #[test]
-    fn opaque_tokens_and_original_version_roundtrip_without_new_authorization_rules()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for token in [0, u64::MAX] {
-            let original = cursor(token)?;
-            let bytes = encoded(&original)?;
-            let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
-            let mut ledger = AllocationLedger::default();
-            let mut work = WorkCounters::default();
-            let prior_live = original.directory.retained_bytes() + bytes.capacity() as u64;
-            ledger.claim_bytes(prior_live, 0, &mut work, WorkBudget::UNBOUNDED)?;
-            let decoded = SourceCursor::decode_cursor_with_ledger(
-                &mut decoder, original.source, &original.directory,
-                crate::FilesystemProfile::Windows, crate::VolumeLimits::default(),
-                &mut ledger, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-            )?;
-            decoder.finish()?;
-            assert_eq!(decoded, original);
-            assert_eq!(work.bytes_copied, 16 + 2 + 32);
-            assert_eq!(work.allocation_operations, 2);
-            assert_eq!(ledger.live_bytes(), prior_live + decoded.retained_bytes());
-            assert_eq!(work.peak_allocation_bytes, ledger.live_bytes());
-            ledger.release(decoded.retained_bytes())?;
-            assert_eq!(ledger.live_bytes(), prior_live);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn foreign_bindings_fail_with_actual_prefix_and_retire_only_decoded_path()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let original = cursor(0)?;
-        let bytes = encoded(&original)?;
-        let foreign_directory = NamespacePath::new(vec![LogicalName::new(
-            NameEncoding::WindowsUtf16Le, vec![b'b', 0], 255,
-        )?], crate::VolumeLimits::default())?;
-        for foreign_source in [true, false] {
-            let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
-            let mut ledger = AllocationLedger::default();
-            let mut work = WorkCounters::default();
-            let prior_live = original.directory.retained_bytes()
-                + foreign_directory.retained_bytes() + bytes.capacity() as u64;
-            ledger.claim_bytes(prior_live, 0, &mut work, WorkBudget::UNBOUNDED)?;
-            let expected_source = if foreign_source {
-                SourceReference { epoch: original.source.epoch + 1, ..original.source }
-            } else { original.source };
-            let expected_directory = if foreign_source { &original.directory } else { &foreign_directory };
-            let error = SourceCursor::decode_cursor_with_ledger(
-                &mut decoder, expected_source, expected_directory,
-                crate::FilesystemProfile::Windows, crate::VolumeLimits::default(),
-                &mut ledger, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-            ).expect_err("foreign cursor binding must fail");
-            assert!(matches!(error, DemandError::StaleCursor));
-            assert_eq!(work.bytes_copied, if foreign_source { 16 } else { 18 });
-            assert_eq!(work.allocation_operations, if foreign_source { 0 } else { 2 });
-            assert_eq!(ledger.live_bytes(), prior_live);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn copy_denial_and_cancellation_preserve_actual_prefix_and_caller_claims()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let original = cursor(u64::MAX)?;
-        let bytes = encoded(&original)?;
-        for (copy_budget, copied, allocations) in [(0, 0, 0), (17, 16, 1), (18, 18, 2)] {
-            let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
-            let mut ledger = AllocationLedger::default();
-            let mut work = WorkCounters::default();
-            let prior_live = original.directory.retained_bytes() + bytes.capacity() as u64;
-            ledger.claim_bytes(prior_live, 0, &mut work, WorkBudget::UNBOUNDED)?;
-            let error = SourceCursor::decode_cursor_with_ledger(
-                &mut decoder, original.source, &original.directory,
-                crate::FilesystemProfile::Windows, crate::VolumeLimits::default(),
-                &mut ledger, &mut work,
-                WorkBudget { bytes_copied: copy_budget, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
-            ).expect_err("copy allowance must deny before the next copy/allocation");
-            assert!(matches!(error, DemandError::Work(_)));
-            assert_eq!(work.bytes_copied, copied);
-            assert_eq!(work.allocation_operations, allocations);
-            assert_eq!(ledger.live_bytes(), prior_live);
-        }
         let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
-        let mut ledger = AllocationLedger::default();
-        let mut work = WorkCounters::default();
-        let error = SourceCursor::decode_cursor_with_ledger(
-            &mut decoder, original.source, &original.directory,
-            crate::FilesystemProfile::Windows, crate::VolumeLimits::default(),
-            &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        ).expect_err("cancelled decode must not allocate");
-        assert!(matches!(error, DemandError::Cancelled));
-        assert_eq!(work, WorkCounters::default());
-        assert_eq!(ledger.live_bytes(), 0);
+        for token in [0, u64::MAX] {
+            let cursor = SourceCursor {
+                source: SourceReference { identity: [4; 16], epoch: 7 },
+                directory: NamespacePath::new(vec![LogicalName::new(
+                    NameEncoding::WindowsUtf16Le, vec![0, 0xd8], limits.maximum_component_bytes,
+                )?], limits)?,
+                directory_version: SourceVersion([9; 32]), token,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_ownership: NativeCursorOwnership::default(),
+            };
+            let mut ledger = AllocationLedger::default();
+            let mut work = WorkCounters::default();
+            let mut accounting = KernelAccounting::borrowed_standalone(
+                &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
+            );
+            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?)?;
+            cursor.encode_cursor_into(&mut encoder, &mut accounting, &cancellation)?;
+            let bytes = encoder.finish();
+            for epoch in [cursor.source.epoch, cursor.source.epoch + 1] {
+                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
+                let result = SourceCursor::decode_cursor(
+                    &mut decoder, SourceReference { epoch, ..cursor.source }, &cursor.directory,
+                    crate::FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
+                );
+                if epoch == cursor.source.epoch {
+                    let (decoded, mut allocation) = result?;
+                    decoder.finish()?;
+                    assert_eq!(decoded, cursor);
+                    accounting.release_owned(&mut allocation, decoded.retained_bytes())?;
+                } else {
+                    assert!(matches!(result, Err(DemandError::StaleCursor)));
+                }
+            }
+        }
         Ok(())
     }
-
 }
 
 /// Immutable entries backed by the producer's original page, never a retry copy.
@@ -1692,38 +1472,6 @@ impl DemandCancellationRoots {
         custody.pending = false;
     }
 
-    fn retain_watch(
-        &mut self, token: &std::sync::Arc<SourceWatchAllocationCustody>,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget,
-    ) -> Result<(), DemandError> {
-        let weak = std::sync::Arc::downgrade(token);
-        for custody in self.watches.iter().flatten().chain(self.watch_overflow.iter()) {
-            work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, &budget)?;
-            if custody.token.ptr_eq(&weak) { return Ok(()); }
-        }
-        let inline = self.watches.iter().position(Option::is_none);
-        if inline.is_none() {
-            if let Err(error) = self.watch_capacity.ensure_for_push::<DemandWatchCustody>(
-                &mut self.watch_overflow, usize::MAX, allocations, work, budget,
-            ) {
-                return Err(error.into_work_or(DemandError::WorkerUnavailable));
-            }
-        }
-        let custody = DemandWatchCustody { token: weak, adopted_bytes: 0, pending: false };
-        let custody = if let Some(index) = inline {
-            self.watches[index] = Some(custody);
-            self.watches[index].as_mut().expect("inserted original backing proof")
-        } else {
-            self.watch_overflow.push(custody);
-            self.watch_overflow.last_mut().expect("inserted original backing proof")
-        };
-        let bytes = custody.current_bytes();
-        let recorded = record_completed_retention(allocations, work, budget, bytes);
-        custody.adopted_bytes = bytes;
-        recorded.map_err(DemandError::from)
-    }
-
     fn record_observer_growth(
         &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget,
@@ -2350,128 +2098,68 @@ struct ScopedSourceReadMeter<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+macro_rules! forward_source_reads {
+    ($($mode:ident $name:ident($($arg:ident: $ty:ty),*) -> $result:ty;)*) => {
+        $(fn $name(&self, $($arg: $ty),*) -> $result {
+            forward_source_reads!(@ $mode self);
+            self.original.$name($($arg),*)
+        })*
+    };
+    (@ admit $meter:ident) => { $meter.check()?; };
+    (@ complete $meter:ident) => {};
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
-    fn check(&self) -> std::io::Result<()> {
+    fn check(&self) -> io::Result<()> {
         if self.stop.load(std::sync::atomic::Ordering::Acquire) {
             return Err(self.failure_root.with_original_leaf(|work| work.record_native_io_failure(DemandError::Cancelled)));
         }
         self.original.check()
     }
-    fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.reserve_operations(kind, count)
+
+    forward_source_reads! {
+        admit reserve_operations(kind: NativeOperationKind, count: u64) -> io::Result<()>;
+        complete cancel_reserved_operations(kind: NativeOperationKind, count: u64) -> ();
+        complete record_reserved_operation(kind: NativeOperationKind) -> io::Result<()>;
+        admit admit_write_bytes(maximum: usize) -> io::Result<()>;
+        admit reserve_bytes(kind: NativeOperationKind, maximum: u64) -> io::Result<()>;
+        complete cancel_reserved_bytes(kind: NativeOperationKind, maximum: u64) -> ();
+        complete record_reserved_bytes(kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()>;
+        admit allocate(bytes: u64) -> io::Result<()>;
+        complete allocation_failed(error: std::collections::TryReserveError) -> io::Error;
+        admit reserve_allocation(bytes: u64) -> io::Result<()>;
+        complete cancel_reserved_allocation(bytes: u64) -> ();
+        complete record_reserved_allocation(bytes: u64) -> io::Result<()>;
+        admit allocate_refcount_header() -> io::Result<()>;
+        admit adopt(bytes: u64) -> io::Result<()>;
+        complete record_completed_adoption(bytes: u64) -> (u64, io::Result<()>);
+        admit admit_codec(encoded: u64, copied: u64, hashed: u64) -> io::Result<()>;
+        complete record_codec(encoded: u64, copied: u64, hashed: u64) -> io::Result<()>;
+        admit examine(items: u64, bytes_copied: u64) -> io::Result<()>;
+        admit admit_examination(items: u64, bytes_copied: u64) -> io::Result<()>;
+        complete record_examination(items: u64, bytes_copied: u64) -> io::Result<()>;
+        complete release(bytes: u64) -> ();
+        admit admit_bytes(maximum: usize) -> io::Result<()>;
+        admit admit_read(maximum: usize) -> io::Result<()>;
+        admit admit_operations(additional: u64) -> io::Result<()>;
+        complete record_operations(completed: u64) -> io::Result<()>;
+        complete record_read(bytes: usize) -> io::Result<()>;
+        admit admit_write(maximum: usize) -> io::Result<()>;
+        complete record_write(bytes: usize) -> io::Result<()>;
+        admit admit_write_operations(additional: u64) -> io::Result<()>;
+        complete record_write_operations(completed: u64) -> io::Result<()>;
+        admit admit_durability() -> io::Result<()>;
+        admit reserve_cleanup_write() -> io::Result<u64>;
+        complete cancel_cleanup_write(reservation: u64) -> ();
+        complete record_cleanup_write(reservation: u64) -> io::Result<()>;
     }
-    fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        self.original.cancel_reserved_operations(kind, count);
-    }
-    fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        self.original.record_reserved_operation(kind)
-    }
-    fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_write_bytes(maximum)
-    }
-    fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.reserve_bytes(kind, maximum)
-    }
-    fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        self.original.cancel_reserved_bytes(kind, maximum);
-    }
-    fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-        self.original.record_reserved_bytes(kind, maximum, actual)
-    }
-    fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.allocate(bytes)
-    }
-    fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
-        self.original.allocation_failed(error)
-    }
-    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.reserve_allocation(bytes)
-    }
-    fn cancel_reserved_allocation(&self, bytes: u64) {
-        self.original.cancel_reserved_allocation(bytes);
-    }
-    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
-        self.original.record_reserved_allocation(bytes)
-    }
-    fn allocate_refcount_header(&self) -> std::io::Result<()> {
-        self.check()?;
-        self.original.allocate_refcount_header()
-    }
-    fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.adopt(bytes)
-    }
-    fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        self.original.record_completed_adoption(bytes)
-    }
-    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_codec(encoded, copied, hashed)
-    }
-    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
-        self.original.record_codec(encoded, copied, hashed)
-    }
-    fn examine(&self, items: u64, bytes_copied: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.examine(items, bytes_copied)
-    }
-    fn admit_examination(&self, items: u64, bytes_copied: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_examination(items, bytes_copied)
-    }
-    fn record_examination(&self, items: u64, bytes_copied: u64) -> std::io::Result<()> {
-        self.original.record_examination(items, bytes_copied)
-    }
-    fn release(&self, bytes: u64) { self.original.release(bytes); }
-    fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_bytes(maximum)
-    }
-    fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_read(maximum)
-    }
-    fn admit_operations(&self, additional: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_operations(additional)
-    }
-    fn record_operations(&self, completed: u64) -> std::io::Result<()> {
-        self.original.record_operations(completed)
-    }
-    fn record_read(&self, bytes: usize) -> std::io::Result<()> { self.original.record_read(bytes) }
-    fn finish_read(&self, requested: usize, completed: usize) -> std::io::Result<()> {
+
+    fn finish_read(&self, requested: usize, completed: usize) -> io::Result<()> {
         let completed = self.original.finish_read(requested, completed);
         completed.and(self.check())
     }
-    fn admit_write(&self, maximum: usize) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_write(maximum)
-    }
-    fn record_write(&self, bytes: usize) -> std::io::Result<()> { self.original.record_write(bytes) }
-    fn admit_write_operations(&self, additional: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_write_operations(additional)
-    }
-    fn record_write_operations(&self, completed: u64) -> std::io::Result<()> {
-        self.original.record_write_operations(completed)
-    }
-    fn admit_durability(&self) -> std::io::Result<()> {
-        self.check()?;
-        self.original.admit_durability()
-    }
-    fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
-        self.check()?;
-        self.original.reserve_cleanup_write()
-    }
-    fn cancel_cleanup_write(&self, reservation: u64) { self.original.cancel_cleanup_write(reservation); }
-    fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
-        self.original.record_cleanup_write(reservation)
-    }
+
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7289,117 +6977,6 @@ pub mod native {
         }
     }
 
-    #[cfg(all(test, unix))]
-    mod original_file_tests {
-        use super::*;
-
-        async fn opened(
-            cancellation: &CancellationToken,
-        ) -> Result<(tempfile::TempDir, NativeDemandFile, Arc<NativeDemandReadMeter>), Box<dyn std::error::Error>> {
-            let root = tempfile::tempdir()?;
-            std::fs::write(root.path().join("file"), b"native")?;
-            let provider = NativeDemandSource::open(
-                root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
-            ).await?;
-            let limits = VolumeLimits::default();
-            let path = NamespacePath::from_portable(
-                &crate::path::PortablePath::parse("/file", limits)?, limits,
-            )?;
-            let expected = provider.lookup(provider.reference(), &path, WorkBudget::UNBOUNDED, cancellation)
-                .await?.value.ok_or("missing source file")?.version;
-            let original = Arc::new(NativeDemandReadMeter(Mutex::new(
-                DemandWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )));
-            let file = NativeDemandFile::open(
-                provider.clone(), provider.reference(), &path, expected, &mut NativeSourceWork::new(&original),
-            )?;
-            Ok((root, file, original))
-        }
-
-        #[tokio::test]
-        async fn original_bytes_retire_only_after_last_physical_owner_and_survive_origin_drop()
-        -> Result<(), Box<dyn std::error::Error>> {
-            let cancellation = CancellationToken::new();
-            let (_root, file, original) = opened(&cancellation).await?;
-            let chunk = file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original))?;
-            assert_eq!(chunk.bytes.as_ref(), b"native");
-            assert_eq!(chunk.logical_owned_bytes, 6);
-            let before = original.with_original_leaf(DemandWork::receipt);
-            let live = original.with_original_leaf(|work| work.live_allocation_bytes());
-            let alias = chunk.bytes.clone();
-            let empty = chunk.bytes.slice(..0);
-            drop(chunk);
-            original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-            assert_eq!(original.with_original_leaf(|work| work.live_allocation_bytes()), live);
-            assert_eq!(original.with_original_leaf(DemandWork::receipt), before);
-            drop(alias);
-            original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-            assert_eq!(original.with_original_leaf(|work| work.live_allocation_bytes()), live);
-            drop(empty);
-            original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-            assert!(original.with_original_leaf(|work| work.live_allocation_bytes()) <= live - 6);
-            let chunk = file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original))?;
-            let empty = chunk.bytes.slice(..0);
-            let origin = Arc::downgrade(&original);
-            drop(file);
-            drop(original);
-            assert_eq!(chunk.bytes.as_ref(), b"native");
-            assert!(origin.upgrade().ok_or("byte owner retired its original early")?
-                .with_original_leaf(|work| work.live_allocation_bytes())
-                >= chunk.logical_owned_bytes);
-            drop(chunk);
-            assert!(origin.upgrade().is_some(), "the empty alias retains the original context");
-            drop(empty);
-            assert!(origin.upgrade().is_none());
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn guarded_source_bytes_transfer_scratch_without_extending_capture_lifetime()
-        -> Result<(), Box<dyn std::error::Error>> {
-            let cancellation = CancellationToken::new();
-            let (_root, file, meter) = opened(&cancellation).await?;
-            let original = OriginalDemandWork::from_meter(Arc::clone(&meter));
-            let native = crate::NativeMaterializationWork::from_original_demand_work(&original)?;
-            let capture = CaptureTransientCustody::new_native(&native)?;
-            let scoped = native.with_capture_custody(&capture)?;
-            let chunk = file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::from_native_materialization_work(&scoped))?;
-            assert_eq!(chunk.bytes.as_ref(), b"native");
-            assert_eq!(capture.retained_bytes(), 0, "the SDK payload is intrinsic, not capture scratch");
-            let capture_origin = Arc::downgrade(&capture);
-            drop(capture);
-            assert!(capture_origin.upgrade().is_none(), "the SDK payload retains only the original ledger and resource");
-            assert_eq!(chunk.bytes.as_ref(), b"native");
-            drop(chunk);
-            original.with_original_leaf(DemandWork::reconcile_native_controls)??;
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn original_partial_stale_read_preserves_source_prefix_and_denials_start_no_body()
-        -> Result<(), Box<dyn std::error::Error>> {
-            let cancellation = CancellationToken::new();
-            let (root, file, original) = opened(&cancellation).await?;
-            original.with_original_leaf(|work| work.budget.source_bytes_read = 0);
-            assert!(matches!(file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original)),
-                Err(DemandError::Work(_))));
-            assert_eq!(original.with_original_leaf(|work| work.work.source_bytes_read), 0);
-            original.with_original_leaf(|work| work.budget.source_bytes_read = u64::MAX);
-            std::fs::OpenOptions::new().write(true).open(root.path().join("file"))?.set_len(2)?;
-            assert!(matches!(file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original)),
-                Err(DemandError::StaleVersion)));
-            assert_eq!(original.with_original_leaf(|work| work.work.source_bytes_read), 2);
-            assert_eq!(original.with_original_leaf(|work| work.work.output_bytes), 0);
-            original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-            cancellation.cancel();
-            let before = original.with_original_leaf(DemandWork::receipt);
-            assert!(matches!(file.read(ReadRange::new(0, 6)?, &mut NativeSourceWork::new(&original)),
-                Err(DemandError::Cancelled)));
-            assert_eq!(original.with_original_leaf(DemandWork::receipt), before);
-            Ok(())
-        }
-    }
-
     impl DemandFile for NativeDemandFile {
         fn logical_owned_bytes(&self) -> u64 {
             let bytes = (std::mem::size_of::<Self>() + std::mem::size_of::<NativeSourceFile>()) as u64
@@ -8517,92 +8094,6 @@ mod tests {
         ), Err(DemandError::Cancelled)));
         assert!(observer.directories.lock().map_err(|_| "observer lock poisoned")?.is_empty());
         assert_eq!(work.receipt(), before);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn filtered_original_reads_charge_the_original_and_exclusions_do_no_io()
-    -> Result<(), Box<dyn Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("visible"), b"actual")?;
-        let source = FilteredDemandSource::new(NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
-        ).await?, vec![path("/hidden")?]);
-        let cancellation = CancellationToken::new();
-        let original = Arc::new(NativeDemandReadMeter(Mutex::new(
-            DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
-        )));
-        original.with_original_leaf(|work| work.charge(WorkCounters {
-            bytes_hashed: 7, ..WorkCounters::UNCHARGED
-        }))?;
-        let hidden = path("/hidden/missing")?;
-        assert!(source.lookup_with_native_work(
-            source.reference(), &hidden, NativeSourceWork::new(&original),
-        ).await?.is_none());
-        assert_eq!(original.lock().work.backend_read_operations, 0);
-        assert_eq!(original.lock().work.items_examined, 2);
-        let visible = path("/visible")?;
-        let node = source.read_metadata_with_native_work(
-            source.reference(), &visible, None, NativeSourceWork::new(&original),
-        ).await?.ok_or("visible file absent")?;
-        let chunk = source.read_range_with_native_work(
-            source.reference(), &visible, node.version, 0, 6, NativeSourceWork::new(&original),
-        ).await?;
-        assert_eq!(chunk.bytes.as_ref(), b"actual");
-        assert_eq!(original.lock().work.source_bytes_read, 6);
-        assert!(original.lock().work.backend_read_operations > 0);
-        assert!(original.lock().work.bytes_hashed >= 7);
-        drop(chunk);
-        original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-        cancellation.cancel();
-        let before = original.lock().work;
-        assert!(matches!(source.lookup_with_native_work(
-            source.reference(), &hidden, NativeSourceWork::new(&original),
-        ).await, Err(DemandError::Cancelled)));
-        assert_eq!(original.lock().work, before);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn filtered_original_selector_denial_replays_raw_page_and_drop_retires_selectors()
-    -> Result<(), Box<dyn Error>> {
-        let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("hidden"), b"x")?;
-        std::fs::write(root.path().join("visible"), b"x")?;
-        let source = FilteredDemandSource::new(NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(),
-        ).await?, vec![path("/hidden")?]);
-        let directory = path("/")?;
-        let cancellation = CancellationToken::new();
-        let original = Arc::new(NativeDemandReadMeter(Mutex::new(
-            DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
-        )));
-        let raw = source.inner().list_page_with_native_work(
-            source.reference(), &directory, None, 16, NativeSourceWork::new(&original),
-        ).await?;
-        assert_eq!(raw.entries.len(), 2);
-        let raw_address = raw.entries.get(0).ok_or("empty raw page")? as *const SourceDirectoryEntry;
-        original.with_original_leaf(|work| { work.budget.items_examined = work.work.items_examined; });
-        assert!(matches!(source.project_original_page(
-            &directory, raw, &mut NativeSourceWork::new(&original),
-        ), Err(DemandError::Work(_))));
-        original.with_original_leaf(|work| { work.budget.items_examined = u64::MAX; });
-        let replay = source.inner().list_page_with_native_work(
-            source.reference(), &directory, None, 16, NativeSourceWork::new(&original),
-        ).await?;
-        assert_eq!(replay.entries.get(0).ok_or("empty replay")? as *const SourceDirectoryEntry, raw_address);
-        let page = source.project_original_page(
-            &directory, replay, &mut NativeSourceWork::new(&original),
-        )?;
-        assert_eq!(page.entries.len(), 1);
-        assert_eq!(page.entries[0].name(), path("/visible")?.components().last().ok_or("name absent")?);
-        let selector_bytes = (page.entries.indices.as_ref().ok_or("selector absent")?.capacity()
-            * std::mem::size_of::<usize>()) as u64;
-        assert_eq!(selector_bytes, (2 * std::mem::size_of::<usize>()) as u64);
-        let live = original.with_original_leaf(|work| work.live_allocation_bytes());
-        drop(page);
-        original.with_original_leaf(DemandWork::reconcile_native_controls)?;
-        assert!(original.with_original_leaf(|work| work.live_allocation_bytes()) <= live - selector_bytes);
         Ok(())
     }
 

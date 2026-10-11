@@ -38,7 +38,7 @@ pub(crate) struct ForkFailure {
 
 impl ForkFailure {
     pub(crate) fn new(error: AuthorityStoreError, work: WorkCounters) -> Self { Self { error, work } }
-    pub(crate) fn before_work(error: AuthorityStoreError) -> Self { Self::new(error, WorkCounters::default()) }
+
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +83,7 @@ pub(crate) struct ForkWork<'a> {
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
     pub(crate) cancellation: &'a CancellationToken,
-    pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
+    pub(crate) allocations: Option<crate::kernel::allocation::AllocationLedger>,
     /// Admission-only upper witness for retained opaque provider payloads.
     opaque_live_upper_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -96,7 +96,7 @@ impl<'a> ForkWork<'a> {
     pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
         Self {
             work: WorkCounters::default(), budget, cancellation,
-            allocations: Default::default(), opaque_live_upper_bytes: 0,
+            allocations: Some(Default::default()), opaque_live_upper_bytes: 0,
             #[cfg(not(target_arch = "wasm32"))]
             original: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -113,7 +113,7 @@ impl<'a> ForkWork<'a> {
         // The standalone fields are never consulted by original funding.
         Ok(Self {
             work: original.receipt(), budget: WorkBudget::default(), cancellation,
-            allocations: Default::default(), opaque_live_upper_bytes: 0,
+            allocations: None, opaque_live_upper_bytes: 0,
             original: Some(original), request_allocation: None,
         })
     }
@@ -184,7 +184,7 @@ impl<'a> ForkWork<'a> {
             .map_err(|_| ForkFailure::new(AuthorityStoreError::Cancelled, self.work))?;
         self.work.verify(self.budget)
             .map_err(|error| ForkFailure::new(error.into(), self.work))?;
-        let peak = self.allocations.live_bytes().checked_add(self.opaque_live_upper_bytes)
+        let peak = self.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(self.opaque_live_upper_bytes)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         self.work.admit(&WorkCounters { peak_allocation_bytes: peak, ..WorkCounters::default() }, &self.budget)
             .map_err(|error| ForkFailure::new(error.into(), self.work))
@@ -199,7 +199,7 @@ impl<'a> ForkWork<'a> {
         }
         self.check()?;
         let mut admitted = delta;
-        admitted.peak_allocation_bytes = delta.peak_allocation_bytes.max(self.allocations.live_bytes())
+        admitted.peak_allocation_bytes = delta.peak_allocation_bytes.max(self.allocations.as_ref().expect("standalone fork funding").live_bytes())
             .checked_add(self.opaque_live_upper_bytes)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         self.work.admit(&admitted, &self.budget)
@@ -220,7 +220,7 @@ impl<'a> ForkWork<'a> {
 
     pub(crate) fn release(&mut self, bytes: u64) -> Result<(), ForkFailure> {
         if self.is_native() { return Ok(()); }
-        self.allocations.release(bytes)
+        self.allocations.as_mut().expect("standalone fork funding").release(bytes)
             .map_err(|error| ForkFailure::new(
                 error.into_work_or(AuthorityStoreError::RejectedStatic("fork allocation custody mismatch")), self.work))
     }
@@ -232,14 +232,14 @@ impl<'a> ForkWork<'a> {
             self.work = self.spent();
             return Ok(());
         }
-        self.release(self.allocations.live_bytes())
+        self.release(self.allocations.as_ref().expect("standalone fork funding").live_bytes())
     }
 
     pub(crate) fn hold_opaque(&mut self, bytes: u64) -> Result<(), ForkFailure> {
         if self.is_native() { return self.check(); }
         let next = self.opaque_live_upper_bytes.checked_add(bytes)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
-        let peak = self.allocations.live_bytes().checked_add(next)
+        let peak = self.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(next)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         self.work.admit(&WorkCounters { peak_allocation_bytes: peak, ..WorkCounters::default() }, &self.budget)
             .map_err(|error| ForkFailure::new(error.into(), self.work))?;
@@ -335,7 +335,7 @@ impl<'a> ForkWork<'a> {
             };
             return Ok((value, Some(allocation)));
         }
-        allocate(&mut self.allocations, &mut self.work, self.budget, self.cancellation)
+        allocate(self.allocations.as_mut().expect("standalone fork funding"), &mut self.work, self.budget, self.cancellation)
             .map(|value| (value, None)).map_err(|error| ForkFailure::new(error, self.work))
     }
 
@@ -418,7 +418,7 @@ impl<'a> ForkWork<'a> {
                 bytes_encoded: writes.bytes_encoded,
                 bytes_copied: writes.bytes_copied + length as u64,
                 allocation_operations: 1,
-                peak_allocation_bytes: self.allocations.live_bytes().checked_add(length as u64)
+                peak_allocation_bytes: self.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(length as u64)
                     .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?,
                 ..WorkCounters::default()
             })?;
@@ -457,13 +457,13 @@ impl<'a> ForkWork<'a> {
         }
         self.admit(WorkCounters {
             allocation_operations: 1,
-            peak_allocation_bytes: self.allocations.live_bytes().checked_add(length as u64)
+            peak_allocation_bytes: self.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(length as u64)
                 .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?,
             bytes_copied: length as u64, ..WorkCounters::default()
         })?;
         let path = acyclic_stream::StreamPath::new(text)
             .map_err(|error| ForkFailure::new(map_stream_error(error), self.work))?;
-        self.allocations.claim_bytes(length as u64, 1, &mut self.work, WorkBudget::UNBOUNDED)
+        self.allocations.as_mut().expect("standalone fork funding").claim_bytes(length as u64, 1, &mut self.work, WorkBudget::UNBOUNDED)
             .map_err(|error| ForkFailure::new(
                 error.into_work_or(AuthorityStoreError::Rejected("fork allocation failed".to_owned())), self.work))?;
         self.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() })?;
@@ -546,7 +546,7 @@ impl<'a> ForkWork<'a> {
         let mut budget = self.work.remaining(self.budget)
             .map_err(|error| ForkFailure::new(error.into(), self.work))?;
         budget.peak_allocation_bytes = self.budget.peak_allocation_bytes
-            .checked_sub(self.allocations.live_bytes()).and_then(|bytes| bytes.checked_sub(self.opaque_live_upper_bytes))
+            .checked_sub(self.allocations.as_ref().expect("standalone fork funding").live_bytes()).and_then(|bytes| bytes.checked_sub(self.opaque_live_upper_bytes))
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         Ok(budget)
     }
@@ -556,7 +556,7 @@ impl<'a> ForkWork<'a> {
         if self.is_native() {
             return Err(ForkFailure::new(AuthorityStoreError::NativeOriginalUnsupported, self.spent()));
         }
-        child.peak_allocation_bytes = self.allocations.live_bytes().checked_add(child.peak_allocation_bytes)
+        child.peak_allocation_bytes = self.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(child.peak_allocation_bytes)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), self.work))?;
         self.charge(child)
     }
@@ -1671,25 +1671,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
     }
 
-    async fn publication_gate(
-        &self,
-        authority_id: AuthorityId,
-    ) -> Result<(u64, Option<OperationId>), AuthorityStoreError> {
-        let path = publication_gate_path(authority_id)?;
-        let tail = self
-            .provider
-            .tail(path.clone())
-            .await
-            .map_err(map_stream_error)?;
-        if tail == 0 {
-            return Err(AuthorityStoreError::Corrupt(
-                "authority publication gate is empty".to_owned(),
-            ));
-        }
-        let record = read_one(self.provider.as_ref(), path, tail - 1).await?;
-        Ok((tail, decode_publication_gate(&record.value)?))
-    }
-
     async fn fork_record(
             &self,
             path: acyclic_stream::StreamPath,
@@ -1722,7 +1703,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 return Ok(ForkRecord::Native(record));
             }
             // Standalone opaque bounds are admission-only, never actual capacity.
-            let peak = meter.allocations.live_bytes().checked_add(STREAM_RECORD_LIMIT)
+            let peak = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(STREAM_RECORD_LIMIT)
                 .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
             meter.admit(WorkCounters { peak_allocation_bytes: peak, ..WorkCounters::default() })?;
             self.measured_record(path, from, &mut meter.work, meter.budget, meter.cancellation).await.map(ForkRecord::Standalone)
@@ -1748,10 +1729,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             authority: AuthorityId,
             meter: &mut ForkWork<'_>,
         ) -> Result<AuthoritySnapshot, ForkFailure> {
-            let baseline = if meter.is_native() { 0 } else { meter.allocations.live_bytes() };
+            let baseline = if meter.is_native() { 0 } else { meter.allocations.as_ref().expect("standalone fork funding").live_bytes() };
             let result = self.fork_snapshot_inner(authority, meter).await;
             if result.is_err() && !meter.is_native() {
-                let remaining = meter.allocations.live_bytes().checked_sub(baseline)
+                let remaining = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_sub(baseline)
                     .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
                 meter.release(remaining)?;
             }
@@ -2087,7 +2068,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         &self,
         authority: AuthorityId,
     ) -> Result<Vec<GenerationId>, AuthorityStoreError> {
-        let path = lineage_path(authority)?;
+        let path = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .path(authority, "/lineage", None).map_err(|failure| failure.error)?;
         let tail = self
             .provider
             .tail(path.clone())
@@ -2096,7 +2078,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut lineage = Vec::new();
         for sequence in 0..tail {
             let record = read_one(self.provider.as_ref(), path.clone(), sequence).await?;
-            lineage.push(decode_lineage_generation(&record.value)?);
+            lineage.push(ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .decode_lineage_generation(&record.value).map_err(|failure| failure.error)?);
         }
         Ok(lineage)
     }
@@ -2109,7 +2092,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     ) -> Result<u64, AuthorityStoreError> {
         let record = read_one(
             self.provider.as_ref(),
-            generation_path(authority, generation)?,
+            ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .path(authority, "/generations/", Some(generation)).map_err(|failure| failure.error)?,
             0,
         )
         .await?;
@@ -2401,7 +2385,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 .checked_add(records.as_str().len() as u64)
                 .and_then(|bytes| bytes.checked_add(lease_path.as_ref().map_or(0, |path| path.as_str().len() as u64)))
                 .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.spent()))?;
-            let retired = meter.allocations.live_bytes().checked_sub(retained_paths)
+            let retired = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_sub(retained_paths)
                 .ok_or_else(|| authority_corrupt("append path custody exceeds live request claims", &meter))?;
             meter.release(retired)?;
         }
@@ -3003,23 +2987,6 @@ fn epochs_path(
         .map_err(map_stream_error)
 }
 
-fn publication_gate_path(
-    authority_id: AuthorityId,
-) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-    acyclic_stream::StreamPath::new(format!(
-        "{}/publication-gate",
-        authority_prefix(authority_id)
-    ))
-    .map_err(map_stream_error)
-}
-
-fn encode_active_reservation(operation_id: OperationId) -> Bytes {
-    let mut value = Vec::with_capacity(PUBLICATION_GATE_ACTIVE.len() + 16);
-    value.extend_from_slice(PUBLICATION_GATE_ACTIVE);
-    value.extend_from_slice(&operation_id.into_bytes());
-    Bytes::from(value)
-}
-
 fn decode_publication_gate(value: &[u8]) -> Result<Option<OperationId>, AuthorityStoreError> {
     if value == PUBLICATION_GATE_FREE {
         return Ok(None);
@@ -3031,25 +2998,6 @@ fn decode_publication_gate(value: &[u8]) -> Result<Option<OperationId>, Authorit
             AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
         })?;
     Ok(Some(OperationId::from_bytes(operation)))
-}
-
-fn lineage_path(
-    authority_id: AuthorityId,
-) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-    acyclic_stream::StreamPath::new(format!("{}/lineage", authority_prefix(authority_id)))
-        .map_err(map_stream_error)
-}
-
-fn generation_path(
-    authority_id: AuthorityId,
-    generation: GenerationId,
-) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-    acyclic_stream::StreamPath::new(format!(
-        "{}/generations/{}",
-        authority_prefix(authority_id),
-        hex::encode(generation.digest().as_bytes())
-    ))
-    .map_err(map_stream_error)
 }
 
 fn stream_key(
@@ -3440,10 +3388,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     async fn reservation_inspect(
         &self, domain: &[u8], identity: &[u8], meter: &mut ForkWork<'_>,
     ) -> Result<(AuthorityProviderOutput<Option<acyclic_stream::IdempotencyObservation>>, u64), ForkFailure> {
-        let baseline = if meter.is_native() { 0 } else { meter.allocations.live_bytes() };
+        let baseline = if meter.is_native() { 0 } else { meter.allocations.as_ref().expect("standalone fork funding").live_bytes() };
         let key = meter.stream_key(domain, identity)?;
         let key_bytes = if meter.is_native() { 0 } else {
-            meter.allocations.live_bytes().checked_sub(baseline)
+            meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_sub(baseline)
                 .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.spent()))?
         };
         let key_pointer = key.as_bytes().as_ptr() as usize;
@@ -3451,7 +3399,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let record_ceiling = (acyclic_stream::MAX_ITEMS as u64).checked_mul(acyclic_stream::MAX_ITEMS as u64)
             .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.spent()))?;
         let peak = if meter.is_native() { 0 } else {
-            meter.allocations.live_bytes().checked_add(ceiling)
+            meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(ceiling)
                 .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.spent()))?
         };
         meter.admit(WorkCounters {
@@ -3561,12 +3509,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 meter.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;
                 return Ok(false);
             }
-            let baseline = if meter.is_native() { 0 } else { meter.allocations.live_bytes() };
+            let baseline = if meter.is_native() { 0 } else { meter.allocations.as_ref().expect("standalone fork funding").live_bytes() };
             let request = reservation_request(authority, Some(snapshot), operation, prior, false, None, meter)?;
             let digest = reservation_request_digest(&request, meter)?;
             drop(request);
             if !meter.is_native() {
-                let bytes = meter.allocations.live_bytes().checked_sub(baseline)
+                let bytes = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_sub(baseline)
                     .ok_or_else(|| ForkFailure::new(crate::WorkError::Overflow.into(), meter.work))?;
                 meter.release(bytes)?;
             }
@@ -3694,36 +3642,6 @@ fn fork_generation_commit_request(
     meter.push(&mut mutations, CommitMutation::Append { path: destination.gate, records: gate })?;
     let idempotency_key = meter.stream_key(b"fork-authority", &operation_id.into_bytes())?;
     Ok(acyclic_stream::CommitRequest { conditions, mutations, idempotency_key })
-}
-
-fn operation_key(
-    authority_id: AuthorityId,
-    operation_id: OperationId,
-) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-    let mut identity = [0; 32];
-    identity[..16].copy_from_slice(&authority_id.into_bytes());
-    identity[16..].copy_from_slice(&operation_id.into_bytes());
-    stream_key(b"operation", &identity)
-}
-
-fn publication_reservation_key(
-    domain: &[u8],
-    authority_id: AuthorityId,
-    operation_id: OperationId,
-    gate_tail: u64,
-) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-    let mut identity = Vec::with_capacity(40);
-    identity.extend_from_slice(&authority_id.into_bytes());
-    identity.extend_from_slice(&operation_id.into_bytes());
-    identity.extend_from_slice(&gate_tail.to_le_bytes());
-    stream_key(domain, &identity)
-}
-
-fn encode_epoch(domain: &[u8], epoch: Epoch) -> Bytes {
-    let mut value = Vec::with_capacity(domain.len().saturating_add(8));
-    value.extend_from_slice(domain);
-    value.extend_from_slice(&epoch.get().to_le_bytes());
-    Bytes::from(value)
 }
 
 enum GenerationDecodeFailure {
@@ -4008,7 +3926,7 @@ mod tests {
         assert_eq!(decode_durable(authority_id, &legacy).expect("legacy").settled_at_micros, None);
 
         let observation = acyclic_stream::StreamProvider::inspect_idempotency(
-            stream.as_ref(), operation_key(authority_id, proposed.operation_id).expect("key"),
+            stream.as_ref(), ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).operation_key(authority_id, proposed.operation_id).expect("key"),
         ).await.expect("inspect").expect("retained operation");
         let acyclic_stream::IdempotencyOutcome::Commit(
             acyclic_stream::CommitOutcome::Committed(envelope)
@@ -4409,11 +4327,11 @@ mod tests {
                     },
                     acyclic_stream::CommitMutation::Append {
                         path: records,
-                        records: vec![encode_epoch(GENESIS_DOMAIN, Epoch::GENESIS).into()],
+                        records: vec![ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).bytes(GENESIS_DOMAIN, &[&Epoch::GENESIS.get().to_le_bytes()]).expect("epoch").into()],
                     },
                     acyclic_stream::CommitMutation::Append {
                         path: epochs,
-                        records: vec![encode_epoch(EPOCH_DOMAIN, Epoch::GENESIS).into()],
+                        records: vec![ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).bytes(EPOCH_DOMAIN, &[&Epoch::GENESIS.get().to_le_bytes()]).expect("epoch").into()],
                     },
                 ],
                 idempotency_key: stream_key(b"gateless-authority", &authority_id.into_bytes())
@@ -4441,7 +4359,7 @@ mod tests {
         assert!(matches!(
             acyclic_stream::StreamProvider::tail(
                 stream.as_ref(),
-                publication_gate_path(authority_id).expect("gate path"),
+                ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).path(authority_id, "/publication-gate", None).expect("gate path"),
             )
             .await,
             Err(acyclic_stream::StreamError::NotFound)
@@ -4463,7 +4381,7 @@ mod tests {
             )
             .await
             .expect("create authority");
-        let gate = publication_gate_path(authority_id).expect("gate path");
+        let gate = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).path(authority_id, "/publication-gate", None).expect("gate path");
         acyclic_stream::StreamProvider::commit(
             stream.as_ref(),
             acyclic_stream::CommitRequest {
@@ -4638,7 +4556,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let gate = publication_gate_path(authority_id).expect("gate path");
+        let gate = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).path(authority_id, "/publication-gate", None).expect("gate path");
         let advanced = acyclic_stream::StreamProvider::commit(
             stream.as_ref(),
             acyclic_stream::CommitRequest {
@@ -4648,7 +4566,7 @@ mod tests {
                 }],
                 mutations: vec![acyclic_stream::CommitMutation::Append {
                     path: gate.clone(),
-                    records: vec![encode_active_reservation(reacquired.operation_id).into()],
+                    records: vec![ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).bytes(PUBLICATION_GATE_ACTIVE, &[&reacquired.operation_id.into_bytes()]).expect("active gate").into()],
                 }],
                 idempotency_key: stream_key(b"advance-active-gate", &authority_id.into_bytes())
                     .expect("advance key"),
@@ -4661,12 +4579,7 @@ mod tests {
             acyclic_stream::CommitOutcome::Committed(_)
         ));
 
-        let release_key = publication_reservation_key(
-            b"release-publication",
-            reacquired.authority_id,
-            reacquired.operation_id,
-            reacquired.gate_tail,
-        )
+        let release_key = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).stream_key(b"release-publication", &[reacquired.authority_id.into_bytes().as_slice(), reacquired.operation_id.into_bytes().as_slice(), reacquired.gate_tail.to_le_bytes().as_slice()].concat())
         .expect("release key");
         let retained_conflict = acyclic_stream::StreamProvider::commit(
             stream.as_ref(),
@@ -4692,8 +4605,8 @@ mod tests {
             .release_publication(reacquired, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .expect_err("retained release conflict must not become success");
-        let (_, active) = authority
-            .publication_gate(authority_id)
+        let (_, _, active) = authority
+            .fork_gate(authority_id, &mut ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))
             .await
             .expect("read active gate");
         assert_eq!(active, Some(reacquired.operation_id));
@@ -4826,7 +4739,7 @@ mod tests {
         assert_eq!(receipt.work.authority_records_read, 1);
         assert_eq!(receipt.work.authority_bytes_read, PUBLICATION_GATE_FREE.len() as u64);
         assert_eq!(receipt.work.backend_write_operations, 0);
-        assert_eq!(authority.publication_gate(reservation.authority_id).await?.1, Some(new_operation));
+        assert_eq!(authority.fork_gate(reservation.authority_id, &mut ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await?.2, Some(new_operation));
         for corrupt in 1..=10 {
             let mut spy = ReleaseSpy::new(Arc::clone(&inner));
             spy.corrupt_observation = corrupt;
@@ -4857,9 +4770,8 @@ mod tests {
         use std::sync::atomic::Ordering;
         for wrong_family in [false, true] {
             let (inner, reservation) = release_fixture().await?;
-            let gate = publication_gate_path(reservation.authority_id)?;
-            let key = publication_reservation_key(b"release-publication", reservation.authority_id,
-                reservation.operation_id, reservation.gate_tail)?;
+            let gate = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).path(reservation.authority_id, "/publication-gate", None)?;
+            let key = ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).stream_key(b"release-publication", &[reservation.authority_id.into_bytes().as_slice(), reservation.operation_id.into_bytes().as_slice(), reservation.gate_tail.to_le_bytes().as_slice()].concat())?;
             if wrong_family {
                 let outcome = acyclic_stream::StreamProvider::append(inner.as_ref(), acyclic_stream::AppendRequest {
                     path: gate, records: vec![acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE)],
