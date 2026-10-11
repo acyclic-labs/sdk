@@ -94,12 +94,13 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Option<EffectObservation>>>;
 
     /// Dispatches the same durable attempt on the supplied original ledger.
-    /// Unsupported providers reject before any provider work.
+    /// Unsupported providers reject before any provider work. The native future
+    /// owns its real box custody until after the physical box is dropped.
     #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
     fn dispatch_with_native_work<'a>(
         &'a self, _request: EffectDispatch,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<BoxFuture<'a,Result<(EffectObservation,acyclic_fs::NativeAllocation)>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (EffectObservation, acyclic_fs::NativeAllocation)>> {
         Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unsupported, reason:"effect provider has no native dispatch observer" })
     }
 
@@ -108,7 +109,7 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
     fn reconcile_with_native_work<'a>(
         &'a self, _attempt_id: EffectAttemptId,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<BoxFuture<'a,Result<Option<(EffectObservation,acyclic_fs::NativeAllocation)>>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, Option<(EffectObservation, acyclic_fs::NativeAllocation)>>> {
         Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unsupported, reason:"effect provider has no native reconciliation observer" })
     }
 
