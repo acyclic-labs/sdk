@@ -82,8 +82,10 @@ Durable scheduler declarations pin initial process state by `FileRef`, not inlin
 
 The coordinator task host's `*_with_native_work` lifecycle methods use the
 caller's original finite ledger for authenticated admission, pull/recovery,
-start, current cancellation, passive suspension/wake, retained workflow input,
-outcome and settlement. Scalar cancellation reads do not clone operation state.
+start, current cancellation, passive suspension/wake/resume, retained workflow
+input, outcome and settlement. Resume consumes the funded input and original
+idempotency key without replacement; callers retain their producer custody
+through the await. Scalar cancellation reads do not clone operation state.
 Returned DTOs carry `NativeAllocation` custody through their last consumer;
 drop the DTO before its guard. Native failures propagate before deadline clocks
 or cancellation/retry work. Metrics cover visible SDK calls and original record

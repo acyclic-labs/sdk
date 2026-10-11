@@ -3129,7 +3129,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let input = self.stage_payload_with_work(operation, &key, b"null", work).await?;
         let admission = self.admission_with_work(operation, work).await?;
         admission.limits.validate_file(&input)?;
-        if !read_granted(&admission.grants, &input)? {
+        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its command wake"));
         }
@@ -3162,19 +3162,46 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         input: FileRef,
         key: IdempotencyKey,
     ) -> Result<()> {
+        self.resume_workflow_with_work(task, revision, input, key, &mut None).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn resume_workflow_with_native_work(
+        &self, task: TaskId, revision: u64, input: FileRef, key: IdempotencyKey,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.resume_workflow_with_work(task, revision, input, key, &mut Some(&mut io)).await
+    }
+
+    async fn resume_workflow_with_work(
+        &self, task: TaskId, revision: u64, input: FileRef, key: IdempotencyKey,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission(operation_id).await?;
-        admission.limits.validate_file(&input)?;
-        if !read_granted(&admission.grants, &input)? {
-            return Err(Error::Unauthorized(
-                "task cannot read its workflow resume input".into(),
-            ));
+        let admission = self.admission_with_work(operation_id, work).await?;
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            if input.path().len() > admission.limits.path_bytes
+                || input.descriptor().byte_length() > admission.limits.file_bytes
+            {
+                return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "workflow resume input exceeds original task limits"));
+            }
         }
-        self.read_json(&input).await?;
+        admission.limits.validate_file(&input)?;
+        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
+            return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "task cannot read its workflow resume input"));
+        }
+        let (value, owned) = self.read_json_with_work(&input, work).await?;
+        drop(value);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(owned)?; }
         self.coordinator
             .lock()
             .await
-            .resume_workflow(
+            .resume_workflow_with_work(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
@@ -3182,6 +3209,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 revision,
                 input,
                 key,
+                work,
             )
             .await?;
         Ok(())
@@ -3238,7 +3266,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok((None, 0));
         };
         admission.limits.validate_file(&input)?;
-        if !read_granted(&admission.grants, &input)? {
+        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its retained workflow input"));
         }
@@ -5895,6 +5923,56 @@ pub(crate) mod tests {
         assert!(matches!(fixture.host.outcome_with_native_work(fixture.root, &work).await,
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_workflow_resume_retries_the_original_key_and_input() -> Result<()> {
+        use crate::store::history::HistoryIo as _;
+        let fixture = created_resource_access::CreationFixture::new().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
+            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        fixture.host.suspend_workflow_with_native_work(
+            fixture.root, crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, &work,
+        ).await?;
+        let operation = OperationId::from_bytes(fixture.root.into_bytes());
+        let mut original_input = None;
+        for _ in 0..2 {
+            let (input, input_guard) = fixture.host.payloads.stage_with_native_work(
+                operation, "native-existing-resume-input", br#"{"resume":true}"#, &work,
+            ).await?;
+            let mut key_io = crate::store::history::native_work_io(&work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let identity = host_digest_with_work(
+                &input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut key_io),
+            )?;
+            if let Some(original) = original_input {
+                assert_eq!(original, identity);
+            } else {
+                original_input = Some(identity);
+            }
+            let key = IdempotencyKey::new(key_io.clone_text("native-existing-resume-key")?)?;
+            let key_guard = key_io.into_custody();
+            fixture.host.resume_workflow_with_native_work(fixture.root, 1, input, key, &work).await?;
+            drop(key_guard);
+            drop(input_guard);
+        }
+        let (pulled, pulled_guard) = fixture.host.pull_operation_with_native_work(
+            &fixture.worker, operation, &work,
+        ).await?;
+        let crate::distributed::WorkPull::Claimed(lease) = pulled else {
+            panic!("original resumed task was not claimed");
+        };
+        fixture.host.start_task_with_native_work(&lease, &work).await?;
+        let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+        let (input, input_guard) = fixture.host.workflow_input_with_native_work(fixture.root, &fence, &work).await?;
+        assert_eq!(input, Some((1, serde_json::json!({"resume":true}))));
+        drop(input);
+        drop(input_guard);
+        drop(lease);
+        drop(pulled_guard);
         Ok(())
     }
 
