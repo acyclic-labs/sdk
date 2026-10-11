@@ -9,6 +9,7 @@
 #![doc = include_str!("../../docs/filesystem.md")]
 
 use crate::contract::capability;
+use acyclic_fs::WorkCounters;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
@@ -2091,6 +2092,7 @@ pub struct FilesystemProjectMergeVerifier<A, O> {
 }
 
 impl UploadRecord for JoinCommitWitness {
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         Ok(std::mem::size_of::<Self>() as u64)
     }
@@ -3141,7 +3143,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         handle.grant().require_with_io(source, VolumeOperation::Read, io)
     }
 
-    pub async fn prepare_project_import_from_selected_source<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_from_selected_source<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3153,7 +3155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             || owner.verify_project_source_handle(context, handle)).await
     }
 
-    pub async fn prepare_project_import_at_from_selected_source<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_at_from_selected_source<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef, target: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3219,7 +3221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn prepare_project_import_from_selected_source_with_native_work<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_from_selected_source_with_native_work<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3233,7 +3235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn prepare_project_import_at_from_selected_source_with_native_work<P: crate::store::StreamProvider>(
+    pub async fn prepare_project_import_at_from_selected_source_with_native_work<P: acyclic_stream::StreamProvider>(
         &self, source: &VolumeRef, generation: &GenerationRef, target: &GenerationRef,
         handle: &crate::source_authorization::ProjectSourceReadHandle,
         owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -3329,7 +3331,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             std::future::ready(guard_owner.check(original));
         plan.plan.apply_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
-            acyclic_fs::WritePermit::Unrestricted, work, work.cancellation(),
+            acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
         ).await
     }
@@ -3347,7 +3349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             std::future::ready(guard_owner.check(original));
         plan.plan.apply_sides_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
-            selections, acyclic_fs::WritePermit::Unrestricted, work, work.cancellation(),
+            selections, acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
         ).await
     }
@@ -5006,15 +5008,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(map_error)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn open_with_native_work(
-        &self,
-        reference: &WorkspaceRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Workspace<A, O>> {
-        let io = PreparationIo::from_native_work(work)?;
-        fork_preparer::bounded_io::open(self, reference, &io).await
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn open_volume_with_native_work(
@@ -5033,25 +5026,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer::bounded_io::open(self, &reference, &io).await
     }
 
-    async fn open_measured(
-        &self,
-        reference: &WorkspaceRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Workspace<A, O>>, Error> {
-        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
-        self.validate_provider(reference.as_resource().provider())
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let name = std::str::from_utf8(reference.as_resource().key()).map_err(|_| {
-            acyclic_fs::OperationFailure::before_work(Error::Invalid(
-                "workspace reference key must be UTF-8".into(),
-            ))
-        })?;
-        self.filesystem
-            .open_workspace_measured(name, budget, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
-    }
 
     async fn generation(
         &self,
@@ -5082,26 +5056,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer::bounded_io::generation(self, workspace, reference, &io).await
     }
 
-    async fn generation_measured(
-        &self,
-        workspace: &Workspace<A, O>,
-        reference: &GenerationRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Generation<A, O>>, Error> {
-        reference.validate().map_err(acyclic_fs::OperationFailure::before_work)?;
-        self.validate_provider(reference.as_resource().provider())
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let bytes: [u8; 32] = reference.as_resource().key().try_into().map_err(|_| {
-            acyclic_fs::OperationFailure::before_work(Error::Invalid(
-                "generation reference key must be 32 bytes".into(),
-            ))
-        })?;
-        workspace
-            .generation_measured(GenerationId::new(Digest::from_bytes(bytes)), budget, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(acyclic_fs::WorkCounters::default(), map_error))
-    }
 
     async fn retain_generation(
         &self,

@@ -17,7 +17,7 @@ use crate::{
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, ResumableTaskSession,
-        RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        OwnedTaskMailbox, RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -600,7 +600,7 @@ where
             host = host.with_policy(policy.clone())?;
         }
         let host = Arc::new(host);
-        let harness = crate::runtime::HarnessBuilder {
+        let harness = crate::HarnessBuilder {
             tasks,
             tools: tools.clone(),
             resumable_tools,
@@ -609,7 +609,7 @@ where
             durable_host: Some(host.clone()),
             content: Some(ContentBindings { reader, writer: None }),
             policy: policy.clone(),
-            ..crate::runtime::HarnessBuilder::local()
+            ..crate::HarnessBuilder::local()
         }.build()?;
         Self::from_host(
             stream, harness, host, filesystem, volume, verifier, signed, tools,
@@ -1327,13 +1327,13 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn task_context_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         self.task_context_for_original_owner_with_native_work(task, fence, false, work).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn readonly_fork_preparation_with_native_work(
-        &self, task: TaskId, query: &Arc<crate::NativeTaskContext>,
+        &self, task: TaskId, query: &Arc<crate::runtime::NativeTaskContext>,
         admitted: &crate::resource_preparation::ResourcePreparationRequest,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Arc<crate::resource_preparation::TaskResourcePreparation>>> {
@@ -1387,7 +1387,7 @@ where
     async fn task_context_for_original_owner_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, allow_settlement: bool,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
         owner.verify_with_native_work(allow_settlement, work).await?;
         let owner = owner.into_native_shared(work)?;
@@ -2367,7 +2367,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn stock_executor_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, operation: OperationId,
-        context: &Arc<crate::NativeTaskContext>, model: &Model,
+        context: &Arc<crate::runtime::NativeTaskContext>, model: &Model,
         provider: Arc<dyn ModelProvider>, pipeline: &ContextPipeline,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,

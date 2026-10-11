@@ -7,7 +7,7 @@ use super::{
     MODEL_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, fork_preparation_request,
 };
 use crate::{
-    Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
+    Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, VolumeOperation, VolumeRef},
     core::{Action, Authority, AuthorityVerifier, Command, Scope},
     durable_tool::{ResumableTool, ResumableToolRegistry},
@@ -122,7 +122,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, _context: &'a Arc<crate::NativeTaskContext>,
+    fn preparation_with_native_work<'a>(&'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -133,7 +133,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     /// Restores only the retained source for passive reconciliation.
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self, _context: &'a Arc<crate::NativeTaskContext>,
+        &'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -767,7 +767,7 @@ recursive_preparation_records!(
     RecursiveMergeToolPlan => RecursiveMergeToolPlan,
     Plan => RecursivePlan, State => RecursiveState, InitialPlan => RecursiveInitialPlan,
     SourcePin => RecursiveSourcePin, Receipt => RecursiveReceipt,
-    ForkRequest => ForkRequest, ForkReport => ForkReport, ForkSeed => ForkSeed,
+    ForkSeed => ForkSeed,
     TaskId => None, ProjectMergeReceipt => ProjectMergeReceipt,
 );
 
@@ -1163,7 +1163,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "native outbox operation differs from original effect" });
                     }
-                    let expected = command_payload_with_io(
+                    let expected = command_payload(
                         stage, &plan, report.as_deref(), receipt.as_deref(), Some(&io))?;
                     let retained = retained_payload_with_native_work(
                         context, &command.payload, self.maximum_request_bytes, work).await?;
@@ -1280,7 +1280,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     if command.operation_id != derived(invocation.operation_id, stage.label()) {
                         return Err(Error::Unauthorized("recursive outbox operation differs from original effect".into()));
                     }
-                    let expected_payload = command_payload(stage, &plan, report.as_deref(), receipt.as_deref())?;
+                    let expected_payload = command_payload(stage, &plan, report.as_deref(), receipt.as_deref(), None)?;
                     let bytes = read(context.task(), &command.payload, self.maximum_request_bytes, cancellation).await?;
                     if crate::contract::json_from_slice::<Value>(&bytes).map_err(|error| Error::Storage(error.to_string()))? != expected_payload {
                         return Err(Error::Unauthorized("recursive outbox payload changed its original plan".into()));
@@ -1367,7 +1367,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     async fn command(&self, context: &ToolContext, stage_kind: Stage, plan: &Plan, report: Option<&ForkReport>,
         receipt: Option<&ProjectMergeReceipt>, cancellation: &CancellationToken) -> Result<WorkflowCommand> {
         let operation_id = derived(context.operation_id(), stage_kind.label());
-        let payload = command_payload(stage_kind, plan, report, receipt)?;
+        let payload = command_payload(stage_kind, plan, report, receipt, None)?;
         Ok(WorkflowCommand { operation_id, kind: stage_kind.kind().into(),
             payload: stage(context, derived(operation_id, "payload"), stage_kind.label(), &payload,
                 self.maximum_request_bytes, cancellation).await? })
@@ -1504,7 +1504,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = super::PreparationIo::from_native_work(work)?;
         let operation_id = recursive_derived(context.operation_id(), stage.label(), Some(&io))?;
         let payload = {
-            let value = command_payload_with_io(stage, plan, report, receipt, Some(&io))?;
+            let value = command_payload(stage, plan, report, receipt, Some(&io))?;
             let custody = io.take_native_custody(io.owned_bytes()?)?;
             (value, custody)
         };
@@ -2055,10 +2055,7 @@ impl ToolProjection for RecursiveProjection {
     }
 }
 
-fn command_payload(stage: Stage, plan: &Plan, report: Option<&ForkReport>, receipt: Option<&ProjectMergeReceipt>) -> Result<Value> {
-    command_payload_with_io(stage, plan, report, receipt, None)
-}
-fn command_payload_with_io(stage: Stage, plan: &Plan, report: Option<&ForkReport>,
+fn command_payload(stage: Stage, plan: &Plan, report: Option<&ForkReport>,
     receipt: Option<&ProjectMergeReceipt>, io: Option<&super::PreparationIo>) -> Result<Value> {
     #[derive(Serialize)]
     struct Admission<'a> { admission: &'a TaskAdmissionRecord }

@@ -50,12 +50,8 @@ struct ExecutionSummary {
 }
 
 impl ExecutionSummary {
-    #[cfg(test)]
-    fn require_next(&self, event: &ExecutionEvent) -> Result<()> {
-        self.require_next_with_io(event, None)
-    }
 
-    fn require_next_with_io(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<()> {
+    fn require_next(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<()> {
         let hashed = match event {
             ExecutionEvent::ToolStarted { call_id, .. } if self.tail > 0 && !call_id.is_empty() =>
                 call_id.len() as u64,
@@ -130,7 +126,7 @@ impl ExecutionSummary {
         limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let Some(io) = io { io.check_cancellation()?; }
-        self.require_next_with_io(event, io)?;
+        self.require_next(event, io)?;
         if let ExecutionEvent::Model { step, purpose, .. } = event {
             self.models
                 .get(&(*step, *purpose))
@@ -146,16 +142,8 @@ impl ExecutionSummary {
         Ok(())
     }
 
-    fn accept(
-        &mut self,
-        record: &ExecutionRecord,
-        model: Option<&ModelEvent>,
-        limits: Limits,
-    ) -> Result<()> {
-        self.accept_with_io(record, model, limits, None)
-    }
 
-    fn accept_with_io(
+    fn accept(
         &mut self, record: &ExecutionRecord, model: Option<&ModelEvent>,
         limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -450,11 +438,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(Arc::new(self))
     }
 
-    fn require_operation(&self, operation: OperationId) -> Result<()> {
-        self.require_operation_with_io(operation, None)
-    }
 
-    fn require_operation_with_io(
+    fn require_operation(
         &self, operation: OperationId, io: Option<&PreparationIo>,
     ) -> Result<()> {
         if self.execution.as_ref().is_some_and(|bound| bound.operation != operation) {
@@ -464,20 +449,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(())
     }
 
-    async fn refresh_summary(
-        &self,
-        operation: OperationId,
-        summary: &mut ExecutionSummary,
-    ) -> Result<()>
-    where
-        P: StreamProvider,
-        A: AsyncAuthorityStore + 'static,
-        O: AsyncObjectStore + 'static,
-    {
-        self.refresh_summary_with_io(operation, summary, None).await
-    }
 
-    async fn refresh_summary_with_io(
+    async fn refresh_summary(
         &self, operation: OperationId, summary: &mut ExecutionSummary,
         io: Option<&PreparationIo>,
     ) -> Result<()>
@@ -500,12 +473,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("matched original native work");
-                    crate::NativeFutureBundle::new(work, || self.replay_verified_with_io(
+                    crate::NativeFutureBundle::new(work, || self.replay_verified(
                         operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io)))?.await?
                 }
-                Some(io) => Box::pin(self.replay_verified_with_io(
+                Some(io) => Box::pin(self.replay_verified(
                     operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io))).await?,
-                None => self.replay_verified_with_io(
+                None => self.replay_verified(
                     operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, None).await?,
             };
             page_hold = match (io, before) {
@@ -517,7 +490,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(());
             }
             for (record, model) in page {
-                summary.accept_with_io(&record, model.as_ref(), limits, io)?;
+                summary.accept(&record, model.as_ref(), limits, io)?;
             }
             drop(page_hold);
         }
@@ -536,7 +509,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         owner.verify(true).await?;
         let quiescent = {
             let mut summary = self.verified.lock().await;
-            Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+            Box::pin(self.refresh_summary(*operation, &mut summary, None)).await?;
             summary.quiescent(None)?
         };
         owner.verify(true).await?;
@@ -555,13 +528,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             let (owner, operation) = self.owner.as_ref().ok_or_else(||
                 Self::journal_read_boundary(Some(&io), crate::wire::ErrorCode::Unsupported,
                     "quiescence requires a task-owned execution journal"))?;
-            self.require_operation_with_io(*operation, Some(&io))?;
+            self.require_operation(*operation, Some(&io))?;
             owner.verify_with_native_work(true, work).await?;
             let quiescent = {
                 let before = io.owned_bytes()?;
                 let summary_hold;
                 let mut summary = ExecutionSummary::default();
-                self.refresh_summary_with_io(*operation, &mut summary, Some(&io)).await?;
+                self.refresh_summary(*operation, &mut summary, Some(&io)).await?;
                 summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| io.invalid("execution summary custody underflow"))?)?;
                 let quiescent = summary.quiescent(Some(&io))?;
@@ -593,7 +566,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 let before = io.owned_bytes()?;
                 let summary_hold;
                 let mut summary = ExecutionSummary::default();
-                self.refresh_summary_with_io(*operation, &mut summary, Some(&io)).await?;
+                self.refresh_summary(*operation, &mut summary, Some(&io)).await?;
                 summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| Error::Invalid("execution summary custody underflow".into()))?)?;
                 if !summary.quiescent(Some(&io))? { return Ok(None); }
@@ -660,7 +633,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        self.refresh_summary_with_io(*operation, summary, io).await?;
+        self.refresh_summary(*operation, summary, io).await?;
         if !summary.quiescent(io)? {
             return Err(Error::Indeterminate(*operation));
         }
@@ -671,22 +644,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         ).await
     }
 
-    async fn append_validated(
-        &self, operation_id: OperationId, expected_tail: Option<u64>,
-        claim_id: &str, event: ExecutionEvent,
-    ) -> Result<bool>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        self.append_validated_with_io(operation_id, expected_tail, claim_id, &event, None).await
-    }
 
-    async fn append_validated_with_io(
+    async fn append_validated(
         &self, operation_id: OperationId, expected_tail: Option<u64>,
         claim_id: &str, event: &ExecutionEvent, io: Option<&PreparationIo>,
     ) -> Result<bool>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         if claim_id.is_empty() {
             return Err(super::fork_preparer_io::invalid(io,
                 "execution journal compare-and-append is invalid"));
@@ -781,7 +746,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut transient = ExecutionSummary::default();
         let summary = if io.is_some() { &mut transient } else { &mut *shared };
         loop {
-            self.refresh_summary_with_io(operation_id, summary, io).await?;
+            self.refresh_summary(operation_id, summary, io).await?;
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner.verify_execution_with_work(operation_id, event,
@@ -897,11 +862,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             canonical_validate_limits(limits, io)?;
-            self.require_operation_with_io(envelope.operation_id, io)?;
+            self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
                 let association_hold;
                 let association_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let records = self.replay_verified_with_io(envelope.operation_id, 0, 1, io).await?;
+                let records = self.replay_verified(envelope.operation_id, 0, 1, io).await?;
                 association_hold = io.map(|io| io.guard_owned(
                     io.owned_bytes()?.checked_sub(association_before)
                         .ok_or_else(|| io.invalid("checkpoint association custody underflows"))?,
@@ -1124,14 +1089,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
             Err(Error::Indeterminate(_)) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_verified(operation_id, tail, 1, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
                 } else { Err(Error::Indeterminate(operation_id)) }
             }
             Err(error @ Error::Conflict(_)) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_verified(operation_id, tail, 1, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1140,7 +1105,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             Err(error @ Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })
             | Err(error @ Error::NativeStream { source: StreamError::IdempotencyMismatch, .. }) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_verified(operation_id, tail, 1, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1729,21 +1694,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
     }
 
-    async fn replay_verified(
-        &self,
-        operation_id: OperationId,
-        after: u64,
-        maximum: u32,
-    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
-    where
-        P: StreamProvider,
-        A: AsyncAuthorityStore + 'static,
-        O: AsyncObjectStore + 'static,
-    {
-        self.replay_verified_with_io(operation_id, after, maximum, None).await
-    }
 
-    async fn replay_verified_with_io(
+    async fn replay_verified(
         &self, operation_id: OperationId, after: u64, maximum: u32, io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
@@ -1757,7 +1709,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         if maximum == 0 {
             return Err(super::fork_preparer_io::invalid(io, "execution replay page bound is invalid"));
         }
@@ -2121,7 +2073,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_operation_with_io(operation, io)?;
+        self.require_operation(operation, io)?;
         let host = self.interactions.as_ref().ok_or_else(||
             super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "task execution has no conversation interaction owner"))?;
@@ -2332,7 +2284,7 @@ where
             items = crate::obs::Empty
         );
         traced(span, async move {
-            let page = self.replay_verified(operation_id, after, maximum).await?;
+            let page = self.replay_verified(operation_id, after, maximum, None).await?;
             crate::obs::obs_record!("items" = page.len());
             Ok(page.into_iter().map(|(record, _)| record).collect())
         })
@@ -2377,7 +2329,7 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         let span = obs_span!("acyclic.harness.journal.append");
         traced(span, async move {
-            self.append_validated(operation_id, None, &idempotency_key, event)
+            self.append_validated(operation_id, None, &idempotency_key, &event, None)
                 .await
                 .map(|_| ())
         })
@@ -2395,7 +2347,7 @@ where
             rev = expected_tail
         );
         traced(span, async move {
-            self.append_validated(operation_id, Some(expected_tail), &claim_id, event)
+            self.append_validated(operation_id, Some(expected_tail), &claim_id, &event, None)
                 .await
         })
     }
@@ -2407,7 +2359,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.append_validated_with_io(
+            let result = self.append_validated(
                 operation_id, None, idempotency_key, event, Some(&io)).await;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -2423,7 +2375,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, bool>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.append_validated_with_io(
+            let result = self.append_validated(
                 operation_id, Some(expected_tail), idempotency_key, event, Some(&io)).await;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -2585,12 +2537,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_selected_context_with_io(
         &self, operation_id: OperationId, selected: &SelectedModelContext, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         let turn_operation = self.turn_operation(operation_id);
         {
             let association_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let records = self.replay_verified_with_io(operation_id, 0, 1, io).await?;
+            let records = self.replay_verified(operation_id, 0, 1, io).await?;
             association_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "selected association custody underflows"))?)).transpose()?;
@@ -2820,7 +2772,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.journal.authorize_selected_file_with_io(file, None)?;
             self.inner.read(file).await
@@ -3289,7 +3241,7 @@ mod tests {
             metadata: serde_json::Value::Null,
         };
         for (index, event) in observations.into_iter().enumerate() {
-            assert!(state.require_next(&compacted).is_err());
+            assert!(state.require_next(&compacted, None).is_err());
             let model = matches!(event, ExecutionEvent::Model { .. }).then_some(&completed);
             state.accept(
                 &ExecutionRecord {
@@ -3299,10 +3251,9 @@ mod tests {
                     event,
                 },
                 model,
-                Limits::default(),
-            )?;
+                Limits::default(), None)?;
         }
-        state.require_next(&compacted)?;
+        state.require_next(&compacted, None)?;
         state.accept(
             &ExecutionRecord {
                 operation_id: operation,
@@ -3311,16 +3262,15 @@ mod tests {
                 event: compacted.clone(),
             },
             None,
-            Limits::default(),
-        )?;
-        assert!(state.require_next(&compacted).is_err());
+            Limits::default(), None)?;
+        assert!(state.require_next(&compacted, None).is_err());
         let wrong_step = ExecutionEvent::ContextCompacted {
             step: 1,
             projection: file.clone(),
             compaction: file.clone(),
             accounting: file.clone(),
         };
-        assert!(state.require_next(&wrong_step).is_err());
+        assert!(state.require_next(&wrong_step, None).is_err());
         let response = ExecutionEvent::ModelStarted {
             step: 0,
             purpose: ModelPurpose::Response,
@@ -3335,10 +3285,9 @@ mod tests {
                 event: response,
             },
             None,
-            Limits::default(),
-        )?;
+            Limits::default(), None)?;
         state.compacted_contexts.clear();
-        assert!(state.require_next(&compacted).is_err());
+        assert!(state.require_next(&compacted, None).is_err());
         Ok(())
     }
 
@@ -3371,8 +3320,7 @@ mod tests {
                         },
                     },
                     None,
-                    limits,
-                )?;
+                    limits, None)?;
                 let prepared = ExecutionEvent::ContextPrepared {
                     step: 0,
                     projection: file.clone(),
@@ -3386,9 +3334,8 @@ mod tests {
                         event: prepared.clone(),
                     },
                     None,
-                    limits,
-                )?;
-                assert!(state.require_next(&prepared).is_err());
+                    limits, None)?;
+                assert!(state.require_next(&prepared, None).is_err());
                 for purpose in [first_start, other(first_start)] {
                     let start = ExecutionEvent::ModelStarted {
                         step: 0,
@@ -3404,9 +3351,8 @@ mod tests {
                             event: start.clone(),
                         },
                         None,
-                        limits,
-                    )?;
-                    assert!(state.require_next(&start).is_err());
+                        limits, None)?;
+                    assert!(state.require_next(&start, None).is_err());
                     assert!(!state.quiescent(None)?);
                 }
                 for purpose in [first_completion, other(first_completion)] {
@@ -3424,8 +3370,7 @@ mod tests {
                         Some(&ModelEvent::Completed {
                             metadata: serde_json::json!({}),
                         }),
-                        limits,
-                    )?;
+                        limits, None)?;
                     assert_eq!(state.quiescent(None)?, purpose != first_completion);
                     assert!(
                         state
@@ -3433,7 +3378,7 @@ mod tests {
                                 step: 0,
                                 purpose,
                                 event: file.clone()
-                            })
+                            }, None)
                             .is_err()
                     );
                 }

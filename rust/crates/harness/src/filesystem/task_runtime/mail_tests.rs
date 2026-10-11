@@ -46,7 +46,7 @@ async fn native_mailbox_page_empty_precancel_and_denial_keep_original_ledger() -
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].sequence, 1);
     assert!(work.shares_ledger(custody.work()));
-    assert!(custody.bytes() >= (items.capacity() * std::mem::size_of::<crate::InboxItem>()) as u64);
+    assert!(custody.bytes() >= (items.capacity() * std::mem::size_of::<crate::scheduler::InboxItem>()) as u64);
     assert!(work.receipt().backend_read_operations > 0);
     assert!(work.receipt().authority_records_read > 0);
     assert_eq!(work.receipt().backend_write_operations, 0);

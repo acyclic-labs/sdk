@@ -6,7 +6,8 @@ use crate::conversation::{VolumeClass, VolumeRef};
 use crate::core::Authority;
 use crate::source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider};
 use crate::{Error, Result, TaskId};
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, DemandSource, Digest, GenerationId, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget, WorkCounters};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Digest, GenerationId, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget, WorkCounters};
+use acyclic_fs::demand::DemandSource;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -33,13 +34,13 @@ type RootLazyPublication<A, O> = (
 
 #[cfg(not(target_arch = "wasm32"))]
 fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
-    -> impl Iterator<Item = acyclic_fs::LazyWriteMutation<'_>> + Send
+    -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'_>> + Send
 {
     mutations.iter().filter_map(|mutation| match mutation {
         super::WorkspaceMutation::CreateDirectory { path } =>
-            Some(acyclic_fs::LazyWriteMutation::CreateDirectory { path }),
+            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path }),
         super::WorkspaceMutation::PutFile { path, bytes } =>
-            Some(acyclic_fs::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
+            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
         super::WorkspaceMutation::Remove { .. } => None,
     })
 }
@@ -681,7 +682,8 @@ fn source_cancelled(error: acyclic_fs::CancellationError) -> Error {
 mod tests {
     use super::*;
     use crate::conversation::{VolumeOperation, VolumeOwner};
-    use crate::core::{AggregateKind, Limits};
+    use crate::core::AggregateKind;
+    use crate::conversation::Limits;
     use crate::runtime::{TaskAdmissionRecord, TaskRunLimits};
 
     #[test]

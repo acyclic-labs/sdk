@@ -173,9 +173,6 @@ pub struct ModelTaskCommand {
     /// Exact admitted created destination; absent retains the private writer.
     #[serde(default)]
     pub selected_output_volume: Option<crate::conversation::VolumeRef>,
-    /// Exact receive consumed in the preceding committed workflow checkpoint.
-    #[serde(default)]
-    pub mailbox_operation: Option<OperationId>,
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.
@@ -316,7 +313,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
 enum CommandContext {
     Ordinary(TaskContext),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(Arc<crate::NativeTaskContext>),
+    Native(Arc<crate::runtime::NativeTaskContext>),
 }
 
 impl CommandContext {
@@ -351,7 +348,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
-        &'a self, context: Arc<crate::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<crate::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
         self.validate_native_configuration_work(work)?;
@@ -363,7 +360,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
-        &'a self, context: Arc<crate::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<crate::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
         self.validate_native_configuration_work(work)?;
@@ -554,7 +551,7 @@ where
                 let preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
                 self.retain_native_preparation(task, command.operation_id, preparation, io, work)?
             };
-            let fork: super::ForkRequest = mail::decode_borrowed_command(&preparation.request().payload, io)?;
+            let fork: crate::fork::ForkRequest = mail::decode_borrowed_command(&preparation.request().payload, io)?;
             let source = self.runtime.recursive_source().ok_or_else(|| boundary(
                 Some(io), ErrorCode::Unsupported, "fork preparation source is not configured"))?;
             let retained = if reconciliation_only {
@@ -592,7 +589,7 @@ where
         let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
             .with_invocation_cancellation(&cancellation);
         let preparation = owner.resource_preparation(request).await?;
-        let fork: super::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
+        let fork: crate::fork::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
             .map_err(|cause| Error::Invalid(format!("invalid exact fork request: {cause}")))?;
         let preparer = if let Some(preparer) = &self.fork_preparer {
             preparer.clone()
@@ -685,7 +682,7 @@ where
             let work = io.original_native_work().ok_or_else(|| boundary(
                 Some(io), ErrorCode::Unsupported, "native prepared admission requires original work"))?;
             if reconciliation_only {
-                let retained = crate::DurableTaskHost::reconcile_admission_with_native_work(
+                let retained = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
                     self.runtime.task_host().as_ref(), request.admission.operation_id, work,
                 )?.await?;
                 io.absorb_native_custody(retained.1)?;
@@ -699,7 +696,7 @@ where
                     Some(io), ErrorCode::Invalid, "prepared admission custody overflows"))?;
             let admission = (request.admission, io.take_native_custody(bytes)?);
             let fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-            let result = crate::DurableTaskHost::admit_owned_with_native_work(
+            let result = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
                 self.runtime.task_host().as_ref(), admission, fence, work,
             )?.await?;
             io.absorb_native_custody(result.1)?;
@@ -956,7 +953,7 @@ where
                     task, context.scope(), work,
                 )?;
                 if reconciliation_only {
-                    let (retained, retained_custody) = crate::DurableTaskHost::reconcile_admission_with_native_work(
+                    let (retained, retained_custody) = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
                         self.runtime.task_host().as_ref(), operation, work,
                     )?.await?;
                     io.absorb_native_custody(retained_custody)?;
@@ -966,7 +963,7 @@ where
                     return mail::reconciled(Some(io));
                 }
                 let paid_fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-                let (result, custody) = crate::DurableTaskHost::admit_owned_with_native_work(
+                let (result, custody) = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
                     self.runtime.task_host().as_ref(), admission, paid_fence, work,
                 )?.await?;
                 io.absorb_native_custody(custody)?;
@@ -1011,7 +1008,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn model_command_with_native_work(
-        &self, task: TaskId, context: Arc<crate::NativeTaskContext>, fence: &LeaseFence,
+        &self, task: TaskId, context: Arc<crate::runtime::NativeTaskContext>, fence: &LeaseFence,
         turn: OperationId, payload: Value, reconciliation_only: bool,
         io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
@@ -1142,7 +1139,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn tool_command_with_native_work(
-        &self, task: TaskId, context: Arc<crate::NativeTaskContext>, fence: &LeaseFence,
+        &self, task: TaskId, context: Arc<crate::runtime::NativeTaskContext>, fence: &LeaseFence,
         turn: OperationId, payload: Value, reconciliation_only: bool,
         io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {

@@ -1254,6 +1254,8 @@ impl MemoryHarnessStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::ContentGrant;
+    use crate::conversation::ContentGrant;
     use crate::{
         Outcome,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
