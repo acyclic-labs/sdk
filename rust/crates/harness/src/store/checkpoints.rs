@@ -647,7 +647,8 @@ impl ProjectionLocation {
                 "projection head is outside its canonical atomic commit".into(),
             ));
         }
-        let (actual_authority, event) = crate::wire_codec::decode_event_with_work(&canonical.value, work)?;
+        let ((actual_authority, event), event_retained) =
+            crate::wire_codec::decode_event_with_work_and_custody(&canonical.value, work)?;
         verifier.verify_event_with_work(&event, work)?;
         if actual_authority != self.authority || event.revision != self.revision {
             return Err(Error::Storage("projection canonical anchor differs".into()));
@@ -664,7 +665,7 @@ impl ProjectionLocation {
             ));
         }
         let anchor_owned = if work.is_some() {
-            crate::core::event_clone_reservation(&event)?
+            event_retained
                 .checked_add(actual_authority.id.capacity() as u64)
                 .ok_or_else(|| Error::Invalid("projection anchor custody overflows".into()))?
         } else { 0 };

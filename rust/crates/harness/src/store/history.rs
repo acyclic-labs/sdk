@@ -466,16 +466,18 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         if limits.maximum_events < 2 || limits.maximum_bytes == 0 {
-            return Err(Error::Invalid("published child verification requires two bounded canonical events".into()));
+            return Err(history_read_invalid(work, "published child verification requires two bounded canonical events"));
         }
         seed.validate_with_work(work)?;
         if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
-            return Err(Error::Unauthorized("published child differs from the original parent or child audience".into()));
+            return Err(history_verification_error(work, crate::wire::ErrorCode::Unauthorized,
+                Error::Unauthorized, "published child differs from the original parent or child audience"));
         }
         let child_cut = self.pin_with_work(0,
             work.as_mut().map(|work| &mut **work as &mut dyn HistoryIo)).await?;
         if child_cut.through_revision == 0 {
-            return Err(Error::Unauthorized("published child is not bound".into()));
+            return Err(history_verification_error(work, crate::wire::ErrorCode::Unauthorized,
+                Error::Unauthorized, "published child is not bound"));
         }
         let child_cursor_bytes = child_cut.authority.id.capacity() as u64;
         let cut = child_cut.through_revision;
@@ -486,7 +488,8 @@ impl<P: StreamProvider> HistoryReader<P> {
             &parent.client, parent.verifier.audience(), &parent.verifier,
             seed.operation_id, limits.maximum_bytes, false, work).await?;
         let (publication, publication_owned) = publication
-            .ok_or_else(|| Error::Conflict("child has no original parent publication".into()))?;
+            .ok_or_else(|| history_verification_error(work, crate::wire::ErrorCode::Conflict,
+                Error::Conflict, "child has no original parent publication"))?;
         let publication_matches = publication.revision == causal.revision
             && matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed);
         drop(publication);
@@ -496,15 +499,17 @@ impl<P: StreamProvider> HistoryReader<P> {
         };
         if !publication_matches {
             let _ = released_publication;
-            return Err(Error::Conflict("child differs from the original parent publication".into()));
+            return Err(history_verification_error(work, crate::wire::ErrorCode::Conflict,
+                Error::Conflict, "child differs from the original parent publication"));
         }
         released_publication?;
         let remaining = limits.maximum_bytes.checked_sub(consumed).filter(|bytes| *bytes > 0)
-            .ok_or_else(|| Error::Invalid("published child verification exceeds byte allowance".into()))?;
+            .ok_or_else(|| history_read_invalid(work, "published child verification exceeds byte allowance"))?;
         let (binding, _) = super::operations::bounded_operation_with_retained_quota(
             &self.client, self.verifier.audience(), &self.verifier, operation, remaining, false, work).await?;
         let (binding, binding_owned) = binding
-            .ok_or_else(|| Error::Conflict("child lacks its original fork binding".into()))?;
+            .ok_or_else(|| history_verification_error(work, crate::wire::ErrorCode::Conflict,
+                Error::Conflict, "child lacks its original fork binding"))?;
         let binding_matches = binding.revision == 1 && binding.revision <= cut
             && binding.scope.agent() == Some(seed.child_agent)
             && binding.causal_parent.as_ref() == Some(&causal)
@@ -512,7 +517,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let released_owned = if work.is_some() {
             binding_owned
                 .checked_add(causal.authority.id.capacity() as u64)
-                .ok_or_else(|| Error::Invalid("child verification custody overflows".into()))?
+                .ok_or_else(|| history_read_invalid(work, "child verification custody overflows"))?
         } else { 0 };
         drop(binding);
         drop(causal);
@@ -522,7 +527,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         };
         if !binding_matches {
             let _ = released_binding;
-            return Err(Error::Conflict("child lacks its original fork binding".into()));
+            return Err(history_verification_error(work, crate::wire::ErrorCode::Conflict,
+                Error::Conflict, "child lacks its original fork binding"));
         }
         released_binding
     }
@@ -1108,6 +1114,20 @@ fn history_record_boundary(
     }
     let _ = work;
     Error::Storage(reason.into())
+}
+
+fn history_verification_error(
+    work: &Option<&mut dyn HistoryIo>,
+    code: crate::wire::ErrorCode,
+    ordinary: fn(String) -> Error,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(super::operations::original_native_decode_mode) {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = (work, code);
+    ordinary(reason.into())
 }
 
 /// Original identity bytes for an already admitted resident SDK Value.

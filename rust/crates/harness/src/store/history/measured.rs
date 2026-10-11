@@ -66,7 +66,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Vec<Event>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let events = super::super::effects::read_with_work(
+        let (events, _) = super::super::effects::read_with_retained_quota(
             &self.client, &self.verifier, cursor, effect, limits,
             &mut Some(&mut native_io),
         ).await?;
@@ -90,6 +90,21 @@ impl<P: StreamProvider> HistoryReader<P> {
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
         Ok((state, native_io.into_custody()))
+    }
+
+    /// Verifies the original canonical publication and initial child binding
+    /// on the caller's ledger. This read admits no publication or fresh lease.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn verify_published_child_with_native_work(
+        &self,
+        parent: &Self,
+        seed: &crate::fork::ForkSeed,
+        limits: HistoryReadLimits,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = super::native_work_io(original)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.verify_published_child_with_work(parent, seed, limits, &mut Some(&mut io)).await
     }
 
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
