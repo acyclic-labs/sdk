@@ -6816,15 +6816,20 @@ fn native_positional_file_measured(
     file: std::fs::File,
     scope: &CaptureWorkScope,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = scope.original().clone();
+    let meter = scope.native().runtime_meter_owner();
     #[cfg(windows)]
     let result = unsafe {
         acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
     };
     #[cfg(not(windows))]
     let result = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter);
-    result.map_err(|error| capture_demand_error(scope.original().take_native_io_failure()
-        .unwrap_or_else(|| native_demand_error(error))))
+    result.map_err(|(error, file)| {
+        // This is an ordinary std file, not an explicit SDK close operation.
+        // Retire its physical handle before projecting the original failure.
+        drop(file);
+        capture_demand_error(scope.original().take_native_io_failure()
+            .unwrap_or_else(|| native_demand_error(error)))
+    })
 }
 
 
@@ -6938,6 +6943,34 @@ mod native_range_tests {
             peak_allocation_bytes: 1024 * 1024,
             ..budget()
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code, reason = "advisory locks observe the real imported descriptor's physical retirement")]
+    fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::fd::AsRawFd as _;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("cancelled-import");
+        std::fs::write(&path, b"actual")?;
+        let file = fixture_file(&path)?;
+        let contender = fixture_file(&path)?;
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_ne!(unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(original_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut scope = CaptureWorkScope::new(&original)?;
+        let before = original.receipt();
+        cancellation.cancel();
+        assert!(matches!(native_positional_file_measured(file, &scope), Err(CaptureError::Cancelled)));
+        assert_eq!(unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_eq!(original.receipt(), before);
+        assert_eq!(original.receipt().backend_write_operations, 0);
+        scope.release()?;
+        Ok(())
     }
 
     #[tokio::test]
