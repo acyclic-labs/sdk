@@ -1285,7 +1285,7 @@ impl PiNativeCommandHost {
                 let options = pi_native::native_view_options_with_work(&self.resources, &root_session,
                     owner.task_id(), 2, view_volume_share(budget, 2)?, &meter)?;
                 handles.scratch = Some(pi_native::scratch_view_with_work(&self.resources, &root_session,
-                    &self.protected, &owner, context, &prepared.binding, &options.0, &intent, &session,
+                    &self.protected, &owner, &shared, &prepared.binding, &options.0, &intent, &session,
                     &[BorrowedNativeVolumeBinding { host: &self.filesystem, volume: &prepared.binding.scratch.volume,
                         generation: &generation, path: "scratch", writable: true, verifier: &verifier, scope: &scope,
                         publication: scratch_permit, namespace: &namespace }],
@@ -1303,7 +1303,7 @@ impl PiNativeCommandHost {
                 project_startup_owner, .. } = &mut *handles;
             let scratch = scratch.as_ref().ok_or_else(|| unauthorized("Pi lost its original scratch preparation"))?;
             let index = scratch.view.manifest().volumes.len();
-            let (mapping, mount) = scratch.mount_project_with_work(&owner, context, &prepared.binding, root_key,
+            let (mapping, mount) = scratch.mount_project_with_work(&owner, &shared, &prepared.binding, root_key,
                 &prepared.workspace, self.filesystem.clone(), &project_generation, authority,
                 project_permit, index, writable, retained_mount, project_allocation,
                 project_startup_owner, &meter, &cancellation).await?;
