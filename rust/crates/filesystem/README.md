@@ -167,6 +167,9 @@ original accounting context. Private owner publication retains existing Unix
 owner/mode/link checks (and Windows regular/reparse checks), exclusive temporary
 creation, no-replace held rename and prepaid temporary cleanup. It never removes
 the published destination after an uncertain acknowledgement.
+Directory recovery enumerates lossless native names using the same held owner,
+to exhaustion or a typed original-budget failure, never an invented entry cap
+or partial-success result. Only genuine `NotFound` yields an absent timestamp.
 
 Native journal completion keeps the original protected Preparing packet.
 Its durable work is a known lower bound; physical mutation before its next CAS,
@@ -174,5 +177,15 @@ or a lost CAS acknowledgement, remains an incomplete original operation rather
 than a fabricated exact cold receipt. A quota reservation is accounting custody,
 not permission to append after cancellation; an accepted owner window is a
 separate required authorization.
+Accepted action completion advances the existing packet before the next owner
+guard. Its native store funds the actual record buffer and completion frame
+before the physical action; uncertainty retains the original cause and live
+observed prefix alongside the acknowledged durable lower bound.
+
+`NativeAllocation::from_runtime_allocation` transfers an existing runtime
+buffer guard only when its canonical allocation-owner projection matches the
+exact original root and resource. It does not readmit, rebill, check cancellation
+or release the payload claim. A mismatch returns the incoming guard intact;
+callers must destroy the payload before either guard.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
