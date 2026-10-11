@@ -300,8 +300,7 @@ impl super::UploadRecord for ListFilesInput {
             self.path.capacity() as u64,
             self.after.as_ref().map_or(0, |after| after.capacity() as u64),
             self.expected_generation.as_ref()
-                .map(|generation| generation.logical_owned_bytes()
-                    .map(|bytes| bytes - std::mem::size_of::<GenerationRef>() as u64))
+                .map(GenerationRef::logical_owned_bytes)
                 .transpose()?.unwrap_or(0),
         ] {
             bytes = bytes.checked_add(size).ok_or(Error::NativeBoundary {
