@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -174,12 +174,27 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const bun = process.versions.bun === undefined ? (process.env.ACYCLIC_FS_NAPI_BUN ?? "bun") : process.execPath;
   const installed = spawnSync(bun, ["install", "--production", "--ignore-scripts", "--no-save", "--no-progress", `--cpu=${process.arch}`, `--os=${process.platform}`], {
     cwd: installationRoot, stdio: "inherit",
+    env: { ...process.env, BUN_INSTALL_CACHE_DIR: join(installationRoot, "install-cache") },
   });
   if (installed.error) throw installed.error;
   if (installed.status !== 0) throw new Error("native adapter archive installation failed");
-  const installedBinding = createRequire(pathToFileURL(join(packageRoot, "dist", "native.js")))(manifest.name);
-  if (installedBinding.nativeCapabilities().version !== version) throw new Error("installed archive ABI differs");
   const metadata = JSON.parse(await readFile(join(bundle, "native-targets.json"), "utf8"));
+  const loaderPath = join(packageRoot, "generated", "native", "binding.cjs");
+  if (await fileDigest(loaderPath) !== await fileDigest(join(bundle, "binding.cjs"))) {
+    throw new Error("installed archive generated loader bytes differ from the producer bundle");
+  }
+  const installedRequire = createRequire(pathToFileURL(loaderPath));
+  const installedPath = installedRequire.resolve(manifest.name);
+  const installedDigest = await fileDigest(installedPath);
+  const installedBytes = (await stat(installedPath)).size;
+  if (installedDigest !== metadata.artifact.sha256 || installedBytes !== metadata.artifact.bytes) {
+    throw new Error("installed archive native artifact digest or bytes differ from the producer bundle");
+  }
+  const installedBinding = installedRequire(installedPath);
+  if (installedRequire("./binding.cjs") !== installedBinding) {
+    throw new Error("installed archive generated loader did not select the qualified companion");
+  }
+  if (installedBinding.nativeCapabilities().version !== version) throw new Error("installed archive ABI differs");
   const proof = {
     schema: "acyclic.filesystem.native-runtime-qualification.v1",
     source_commit: metadata.source_revision, source_sha256: metadata.source_sha256, target: metadata.selected_target,
@@ -187,6 +202,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     node_executable_sha256: await fileDigest(process.execPath),
     bun: /** @type {NativeBunRuntimeProof | undefined} */ (undefined),
     artifact: metadata.artifact,
+    installed_artifact: { companion: manifest.name, path: manifest.main, sha256: installedDigest, bytes: installedBytes },
     producer_receipt_sha256: `sha256:${createHash("sha256").update(await readFile(receipt)).digest("hex")}`,
     retained_artifact: { path: `acyclic-fs-${version}-${process.platform}-${process.arch}.node`, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes },
     archives: await Promise.all([parentArchive, companionArchive].map(async path => ({
@@ -314,7 +330,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   }
   const nodeConsumer = spawnSync(process.env.ACYCLIC_FS_NAPI_NODE ?? (process.versions.bun === undefined ? process.execPath : "node"), [
     fileURLToPath(new URL("../typescript/packages/filesystem/test/native-public-installed.mjs", import.meta.url)),
-    packageRoot,
+    packageRoot, manifest.name, metadata.artifact.sha256,
   ], { stdio: "inherit" });
   if (nodeConsumer.error) throw nodeConsumer.error;
   if (nodeConsumer.status !== 0) throw new Error("installed native Node.js consumer qualification failed");
@@ -335,7 +351,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     if (bunIdentity.arch !== process.arch) throw new Error("native Bun consumer architecture differs from the qualified addon");
     const bunConsumer = spawnSync(bun, [
       fileURLToPath(new URL("../typescript/packages/filesystem/test/native-public-installed.mjs", import.meta.url)),
-      packageRoot,
+      packageRoot, manifest.name, metadata.artifact.sha256,
     ], { stdio: "inherit" });
     if (bunConsumer.error) throw bunConsumer.error;
     if (bunConsumer.status !== 0) throw new Error("installed native Bun consumer qualification failed");

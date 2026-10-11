@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { nativeFamily } from "./native-family.mjs";
 import { createNativeAssembler } from "./assemble-native-family.mjs";
 
@@ -21,6 +26,7 @@ const proof = () => ({
   node_executable_sha256: hash("synthetic Node binary"),
   bun: { version: "1.4.2", platform: "linux", arch: "x64", executable_sha256: hash("synthetic Bun binary"), consumer: "passed" },
   artifact: { ...artifact }, producer_receipt_sha256: hash(receipt),
+  installed_artifact: { companion: companion.name, path: companion.main, sha256: artifact.sha256, bytes: artifact.bytes },
   retained_artifact: { path: "acyclic-fs-0.2.0-linux-x64.node", sha256: artifact.sha256, bytes: artifact.bytes },
   archives: [{ path: "acyclic-labs-fs-0.2.0.tgz", sha256: hash("parent") }, { path: "acyclic-labs-fs-linux-x64-gnu-0.2.0.tgz", sha256: hash("companion") }],
 });
@@ -36,6 +42,11 @@ test("filesystem runtime admission binds source, filename, bytes, triple and act
     { runtime: "bun" }, { retained_artifact: { ...artifact, path: "wrong.node" } },
     { bun: undefined }, { bun: { ...proof().bun, arch: "arm64" } },
     { node_executable_sha256: undefined }, { bun: { ...proof().bun, executable_sha256: undefined } },
+    { installed_artifact: undefined },
+    { installed_artifact: { ...proof().installed_artifact, companion: "@acyclic-labs/fs-darwin-x64" } },
+    { installed_artifact: { ...proof().installed_artifact, path: "wrong.node" } },
+    { installed_artifact: { ...proof().installed_artifact, sha256: hash("cached older addon") } },
+    { installed_artifact: { ...proof().installed_artifact, bytes: artifact.bytes + 1 } },
     { bun: { ...proof().bun, consumer: "unsupported-native-architecture" } },
     { archives: [proof().archives[0], proof().archives[0]] },
     { archives: [{ ...proof().archives[0], path: "wrong.tgz" }, proof().archives[1]] },
@@ -75,6 +86,7 @@ test("Windows ARM64 retains actual Node proof without mislabeling x64 Bun as nat
   const windowsProof = {
     ...proof(), target, platform: "win32", arch: "arm64", artifact: windowsArtifact,
     bun: { version: "1.4.2", platform: "win32", arch: "x64", executable_sha256: hash("synthetic x64 Bun installer"), consumer: "unsupported-native-architecture" },
+    installed_artifact: { companion: windowsCompanion.name, path: windowsCompanion.main, sha256: windowsArtifact.sha256, bytes: windowsArtifact.bytes },
     retained_artifact: { ...proof().retained_artifact, path: "acyclic-fs-0.2.0-win32-arm64.node" },
     archives: [proof().archives[0], { ...proof().archives[1], path: "acyclic-labs-fs-win32-arm64-msvc-0.2.0.tgz" }],
   };
@@ -84,5 +96,26 @@ test("Windows ARM64 retains actual Node proof without mislabeling x64 Bun as nat
     { ...windowsProof.bun, arch: "arm64", consumer: "passed" },
   ]) {
     assert.throws(() => assembler.assertNativeRuntimeQualification({ ...windowsProof, bun: replacement }, windowsMetadata, windowsCompanion, receipt), /runtime qualification/);
+  }
+});
+
+test("installed public consumer rejects substituted bytes before loading the addon", async () => {
+  const root = await mkdtemp(join(tmpdir(), "acyclic-fs-installed-custody-"));
+  try {
+    const packageRoot = join(root, "node_modules", "@acyclic-labs", "fs");
+    const companionRoot = join(root, "node_modules", "@acyclic-labs", "fs-linux-x64-gnu");
+    await mkdir(join(packageRoot, "generated", "native"), { recursive: true });
+    await mkdir(companionRoot, { recursive: true });
+    await writeFile(join(companionRoot, "package.json"), JSON.stringify(companion));
+    await writeFile(join(companionRoot, companion.main), "substituted archive bytes");
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL("../typescript/packages/filesystem/test/native-public-installed.mjs", import.meta.url)),
+      packageRoot, companion.name, artifact.sha256,
+    ], { encoding: "utf8" });
+    if (result.error) throw result.error;
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /installed public consumer native artifact digest differs from the qualified producer/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

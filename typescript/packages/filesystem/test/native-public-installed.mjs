@@ -1,15 +1,29 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
-const packageRoot = process.env.FS_INSTALLED_PACKAGE_ROOT ?? process.argv[2];
-if (packageRoot === undefined) {
-  throw new Error("set FS_INSTALLED_PACKAGE_ROOT or pass the installed @acyclic-labs/fs package root");
+const [packageRoot, companionName, expectedDigest] = process.argv.slice(2);
+if (packageRoot === undefined || companionName === undefined || !/^sha256:[0-9a-f]{64}$/u.test(expectedDigest ?? "")) {
+  throw new Error("usage: native-public-installed.mjs INSTALLED_PACKAGE_ROOT COMPANION_NAME sha256:EXPECTED_NATIVE_DIGEST");
 }
 
 const packagePath = resolve(packageRoot);
+const installedRequire = createRequire(pathToFileURL(join(packagePath, "generated", "native", "binding.cjs")));
+const installedPath = installedRequire.resolve(companionName);
+const digest = createHash("sha256");
+for await (const chunk of createReadStream(installedPath)) digest.update(chunk);
+if (`sha256:${digest.digest("hex")}` !== expectedDigest) {
+  throw new Error("installed public consumer native artifact digest differs from the qualified producer");
+}
+const qualifiedBinding = installedRequire(installedPath);
+if (installedRequire("./binding.cjs") !== qualifiedBinding) {
+  throw new Error("installed public consumer loader did not select the qualified companion");
+}
 const native = await import(pathToFileURL(join(packagePath, "dist/native.js")).href);
 const engineRoot = process.env.FS_NATIVE_TEST_ROOT === undefined
   ? await mkdtemp(join(tmpdir(), "acyclic-fs-public-loader-"))

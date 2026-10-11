@@ -172,6 +172,8 @@ const main = async () => {
       }
     }
     const nativeTarballs = new Map();
+    /** @type {{ name: string, sha256: string } | undefined} */
+    let filesystemNativeArtifact;
     if (assembledDirectory) {
       for (const family of ["stream", "actors", "workers", "filesystem"]) {
       const assembly = JSON.parse(await readFile(join(assembledDirectory, `${family.toUpperCase()}_NATIVE_PACKAGE.json`), "utf8"));
@@ -190,6 +192,7 @@ const main = async () => {
         throw new Error("Rust host companion differs from the JavaScript runtime platform");
       }
       nativeTarballs.set(companion.name, join(assembledDirectory, companion.asset));
+      if (family === "filesystem") filesystemNativeArtifact = { name: companion.name, sha256: companion.artifact.sha256 };
       }
     }
     const manifests = await Promise.all(packageDirectories.map(packageJson));
@@ -261,8 +264,11 @@ const main = async () => {
         await readFile(join(packagesRoot, "filesystem/test/native-public-installed.mjs")));
       await writeFile(join(tempRoot, "workspace-composition.mjs"),
         await readFile(join(packagesRoot, "filesystem/test/workspace-composition.mjs")));
-      run("node", ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs")], { cwd: tempRoot });
-      run("bun", ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs")], { cwd: tempRoot });
+      if (filesystemNativeArtifact === undefined) throw new Error("filesystem installed consumer requires the verified host artifact digest");
+      const filesystemConsumerArgs = ["native-public-installed.mjs", join(tempRoot, "node_modules/@acyclic-labs/fs"),
+        filesystemNativeArtifact.name, filesystemNativeArtifact.sha256];
+      run("node", filesystemConsumerArgs, { cwd: tempRoot });
+      run("bun", filesystemConsumerArgs, { cwd: tempRoot });
     }
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });

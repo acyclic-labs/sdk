@@ -178,6 +178,7 @@ function assertNativeRuntimeQualification(proof, metadata, companion, receiptByt
         : proof.bun.arch !== "x64" || proof.bun.consumer !== "unsupported-native-architecture")
       || metadata.artifact.path !== `generated/native/${companion.main}`
       || !isDeepStrictEqual(proof.artifact, metadata.artifact)
+      || !isDeepStrictEqual(proof.installed_artifact, { companion: companion.name, path: companion.main, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes })
       || proof.producer_receipt_sha256 !== `sha256:${createHash("sha256").update(receiptBytes).digest("hex")}`
       || !isDeepStrictEqual(proof.retained_artifact, { path: retainedPath, sha256: metadata.artifact.sha256, bytes: metadata.artifact.bytes })
       || !Array.isArray(proof.archives) || !isDeepStrictEqual(proof.archives.map(entry => entry.path).sort(), expectedArchives)

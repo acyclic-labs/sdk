@@ -46,6 +46,16 @@ bun run check:native-adapter --bundle "$native_output/bundle" \
 
 Run these commands from the repository root with the pinned Node, Bun, Rust and wasm-bindgen tools installed. The root adapter command builds the public filesystem distribution and runs the Node-attested checker, including its real supported Bun consumer. Both paths must be absolute; the checker accepts no default `.so`/DLL, debug-target or receipt fallback.
 
+Qualification hashes the installed companion resolved from the generated loader, rejects bytes differing from the source-bound producer, and verifies that the public loader selects that same addon. Node and supported Bun consumers repeat the installed-byte check before running the maintained filesystem model. The retained runtime receipt includes this installed artifact identity; bundle metadata or matching package versions alone are not installation proof. Install caches are private to each archive qualification.
+
+The maintained installed consumer also requires the source-qualified companion and digest explicitly:
+
+```sh
+node typescript/packages/filesystem/test/native-public-installed.mjs \
+  /absolute/installation/node_modules/@acyclic-labs/fs \
+  @acyclic-labs/fs-linux-x64-gnu sha256:EXPECTED_NATIVE_DIGEST
+```
+
 `await openBrowserOperationWindowCoordinator(filesystem)` binds durable leases to the authority of an opened browser filesystem. Pass the returned lease to `transaction.commit(lease)` or `checkout.commit(operationId, lease)` to fence publication by closed, superseded or expired owners. The lease check and authority publication share one strict IndexedDB transaction. Construction acquires no lease; begin, close and reconciliation use the existing Rust coordinator. OPFS accelerates immutable objects in tabs and workers while IndexedDB retains authority. Control records have a 64 KiB storage ceiling. Opening older database schemas fails; use a fresh database name for this format. Atomicity covers that database, without a cross-volume or mixed-provider guarantee.
 
 See the [browser example](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/filesystem/examples/browser.mjs), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/filesystem/src), and [Filesystem protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem).
