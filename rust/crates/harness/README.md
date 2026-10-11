@@ -206,6 +206,15 @@ publication lease, while inherited access preserves the original proof identity.
 Workflow command and model inputs resolve through those same owner-authenticated
 bindings. Protected workflow and execution records remain in their original
 owner-controlled storage; ordinary content refs cannot substitute for them.
+
+Durable-host scope authentication, retained admission reads and parent validation
+share one optional `HistoryIo` engine on native, portable and WASM targets.
+Ordinary entrypoints pass `None`; observed entrypoints preserve the original
+reader and proof authority. Native `Some` uses that caller's original ledger for
+field copies, recursive proof custody and typed failures; native constructors
+remain filesystem/non-WASM-only. No portable adapter creates another budget or
+authorization path.
+
 Native consumers share one SDK-issued `NativeTaskContext` for commands,
 root-provider reads, and the original-owner content verifier. Sharing consumes
 the actual context and its original metadata allocation receipt; an ordinary

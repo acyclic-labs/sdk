@@ -292,6 +292,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
                 io.reserve_text(&mut text, 48)?;
                 io.copy_bytes(48)?;
             }
+            use std::fmt::Write as _;
             write!(&mut text, "task-cancel:{}", self.operation).expect("writing into String");
             coordinator.cancel_operation_with_work(
                 &self.owner, &self.scope, &self.verifier, self.operation,
@@ -4498,132 +4499,281 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     async fn authenticated_scope(&self, admission: &TaskAdmissionRecord) -> Result<RuntimeScope> {
-        let mut visited = BTreeSet::new();
-        let access = self.verify_created_access(admission, &mut visited).await?;
-        self.root_scope.with_created_access(admission, access)
+        self.authenticated_scope_with_work(admission, &mut None).await.map(|(scope, _)| scope)
     }
 
-    fn verify_created_access<'a>(
-        &'a self,
-        admission: &'a TaskAdmissionRecord,
-        visited: &'a mut BTreeSet<OperationId>,
-    ) -> BoxFuture<'a, Result<Option<crate::resource_preparation::CreatedResourceAccess>>> {
-        Box::pin(async move {
-            if admission.resource_proofs.is_empty() {
-                return Ok(None);
+    pub(crate) async fn authenticated_scope_with_work(
+        &self, admission: &TaskAdmissionRecord,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(RuntimeScope, u64)> {
+        let mut visited = Vec::new();
+        let access = self.verify_created_access_with_work(admission, &mut visited, work).await;
+        let visited_bytes = (visited.capacity() * std::mem::size_of::<OperationId>()) as u64;
+        drop(visited);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(visited_bytes)?; }
+        self.root_scope.with_created_access_with_work(admission, access?, work)
+    }
+
+    fn reserve_proof_slots<T>(
+        values: &mut Vec<T>, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        if values.len() < values.capacity() { return Ok(0); }
+        let target = values.capacity().checked_mul(2).unwrap_or(usize::MAX).max(4);
+        let bytes = target.checked_sub(values.capacity())
+            .and_then(|slots| slots.checked_mul(std::mem::size_of::<T>()))
+            .ok_or_else(|| Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "resource proof vector ownership overflows",
+            ))? as u64;
+        let old = values.capacity();
+        if let Some(io) = work.as_deref_mut() { io.admit_allocation(bytes)?; }
+        values.try_reserve_exact(target - values.len()).map_err(|cause| {
+            match work.as_deref() {
+                Some(io) => io.allocation_failure(cause),
+                None => Error::Storage(cause.to_string()),
             }
-            if !visited.insert(admission.operation_id) {
-                return Err(Error::Unauthorized("resource preparation proof is cyclic".into()));
+        })?;
+        let retained = (values.capacity() - old).checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "resource proof vector ownership overflows",
+            ))? as u64;
+        if let Some(io) = work.as_deref_mut() { io.retain_owned(retained)?; }
+        Ok(retained)
+    }
+
+    fn proof_contains<T: PartialEq>(
+        values: &[T], wanted: &T,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        for value in values {
+            if let Some(io) = work.as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
             }
-            let parent = admission.parent.ok_or_else(|| {
-                Error::Unauthorized("created resource admission has no parent".into())
-            })?;
-            let parent_admission = self.read_retained_admission(
-                OperationId::from_bytes(parent.into_bytes()),
+            if value == wanted { return Ok(true); }
+        }
+        Ok(false)
+    }
+
+    async fn verify_created_access_with_work(
+        &self, admission: &TaskAdmissionRecord, visited: &mut Vec<OperationId>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if admission.resource_proofs.is_empty() { return Ok(None); }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()).cloned() {
+            return crate::NativeFutureBundle::new(&native, || {
+                self.verify_created_access_body(admission, visited, work)
+            })?.await;
+        }
+        Box::pin(self.verify_created_access_body(admission, visited, work)).await
+    }
+
+    async fn verify_created_access_body(
+        &self, admission: &TaskAdmissionRecord, visited: &mut Vec<OperationId>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
+        use crate::wire::ErrorCode;
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if admission.resource_proofs.is_empty() { return Ok(None); }
+        if Self::proof_contains(visited, &admission.operation_id, work)? {
+            return Err(Self::admission_boundary(work, ErrorCode::Unauthorized,
+                "resource preparation proof is cyclic"));
+        }
+        Self::reserve_proof_slots(visited, work)?;
+        visited.push(admission.operation_id);
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let parent = admission.parent.ok_or_else(|| Self::admission_boundary(
+            custody.work(), ErrorCode::Unauthorized, "created resource admission has no parent",
+        ))?;
+        let (parent_admission, held) = self.read_retained_admission_counted(
+            OperationId::from_bytes(parent.into_bytes()), custody.work(),
+        ).await?;
+        custody.adopt(held)?;
+        let mut receipts = Vec::new();
+        let mut current_default: Option<(usize, OperationId)> = None;
+        for proof in &admission.resource_proofs {
+            let mut selected = None;
+            for provider in &self.resource_creation {
+                if let Some(io) = custody.work().as_deref_mut() {
+                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                }
+                if provider.provider() == &proof.provider {
+                    selected = Some(provider);
+                    break;
+                }
+            }
+            let provider = selected.ok_or_else(|| Self::admission_boundary(
+                custody.work(), ErrorCode::Unsupported, "resource proof verifier is not bound",
+            ))?;
+            let mut proof_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+            let (preparation, held) = self.read_retained_admission_counted(
+                OperationId::from_bytes(proof.preparation.into_bytes()), proof_custody.work(),
             ).await?;
-            let mut receipts = Vec::with_capacity(admission.resource_proofs.len());
-            let mut current_default: Option<(usize, OperationId)> = None;
-            for proof in &admission.resource_proofs {
-                let provider = self.resource_creation.iter().find(|provider| {
-                    provider.provider() == &proof.provider
-                }).ok_or_else(|| Error::Unsupported("resource proof verifier is not bound".into()))?;
-                let preparation = self.read_retained_admission(
-                    OperationId::from_bytes(proof.preparation.into_bytes()),
-                ).await?;
-                let request: crate::resource_preparation::ResourcePreparationRequest =
-                    serde_json::from_value(preparation.input.clone())
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                request.validate()?;
-                if preparation.parent != request.child.parent
-                    || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
-                    || request.provider != proof.provider
-                    || !request.resources.contains(&proof.resource)
-                    || !request.child.resource_proofs.contains(proof)
-                    || !preparation.grants.contains(&request.creation_grant)
-                {
-                    return Err(Error::Unauthorized("resource proof differs from admitted preparation".into()));
-                }
-                let preparation_access = self.verify_created_access(&preparation, visited).await?;
-                self.root_scope.with_created_access(&preparation, preparation_access)?;
-                let preparation_parent = preparation.parent.ok_or_else(|| {
-                    Error::Unauthorized("resource preparation has no original parent".into())
-                })?;
-                let original_parent = self.read_retained_admission(
-                    OperationId::from_bytes(preparation_parent.into_bytes()),
-                ).await?;
-                if !original_parent.grants.contains(&request.creation_grant)
-                    || !preparation.grants.is_subset_of(&original_parent.grants)
-                {
-                    return Err(Error::Unauthorized("creation authority was not narrowed from the parent".into()));
-                }
-                let inherited = request.child != *admission;
-                let mut origin_distance = 0;
-                if inherited {
-                    if !parent_admission.resource_proofs.contains(proof) {
-                        return Err(Error::Unauthorized("created resource proof is not inherited from the parent".into()));
-                    }
-                    let original_child = self.read_retained_admission(request.child.operation_id).await?;
-                    if original_child != request.child {
-                        return Err(Error::Unauthorized("created resource origin admission changed".into()));
-                    }
-                }
-                {
-                    let mut coordinator = self.coordinator.lock().await;
-                    coordinator.refresh().await?;
-                    let prepared = coordinator.observe_operation(
-                        &self.owner, &self.owner_scope, &self.verifier, preparation.operation_id,
-                    )?;
-                    if prepared.cancellation_requested
-                        || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
-                    {
-                        return Err(Error::Unauthorized("resource preparation did not succeed".into()));
-                    }
-                    if inherited {
-                        let mut cursor = Some(OperationId::from_bytes(parent.into_bytes()));
-                        let mut lineage = BTreeSet::new();
-                        let mut found = false;
-                        while let Some(operation) = cursor {
-                            if operation == request.child.operation_id {
-                                origin_distance = lineage.len() + 1;
-                                found = true;
-                                break;
-                            }
-                            if !lineage.insert(operation) {
-                                return Err(Error::Conflict("indexed operation lineage is cyclic".into()));
-                            }
-                            let state = coordinator.observe_operation(
-                                &self.owner, &self.owner_scope, &self.verifier, operation,
-                            )?;
-                            cursor = state.spec.parent.map(|link| link.operation_id);
-                        }
-                        if !found {
-                            return Err(Error::Unauthorized("resource proof belongs to another child lineage".into()));
-                        }
-                    }
-                }
-                let receipt = provider.verify(&request, proof).await?;
-                if receipt.origin.owner != self.owner
-                    || receipt.origin.parent_task != preparation_parent
-                    || receipt.origin.preparation_task != proof.preparation
-                    || receipt.origin.intended_child != request.child.operation_id
-                    || receipt.origin.admission_digest != crate::contract::canonical_json_digest(&preparation)?
-                    || receipt.origin.request_digest != crate::contract::canonical_json_digest(&request)?
-                    || receipt.origin.source_grants != preparation.grants
-                {
-                    return Err(Error::Unauthorized("resource allocation provenance changed".into()));
-                }
-                if receipt.content.iter().any(|binding| binding.default_writer)
-                    && current_default.is_none_or(|(distance, _)| origin_distance < distance)
-                {
-                    current_default = Some((origin_distance, receipt.origin.intended_child));
-                }
-                receipts.push(receipt);
+            proof_custody.adopt(held)?;
+            let (request, held) =
+                crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+                    &preparation.input, proof_custody.work(),
+                )?;
+            proof_custody.adopt(held)?;
+            if preparation.parent != request.child.parent
+                || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
+                || request.provider != proof.provider
+                || !request.resources.contains(&proof.resource)
+                || !request.child.resource_proofs.contains(proof)
+                || !preparation.grants.contains(&request.creation_grant)
+            {
+                return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                    "resource proof differs from admitted preparation"));
             }
-            visited.remove(&admission.operation_id);
-            crate::resource_preparation::CreatedResourceAccess::consume(
-                admission, receipts, current_default.map(|(_, origin)| origin),
-            ).map(Some)
-        })
+            let preparation_access = self.verify_created_access_with_work(
+                &preparation, visited, proof_custody.work(),
+            ).await?;
+            let (preparation_scope, scope_held) = self.root_scope.with_created_access_with_work(
+                &preparation, preparation_access, proof_custody.work(),
+            )?;
+            drop(preparation_scope);
+            if let Some(io) = proof_custody.work().as_deref_mut() { io.release_owned(scope_held)?; }
+            let preparation_parent = preparation.parent.ok_or_else(|| Self::admission_boundary(
+                proof_custody.work(), ErrorCode::Unauthorized, "resource preparation has no original parent",
+            ))?;
+            let (original_parent, held) = self.read_retained_admission_counted(
+                OperationId::from_bytes(preparation_parent.into_bytes()), proof_custody.work(),
+            ).await?;
+            proof_custody.adopt(held)?;
+            if !original_parent.grants.contains(&request.creation_grant)
+                || !preparation.grants.is_subset_of(&original_parent.grants)
+            {
+                return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                    "creation authority was not narrowed from the parent"));
+            }
+            let inherited = request.child != *admission;
+            let mut origin_distance = 0;
+            if inherited {
+                if !parent_admission.resource_proofs.contains(proof) {
+                    return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                        "created resource proof is not inherited from the parent"));
+                }
+                let (original_child, held) = self.read_retained_admission_counted(
+                    request.child.operation_id, proof_custody.work(),
+                ).await?;
+                proof_custody.adopt(held)?;
+                let matches = original_child == request.child;
+                drop(original_child);
+                proof_custody.relinquish(held)?;
+                if !matches {
+                    return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                        "created resource origin admission changed"));
+                }
+            }
+            {
+                let mut coordinator = self.coordinator.lock().await;
+                coordinator.refresh_with_work(proof_custody.work()).await?;
+                let prepared = coordinator.observe_operation_ref_with_work(
+                    &self.owner, &self.owner_scope, &self.verifier,
+                    preparation.operation_id, proof_custody.work(),
+                )?;
+                if prepared.cancellation_requested
+                    || !matches!(prepared.outcome, Some(Outcome::Succeeded(_)))
+                {
+                    return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                        "resource preparation did not succeed"));
+                }
+                if inherited {
+                    let mut lineage_custody = crate::wire_codec::CodecQuota::new(proof_custody.work(), 0)?;
+                    let mut lineage = Vec::new();
+                    let mut cursor = Some(OperationId::from_bytes(parent.into_bytes()));
+                    let mut found = false;
+                    while let Some(operation) = cursor {
+                        if let Some(io) = lineage_custody.work().as_deref_mut() {
+                            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                        }
+                        if operation == request.child.operation_id {
+                            origin_distance = lineage.len() + 1;
+                            found = true;
+                            break;
+                        }
+                        if Self::proof_contains(&lineage, &operation, lineage_custody.work())? {
+                            return Err(Self::admission_boundary(lineage_custody.work(), ErrorCode::Conflict,
+                                "indexed operation lineage is cyclic"));
+                        }
+                        let held = Self::reserve_proof_slots(&mut lineage, lineage_custody.work())?;
+                        lineage_custody.adopt(held)?;
+                        lineage.push(operation);
+                        let state = coordinator.observe_operation_ref_with_work(
+                            &self.owner, &self.owner_scope, &self.verifier, operation,
+                            lineage_custody.work(),
+                        )?;
+                        cursor = state.spec.parent.as_ref().map(|link| link.operation_id);
+                    }
+                    if !found {
+                        return Err(Self::admission_boundary(lineage_custody.work(), ErrorCode::Unauthorized,
+                            "resource proof belongs to another child lineage"));
+                    }
+                }
+            }
+            let receipt;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = proof_custody.work().as_deref()
+                .and_then(|io| io.original_native_work()).cloned()
+            {
+                let (verified, guard) = provider.verify_with_native_work(&request, proof, &native)?.await?;
+                if !guard.matches_work(&native) {
+                    drop(verified);
+                    return Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                        custody: Some(guard),
+                    });
+                }
+                proof_custody.work().as_deref_mut().expect("native proof observer")
+                    .absorb_native_custody(guard)?;
+                receipt = verified;
+            } else {
+                receipt = provider.verify(&request, proof).await?;
+            }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+            { receipt = provider.verify(&request, proof).await?; }
+            if receipt.origin.owner != self.owner
+                || receipt.origin.parent_task != preparation_parent
+                || receipt.origin.preparation_task != proof.preparation
+                || receipt.origin.intended_child != request.child.operation_id
+                || receipt.origin.admission_digest != Self::proof_digest(&preparation, proof_custody.work())?
+                || receipt.origin.request_digest != Self::proof_digest(&request, proof_custody.work())?
+            {
+                return Err(Self::admission_boundary(proof_custody.work(), ErrorCode::Unauthorized,
+                    "resource allocation provenance changed"));
+            }
+            if receipt.content.iter().any(|binding| binding.default_writer)
+                && current_default.is_none_or(|(distance, _)| origin_distance < distance)
+            {
+                current_default = Some((origin_distance, receipt.origin.intended_child));
+            }
+            drop(original_parent);
+            drop(request);
+            drop(preparation);
+            drop(proof_custody);
+            // The original Common consumer retires this vector itself after
+            // draining receipts, and splits its sealed payload's exact guard.
+            // Do not also adopt these slots into temporary proof custody.
+            Self::reserve_proof_slots(&mut receipts, custody.work())?;
+            receipts.push(receipt);
+        }
+        visited.pop();
+        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume_with_work(
+            admission, &mut receipts, current_default.map(|(_, origin)| origin), custody.work(),
+        )?;
+        Ok(Some(access))
+    }
+
+    fn proof_digest<T: serde::Serialize + ?Sized>(
+        value: &T, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let bytes = crate::store::history::canonical_bytes_with_work(
+            value, acyclic_stream::MAX_RECORD_BYTES as u64, custody.work(),
+        )?;
+        custody.adopt(bytes.capacity() as u64)?;
+        if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+        Ok(*blake3::hash(&bytes).as_bytes())
     }
 
     async fn read_json(&self, reference: &FileRef) -> Result<Value> {
@@ -4635,16 +4785,35 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Value,u64)> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            reference.validate_with_native_work(native)?;
+        } else {
+            reference.validate()?;
+        }
+        #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
         reference.validate()?;
         if reference.descriptor().media_type() != "application/json" {
-            return Err(Error::Invalid("durable task payload is not JSON".into()));
+            return Err(Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "durable task payload is not JSON",
+            ));
         }
         let bytes = match work.as_deref_mut() {
             Some(io) => io.read_content(self.reader.as_ref(), reference)?.await?,
             None => self.reader.read(reference).await?,
         };
-        if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-        reference.descriptor().verify(&bytes)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            reference.descriptor().verify_with_native_work(&bytes, native)?;
+        } else {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            reference.descriptor().verify(&bytes)?;
+        }
+        #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+        {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            reference.descriptor().verify(&bytes)?;
+        }
         let (value, retained) = match work.as_deref_mut() {
             Some(io) => io.decode_json_value(&bytes)?,
             None => (crate::contract::json_from_slice(&bytes)
@@ -4663,7 +4832,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.release_owned(byte_capacity)?;
         }
         if differs {
-            return Err(Error::Invalid("durable task payload is not canonical JSON".into()));
+            return Err(Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "durable task payload is not canonical JSON",
+            ));
         }
         Ok((value,retained))
     }
@@ -4767,6 +4938,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
             crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
             crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+            crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
             _ => Error::Invalid(reason.into()),
         }
     }
@@ -4779,12 +4951,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskAdmissionRecord> {
+        self.read_retained_admission_counted(operation_id, work).await.map(|(record, _)| record)
+    }
+
+    async fn read_retained_admission_counted(
+        &self, operation_id: OperationId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(TaskAdmissionRecord, u64)> {
         let spec = self.retained_declaration_with_work(operation_id, work).await?
             .ok_or_else(|| Self::admission_boundary(
                 work, crate::wire::ErrorCode::NotFound, "task admission",
             ))?;
         let bytes = if work.is_some() { spec.logical_owned_bytes()? } else { 0 };
-        let admission = self.read_declared_admission_with_work(&spec, work).await;
+        let admission = self.read_declared_admission_counted(&spec, work).await;
         drop(spec);
         let release = match work.as_deref_mut() {
             Some(io) => io.release_owned(bytes),
@@ -4804,16 +4983,29 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, spec: &OperationSpec,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskAdmissionRecord> {
+        self.read_declared_admission_counted(spec, work).await.map(|(record, _)| record)
+    }
+
+    async fn read_declared_admission_counted(
+        &self, spec: &OperationSpec,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(TaskAdmissionRecord, u64)> {
+        spec.verify_owner_with_work(&self.owner, &self.verifier, work)?;
         let operation_id = spec.operation_id;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
             // Session configuration and parent links are immutable. A cached
             // hierarchy can check these pinned ceilings without refreshing
             // unrelated lifecycle events; unknown descendants still bootstrap.
-            let retained = match coordinator.scheduler().session_limits(operation_id) {
+            let retained = match coordinator.scheduler().session_limits_with_work(operation_id, work) {
                 Err(Error::NotFound(_)) => {
                     coordinator.refresh_with_work(work).await?;
-                    coordinator.scheduler().session_limits(operation_id)?
+                    coordinator.scheduler().session_limits_with_work(operation_id, work)?
+                }
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, .. }) => {
+                    coordinator.refresh_with_work(work).await?;
+                    coordinator.scheduler().session_limits_with_work(operation_id, work)?
                 }
                 other => other?,
             };
@@ -4824,8 +5016,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ));
             }
         }
-        let (value, _) = self.read_admission_json_with_work(&spec.state, work).await?;
-        let admission = TaskAdmissionRecord::from_canonical_value_with_work(value, work)?;
+        let (value, held) = self.read_admission_json_with_work(&spec.state, work).await?;
+        let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(value, work)?;
+        let held = held.checked_add(added).ok_or_else(|| Self::admission_boundary(
+            work, crate::wire::ErrorCode::Invalid, "task admission custody overflows",
+        ))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let held = if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            let actual = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+                .checked_add(admission.logical_owned_bytes()?).ok_or_else(|| Self::admission_boundary(
+                    work, crate::wire::ErrorCode::Invalid, "task admission custody overflows",
+                ))?;
+            let retired = held.checked_sub(actual).ok_or_else(|| Self::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "task admission producer custody is undersized",
+            ))?;
+            work.as_deref_mut().expect("native admission observer").release_owned(retired)?;
+            actual
+        } else { held };
         let policy_matches = if work.is_some() {
             admission.policy.as_ref() == self.policy_binding.as_ref()
         } else {
@@ -4838,7 +5045,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if let Some(extensions) = &admission.extensions {
-            extensions.validate()?;
+            extensions.validate_with_work(work)?;
         }
         if admission.extensions.as_ref() != self.root_scope.extensions() {
             return Err(Self::admission_boundary(
@@ -4879,11 +5086,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&admission.input),
             work,
         )?;
-        Ok(admission)
+        Ok((admission, held))
     }
     async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
-        let admission = self.read_retained_admission(operation_id).await?;
-        self.authenticated_scope(&admission).await?;
+        self.admission_with_work(operation_id, &mut None).await
+    }
+
+    pub(crate) async fn admission_with_work(
+        &self, operation_id: OperationId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<TaskAdmissionRecord> {
+        let admission = self.read_retained_admission_with_work(operation_id, work).await?;
+        let (scope, held) = self.authenticated_scope_with_work(&admission, work).await?;
+        drop(scope);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(held)?; }
         Ok(admission)
     }
 
@@ -4893,10 +5109,65 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         parent: Option<TaskId>,
         scope: &RuntimeScope,
     ) -> Result<()> {
+        self.validate_parent_scope_with_work(parent, scope, &mut None).await
+    }
+
+    pub(crate) async fn validate_parent_scope_with_work(
+        &self, parent: Option<TaskId>, scope: &RuntimeScope,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(parent) = parent {
-            let admitted = self
-                .read_retained_admission(OperationId::from_bytes(parent.into_bytes()))
-                .await?;
+            let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let (admitted, held) = self.read_retained_admission_counted(
+                OperationId::from_bytes(parent.into_bytes()), custody.work(),
+            ).await?;
+            custody.adopt(held)?;
+            let (authenticated, scope_held) = self.authenticated_scope_with_work(&admitted, custody.work()).await?;
+            custody.adopt(scope_held)?;
+            drop(authenticated);
+            custody.relinquish(scope_held)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
+                RuntimeScope::validate_limits_with_native_work(&scope.limits(), native)?;
+                RuntimeScope::validate_run_limits_with_native_work(&scope.run_limits(), native)?;
+                let parent_limits = admitted.limits;
+                let child_limits = scope.limits();
+                let mut grants_match = true;
+                for grant in scope.grants().iter() {
+                    native.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    if !admitted.grants.contains(grant)
+                        && !scope.created_grants().is_some_and(|created| created.contains(grant))
+                    {
+                        grants_match = false;
+                        break;
+                    }
+                }
+                let limits_match = child_limits.file_bytes <= parent_limits.file_bytes
+                    && child_limits.path_bytes <= parent_limits.path_bytes
+                    && child_limits.attachments <= parent_limits.attachments
+                    && child_limits.render_bytes <= parent_limits.render_bytes
+                    && child_limits.model_steps <= parent_limits.model_steps
+                    && child_limits.model_events_per_step <= parent_limits.model_events_per_step
+                    && child_limits.tool_calls_per_step <= parent_limits.tool_calls_per_step
+                    && child_limits.context_messages <= parent_limits.context_messages;
+                let parent_run = admitted.run_limits;
+                let child_run = scope.run_limits();
+                let runs_match = [
+                    (parent_run.concurrency.map(|v| v as u64), child_run.concurrency.map(|v| v as u64)),
+                    (parent_run.max_steps.map(|v| v as u64), child_run.max_steps.map(|v| v as u64)),
+                    (parent_run.deadline_epoch_ms, child_run.deadline_epoch_ms),
+                ].into_iter().all(|(bound, child)| bound.is_none_or(|bound|
+                    child.is_some_and(|child| child <= bound)));
+                if !grants_match || !limits_match || !runs_match {
+                    return Err(Self::admission_boundary(
+                        custody.work(), crate::wire::ErrorCode::Unauthorized,
+                        "runtime scope cannot widen ancestor authority",
+                    ));
+                }
+                return Ok(());
+            }
             let allowed = Capabilities::new(admitted.grants.iter().chain(
                 scope.created_grants().into_iter().flat_map(Capabilities::iter),
             ));
