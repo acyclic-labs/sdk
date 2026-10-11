@@ -1,4 +1,4 @@
-use super::{ContentResidencyVerifier, TaskContext, ToolContext, ToolTaskContext};
+use super::{ContentResidencyVerifier, InteractionRouter, TaskContext, ToolContext, ToolTaskContext};
 use crate::{Error, FileRef, NativeFutureBundle, Result, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
@@ -161,8 +161,34 @@ impl ToolContext {
             task: ToolTaskContext::Native(task),
             operation_id,
             call_id: output.0,
+            native_interactions: None,
             native_custody: Some(output.1),
         })
+    }
+
+    /// Retains an already SDK-issued native interaction router for this tool
+    /// without cloning or changing its original task, scope or policy.
+    /// The router producer, not this allocation-membership gate, authenticates
+    /// and funds its own original journal/owner and shared value slot.
+    /// SDK stock-worker-only: holding a native budget is not router authority.
+    pub(crate) fn with_native_interactions(
+        mut self, router: Arc<dyn InteractionRouter>, work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        work.charge(WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.native_metadata_matches(work) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "interaction override has no original native tool metadata source"));
+        }
+        // The Option<Arc> value slot is already covered by the genuine tool
+        // constructor's known Self admission. Moving the issued Arc allocates 0.
+        self.native_interactions = Some(router);
+        Ok(self)
+    }
+
+    /// Borrows the actual per-command router for the original policy pipeline.
+    pub(crate) fn native_interactions(&self) -> Option<&Arc<dyn InteractionRouter>> {
+        self.native_interactions.as_ref()
     }
 
     /// Borrows the original shared task without reconstructing its owner.
@@ -570,6 +596,7 @@ mod tests {
         assert_eq!(tool.operation_id(), operation);
         assert_eq!(tool.call_id(), call_id);
         assert!(tool.native_metadata_matches(&original));
+        assert!(tool.native_interactions().is_none());
         assert_eq!(Arc::strong_count(&shared), users + 1);
         assert!(original.receipt().bytes_copied >= before.bytes_copied + call_id.len() as u64);
         let held = tool.native_custody.as_ref().expect("genuine SDK tool metadata").bytes();

@@ -7545,6 +7545,8 @@ pub struct ToolContext {
     operation_id: OperationId,
     call_id: String,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_interactions: Option<Arc<dyn InteractionRouter>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -7554,6 +7556,8 @@ impl Clone for ToolContext {
             task: self.task.clone(),
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -7575,6 +7579,8 @@ impl ToolContext {
             task: ToolTaskContext::Ordinary(task),
             operation_id,
             call_id,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         })
