@@ -441,10 +441,9 @@ pub(crate) async fn observe_declaration_with_work<P: StreamProvider>(
         return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
             "declaration observation requires operation:observe"));
     }
-    let authorization = work.is_some().then_some((owner, scope, verifier));
     let mut custody = CodecQuota::new(work, 0)?;
     let Some((_, event, ..)) = read_indexed_intent_with_work(
-        client, declaration_key.as_str(), None, authorization, custody.work(),
+        client, declaration_key.as_str(), None, custody.work(),
     ).await?
     else {
         return Ok(None);
@@ -494,7 +493,7 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
     )?;
     custody.adopt(key.capacity() as u64)?;
     let declaration = read_indexed_intent_with_work(
-        client, &key, None, Some((owner, scope, verifier)), custody.work(),
+        client, &key, None, custody.work(),
     ).await;
     let key_capacity = key.capacity() as u64;
     drop(key);
@@ -514,7 +513,6 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
             "historical declaration identifies another operation"));
     }
     declaration.verify_owner_with_work(owner, verifier, custody.work())?;
-    authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
     let stream = coordinator_source_stream_with_work(client, custody.work())?;
     let path_bytes = if custody.work().as_deref()
         .is_some_and(operations::original_native_decode_mode)
@@ -529,8 +527,6 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
     let mut admitted = None;
     let mut last_time = None;
     while next < tail {
-        authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
-        declaration.verify_owner_with_work(owner, verifier, custody.work())?;
         let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
         let records = read_records_with_work(client, &stream.stream, next, maximum, custody.work()).await?
             .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
@@ -723,11 +719,7 @@ async fn read_intent_location<P: StreamProvider>(
     client: &StreamClient<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<IntentLocation>> {
     let mut custody = CodecQuota::new(work, 0)?;
-    let owned_key = text_with_work(key, custody.work())?;
-    let key_capacity = owned_key.capacity() as u64;
-    let validation = checked_idempotency_key(owned_key, custody.work()).map(|_| ());
-    if let Some(work) = custody.work().as_deref_mut() { work.release_owned(key_capacity)?; }
-    validation?;
+    validate_idempotency_key(key, custody.work())?;
     let stream = intent_location_stream_with_work(client, key, custody.work())?;
     let path_bytes = if custody.work().is_some()
         && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
@@ -768,13 +760,9 @@ async fn read_intent_location<P: StreamProvider>(
 
 async fn read_indexed_intent_with_work<P: StreamProvider>(
     client: &StreamClient<P>, key: &str, maximum_revision: Option<u64>,
-    authorization: Option<(&Authority, &Scope, &AuthorityVerifier)>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<RetainedIntent>> {
     let mut custody = CodecQuota::new(work, 0)?;
-    if let Some((owner, scope, verifier)) = authorization {
-        authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
-    }
     let Some(location) = read_intent_location(client, key, custody.work()).await? else {
         return Ok(None);
     };
@@ -786,9 +774,6 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
         && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
     { source.stream.path().as_str().len() as u64 } else { 0 };
     custody.adopt(path_bytes)?;
-    if let Some((owner, scope, verifier)) = authorization {
-        authenticate_reservation_observation(owner, scope, verifier, custody.work())?;
-    }
     let Some(records) = read_records_with_work(
         client, &source.stream, location.revision - 1, 1, custody.work(),
     ).await? else {
@@ -1075,7 +1060,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     async fn retained_intent_with_work(
         &self, key: &str, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<RetainedIntent>> {
-        read_indexed_intent_with_work(&self.client, key, Some(self.revision), None, work).await
+        read_indexed_intent_with_work(&self.client, key, Some(self.revision), work).await
     }
 
     async fn intent_matches_with_work(
@@ -1640,12 +1625,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "session declaration must be a root"));
         }
         limits.validate_with_work(custody.work())?;
-        let idempotency_key = if custody.work().is_some() {
-            checked_idempotency_key(idempotency_key.0, custody.work())?
-        } else {
-            IdempotencyKey::new(idempotency_key.0.clone())?;
-            idempotency_key
-        };
+        validate_idempotency_key(idempotency_key.as_str(), custody.work())?;
         let operation_id = spec.operation_id;
         let declaration_key = text_with_work(idempotency_key.as_str(), custody.work())?;
         if custody.work().is_some() { custody.adopt(declaration_key.capacity() as u64)?; }
@@ -1876,11 +1856,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "coordinator changed after owner verification"));
         }
         self.require_parent_owner_with_work(&event, parent_fence, work)?;
-        let validated = text_with_work(idempotency_key.as_str(), work)?;
-        let validation_capacity = validated.capacity() as u64;
-        let validation = checked_idempotency_key(validated, work).map(|_| ());
-        if let Some(work) = work.as_deref_mut() { work.release_owned(validation_capacity)?; }
-        validation?;
+        validate_idempotency_key(idempotency_key.as_str(), work)?;
         let key = idempotency_key.as_str();
         if event.operation_id() != operation_id {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
@@ -2154,7 +2130,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 format_args!("dependency-rejected:{operation_id}"), custody.work(),
             )?;
             if custody.work().is_some() { custody.adopt(key.capacity() as u64)?; }
-            let key = checked_idempotency_key(key, custody.work())?;
+            validate_idempotency_key(&key, custody.work())?;
+            let key = IdempotencyKey(key);
             let reason = text_with_work("a required dependency did not succeed", custody.work())?;
             if custody.work().is_some() { custody.adopt(reason.capacity() as u64)?; }
             self.apply_with_work(
@@ -2513,16 +2490,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
 }
 
-fn checked_idempotency_key(
-    value: String, work: &Option<&mut dyn HistoryIo>,
-) -> Result<IdempotencyKey> {
-    if work.as_deref().is_some_and(operations::original_native_decode_mode) {
-        if value.is_empty() || value.chars().any(char::is_control) {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Invalid, "idempotency key is invalid"));
-        }
-        return Ok(IdempotencyKey(value));
+fn validate_idempotency_key(value: &str, work: &Option<&mut dyn HistoryIo>) -> Result<()> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(coordinator_boundary(work, wire::ErrorCode::Invalid, "idempotency key is invalid"));
     }
-    IdempotencyKey::new(value)
+    Ok(())
 }
 
 fn text_with_work(
@@ -3427,6 +3399,7 @@ fn retain_received_owned(
     bytes: u64, custody: &mut CodecQuota<'_, '_>, failure: &mut Option<Error>,
 ) -> Result<()> {
     let Some(work) = custody.work().as_deref_mut() else { return Ok(()); };
+    if operations::original_native_decode_mode(work) { return Ok(()); }
     match work.retain_owned(bytes) {
         Ok(()) => custody.adopt(bytes)?,
         Err(error) => { if failure.is_none() { *failure = Some(error); } }
@@ -3436,100 +3409,83 @@ fn retain_received_owned(
 
 fn observe_commit_with_work(
     outcome: &acyclic_stream::CommitOutcome, direct_acknowledgment: bool,
-    custody: &mut CodecQuota<'_, '_>, failure: &mut Option<Error>,
+    custody: &mut CodecQuota<'_, '_>,
 ) -> Result<()> {
     use acyclic_stream::{CommitConflict, CommitOutcome, CommittedMutation};
     if custody.work().is_none() { return Ok(()); }
+    let native = custody.work().as_deref().is_some_and(operations::original_native_decode_mode);
+    let mut failure = None;
     match outcome {
         CommitOutcome::Committed(envelope) => {
             retain_received_owned((envelope.mutations.capacity()
-                * std::mem::size_of::<CommittedMutation>()) as u64, custody, failure)?;
+                * std::mem::size_of::<CommittedMutation>()) as u64, custody, &mut failure)?;
             for mutation in &envelope.mutations {
                 let records = match mutation {
                     CommittedMutation::Append(append) => {
-                        retain_received_owned(append.path.as_str().len() as u64, custody, failure)?;
+                        retain_received_owned(append.path.as_str().len() as u64, custody, &mut failure)?;
                         &append.records
                     }
                     CommittedMutation::Fork(fork) => {
-                        retain_received_owned(fork.source.as_str().len() as u64, custody, failure)?;
-                        retain_received_owned(fork.destination.as_str().len() as u64, custody, failure)?;
+                        retain_received_owned(fork.source.as_str().len() as u64, custody, &mut failure)?;
+                        retain_received_owned(fork.destination.as_str().len() as u64, custody, &mut failure)?;
                         &fork.records
                     }
                 };
                 retain_received_owned((records.capacity()
-                    * std::mem::size_of::<acyclic_stream::Record>()) as u64, custody, failure)?;
+                    * std::mem::size_of::<acyclic_stream::Record>()) as u64, custody, &mut failure)?;
                 for record in records {
                     let bytes = record.value.len() as u64;
-                    match custody.work().as_deref_mut().expect("observed envelope").receive_record(bytes) {
-                        Ok(()) => custody.adopt(bytes)?,
-                        Err(error) => { if failure.is_none() { *failure = Some(error); } }
+                    let observer = custody.work().as_deref_mut().expect("observed envelope");
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    let received = if native { observer.receive_native_record(bytes) }
+                        else { observer.receive_record(bytes) };
+                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                    let received = observer.receive_record(bytes);
+                    match received {
+                        Ok(()) if !native => custody.adopt(bytes)?,
+                        Ok(()) => {},
+                        Err(error) => { if failure.is_none() { failure = Some(error); } }
                     }
                     if direct_acknowledgment {
                         let acknowledged = custody.work().as_deref_mut().expect("observed envelope")
                             .acknowledged(bytes, 1);
                         if let Err(error) = acknowledged
                             && failure.is_none()
-                        { *failure = Some(error); }
+                        { failure = Some(error); }
                     }
                 }
             }
         }
         CommitOutcome::Conflict(conflicts) => {
             retain_received_owned((conflicts.capacity()
-                * std::mem::size_of::<CommitConflict>()) as u64, custody, failure)?;
+                * std::mem::size_of::<CommitConflict>()) as u64, custody, &mut failure)?;
             for conflict in conflicts {
                 let (CommitConflict::Tail { path, .. } | CommitConflict::Exists { path }) = conflict;
-                retain_received_owned(path.as_str().len() as u64, custody, failure)?;
+                retain_received_owned(path.as_str().len() as u64, custody, &mut failure)?;
             }
         }
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 fn observe_recovery_with_work(
     observation: &acyclic_stream::IdempotencyObservation, custody: &mut CodecQuota<'_, '_>,
-    failure: &mut Option<Error>,
 ) -> Result<()> {
-    retain_received_owned(observation.idempotency_key.as_bytes().len() as u64, custody, failure)?;
+    let mut failure = None;
+    retain_received_owned(observation.idempotency_key.as_bytes().len() as u64, custody, &mut failure)?;
     match &observation.outcome {
-        IdempotencyOutcome::Commit(outcome) => observe_commit_with_work(outcome, false, custody, failure)?,
+        IdempotencyOutcome::Commit(outcome) => {
+            if let Err(error) = observe_commit_with_work(outcome, false, custody) {
+                failure.get_or_insert(error);
+            }
+        }
         IdempotencyOutcome::Fork(receipt) => {
-            retain_received_owned(receipt.source.as_str().len() as u64, custody, failure)?;
-            retain_received_owned(receipt.destination.as_str().len() as u64, custody, failure)?;
+            retain_received_owned(receipt.source.as_str().len() as u64, custody, &mut failure)?;
+            retain_received_owned(receipt.destination.as_str().len() as u64, custody, &mut failure)?;
         }
         IdempotencyOutcome::Append(_) => {}
     }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn observe_native_commit(
-    outcome: &acyclic_stream::CommitOutcome, direct_acknowledgment: bool,
-    observer: &mut dyn HistoryIo,
-) -> Result<()> {
-    let mut failure = None;
-    if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
-        for mutation in &envelope.mutations {
-            let records = match mutation {
-                acyclic_stream::CommittedMutation::Append(append) => &append.records,
-                acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
-            };
-            for record in records {
-                let bytes = record.value.len() as u64;
-                if let Err(error) = observer.receive_native_record(bytes)
-                    && failure.is_none()
-                { failure = Some(error); }
-                if direct_acknowledgment
-                    && let Err(error) = observer.acknowledged(bytes, 1)
-                    && failure.is_none()
-                { failure = Some(error); }
-            }
-        }
-    }
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    failure.map_or(Ok(()), Err)
 }
 
 pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
@@ -3573,9 +3529,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
             .is_some_and(|observer| observer.requires_prepared_native_dispatch());
         if accepted && let Some(observation) = output.value()
             && let IdempotencyOutcome::Commit(outcome) = &observation.outcome
-            && let Err(error) = observe_native_commit(
-                outcome, false, custody.work().as_deref_mut().expect("original accepted observer"),
-            )
+            && let Err(error) = observe_commit_with_work(outcome, false, &mut custody)
         {
             drop(output);
             return Err(error);
@@ -3586,9 +3540,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
         custody.adopt(retained)?;
         let Some(observation) = observation else { return Ok(Ok(None)); };
         if !accepted && let IdempotencyOutcome::Commit(outcome) = &observation.outcome {
-            observe_native_commit(
-                outcome, false, custody.work().as_deref_mut().expect("original native observer"),
-            )?;
+            observe_commit_with_work(outcome, false, &mut custody)?;
         }
         custody.work().as_deref_mut().expect("original native observer").check_cancellation()?;
         let retained = custody.retained();
@@ -3607,9 +3559,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
                     acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
                 };
             }
-            let mut failure = None;
-            observe_recovery_with_work(&observation, &mut custody, &mut failure)?;
-            if let Some(error) = failure { return Err(error); }
+            observe_recovery_with_work(&observation, &mut custody)?;
             if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
             custody.relinquish(retained_key)?;
             let retained = custody.retained();
@@ -3774,9 +3724,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             let accepted = self.work().as_deref()
                 .is_some_and(|observer| observer.requires_prepared_native_dispatch());
             let observed = if accepted {
-                observe_native_commit(
-                    output.value(), true, self.work().as_deref_mut().expect("original accepted observer"),
-                )
+                observe_commit_with_work(output.value(), true, &mut self.custody)
             } else { Ok(()) };
             if let Err(error) = released.and(observed) {
                 drop(output);
@@ -3788,9 +3736,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             )?;
             received.adopt(retained)?;
             if !accepted {
-                observe_native_commit(
-                    &outcome, true, received.work().as_deref_mut().expect("original native observer"),
-                )?;
+                observe_commit_with_work(&outcome, true, &mut received)?;
             }
             received.work().as_deref_mut().expect("original native observer").check_cancellation()?;
             let retained = received.retained();
@@ -3810,9 +3756,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         match committed {
             Err(source) => Ok(Err(SdkCallError::ordinary(source))),
             Ok(outcome) => {
-                let mut failure = None;
-                observe_commit_with_work(&outcome, true, &mut received, &mut failure)?;
-                if let Some(error) = failure { return Err(error); }
+                observe_commit_with_work(&outcome, true, &mut received)?;
                 if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
                 let retained = received.retained();
                 received.transfer();
