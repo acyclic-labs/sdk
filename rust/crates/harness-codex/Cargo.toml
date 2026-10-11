@@ -15,12 +15,14 @@ categories = ["development-tools"]
 [dependencies]
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-codex-exec-server-protocol = { git = "https://github.com/openai/codex", rev = "be2951ea34f0d295ed0becf97079f92fa5f6950e" }
-tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
+codex-exec-server-protocol.workspace = true
+tokio-tungstenite.workspace = true
 axum.workspace = true
 blake3.workspace = true
 futures.workspace = true
 jsonschema.workspace = true
+rama-error.workspace = true
+rama-utils.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
