@@ -723,7 +723,7 @@ where
         self.sync_with_permit_measured_guarded(
             permit, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             |_original| std::future::ready(Ok(())),
-        ).await.map(|receipt| receipt.value).map_err(|(error, _)| error)
+        ).await.map(|receipt| receipt.value).map_err(|(error, _)| error.cause)
     }
 
     /// Flushes actual callbacks and checks the original owner before every seal.
@@ -737,7 +737,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         before_publication: F,
-    ) -> Result<crate::OperationReceipt<()>, (MountLifecycleError, crate::WorkCounters)>
+    ) -> Result<crate::OperationReceipt<()>, (NativeMountPublicationFailure, crate::WorkCounters)>
     where
         F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
         Fut: Future<Output = Result<(), MountSourceError>> + Send,
@@ -745,7 +745,9 @@ where
         let work = customer_native_work(budget, cancellation)
             .map_err(|(error, spent)| {
                 self.retain_failed_session();
-                (MountLifecycleError::Native(error), spent)
+                (NativeMountPublicationFailure {
+                    cause: MountLifecycleError::Native(error), source_acknowledged: false,
+                }, spent)
             })?;
         let result = self.sync_with_permit_work_guarded(
             permit, &work.native_mount_work(), cancellation, before_publication,
@@ -755,13 +757,15 @@ where
     }
 
     /// Publishes on the enclosing operation's unchanged original native meter.
+    /// Failure retains whether the real source completed before native visibility
+    /// validation failed. An unconfirmed source is not proof of absent publication.
     pub async fn sync_with_permit_work_guarded<F, Fut>(
         &self,
         permit: crate::PublicationPermit,
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
         mut before_publication: F,
-    ) -> Result<(), MountLifecycleError>
+    ) -> Result<(), NativeMountPublicationFailure>
     where
         F: FnMut(super::NativeMountMeterWork) -> Fut + Send,
         Fut: Future<Output = Result<(), MountSourceError>> + Send,
@@ -772,11 +776,24 @@ where
             with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))?;
             self.source.sync_async_with_permit_native_work_guarded(
                 permit, native_work, cancellation, &mut before_publication,
-            ).await.map_err(MountLifecycleError::Source)?;
-            with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
+            ).await.map_err(MountLifecycleError::Source)
         }.await;
+        match result {
+            Ok(()) => self.revalidate_acknowledged_publication(native_work),
+            Err(cause) => {
+                self.retain_failed_session();
+                Err(NativeMountPublicationFailure { cause, source_acknowledged: false })
+            }
+        }
+    }
+
+    fn revalidate_acknowledged_publication(
+        &self,
+        native_work: &super::NativeMountMeterWork,
+    ) -> Result<(), NativeMountPublicationFailure> {
+        let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
         if result.is_err() { self.retain_failed_session(); }
-        result
+        result.map_err(|cause| NativeMountPublicationFailure { cause, source_acknowledged: true })
     }
 
     /// Imports an original selected mutation through this mount's SDK owner.
@@ -1082,6 +1099,20 @@ where
         self.abandon_measured(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .map(|receipt| receipt.value).map_err(|(error, _)| error)
     }
+}
+
+/// A typed publication failure retaining the SDK source's observed completion.
+///
+/// `false` means unconfirmed, not absent publication. `true` records only real
+/// source success; it is not namespace authority or physical cleanup evidence.
+#[derive(Debug, Error)]
+#[error("{cause}")]
+pub struct NativeMountPublicationFailure {
+    /// The original cause and all its intrinsic allocation custody.
+    #[source]
+    pub cause: MountLifecycleError,
+    /// The actual SDK source returned success before this later failure.
+    pub source_acknowledged: bool,
 }
 
 /// Customer mount admission, publication, and lifecycle failures.
@@ -2083,6 +2114,7 @@ mod tests {
             PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
             |_original| std::future::ready(Err(MountSourceError::Stale)),
         ).await.err().ok_or("failed original-owner guard published")?;
+        assert!(!guarded.0.source_acknowledged);
         assert!(guarded.1.items_examined > 0);
         assert_eq!(lazy.workspace().head().await?.id(), generation);
         assert!(mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await.is_err());
@@ -2097,6 +2129,34 @@ mod tests {
         ).await?;
         assert!(original.receipt().items_examined > 0);
         assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"native edit");
+        std::fs::write(destination.path().join("authored.txt"), b"late source acknowledgement")?;
+        let publication_cancellation = crate::CancellationToken::new();
+        let publication_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &publication_cancellation)
+            .map_err(|(error, _)| error)?;
+        let publication_native = publication_work.native_mount_work();
+        with_live_session(&mount.session, |session| session.flush_callbacks_with_meter(&publication_native))?;
+        let mut before_publication = |_actual| std::future::ready(Ok::<(), MountSourceError>(()));
+        mount.source.sync_async_with_permit_native_work_guarded(
+            PublicationPermit::Unrestricted, &publication_native, &publication_cancellation,
+            &mut before_publication,
+        ).await?;
+        let acknowledged = mount.source.snapshot_with_native_work(
+            &publication_native, &publication_cancellation,
+        ).await?;
+        assert_eq!(lazy.read_range("/authored.txt", 0, 32).await?.as_ref(), b"late source acknowledgement");
+        let acknowledged_prefix = publication_work.receipt();
+        publication_cancellation.cancel();
+        let late_driver = mount.revalidate_acknowledged_publication(&publication_native)
+            .err().ok_or("cancelled native revalidation erased a real source acknowledgement")?;
+        assert!(late_driver.source_acknowledged);
+        assert!(matches!(late_driver.cause, MountLifecycleError::Native(_)));
+        acknowledged_prefix.verify(publication_work.receipt())?;
+        assert!(mount.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some());
+        assert_eq!(
+            mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .await.map_err(|(error, _)| error)?.value,
+            acknowledged,
+        );
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
         mount.snapshot_measured(actual.work, &cancellation)

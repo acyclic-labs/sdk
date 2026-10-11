@@ -642,6 +642,240 @@ impl NativeHostPrivateStateRoot {
         Ok(Self { inner })
     }
 }
+
+/// Observed creation progress, not namespace or task mutation authority.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeOwnedRootStatus {
+    /// This packet has not acknowledged a successful create for this role.
+    Pending,
+    /// The native create succeeded, but no held identity was obtained.
+    CreationAcknowledgedUnknownIdentity,
+    /// Identity was observed from the exact newly created held directory.
+    Known(crate::NativeRootIdentity),
+    /// The original known directory was physically released.
+    Released(crate::NativeRootIdentity),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeOwnedRootRole {
+    relative: PathBuf,
+    status: NativeOwnedRootStatus,
+    held: Option<cap_std::fs::Dir>,
+}
+
+/// Caller-retained progress for four genuinely new private native roots.
+///
+/// Construct and store this packet before the first create. Every create or
+/// release error leaves its acknowledged prefix queryable in this same packet.
+/// The trusted service-root owner and the caller's current creator/write guard
+/// provide namespace authority; operation IDs, identities and quota never do.
+/// Drop retires packet data only: it cannot authorize filesystem deletion.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NativeOwnedRootAllocation {
+    operation: crate::OperationId,
+    root: NativeHostPrivateStateRoot,
+    base_identity: crate::NativeRootIdentity,
+    roles: [NativeOwnedRootRole; 4],
+    original: NativeMaterializationWork,
+    _allocation: NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for NativeOwnedRootAllocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeOwnedRootAllocation")
+            .field("operation", &self.operation)
+            .field("base_identity", &self.base_identity)
+            .field("status", &self.roles.each_ref().map(|role| role.status))
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeOwnedRootAllocation {
+    /// Funds the fixed four-role packet and its exact owned path copies before
+    /// any creation. Roles are root / operation / target / backup; only their
+    /// explicit parent relationships are accepted, never implicit parent mkdirs.
+    ///
+    /// # Errors
+    /// Preserves original allocation, quota and cancellation causes before IO.
+    pub fn new_with_native_work(
+        operation: crate::OperationId, root: &NativeHostPrivateStateRoot,
+        relative: [&Path; 4], work: &NativeMaterializationWork,
+    ) -> Result<Self, NativeTreeMaterializationError> {
+        for path in relative {
+            validate_native_state_relative(path, work)?;
+            if path.as_os_str().is_empty() { return Err(NativeTreeMaterializationError::InvalidLayout); }
+        }
+        work.charge(crate::WorkCounters { items_examined: 4, ..crate::WorkCounters::UNCHARGED })?;
+        if relative[0].parent() != Some(Path::new(""))
+            || relative[1].parent() != Some(relative[0])
+            || relative[2].parent() != Some(relative[1])
+            || relative[3].parent() != Some(relative[1])
+            || relative[2] == relative[3]
+        { return Err(NativeTreeMaterializationError::InvalidLayout); }
+        let mut allocation = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut roles = std::array::from_fn(|_| NativeOwnedRootRole {
+            relative: PathBuf::new(), status: NativeOwnedRootStatus::Pending, held: None,
+        });
+        for index in 0..4 {
+            let (path, mut path_allocation) = crate::native_host::clone_path_with_work(relative[index], &mut &*work)?;
+            if let Err(error) = allocation.absorb(&mut path_allocation) {
+                drop(path);
+                drop(path_allocation);
+                return Err(error);
+            }
+            roles[index].relative = path;
+        }
+        Ok(Self {
+            operation, root: root.clone(), base_identity: root.inner.root().identity(),
+            roles, original: work.clone(), _allocation: allocation,
+        })
+    }
+
+    /// Original operation identity data, not a grant or creation proof.
+    #[must_use]
+    pub const fn operation_id(&self) -> crate::OperationId { self.operation }
+
+    /// Original observed service-root identity; does not authorize a path.
+    #[must_use]
+    pub const fn service_root_identity(&self) -> crate::NativeRootIdentity { self.base_identity }
+
+    /// Returns the original owned relative path without a new allocation.
+    #[must_use]
+    pub fn relative_path(&self, index: usize) -> Option<&Path> {
+        self.roles.get(index).map(|role| role.relative.as_path())
+    }
+
+    /// Reports actual partial progress without querying or adopting a binding.
+    #[must_use]
+    pub fn status(&self, index: usize) -> Option<NativeOwnedRootStatus> {
+        self.roles.get(index).map(|role| role.status)
+    }
+
+    /// Returns all four already-observed identities without a resnapshot.
+    #[must_use]
+    pub fn known_identities(&self) -> Option<[crate::NativeRootIdentity; 4]> {
+        let known = |index| match self.roles[index].status {
+            NativeOwnedRootStatus::Known(identity) => Some(identity), _ => None,
+        };
+        Some([known(0)?, known(1)?, known(2)?, known(3)?])
+    }
+
+    fn validate_work(&self, work: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
+        if !self.original.shares_allocation_context(work) {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        let actual = self.root.inner.root().identity();
+        if actual != self.base_identity {
+            return Err(NativeTreeMaterializationError::AllocationChanged { expected: self.base_identity, actual });
+        }
+        Ok(())
+    }
+
+    /// Calls the caller's current creator/write guard before each native
+    /// mutation. The mutable packet remains owned by the caller on every error.
+    /// Acknowledgement precedes all post-mkdir opens, identity queries and sync.
+    ///
+    /// # Errors
+    /// Never adopts an existing directory or retries an uncertain creation.
+    pub async fn create_into_guarded<F, Fut, E>(
+        &mut self, index: usize, work: &NativeMaterializationWork, mut before_action: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Fut + Send, Fut: Future<Output = Result<(), E>> + Send,
+        E: From<NativeTreeMaterializationError>,
+    {
+        self.validate_work(work).map_err(E::from)?;
+        let status = self.status(index).ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        if status != NativeOwnedRootStatus::Pending {
+            return Err(match status {
+                NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity => NativeTreeMaterializationError::IndeterminatePreparation,
+                _ => NativeTreeMaterializationError::InvalidLayout,
+            }.into());
+        }
+        let parent_index = match index { 0 => None, 1 => Some(0), 2 | 3 => Some(1), _ => return Err(NativeTreeMaterializationError::InvalidLayout.into()) };
+        let expected_parent = match parent_index {
+            None => self.base_identity,
+            Some(parent) => match self.roles[parent].status {
+                NativeOwnedRootStatus::Known(identity) => identity,
+                _ => return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()),
+            },
+        };
+        before_action().await?;
+        self.validate_work(work).map_err(E::from)?;
+        let relative = &self.roles[index].relative;
+        let parent = native_owned_relative_parent(
+            self.root.inner.root(), relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, work,
+        )?;
+        let actual_parent = crate::native_host::directory_identity_materialization_measured(&parent, work)?;
+        if actual_parent != expected_parent {
+            return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_parent, actual: actual_parent }.into());
+        }
+        let NativeOwnedRootRole { relative, status, held } = &mut self.roles[index];
+        let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
+        let directory = crate::native_host::create_new_directory_held_acknowledged_with_work(
+            &parent, leaf, &mut &*work,
+            || { *status = NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity; },
+        )?;
+        // Retain the actual handle even if the following identity query fails.
+        *held = Some(directory);
+        let identity = crate::native_host::directory_identity_materialization_measured(
+            held.as_ref().expect("the successful create returned its actual held directory"), work,
+        )?;
+        *status = NativeOwnedRootStatus::Known(identity);
+        before_action().await?;
+        self.validate_work(work).map_err(E::from)?;
+        crate::native_host::sync_directory_held_with_work(&parent, &mut &*work)?;
+        work.admit(crate::WorkCounters::UNCHARGED).map_err(E::from)
+    }
+
+    /// Releases known roots deepest-first through the existing guarded walker.
+    /// An unknown acknowledged identity is retained, never replaced with a
+    /// current pathname observation or removed by an ancestor traversal.
+    ///
+    /// # Errors
+    /// Keeps the same packet and original spent prefix on every partial failure.
+    pub async fn release_guarded<F, Fut, E>(
+        &mut self, work: &NativeMaterializationWork, mut before_action: F,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Fut + Send, Fut: Future<Output = Result<(), E>> + Send,
+        E: From<NativeTreeMaterializationError>,
+    {
+        self.validate_work(work).map_err(E::from)?;
+        if self.roles.iter().any(|role| role.status == NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity) {
+            return Err(NativeTreeMaterializationError::IndeterminatePreparation.into());
+        }
+        before_action().await?;
+        self.validate_work(work).map_err(E::from)?;
+        // Never wipe an unowned/replaced managed role via its known ancestor.
+        for role in &self.roles {
+            if !matches!(role.status, NativeOwnedRootStatus::Known(_))
+                && work.state_path_exists_with_native_work(&self.root, &role.relative)?
+            { return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()); }
+        }
+        for index in (0..4).rev() {
+            let NativeOwnedRootStatus::Known(identity) = self.roles[index].status else { continue; };
+            work.release_owned_directory_held_guarded(
+                self.root.inner.root(), &self.roles[index].relative, identity,
+                &mut before_action, |_| {
+                    let actual = self.root.inner.root().identity();
+                    if actual != self.base_identity {
+                        return Err(NativeTreeMaterializationError::AllocationChanged { expected: self.base_identity, actual });
+                    }
+                    Ok(())
+                },
+            ).await?;
+            self.roles[index].held.take();
+            self.roles[index].status = NativeOwnedRootStatus::Released(identity);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_native_state_relative(
     relative: &Path, work: &NativeMaterializationWork,
@@ -2280,7 +2514,7 @@ impl NativeMaterializationWork {
         expected_root: crate::NativeRootIdentity,
         relative: &Path,
         expected_directory: crate::NativeRootIdentity,
-        mut before_effect: F,
+        before_effect: F,
     ) -> Result<(), E>
     where
         F: FnMut() -> Fut + Send,
@@ -2294,8 +2528,30 @@ impl NativeMaterializationWork {
         }
         let held = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
         if held.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: held.identity() }.into()); }
+        self.release_owned_directory_held_guarded(
+            &held, relative, expected_directory, before_effect, |work| {
+                let current = crate::native_host::HostRoot::open_materialization_measured(root, work)?;
+                if current.identity() != expected_root {
+                    return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: current.identity() });
+                }
+                Ok(())
+            },
+        ).await
+    }
+
+    async fn release_owned_directory_held_guarded<F, Fut, E, V>(
+        &self, held: &crate::native_host::HostRoot, relative: &Path,
+        expected_directory: crate::NativeRootIdentity, mut before_effect: F,
+        mut validate_root: V,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        E: From<NativeTreeMaterializationError>,
+        V: FnMut(&Self) -> Result<(), NativeTreeMaterializationError> + Send,
+    {
         let parent_path = relative.parent().unwrap_or_else(|| Path::new(""));
-        let parent = native_owned_relative_parent(&held, parent_path, self)?;
+        let parent = native_owned_relative_parent(held, parent_path, self)?;
         let parent_identity = crate::native_host::directory_identity_materialization_measured(&parent, self)?;
         let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
         #[cfg(unix)]
@@ -2320,9 +2576,8 @@ impl NativeMaterializationWork {
         let mut walker = NativeRemoveWalker::new(frame, self)?;
         while let Some(step) = walker.next(self, true)? {
             before_effect().await?;
-            let current = crate::native_host::HostRoot::open_materialization_measured(root, self)?;
-            if current.identity() != expected_root { return Err(NativeTreeMaterializationError::AllocationChanged { expected: expected_root, actual: current.identity() }.into()); }
-            let current_parent = native_owned_relative_parent(&current, parent_path, self)?;
+            validate_root(self).map_err(E::from)?;
+            let current_parent = native_owned_relative_parent(held, parent_path, self)?;
             let actual = crate::native_host::directory_identity_materialization_measured(&current_parent, self)?;
             if actual != parent_identity { return Err(NativeTreeMaterializationError::AllocationChanged { expected: parent_identity, actual }.into()); }
             let actual = native_stat_identity(&stat_native_walk_name(&current_parent, leaf_name, self)?);
@@ -5026,19 +5281,31 @@ impl NativeTreeMaterializationBackend {
         Ok(())
     }
 
-    /// Checks that root entries belong to the original selected install paths.
+    /// Checks root entries against original install paths and explicitly held,
+    /// preserved lazy-root locators. Locators are observations, not authority.
     /// Missing entries remain permitted during incomplete forward application.
     ///
     /// # Errors
     /// Never adopts unselected user data; returns divergence or spent scan work.
-    pub fn require_selected_root(&self, edits: &[MaterializationEdit]) -> Result<(), NativeTreeMaterializationError> {
+    pub fn require_selected_root(&self, edits: &[MaterializationEdit], preserved: &[&str]) -> Result<(), NativeTreeMaterializationError> {
+        for path in preserved {
+            if !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters {
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
+            }))? {
+                return Err(NativeTreeMaterializationError::InvalidLayout);
+            }
+        }
         let directory = self.held_root.open_dir_materialization_measured(Path::new(""), &self.work)?;
         let (mut reader, _cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &self.work)?;
         while let Some((name, _allocation)) = next_native_walk_name(&mut reader, &self.work)? {
             let mut selected = false;
-            for edit in edits {
+            let paths = edits.iter().map(|edit| match edit {
+                MaterializationEdit::Install { path, .. } => Some(path.as_str()),
+                _ => None,
+            }).chain(preserved.iter().copied().map(Some));
+            for path in paths {
                 self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-                let MaterializationEdit::Install { path, .. } = edit else { continue; };
+                let Some(path) = path else { continue; };
                 let top = path.split('/').next().unwrap_or_default();
                 #[cfg(unix)]
                 let equal = {
@@ -10601,6 +10868,106 @@ mod tests {
         allocation.substitute(5).expect("actual retained payload substitution is not a new allocation");
         assert_eq!(work.live_allocation_bytes(), live - 12);
         assert_eq!(work.receipt().peak_allocation_bytes, peak);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_keeps_known_creation_when_the_next_guard_denies() {
+        let temporary = tempfile::tempdir().expect("trusted service fixture");
+        let budget = finite_native_budget();
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("trusted bootstrap");
+        let paths = [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")];
+        let operation = OperationId::from_bytes([73; 16]);
+        let baseline = work.live_allocation_bytes();
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(operation, &root, paths, &work).expect("packet before create");
+        assert_eq!(packet.operation_id(), operation);
+        assert!(work.live_allocation_bytes() > baseline);
+        assert!(!temporary.path().join("native").exists());
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let denied = packet.create_into_guarded(0, &work, || std::future::ready(
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { Ok(()) }
+            else { Err(NativeTreeMaterializationError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))) }
+        )).await.expect_err("post-create current write guard denied");
+        assert!(matches!(denied, NativeTreeMaterializationError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
+        let Some(NativeOwnedRootStatus::Known(identity)) = packet.status(0) else { panic!("actual known creation retained"); };
+        assert_eq!(work.root_identity(&temporary.path().join("native")).expect("physical observation"), identity);
+        assert_eq!(packet.status(1), Some(NativeOwnedRootStatus::Pending));
+        assert!(packet.known_identities().is_none());
+        packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
+            .await.expect("dispose only same known root");
+        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::Released(identity)));
+        assert!(!temporary.path().join("native").exists());
+        drop(packet);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        work.receipt().verify(budget).expect("actual original prefix");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owned_root_packet_acknowledges_mkdir_before_denied_child_open() {
+        let temporary = tempfile::tempdir().expect("trusted root");
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(
+            OperationId::from_bytes([74; 16]), &root,
+            [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")], &work,
+        ).expect("preclaimed packet");
+        let before = work.receipt();
+        // Clone the held service dir and query that actual parent's identity;
+        // deny the third read, which is opening the newly acknowledged child.
+        work.native_read_meter().with_original_leaf(|original| {
+            original.budget.backend_read_operations = before.backend_read_operations + 2;
+        });
+        let error = packet.create_into_guarded(0, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
+            .await.expect_err("child open denied after real mkdir");
+        assert!(matches!(error, NativeTreeMaterializationError::Work(_)));
+        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity));
+        assert!(temporary.path().join("native").is_dir(), "actual mkdir is never lost with its later error");
+        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations + 2);
+        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations + 1);
+        work.native_read_meter().with_original_leaf(|original| original.restore_budget(budget));
+        assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
+            Err(NativeTreeMaterializationError::IndeterminatePreparation)));
+        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity));
+        assert!(temporary.path().join("native").is_dir(), "unknown identity is never adopted for cleanup");
+        work.receipt().verify(budget).expect("real acknowledged prefix");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_four_roles_release_reverse_and_refuse_replacement() {
+        let temporary = tempfile::tempdir().expect("trusted root");
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(
+            OperationId::from_bytes([75; 16]), &root,
+            [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")], &work,
+        ).expect("fixed roles");
+        for index in 0..4 {
+            packet.create_into_guarded(index, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
+                .await.expect("actual new role");
+        }
+        let identities = packet.known_identities().expect("four actual held observations");
+        std::fs::rename(temporary.path().join("native/op/backup"), temporary.path().join("native/op/original-backup")).expect("replace binding");
+        std::fs::create_dir(temporary.path().join("native/op/backup")).expect("unowned replacement");
+        std::fs::write(temporary.path().join("native/op/backup/user"), b"unowned").expect("replacement data");
+        assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
+            Err(NativeTreeMaterializationError::AllocationChanged { expected, .. }) if expected == identities[3]));
+        assert_eq!(std::fs::read(temporary.path().join("native/op/backup/user")).expect("unowned remains"), b"unowned");
+        assert_eq!(packet.known_identities(), Some(identities));
+        std::fs::remove_dir_all(temporary.path().join("native/op/backup")).expect("remove fixture replacement");
+        std::fs::rename(temporary.path().join("native/op/original-backup"), temporary.path().join("native/op/backup")).expect("restore actual original");
+        packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
+            .await.expect("original identities release deepest first");
+        for (index, identity) in identities.into_iter().enumerate() {
+            assert_eq!(packet.status(index), Some(NativeOwnedRootStatus::Released(identity)));
+        }
+        assert!(!temporary.path().join("native").exists());
+        work.receipt().verify(budget).expect("actual original work");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

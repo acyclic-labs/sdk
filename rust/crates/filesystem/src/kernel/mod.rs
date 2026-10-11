@@ -130,7 +130,9 @@ pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
     apply_generation_mutations, apply_generation_mutations_async,
 };
-pub(crate) use list::list_tree_entries_at_or_after_async;
+pub(crate) use list::{
+    list_tree_entries_async_with_custody, list_tree_entries_at_or_after_async_with_custody,
+};
 pub use list::{
     DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries,
     list_tree_entries_async,
