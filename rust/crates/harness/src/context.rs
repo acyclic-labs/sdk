@@ -475,7 +475,7 @@ impl DurableContextProvider {
             .provider
             .append(AppendRequest {
                 path: self.path.clone(),
-                records: vec![encoded],
+                records: vec![encoded.into()],
                 if_tail: Some(expected_revision),
                 idempotency_key: Some(key),
             })
@@ -530,7 +530,7 @@ impl DurableContextProvider {
             .provider
             .append(AppendRequest {
                 path: self.path.clone(),
-                records: vec![source_bytes, compacted_bytes],
+                records: vec![source_bytes.into(), compacted_bytes.into()],
                 if_tail: Some(expected_revision),
                 idempotency_key: Some(key),
             })
@@ -674,7 +674,7 @@ impl DurableContextProvider {
         revision.context.descriptor().verify(&payload)?;
         let context: Context = crate::contract::json_from_slice(&payload)
             .map_err(|error| crate::Error::Storage(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&context)? != payload {
+        if crate::contract::canonical_json_bytes(&context)?.as_slice() != payload.as_ref() {
             return Err(crate::Error::Storage(
                 "context payload is not canonical".into(),
             ));
@@ -1278,25 +1278,9 @@ pub(crate) fn validate_compaction(
     source: &Context,
     compacted: &Context,
 ) -> Result<()> {
-    validate_compaction_with_io(reference, source, compacted, None)
-}
-
-pub(crate) fn validate_compaction_with_io(
-    reference: &CompactionReference, source: &Context, compacted: &Context,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    let _proof_workspace = io.map(|io| crate::executor::reserve_preparation_workspace(reference, io)).transpose()?;
-    #[cfg(feature = "filesystem")]
-    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
-    #[cfg(feature = "filesystem")]
-    let _reconstructed_hold;
-    let (reconstructed, proof) = DurableContextProvider::compact_with_io(
-        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone(), io)?;
-    #[cfg(feature = "filesystem")]
-    { _reconstructed_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
-    if reference.source_digest != proof.source_digest || reconstructed != *compacted
-    {
+    let (reconstructed, proof) = DurableContextProvider::compact(
+        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone())?;
+    if reference.source_digest != proof.source_digest || reconstructed != *compacted {
         return Err(crate::Error::Invalid(
             "compaction reference does not bind the source and retained context".into(),
         ));
@@ -4223,7 +4207,7 @@ mod tests {
             stream
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::from(bytes)],
+                    records: vec![bytes.into()],
                     if_tail: Some(0),
                     idempotency_key: None,
                 })

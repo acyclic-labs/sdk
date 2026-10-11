@@ -667,12 +667,12 @@ impl EffectRegistry {
                     "effect result content resolver is not bound"))?;
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let bytes = content.work().as_deref_mut().expect("observer")
+                let (bytes, claim) = content.work().as_deref_mut().expect("observer")
                     .read_content(resolver.as_ref(), result)?.await?;
-                content.adopt(bytes.capacity() as u64)?;
-                let schema_bytes = content.work().as_deref_mut().expect("observer")
+                content.adopt(claim)?;
+                let (schema_bytes, claim) = content.work().as_deref_mut().expect("observer")
                     .read_content(resolver.as_ref(), &effect.result_schema)?.await?;
-                content.adopt(schema_bytes.capacity() as u64)?;
+                content.adopt(claim)?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {

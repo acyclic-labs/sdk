@@ -1867,7 +1867,7 @@ mod tests {
             assert!(json_value_decode_owned_bytes(overflow_shape).is_err());
         }
         let mut admission = false;
-        let cause = Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let error = json_from_slice_bounded_trusted::<Value, _>(br#"["owned"]"#, BOUNDS, 0, &mut |event| {
             if matches!(event, JsonCodecCharge::Admission { .. }) {
                 admission = true;
@@ -1918,7 +1918,7 @@ mod tests {
             let mut live = 0u64;
             let mut attempted = 0u64;
             let mut copied = 0u64;
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let result = json_value_bounded_trusted("SDK bytes", BOUNDS, &mut |event| {
                 match event {
                     JsonCodecCharge::Retain { bytes } => live += bytes,
@@ -2142,7 +2142,7 @@ mod tests {
         let valid = br#"{"text":"escape\n\u0041"}"#;
         let mut admission = None;
         let record: Record = json_from_slice_bounded_trusted(valid, BOUNDS, 128, &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event { admission = Some(maximum_owned_bytes); }
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event { admission = Some(maximum_owned_bytes); }
             Ok(())
         })?;
         assert_eq!(record.text, "escape\nA");
@@ -2186,7 +2186,7 @@ mod tests {
                 other => panic!("native producer replaced the actual serde cause: {other}"),
             }
         }
-        let cause = Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let error = json_from_slice_bounded_native_trusted::<Record, _>(valid, BOUNDS, 128, crate::wire::ErrorCode::Invalid, &mut |event| {
             if matches!(event, JsonCodecCharge::Admission { .. }) {
                 return Err(Error::Indeterminate(cause));

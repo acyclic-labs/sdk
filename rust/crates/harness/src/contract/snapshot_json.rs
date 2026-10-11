@@ -162,7 +162,7 @@ mod tests {
     use super::*;
     use crate::{Capabilities, IdempotencyKey, OperationId, core::{Action, AggregateKind,
         Authority, AuthorityIssuer, Command, LifecycleState, Reducer, SchemaRegistry}};
-    use crate::{AgentId, ProviderRef, conversation::{ConversationMessage, FileDescriptor,
+    use crate::{AgentId, resources::ProviderRef, conversation::{ConversationMessage, FileDescriptor,
         FileRef, MessageKind, ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef}};
     use std::collections::BTreeMap;
     use std::cell::Cell;

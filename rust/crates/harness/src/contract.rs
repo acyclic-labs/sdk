@@ -99,17 +99,12 @@ pub(crate) use json::{
     canonical_json_value_into_prepaid_native_trusted,
 };
 
-/// One sorted-key JSON encoding for durable identities and Rust/WASM output.
-/// The canonical bounded serializer preserves Value integer/float and duplicate
-/// key semantics, without an unchecked initial `serde_json::to_value`.
+/// Sorted-key JSON encoding for durable identities and Rust/WASM output.
 pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     json::canonical_json_bytes_trusted(value)
 }
 
-/// Checks compact JSON size without retaining an encoded buffer or cloning a
-/// Value tree. Key ordering does not change the size of ordinary typed records.
-/// Canonical encoding and identity checks still use `canonical_json_bytes`.
-/// This is only an encoded-size check, never owned-tree or serde heap admission.
+/// Checks encoded JSON size without admitting owned-tree or serde heap storage.
 pub(crate) fn validate_json_byte_bound<T: Serialize + ?Sized>(value: &T, maximum: u64) -> Result<()> {
     json_byte_length(value, maximum).map(|_| ())
 }

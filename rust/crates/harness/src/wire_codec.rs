@@ -1,6 +1,4 @@
 //! Canonical typed wire conversions shared by native and WASM consumers.
-//! Native event decoding preclaims the closed prost/Serde carriers, preserves
-//! original typed causes, and transfers one measured event claim to readers.
 
 use crate::core::RecordedScope;
 use crate::{
@@ -134,8 +132,7 @@ pub(crate) fn decode_event_with_work_and_custody(
             "event exceeds SDK record boundary"));
     }
     let admitted = admission::decode_quota(bytes, work)?;
-    // FIRST: all physical carrier fields, partial payloads and canonical buffers
-    // declared below drop before this single original ownership reservation.
+    // Carrier fields and buffers must drop before this reservation.
     let mut payload_quota = admission::Quota::new(work, admitted)?;
     let diagnostic = admission::prost_diagnostic_preclaim(payload_quota.work())?;
     let mut envelope = wire::EventEnvelope::decode(bytes)
