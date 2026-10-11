@@ -4,11 +4,66 @@ use super::CustodyError;
 pub(super) struct NamespaceLock(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
+fn resolve_user_scope() -> Result<String, CustodyError> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::Security::{GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(CustodyError::Platform(unsafe { GetLastError() }.into()));
+    }
+    let result = (|| {
+        let mut size = 0;
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size) };
+        if size == 0 {
+            return Err(CustodyError::Platform(unsafe { GetLastError() }.into()));
+        }
+        // usize storage supplies TOKEN_USER alignment; the SID is public OS identity.
+        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), size, &mut size) } == 0 {
+            return Err(CustodyError::Platform(unsafe { GetLastError() }.into()));
+        }
+        let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+        if user.User.Sid.is_null() {
+            return Err(CustodyError::Unavailable);
+        }
+        let length = unsafe { GetLengthSid(user.User.Sid) };
+        if length == 0 {
+            return Err(CustodyError::Unavailable);
+        }
+        let sid = unsafe { std::slice::from_raw_parts(user.User.Sid.cast::<u8>(), length as usize) };
+        let mut scope = String::with_capacity(64);
+        for byte in Sha256::digest(sid) {
+            write!(scope, "{byte:02x}").map_err(|_| CustodyError::Unavailable)?;
+        }
+        Ok(scope)
+    })();
+    unsafe { CloseHandle(token) };
+    result
+}
+
+#[cfg(windows)]
+fn user_scope() -> Result<&'static str, CustodyError> {
+    static SCOPE: std::sync::LazyLock<Result<String, CustodyError>> =
+        std::sync::LazyLock::new(resolve_user_scope);
+    match &*SCOPE {
+        Ok(scope) => Ok(scope.as_str()),
+        Err(CustodyError::Platform(code)) => Err(CustodyError::Platform(*code)),
+        Err(_) => Err(CustodyError::Unavailable),
+    }
+}
+
+#[cfg(windows)]
 impl NamespaceLock {
     pub(super) fn acquire(name: &str) -> Result<Self, CustodyError> {
         use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_ABANDONED, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, WaitForSingleObject};
-        let name: Vec<u16> = format!("Local\\acyclic.customer-leaf.v1.{name}")
+        // Credential Manager survives terminal sessions, so its fence must too.
+        // Per-user SID isolation avoids collisions between separate users' vaults.
+        let scope = user_scope()?;
+        let name: Vec<u16> = format!("Global\\acyclic.customer-leaf.v1.{scope}.{name}")
             .encode_utf16().chain(Some(0)).collect();
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
