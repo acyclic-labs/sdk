@@ -17,7 +17,7 @@ use acyclic_harness::{
         NATIVE_PROCESS_EFFECT_KIND, NativePreparationReceipt, NativePreparationRoot,
         NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError,
         NativeProcessRequest, NativeProcessView, NativeViewManifest, NativeViewOptions,
-        NativeViewOwner, NativeVolumeNamespace, NativeVolumeView,
+        NativeViewOwner, NativeVolumeNamespace, NativeVolumeView, NativeTaskViewDrainReceipt,
         NativeVolumeMapping, NativeExistingLazyVolume,
     },
     runtime::{TaskContext, NativeTaskContext, NativeVolumeCallbackGuard},
@@ -1032,9 +1032,6 @@ pub(crate) struct PiNativeRunner<P: StreamProvider> {
     work: NativeMaterializationWork,
 }
 
-/// Authentic observed process drainage, distinct from namespace disposal. This
-/// is never constructed from a path, PID, cancellation ACK or caller JSON.
-pub(crate) struct PiNativeDrainedProcess { task: acyclic_harness::TaskId, command: OperationId }
 
 
 #[derive(Deserialize)]
@@ -1345,10 +1342,6 @@ pub(crate) struct PiPreparedScratch<A, O> {
     pub(crate) operation: acyclic_fs::OperationId,
     task: acyclic_harness::TaskId,
     scratch: VolumeRef,
-    service_root: PathBuf,
-    service_identity: acyclic_fs::NativeRootIdentity,
-    scratch_relative: PathBuf,
-    scratch_identity: acyclic_fs::NativeRootIdentity,
     _creator_packet: acyclic_fs::materializer::NativeOwnedRootAllocation,
     _metadata_custody: acyclic_fs::NativeAllocation,
 }
@@ -1363,7 +1356,6 @@ pub(crate) struct PiNativeRootSeed {
     scratch: VolumeRef,
     service_root: PathBuf,
     service_identity: Option<acyclic_fs::NativeRootIdentity>,
-    scratch_relative: PathBuf,
     _metadata_custody: acyclic_fs::NativeAllocation,
 }
 
@@ -1616,10 +1608,12 @@ impl PiNativeRootSeed {
         })?;
         owner.verify_with_native_work(false, meter).await?;
         let allocation = seed.witnessed_allocation()?;
-        let service_identity = seed.service_identity.ok_or(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Indeterminate,
-            reason: "Pi mixed preparation has no original service namespace witness",
-        })?;
+        if seed.service_identity.is_none() {
+            return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Indeterminate,
+                reason: "Pi mixed preparation has no original service namespace witness",
+            });
+        }
         if seed.task != owner.task_id() || allocation.root != options.root
             || bindings.len() != 2 || bindings[0].volume != &seed.scratch || bindings[0].path != "scratch"
             || !bindings[0].writable || !matches!(bindings[0].namespace, NativeVolumeNamespace::MaterializedDirectory)
@@ -1638,14 +1632,11 @@ impl PiNativeRootSeed {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi mixed view belongs to another original preparation operation" });
         }
-        let scratch_root = native_join(&seed.service_root, &seed.scratch_relative, meter)?;
-        let scratch_identity = meter.root_identity(&scratch_root.path).map_err(native_error)?;
         owner.verify_with_native_work(false, meter).await?;
         let view = view.into_arc_with_native_work(meter)?;
         let seed = retained.take().expect("original creator slot was exclusively borrowed throughout preparation");
         Ok(PiPreparedScratch { view, allocation: seed.allocation.expect("completed original creator witness was verified above"),
-            operation: seed.operation, task: seed.task, scratch: seed.scratch, service_root: seed.service_root, service_identity,
-            scratch_relative: seed.scratch_relative, scratch_identity, _creator_packet: seed.packet,
+            operation: seed.operation, task: seed.task, scratch: seed.scratch, _creator_packet: seed.packet,
             _metadata_custody: seed._metadata_custody })
     }
 
@@ -1715,42 +1706,31 @@ impl<A, O> PiPreparedScratch<A, O> {
     }
 
 
-    /// Explicit private-scratch disposal only. The caller has already stopped
-    /// actual project drivers; no project/source/parent namespace is released.
+    /// Disposal requires the SDK's whole physical drain receipt, followed by
+    /// fresh original Created-Scratch WRITE for each retained creator deletion.
     pub(crate) async fn release_scratch_with_work<P: StreamProvider + 'static>(
-        &self, owner: &TaskJournalOwner<P>, context: &TaskContext, command: OperationId,
-        drained: &PiNativeDrainedProcess, proof: &acyclic_harness::ChildScratchCreationProof,
-        meter: &NativeMaterializationWork,
-    ) -> Result<()> {
+        &mut self, owner: &TaskJournalOwner<P>, context: &TaskContext, command: OperationId,
+        drained: &NativeTaskViewDrainReceipt, proof: &acyclic_harness::ChildScratchCreationProof,
+        original: &NativeMaterializationWork, meter: &NativeMaterializationWork,
+    ) -> Result<()>
+    where
+        A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+        O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+    {
         if owner.task_id() != self.task || context.durable_task_id() != Some(self.task)
-            || drained.task != self.task || drained.command != command || proof.original_task() != self.task
-            || proof.volume() != &self.scratch || self.operation != NativePreparationRoot::operation(owner)
+            || proof.original_task() != self.task || proof.volume() != &self.scratch
+            || self.operation != NativePreparationRoot::operation(owner)
+            || self._creator_packet.operation_id() != self.operation
+            || !self._metadata_custody.matches_work(original)
         {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi scratch disposal differs from its original created child and process" });
+                reason: "Pi scratch disposal differs from its original created child and preparation" });
         }
-        let target = native_join(&self.allocation.operation_directory, Path::new("target"), meter)?;
-        let backup = native_join(&self.allocation.operation_directory, Path::new("backup"), meter)?;
-        meter.release_owned_directory_guarded(&self.service_root, self.service_identity, &self.scratch_relative,
-            self.scratch_identity, || async {
-                proof.authorize_settlement_with_native_work(owner, meter).await?;
-                if meter.root_identity(&self.allocation.root).map_err(native_error)? != self.allocation.expected_identity {
-                    return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
-                        reason: "Pi original native root was replaced before scratch disposal" });
-                }
-                let identities = self.allocation.expected_preparation_identity;
-                for (path, identity) in [
-                    (&self.allocation.operation_directory, identities.operation),
-                    (&target.path, identities.target),
-                    (&backup.path, identities.backup),
-                ] {
-                    if meter.root_identity(path).map_err(native_error)? != acyclic_fs::NativeRootIdentity::from_bytes(identity) {
-                        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
-                            reason: "Pi original preparation namespace was replaced before scratch disposal" });
-                    }
-                }
-                Ok(())
-            }).await
+        self.view.require_drained_for_disposal_with_native_work(
+            owner.native_view_owner(), command, drained, original, meter)?.await?;
+        self._creator_packet.release_guarded(meter, || async {
+            proof.authorize_settlement_with_native_work(owner, meter).await
+        }).await
     }
 }
 
@@ -1859,7 +1839,6 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let mut operation_root = native_join(task_directory, Path::new("preparation"), meter)?;
     let target = native_join(&operation_root.path, Path::new("target"), meter)?;
     let backup = native_join(&operation_root.path, Path::new("backup"), meter)?;
-    let scratch_root = native_join(&options.root, Path::new("scratch"), meter)?;
     fn relative<'p>(path: &'p Path, data: &Path) -> Result<&'p Path> {
         path.strip_prefix(data).map_err(|_| Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1870,21 +1849,16 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         &resources.private_state_root, [relative(&options.root, &resources.data)?, relative(&operation_root.path, &resources.data)?,
             relative(&target.path, &resources.data)?, relative(&backup.path, &resources.data)?], meter).map_err(native_error)?;
     let mut service_root = meter.copy_path(service).map_err(native_error)?;
-    let scratch_relative = scratch_root.path.strip_prefix(service).ok().ok_or(Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi scratch escaped its original service namespace",
-    })?;
-    let mut scratch_relative = meter.copy_path(scratch_relative).map_err(native_error)?;
     let mut scratch = acyclic_harness::filesystem::copy_native_volume_with_work(&binding.scratch.volume, meter)?;
     let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;
     let mut custody = meter.retain_owned(std::mem::size_of::<PiNativeRootSeed>() as u64).map_err(native_error)?;
     custody.absorb(&mut service_root.1).map_err(native_error)?;
-    custody.absorb(&mut scratch_relative.1).map_err(native_error)?;
     custody.absorb(&mut scratch.1).map_err(native_error)?;
     custody.absorb(&mut view_root.1).map_err(native_error)?;
     custody.absorb(&mut operation_root.custody).map_err(native_error)?;
     Ok(PiNativeRootSeed { allocation: None, packet, view_root: view_root.0, operation_root: operation_root.path,
         operation, task: owner.task_id(), scratch: scratch.0, service_root: service_root.0,
-        service_identity: None, scratch_relative: scratch_relative.0, _metadata_custody: custody })
+        service_identity: None, _metadata_custody: custody })
 }
 
 
