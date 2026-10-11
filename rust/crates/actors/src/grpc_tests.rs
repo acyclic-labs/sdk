@@ -215,6 +215,8 @@ impl Service<http::Request<Body>> for TlsService {
 #[tokio::test]
 async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
 -> Result<(), Box<dyn std::error::Error>> {
+    // Workspace feature unification may enable both crypto providers.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let log = Log::default();
     let _guard =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture(log.clone())));

@@ -1829,6 +1829,8 @@ mod tests {
     #[tokio::test]
     async fn private_ca_https_constructor_requires_handshake_and_exact_bearer()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Workspace feature unification may enable both crypto providers.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let certified = generate_simple_self_signed(["localhost".to_owned()])?;
         let certificate_pem = certified.cert.pem();
         let private_key_pem = certified.signing_key.serialize_pem();

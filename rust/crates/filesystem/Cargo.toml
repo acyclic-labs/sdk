@@ -119,6 +119,7 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
 tracing-subscriber.workspace = true
 
 [lints]
