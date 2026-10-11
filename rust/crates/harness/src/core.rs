@@ -137,6 +137,19 @@ impl std::fmt::Debug for Scope {
 }
 
 impl Scope {
+    /// Copies this existing authenticated grant on the original native ledger.
+    /// This does not issue, attenuate, or change the grant or its proof.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let scope = self.clone_with_work(&mut Some(&mut io))?;
+        let custody = io.into_custody();
+        Ok((scope, custody))
+    }
+
     /// Returns the stable scope identity.
     #[must_use]
     pub fn id(&self) -> &str {
@@ -598,6 +611,19 @@ impl std::fmt::Debug for AuthorityVerifier {
 }
 
 impl AuthorityVerifier {
+    /// Copies only this verifier's existing audience/key metadata, without
+    /// constructing a new issuer, signing a grant, or changing its audience.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let verifier = self.clone_with_work(&mut Some(&mut io))?;
+        let custody = io.into_custody();
+        Ok((verifier, custody))
+    }
+
     /// Returns the one aggregate this verifier is allowed to authenticate.
     #[must_use]
     pub const fn audience(&self) -> &Authority {
