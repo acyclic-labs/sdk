@@ -8,6 +8,8 @@ use crate::{Capabilities, Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
+#[cfg(feature = "filesystem")]
+use std::sync::Arc;
 
 mod root_bootstrap;
 pub use root_bootstrap::{
@@ -747,11 +749,7 @@ impl CreatedResourceAccess {
     pub(crate) const fn current_default_origin(&self) -> Option<OperationId> {
         self.current_default_origin
     }
-    pub(crate) fn current_content(&self) -> Result<Option<&CreatedContentBinding>> {
-        self.current_content_with_work(&mut None)
-    }
-
-    pub(crate) fn current_content_with_work(
+    pub(crate) fn current_content(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<&CreatedContentBinding>> {

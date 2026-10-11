@@ -498,6 +498,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             max_output_tokens: Some(1),
         },
         Limits::default(),
+        None,
     )?;
     let request_digest = prepared.manifest().request_digest;
     let paged_request = journal_a

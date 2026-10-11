@@ -26,20 +26,13 @@ export interface ClientObservation<Value> {
   readonly operation: readonly [string, OperationOutcome] | null;
   readonly work: number;
 }
-/** Trusted in-process host adapter. Never accept a remote `verified: true` flag.
- * Callbacks must be pure, deterministic and bounded by work; reject stale evidence
- * using existing domain validation/reducers. bytes accounts all retained deep
- * values, assumptions, keys and operation clones, not just serialized wire size.
- * Values/assumptions must be transitively immutable; large bodies use references.
- */
+/** Trusted, pure, bounded validation of immutable refs, provenance and retained deep bytes. */
 export interface ClientDomain<Value, Assumption, Evidence> {
   readonly identity: string;
   validate(fact: ClientFact<Value>, predicted: Value, assumption: Assumption, work: number): { bytes: number; work: number };
   observe(evidence: Evidence, current: ClientFact<Value> | null, work: number): ClientObservation<Value>;
   corresponds(predicted: Value, canonical: Value, work: number): { matches: boolean; work: number };
-  /** Verify persisted provenance against the restored authoritative cut. Storage
-   * does not authenticate prediction or operation outcomes. Pure and bounded;
-   * omitted validators make restoration Unsupported. */
+  /** Authenticate persisted provenance against the restored cut; omission makes restoration Unsupported. */
   restore?(fact: ClientFact<Value>, hypothesis: ClientHypothesis<Value, Assumption>, work: number): { bytes: number; work: number };
 }
 export interface ClientPrediction<Value, Assumption> {
@@ -79,9 +72,7 @@ function tick(value: bigint): void {
   if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError("client tick must be u64");
 }
 
-/** Demand-scoped Rust-backed hypotheses. Construction starts no IO or timers.
- * Explicitly initialize the shared Harness WASM before constructing synchronously.
- */
+/** Rust-backed hypotheses; initialize shared WASM before effect-free construction. */
 export class ClientViews<Value, Assumption, Evidence> {
   readonly #kernel: WasmClientViews;
   readonly #selections = new Set<Selection<Value>>();

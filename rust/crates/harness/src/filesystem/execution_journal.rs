@@ -18,7 +18,7 @@ use crate::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     model::{ModelContent, ModelEvent},
-    projection::{SelectedModelContext, select_model_context_at_revision},
+    projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
 };
@@ -50,12 +50,8 @@ struct ExecutionSummary {
 }
 
 impl ExecutionSummary {
-    #[cfg(test)]
-    fn require_next(&self, event: &ExecutionEvent) -> Result<()> {
-        self.require_next_with_io(event, None)
-    }
 
-    fn require_next_with_io(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<()> {
+    fn require_next(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<()> {
         let hashed = match event {
             ExecutionEvent::ToolStarted { call_id, .. } if self.tail > 0 && !call_id.is_empty() =>
                 call_id.len() as u64,
@@ -130,7 +126,7 @@ impl ExecutionSummary {
         limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let Some(io) = io { io.check_cancellation()?; }
-        self.require_next_with_io(event, io)?;
+        self.require_next(event, io)?;
         if let ExecutionEvent::Model { step, purpose, .. } = event {
             self.models
                 .get(&(*step, *purpose))
@@ -146,16 +142,8 @@ impl ExecutionSummary {
         Ok(())
     }
 
-    fn accept(
-        &mut self,
-        record: &ExecutionRecord,
-        model: Option<&ModelEvent>,
-        limits: Limits,
-    ) -> Result<()> {
-        self.accept_with_io(record, model, limits, None)
-    }
 
-    fn accept_with_io(
+    fn accept(
         &mut self, record: &ExecutionRecord, model: Option<&ModelEvent>,
         limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -307,11 +295,6 @@ impl PreparationRecord for Observation {
     }
 }
 
-struct TaskExecutionIdentity {
-    operation: OperationId,
-    turn: OperationId,
-}
-
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
     stream: StreamClient<P>,
@@ -324,7 +307,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
-    execution: Option<TaskExecutionIdentity>,
+    execution: Option<(OperationId, OperationId)>,
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
@@ -348,7 +331,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         host: &crate::durable_host::CoordinatorTaskHost<P>,
     ) -> bool {
         self.execution.as_ref().is_some_and(|identity|
-            identity.operation == operation && identity.turn == turn)
+            identity.0 == operation && identity.1 == turn)
             && self.owner.as_ref().is_some_and(|(owner, bound)|
                 *bound == operation && owner.matches_task_binding(task, fence)
                     && owner.original_host_binding_matches(host))
@@ -374,7 +357,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
         let mut journal = Self::new(
             owner.stream(),
             host,
@@ -384,23 +367,20 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
         )?;
         journal.owner = Some((owner, operation_id));
-        journal.execution = Some(TaskExecutionIdentity {
-            operation: operation_id,
-            turn: turn_operation,
-        });
+        journal.execution = Some((operation_id, turn_operation));
         Ok(journal)
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
     pub(super) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
-        self.execution = Some(TaskExecutionIdentity { operation, turn });
+        self.execution = Some((operation, turn));
         self
     }
 
     fn turn_operation(&self, operation: OperationId) -> OperationId {
         self.execution
             .as_ref()
-            .map_or(operation, |identity| identity.turn)
+            .map_or(operation, |identity| identity.1)
     }
 
     /// Binds the original task owner while admitting newly owned metadata.
@@ -420,10 +400,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             stream, host, volume, verifier, scope, maximum_payload_bytes, &io,
         )?;
         journal.owner = Some((owner, operation_id));
-        journal.execution = Some(TaskExecutionIdentity {
-            operation: operation_id,
-            turn: turn_operation,
-        });
+        journal.execution = Some((operation_id, turn_operation));
         Ok(journal)
     }
 
@@ -450,11 +427,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(Arc::new(self))
     }
 
-    fn require_operation(&self, operation: OperationId) -> Result<()> {
-        self.require_operation_with_io(operation, None)
-    }
 
-    fn require_operation_with_io(
+    fn require_operation(
         &self, operation: OperationId, io: Option<&PreparationIo>,
     ) -> Result<()> {
         if self.execution.as_ref().is_some_and(|bound| bound.operation != operation) {
@@ -464,20 +438,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(())
     }
 
-    async fn refresh_summary(
-        &self,
-        operation: OperationId,
-        summary: &mut ExecutionSummary,
-    ) -> Result<()>
-    where
-        P: StreamProvider,
-        A: AsyncAuthorityStore + 'static,
-        O: AsyncObjectStore + 'static,
-    {
-        self.refresh_summary_with_io(operation, summary, None).await
-    }
 
-    async fn refresh_summary_with_io(
+    async fn refresh_summary(
         &self, operation: OperationId, summary: &mut ExecutionSummary,
         io: Option<&PreparationIo>,
     ) -> Result<()>
@@ -500,13 +462,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("matched original native work");
-                    crate::NativeFutureBundle::new(work, || self.replay_verified_with_io(
-                        operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io)))?.await?
+                    crate::NativeFutureBundle::new(work, || self.replay_page(
+                        operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, Some(io)))?.await?
                 }
-                Some(io) => Box::pin(self.replay_verified_with_io(
-                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io))).await?,
-                None => self.replay_verified_with_io(
-                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, None).await?,
+                Some(io) => Box::pin(self.replay_page(
+                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, Some(io))).await?,
+                None => self.replay_page(
+                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, None).await?,
             };
             page_hold = match (io, before) {
                 (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -517,7 +479,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 return Ok(());
             }
             for (record, model) in page {
-                summary.accept_with_io(&record, model.as_ref(), limits, io)?;
+                summary.accept(&record, model.as_ref(), limits, io)?;
             }
             drop(page_hold);
         }
@@ -536,7 +498,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         owner.verify(true, &mut None).await?;
         let quiescent = {
             let mut summary = self.verified.lock().await;
-            Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+            Box::pin(self.refresh_summary(*operation, &mut summary, None)).await?;
             summary.quiescent(None)?
         };
         owner.verify(true, &mut None).await?;
@@ -555,13 +517,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             let (owner, operation) = self.owner.as_ref().ok_or_else(||
                 Self::journal_read_boundary(Some(&io), crate::wire::ErrorCode::Unsupported,
                     "quiescence requires a task-owned execution journal"))?;
-            self.require_operation_with_io(*operation, Some(&io))?;
+            self.require_operation(*operation, Some(&io))?;
             owner.verify_with_native_work(true, work).await?;
             let quiescent = {
                 let before = io.owned_bytes()?;
                 let summary_hold;
                 let mut summary = ExecutionSummary::default();
-                self.refresh_summary_with_io(*operation, &mut summary, Some(&io)).await?;
+                self.refresh_summary(*operation, &mut summary, Some(&io)).await?;
                 summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| io.invalid("execution summary custody underflow"))?)?;
                 let quiescent = summary.quiescent(Some(&io))?;
@@ -593,7 +555,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 let before = io.owned_bytes()?;
                 let summary_hold;
                 let mut summary = ExecutionSummary::default();
-                self.refresh_summary_with_io(*operation, &mut summary, Some(&io)).await?;
+                self.refresh_summary(*operation, &mut summary, Some(&io)).await?;
                 summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| Error::Invalid("execution summary custody underflow".into()))?)?;
                 if !summary.quiescent(Some(&io))? { return Ok(None); }
@@ -660,7 +622,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        self.refresh_summary_with_io(*operation, summary, io).await?;
+        self.refresh_summary(*operation, summary, io).await?;
         if !summary.quiescent(io)? {
             return Err(Error::Indeterminate(*operation));
         }
@@ -671,22 +633,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         ).await
     }
 
-    async fn append_validated(
-        &self, operation_id: OperationId, expected_tail: Option<u64>,
-        claim_id: &str, event: ExecutionEvent,
-    ) -> Result<bool>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        self.append_validated_with_io(operation_id, expected_tail, claim_id, &event, None).await
-    }
 
-    async fn append_validated_with_io(
+    async fn append_validated(
         &self, operation_id: OperationId, expected_tail: Option<u64>,
         claim_id: &str, event: &ExecutionEvent, io: Option<&PreparationIo>,
     ) -> Result<bool>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         if claim_id.is_empty() {
             return Err(super::fork_preparer_io::invalid(io,
                 "execution journal compare-and-append is invalid"));
@@ -781,7 +735,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut transient = ExecutionSummary::default();
         let summary = if io.is_some() { &mut transient } else { &mut *shared };
         loop {
-            self.refresh_summary_with_io(operation_id, summary, io).await?;
+            self.refresh_summary(operation_id, summary, io).await?;
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner.verify_execution_with_work(operation_id, event,
@@ -897,11 +851,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             canonical_validate_limits(limits, io)?;
-            self.require_operation_with_io(envelope.operation_id, io)?;
+            self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
                 let association_hold;
                 let association_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let records = self.replay_verified_with_io(envelope.operation_id, 0, 1, io).await?;
+                let records = self.replay_page(envelope.operation_id, 0, 1, true, io).await?;
                 association_hold = io.map(|io| io.guard_owned(
                     io.owned_bytes()?.checked_sub(association_before)
                         .ok_or_else(|| io.invalid("checkpoint association custody underflows"))?,
@@ -1124,14 +1078,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
             Err(Error::Indeterminate(_)) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
                 } else { Err(Error::Indeterminate(operation_id)) }
             }
             Err(error @ Error::Conflict(_)) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1140,7 +1094,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             Err(error @ Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })
             | Err(error @ Error::NativeStream { source: StreamError::IdempotencyMismatch, .. }) => {
-                let records = self.replay_verified_with_io(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1383,7 +1337,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
         } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Unauthorized,
@@ -1482,7 +1436,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
         let records_hold;
@@ -1729,35 +1683,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
     }
 
-    async fn replay_verified(
-        &self,
-        operation_id: OperationId,
-        after: u64,
-        maximum: u32,
-    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
-    where
-        P: StreamProvider,
-        A: AsyncAuthorityStore + 'static,
-        O: AsyncObjectStore + 'static,
-    {
-        self.replay_verified_with_io(operation_id, after, maximum, None).await
-    }
 
-    async fn replay_verified_with_io(
-        &self, operation_id: OperationId, after: u64, maximum: u32, io: Option<&PreparationIo>,
-    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        self.replay_page_with_io(operation_id, after, maximum, true, io).await
-    }
-
-    async fn replay_page_with_io(
+    async fn replay_page(
         &self, operation_id: OperationId, after: u64, maximum: u32,
         retain_models: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         if maximum == 0 {
             return Err(super::fork_preparer_io::invalid(io, "execution replay page bound is invalid"));
         }
@@ -1885,11 +1818,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         if let Some((owner, _)) = &self.owner {
             if let Some(io) = io {
                 let mut work = io.history_io();
-                owner.verify_model_history_with_work(
+                owner.verify_model_history(
                     operation_id, result.iter().map(|(record, _)| record), &mut Some(&mut work),
                 ).await?;
             } else {
-                owner.verify_model_history_with_work(
+                owner.verify_model_history(
                     operation_id, result.iter().map(|(record, _)| record), &mut None).await?;
             }
         }
@@ -1943,8 +1876,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 let before = io.map(PreparationIo::owned_bytes).transpose()?;
                 let _prepared_hold;
                 let prepared = match io {
-                    Some(io) => crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io)?,
-                    None => crate::model::PreparedModelRequest::decode(&bytes, limits)?,
+                    Some(io) => crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io))?,
+                    None => crate::model::PreparedModelRequest::decode(&bytes, limits, None)?,
                 };
                 _prepared_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -2121,7 +2054,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_operation_with_io(operation, io)?;
+        self.require_operation(operation, io)?;
         let host = self.interactions.as_ref().ok_or_else(||
             super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "task execution has no conversation interaction owner"))?;
@@ -2129,7 +2062,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
         host.verify_approval_with_io(id, operation, digest, io).await?;
@@ -2204,7 +2137,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let _page_slots;
-            let page = self.replay_page_with_io(operation_id, after, maximum, false, Some(&io)).await?;
+            let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
             let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
                 .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
             _page_slots = io.guard_owned(page_bytes)?;
@@ -2332,7 +2265,7 @@ where
             items = crate::obs::Empty
         );
         traced(span, async move {
-            let page = self.replay_verified(operation_id, after, maximum).await?;
+            let page = self.replay_page(operation_id, after, maximum, true, None).await?;
             crate::obs::obs_record!("items" = page.len());
             Ok(page.into_iter().map(|(record, _)| record).collect())
         })
@@ -2350,7 +2283,7 @@ where
                 .map_err(|cause| acyclic_fs::OperationFailure::new(cause, Default::default()))?;
             let result = async {
                 let _page_slots;
-                let page = self.replay_page_with_io(operation_id, after, maximum, false, Some(&io)).await?;
+                let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
                 let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
                     .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
                 _page_slots = io.guard_owned(page_bytes)?;
@@ -2377,7 +2310,7 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         let span = obs_span!("acyclic.harness.journal.append");
         traced(span, async move {
-            self.append_validated(operation_id, None, &idempotency_key, event)
+            self.append_validated(operation_id, None, &idempotency_key, &event, None)
                 .await
                 .map(|_| ())
         })
@@ -2395,7 +2328,7 @@ where
             rev = expected_tail
         );
         traced(span, async move {
-            self.append_validated(operation_id, Some(expected_tail), &claim_id, event)
+            self.append_validated(operation_id, Some(expected_tail), &claim_id, &event, None)
                 .await
         })
     }
@@ -2407,7 +2340,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.append_validated_with_io(
+            let result = self.append_validated(
                 operation_id, None, idempotency_key, event, Some(&io)).await;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -2423,7 +2356,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, bool>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.append_validated_with_io(
+            let result = self.append_validated(
                 operation_id, Some(expected_tail), idempotency_key, event, Some(&io)).await;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -2585,12 +2518,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_selected_context_with_io(
         &self, operation_id: OperationId, selected: &SelectedModelContext, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_operation_with_io(operation_id, io)?;
+        self.require_operation(operation_id, io)?;
         let turn_operation = self.turn_operation(operation_id);
         {
             let association_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let records = self.replay_verified_with_io(operation_id, 0, 1, io).await?;
+            let records = self.replay_page(operation_id, 0, 1, true, io).await?;
             association_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "selected association custody underflows"))?)).transpose()?;
@@ -2667,19 +2600,27 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                             let original = io.original_native_work().ok_or_else(||
                                 super::interaction_host::interaction_boundary(Some(io),
                                     crate::wire::ErrorCode::Invalid, "selected IO has no original native work"))?;
-                            let (items, custody) = crate::projection::AttachmentListResolver::resolve_with_native_work(
+                            let (items, custody) = crate::conversation::ContentResidencyVerifier::load_manifest_with_native_work(
                                 &resolver, manifest, *item_count, original)?.await?;
                             drop(items);
                             drop(custody);
                         }
-                        _ => { crate::projection::AttachmentListResolver::resolve(&resolver, manifest, *item_count).await?; }
+                        _ => { crate::conversation::ContentResidencyVerifier::load_manifest(&resolver, manifest, *item_count).await?; }
                     }
                 }
                 crate::conversation::ReferencedAttachments::Manifest { .. } => {}
             }
         }
-        let projected = crate::projection::select_model_context_at_revision_with_io(
-            &historical, committed, &resolver, messages, attachments, render_bytes, attachments, io,
+        let projected = crate::projection::select_model_context(
+            &historical,
+            committed.conversation_revision,
+            committed,
+            &resolver,
+            messages,
+            attachments,
+            render_bytes,
+            attachments,
+            io,
         ).await?;
         _query_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
@@ -2714,7 +2655,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |work| work as &mut dyn crate::store::history::HistoryIo);
         interaction.validate_with_work(&mut work)?;
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
@@ -2781,7 +2722,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
@@ -2798,10 +2739,14 @@ struct JournalSelectedResolver<'a, P, A, O> {
     maximum_attachments: usize,
 }
 
-impl<P, A, O> crate::projection::AttachmentListResolver for JournalSelectedResolver<'_, P, A, O>
+impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
-    fn resolve<'a>(
+    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    }
+
+    fn load_manifest<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
     ) -> BoxFuture<'a, Result<Vec<crate::conversation::Attachment>>> {
         Box::pin(async move {
@@ -2820,7 +2765,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.journal.authorize_selected_file_with_io(file, None)?;
             self.inner.read(file).await
@@ -2828,7 +2773,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn resolve_with_native_work<'a>(
+    fn load_manifest_with_native_work<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::conversation::Attachment>, acyclic_fs::NativeAllocation)>> {
@@ -3076,13 +3021,29 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let resolver = JournalSelectedResolver {
                 journal, inner: verifier, maximum_attachments: limits.attachments,
             };
-            crate::projection::select_model_context_at_revision_with_io(
-                &history, selection, &resolver, limits.context_messages, limits.attachments,
-                limits.render_bytes, limits.attachments, Some(io)).await?
+            crate::projection::select_model_context(
+            &history,
+            selection.conversation_revision,
+            selection,
+            &resolver,
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+            Some(io),
+        ).await?
         }
-        None => select_model_context_at_revision(
-            &history, selection, verifier, limits.context_messages, limits.attachments,
-            limits.render_bytes, limits.attachments).await?,
+        None => select_model_context(
+            &history,
+            selection.conversation_revision,
+            selection,
+            verifier,
+            limits.context_messages,
+            limits.attachments,
+            limits.render_bytes,
+            limits.attachments,
+            None,
+        ).await?,
     };
     let input = crate::model::model_content_clone_with_io(&selected.messages.last()
         .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
@@ -3289,7 +3250,7 @@ mod tests {
             metadata: serde_json::Value::Null,
         };
         for (index, event) in observations.into_iter().enumerate() {
-            assert!(state.require_next(&compacted).is_err());
+            assert!(state.require_next(&compacted, None).is_err());
             let model = matches!(event, ExecutionEvent::Model { .. }).then_some(&completed);
             state.accept(
                 &ExecutionRecord {
@@ -3299,10 +3260,9 @@ mod tests {
                     event,
                 },
                 model,
-                Limits::default(),
-            )?;
+                Limits::default(), None)?;
         }
-        state.require_next(&compacted)?;
+        state.require_next(&compacted, None)?;
         state.accept(
             &ExecutionRecord {
                 operation_id: operation,
@@ -3311,16 +3271,15 @@ mod tests {
                 event: compacted.clone(),
             },
             None,
-            Limits::default(),
-        )?;
-        assert!(state.require_next(&compacted).is_err());
+            Limits::default(), None)?;
+        assert!(state.require_next(&compacted, None).is_err());
         let wrong_step = ExecutionEvent::ContextCompacted {
             step: 1,
             projection: file.clone(),
             compaction: file.clone(),
             accounting: file.clone(),
         };
-        assert!(state.require_next(&wrong_step).is_err());
+        assert!(state.require_next(&wrong_step, None).is_err());
         let response = ExecutionEvent::ModelStarted {
             step: 0,
             purpose: ModelPurpose::Response,
@@ -3335,10 +3294,9 @@ mod tests {
                 event: response,
             },
             None,
-            Limits::default(),
-        )?;
+            Limits::default(), None)?;
         state.compacted_contexts.clear();
-        assert!(state.require_next(&compacted).is_err());
+        assert!(state.require_next(&compacted, None).is_err());
         Ok(())
     }
 
@@ -3371,8 +3329,7 @@ mod tests {
                         },
                     },
                     None,
-                    limits,
-                )?;
+                    limits, None)?;
                 let prepared = ExecutionEvent::ContextPrepared {
                     step: 0,
                     projection: file.clone(),
@@ -3386,9 +3343,8 @@ mod tests {
                         event: prepared.clone(),
                     },
                     None,
-                    limits,
-                )?;
-                assert!(state.require_next(&prepared).is_err());
+                    limits, None)?;
+                assert!(state.require_next(&prepared, None).is_err());
                 for purpose in [first_start, other(first_start)] {
                     let start = ExecutionEvent::ModelStarted {
                         step: 0,
@@ -3404,9 +3360,8 @@ mod tests {
                             event: start.clone(),
                         },
                         None,
-                        limits,
-                    )?;
-                    assert!(state.require_next(&start).is_err());
+                        limits, None)?;
+                    assert!(state.require_next(&start, None).is_err());
                     assert!(!state.quiescent(None)?);
                 }
                 for purpose in [first_completion, other(first_completion)] {
@@ -3424,8 +3379,7 @@ mod tests {
                         Some(&ModelEvent::Completed {
                             metadata: serde_json::json!({}),
                         }),
-                        limits,
-                    )?;
+                        limits, None)?;
                     assert_eq!(state.quiescent(None)?, purpose != first_completion);
                     assert!(
                         state
@@ -3433,7 +3387,7 @@ mod tests {
                                 step: 0,
                                 purpose,
                                 event: file.clone()
-                            })
+                            }, None)
                             .is_err()
                     );
                 }
@@ -3626,14 +3580,16 @@ mod tests {
             content: &dyn ContentResidencyVerifier,
             limits: Limits,
         ) -> Result<crate::context::Context> {
-            let selected = select_model_context_at_revision(
+            let selected = select_model_context(
                 history,
+                selection.conversation_revision,
                 selection,
                 content,
                 limits.context_messages,
                 limits.attachments,
                 limits.render_bytes,
                 limits.attachments,
+                None,
             )
             .await?;
             let input = selected
@@ -3658,14 +3614,16 @@ mod tests {
             .ok_or_else(|| Error::NotFound("cold history".into()))?;
         let omitted_source = source(history, omitted.clone(), content.as_ref(), limits).await?;
         let complete_source = source(history, complete.clone(), content.as_ref(), limits).await?;
-        let selected = select_model_context_at_revision(
+        let selected = select_model_context(
             history,
+            complete.conversation_revision,
             complete.clone(),
             content.as_ref(),
             limits.context_messages,
             limits.attachments,
             limits.render_bytes,
             limits.attachments,
+            None,
         )
         .await?;
         let placeholder = references

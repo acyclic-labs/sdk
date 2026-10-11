@@ -73,7 +73,7 @@ async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Resu
                                 && same_placement
                                 && (!cancelled || settlement);
                             assert_eq!(
-                                require_execution_owner(&state, &fence, settlement).is_ok(),
+                                require_execution_owner(&state, &fence, settlement, &mut None).is_ok(),
                                 expected,
                                 "{phase:?}, cancelled={cancelled}, settlement={settlement}, reserved={reserved}, same_id={same_id}, same_placement={same_placement}"
                             );
@@ -801,7 +801,10 @@ where
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::filesystem::copy_native_generation_with_work(generation, work)?;
+        let generation = crate::resources::GenerationRef::new_with_native_work(
+            generation.as_resource().provider(), generation.as_resource().key(),
+            generation.as_resource().version(), work,
+        )?;
         let snapshot = (crate::source_authorization::ProjectSourceSnapshot {
             project: project.0, generation: generation.0,
             native_snapshot: Some(io.value_json(&candidate, 128 * 1024 * 1024)?),
@@ -1514,9 +1517,10 @@ where
                 project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new_with_native_work(
                     Arc::clone(&files), issuer.audience(), task_id, work,
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
-                project_generation = Some(crate::filesystem::copy_native_generation_with_work(
-                    borrowed[0].generation, work,
-                )?);
+                project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
+            borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
+            borrowed[0].generation.as_resource().version(), work,
+        )?);
                 let namespace = NativeVolumeNamespace::LazyMount { snapshot };
                 let mut mixed_borrowed = borrowed;
                 mixed_borrowed[0].namespace = &namespace;
@@ -1525,11 +1529,11 @@ where
                 )?.await?;
                 lazy_mount = Some(Arc::clone(&mount));
                 lazy_work = Some(volume_work.clone());
-                NativeVolumeView::prepare_mixed_with_native_work(&owner, &guards.0,
+                NativeVolumeView::prepare_with_native_work(&owner, &guards.0,
                     &preparation_root, &options, &mixed_borrowed, &[Some(&held), None, None], work)?.await?
             } else {
                 NativeVolumeView::prepare_with_native_work(
-                    &owner, &guards.0, &preparation_root, &options, &borrowed, work,
+                    &owner, &guards.0, &preparation_root, &options, &borrowed, &[], work,
                 )?.await?
             };
             view.into_arc_with_native_work(work)?

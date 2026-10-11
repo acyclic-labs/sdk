@@ -208,7 +208,7 @@ async fn bind_body<P: StreamProvider + 'static>(
         }
         None => {
             owner.verify(allow_cancelled, &mut None).await?;
-            owner.require_effect_grants(&plan.provider, false)?;
+            owner.require_effect_grants(&plan.provider, false, &mut None)?;
             owner.validate_input_file(&plan.request)?;
             owner.validate_input_file(&plan.result_schema)?;
         }

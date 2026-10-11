@@ -1234,7 +1234,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
             )?;
             let projected =
-                select_model_context(&loaded, selection.clone(), &source_reader, 2, 4, 64 * 1_024)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, 2, 4, 64 * 1_024, 4, None)
                     .await?;
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
@@ -1243,7 +1243,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024,
             )?;
             assert!(
-                select_model_context(&loaded, selection, &denied_reader, 2, 4, 64 * 1_024)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, 2, 4, 64 * 1_024, 4, None)
                     .await
                     .is_err()
             );
@@ -1527,6 +1527,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     )?;
     let selected = select_model_context(
         state,
+        (state).logical_revision(),
         ModelContextSelection {
             checkpoint: None,
             conversation_revision: 2,
@@ -1536,6 +1537,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         256,
         2,
         128 * 1024,
+        2,
+        None,
     )
     .await?;
     assert!(

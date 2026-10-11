@@ -348,7 +348,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     return Err(boundary(io, crate::wire::ErrorCode::Storage, "mail publication v3 identity differs"));
                 }
                 let admission = self.mail_admission(sender, io).await?;
-                let source = self.read_mail_source_with_work(&admission, &event.payload, &mut work).await?;
+                let source = self.read_mail_source(&admission, &event.payload, &mut work).await?;
                 drop(source);
                 source_verified = true;
             }

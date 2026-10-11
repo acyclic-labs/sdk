@@ -429,7 +429,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits(operation)?.validate()?;
+                    coordinator.scheduler().session_limits(operation, &mut None)?.validate()?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
             }
@@ -468,7 +468,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 pending.push((preparation, path.clone()));
             }
         }
-        let access = self.verify_created_access(source, &mut BTreeSet::new()).await?;
+        let access = self.verify_created_access_with_work(source, &mut Vec::new(), &mut None).await?;
         Ok(access.as_ref().is_some_and(|access| access.content.iter().any(|binding| &binding.volume == project)))
     }
 
@@ -527,7 +527,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             match &state.spec.parent {
                 Some(parent) => operation = parent.operation_id,
                 None => {
-                    coordinator.scheduler().session_limits_with_work(operation, &mut observer)?
+                    coordinator.scheduler().session_limits(operation, &mut observer)?
                         .validate_with_work(&mut observer)?;
                     return Ok(TaskId::from_bytes(operation.into_bytes()));
                 }
@@ -709,7 +709,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn verify_project_source_authorization(
         &self, record: &ProjectSourceAuthorization, parent: TaskId,
     ) -> Result<()> {
-        record.verify_scope(&self.verifier)?;
+        record.verify_scope_with_work(&self.verifier, &mut None)?;
         if record.owner != self.owner || record.caller_task != parent {
             return Err(Error::Unauthorized("project source differs from original caller or owning coordinator".into()));
         }
