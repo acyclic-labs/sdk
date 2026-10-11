@@ -329,7 +329,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn tonic_surface_delegates_to_the_common_wire_api() -> Result<()> {
         use transport::harness_service_server::HarnessService as _;

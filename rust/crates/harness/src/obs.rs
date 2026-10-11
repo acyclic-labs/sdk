@@ -1,6 +1,4 @@
-//! Tracing glue for `docs/observability.md`. Spans come from
-//! `#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(..))]`; these
-//! helpers compile to no-ops on wasm32, which never links `tracing`.
+//! Tracing glue for `docs/observability.md`.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
@@ -32,8 +30,7 @@ macro_rules! obs_record {
 }
 pub(crate) use obs_record;
 
-/// Opens a span (`DEBUG` unless prefixed with `INFO,`) with `outcome`/`error.kind`
-/// slots for [`traced`]; an empty [`Span`] on wasm32.
+/// Opens a span (`DEBUG` unless prefixed with `INFO,`) with `outcome`/`error.kind` slots for [`traced`]; an empty [`Span`] on wasm32.
 macro_rules! obs_span {
     (INFO, $($rest:tt)+) => { crate::obs::obs_span!(@ INFO, $($rest)+) };
     (@ $level:ident, $name:literal $(, $field:ident = $value:expr)* $(,)?) => {{
@@ -118,9 +115,7 @@ pub(crate) mod capture {
         }
     }
 
-    /// Captures this thread's spans until the guard drops. A second live
-    /// dispatcher makes callsites that a concurrent test reached first
-    /// consult this subscriber too, instead of caching that thread's interest.
+    /// Captures this thread's spans until the guard drops.
     pub(crate) fn install() -> (Seen, impl Sized) {
         use tracing_subscriber::layer::SubscriberExt as _;
         let second = tracing::Dispatch::new(tracing_subscriber::registry());

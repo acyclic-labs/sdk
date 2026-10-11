@@ -116,7 +116,6 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         },
     })?;
 
-    // Bind the provider before the parent has published any fork.
     let workspaces = FilesystemProjectWorkspaces::new(
         &host,
         &reducer,
@@ -125,8 +124,6 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         project.clone(),
     )?;
 
-    // Allocate the child project after binding, but publish its Harness fork
-    // only after the provider has been constructed.
     let child_head = workspaces
         .fork_project(
             &scope,

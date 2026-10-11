@@ -21,10 +21,6 @@ pub struct ExactTextReplacement {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Edits one immutable source under separate verified read/write grants.
-    ///
-    /// The source generation is the transaction precondition. Retry binds the
-    /// source generation and resulting complete file contract through the
-    /// existing content receipt; it does not rebase onto concurrent user edits.
     #[allow(
         clippy::too_many_arguments,
         reason = "each authority, pinned input, finite bound and retry identity is explicit"

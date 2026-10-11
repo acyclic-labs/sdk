@@ -292,9 +292,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     fork_preparer_io::invalid(io, "summary fork copies exceed aggregate byte allowance")
                 })?;
         }
-        // Generation keys encode to 64 hex bytes. Preflight the final context
-        // before reading payloads or publishing either phase, without a cycle
-        // between a context's bytes and the generation containing those bytes.
         const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
         let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
         let context = rewritten_context(prepared.context(), &planned, io)?;

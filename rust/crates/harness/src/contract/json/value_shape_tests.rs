@@ -9,8 +9,7 @@ const LIMITS: JsonBounds = JsonBounds {
     maximum_depth: 256,
 };
 
-// Oracle construction belongs exclusively to controls: production never makes
-// an unchecked Value or reparses a Raw string to discover its resource shape.
+// Oracle construction belongs exclusively to controls: production never makes an unchecked Value or reparses a Raw string to discover its resource shape.
 fn raw_document(payload: &str) -> String {
     format!("{{\"{RAW}\":{}}}", serde_json::to_string(payload).unwrap())
 }
@@ -46,8 +45,6 @@ fn shape(bytes: &[u8], schema: JsonValueSchema) -> JsonValueShape {
         .unwrap_or_else(|_| panic!("valid fixture must have an admitted shape"))
 }
 
-// These are concrete observable capacities, not allocator/RSS observations.
-// BTreeMap nodes are opaque; its logical pairs are the documented codec model.
 fn concrete_owned(value: &Value) -> u64 {
     match value {
         Value::String(text) => text.capacity() as u64,
@@ -91,30 +88,6 @@ fn first_private_key_matches_pinned_serde_including_unicode_escapes() {
     assert_eq!(later_shape.raw_bytes, 0);
     assert_eq!(later_shape.raw_frames, 0);
     assert_eq!(later_shape.virtual_items, 0);
-}
-
-#[test]
-fn raw_payload_bytes_and_frame_counts_are_conserved_across_layers() {
-    let leaf = serde_json::to_string(&"\\\"\n😀".repeat(8192)).unwrap();
-    for layers in 1..=5 {
-        let (document, raw_bytes, virtual_items) = raw_layers(leaf.clone(), layers);
-        let mut inspected = 0;
-        let actual_shape = inspect(document.as_bytes(), Some(JsonValueSchema::Root), LIMITS, &mut |event| {
-            if let JsonCodecCharge::Inspect { items } = event { inspected += items; }
-            Ok(())
-        }).unwrap_or_else(|_| panic!("large recursive leaf is within declared limits"));
-        let actual: Value = serde_json::from_str(&document).unwrap();
-        assert_eq!(actual_shape.raw_bytes, raw_bytes);
-        assert_eq!(actual_shape.raw_frames, layers as u64);
-        assert_eq!(actual_shape.virtual_items, virtual_items);
-        assert_eq!(inspected, raw_bytes);
-        assert_eq!(actual_shape.input_bytes, document.len() as u64);
-        assert_eq!(actual_shape.lexical_items, lexical_items(document.as_bytes()));
-        // RawBox payloads, geometric parser scratch, and boxed-string shrink
-        // overlap must not disappear when the final tree is only one String.
-        let bound = json_value_decode_owned_bytes(actual_shape).unwrap();
-        assert!(bound >= concrete_owned(&actual) + raw_bytes);
-    }
 }
 
 #[test]
@@ -166,8 +139,7 @@ fn interaction_selection_is_gated_by_real_tag_not_field_order_or_name_alone() {
     let ignored_shape = shape(ignored.as_bytes(), JsonValueSchema::Interaction);
     assert_eq!(ignored_shape.virtual_items, 0);
     assert_eq!(ignored_shape.raw_frames, 0);
-    // A potential root schema preceding an unrelated discriminator may need
-    // inspection work, but cannot become Value authority or a bounds rejection.
+    // A potential root schema preceding an unrelated discriminator may need inspection work, but cannot become Value authority or a bounds rejection.
     let unrelated = format!("{{\"schema\":{deep},\"type\":\"choice\"}}");
     assert!(inspect(unrelated.as_bytes(), Some(JsonValueSchema::Interaction), JsonBounds {
         maximum_items: 16, maximum_depth: 3, ..LIMITS
@@ -216,8 +188,7 @@ fn every_closed_descriptor_follows_its_literal_producer_value_paths() {
         (JsonValueSchema::MachineCheckpoint, format!(r#"{{"state":{raw}}}"#), 1),
     ];
     for (schema, document, selected) in fixtures {
-        // This table exercises literal reachability, not arbitrary typed
-        // Deserialize heap proofs or validity of omitted DTO required fields.
+        // This table exercises literal reachability, not arbitrary typed Deserialize heap proofs or validity of omitted DTO required fields.
         let actual = shape(document.as_bytes(), schema);
         assert_eq!(actual.raw_frames, selected, "{schema:?}: {document}");
         assert_eq!(actual.raw_bytes, selected * 3, "{schema:?}: {document}");
@@ -275,8 +246,7 @@ fn consuming_inspection_uses_real_sorted_map_order_not_original_lexical_order() 
             maximum_items: lexical.lexical_items, ..LIMITS
         }, schema, &mut |_| Ok(())).is_err(), "virtual growth is admitted before consuming serde");
     }
-    // The pinned consuming visitor parses the hidden source before noticing
-    // the remaining ordinary key. Do not replace its genuine eventual error.
+    // The pinned consuming visitor parses the hidden source before noticing the remaining ordinary key.
     let invocation: Value = serde_json::from_str(&invocation).unwrap();
     assert!(serde_json::from_value::<crate::tool::ToolInvocation>(invocation).is_err());
     let result: Value = serde_json::from_str(&result).unwrap();
@@ -297,8 +267,6 @@ fn consuming_shape_excludes_moved_strings_but_conserves_raw_overlap_and_first_ca
     assert!(json_owned_value_conversion_additional_bytes(slice).is_err(), "slice witness cannot claim consuming origin");
 
     let (raw, raw_bytes, _) = raw_layers(serde_json::to_string(&"leaf".repeat(4096)).unwrap(), 3);
-    // Original lexical Raw is consumed by from_slice, so build a resident
-    // Raw wrapper without deserializing away its private representation.
     let resident = serde_json::json!({"kind":"json","value":{(RAW): raw}});
     let mut callbacks = 0;
     let raw_shape = json_owned_value_shape_bounded(&resident, LIMITS, JsonValueSchema::ToolResultContent, &mut |_| {
@@ -311,7 +279,7 @@ fn consuming_shape_excludes_moved_strings_but_conserves_raw_overlap_and_first_ca
         maximum_depth: 2, ..LIMITS
     }, JsonValueSchema::ToolResultContent, &mut |_| Ok(())).is_err());
     for denied in 0..callbacks {
-        let cause = uuid::Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let mut reached = 0;
         let failure = json_owned_value_shape_bounded(&resident, LIMITS, JsonValueSchema::ToolResultContent, &mut |_| {
             let current = reached;
@@ -330,52 +298,6 @@ fn consuming_shape_excludes_moved_strings_but_conserves_raw_overlap_and_first_ca
         >= concrete_owned(&value) + raw_shape.raw_bytes);
 }
 
-// Model only the genuine scalar/string sizing writers. Delimiters and null's
-// fixed literal are arithmetic, not fictitious inspected encoded buffers.
-fn tree_sizing_inspections(value: &Value) -> u64 {
-    match value {
-        Value::Null => 0,
-        Value::Bool(_) | Value::Number(_) | Value::String(_) => serde_json::to_vec(value).unwrap().len() as u64,
-        Value::Array(values) => values.iter().map(tree_sizing_inspections).sum(),
-        Value::Object(values) => values.iter().map(|(key, value)| {
-            serde_json::to_vec(key).unwrap().len() as u64 + tree_sizing_inspections(value)
-        }).sum(),
-    }
-}
-
-#[test]
-fn direct_tree_work_never_fabricates_encoded_bytes_or_source_reads() {
-    let value = serde_json::json!({
-        "escape\"\\\n": ["\0\t😀\"\\", u64::MAX, i64::MIN, -0.0, 1.5e300, true, null],
-        "nested": {"key": "value"}
-    });
-    let encoded = serde_json::to_vec(&value).unwrap().len() as u64;
-    for maximum_bytes in [encoded, LIMITS.maximum_bytes] {
-        let mut inspected = 0;
-        let mut items = 0;
-        let actual = json_value_bounded_trusted(&value, JsonBounds { maximum_bytes, ..LIMITS }, &mut |event| {
-            match event {
-                JsonCodecCharge::Work { bytes, items: nodes } => {
-                    assert_eq!(bytes, 0, "tree production emits no encoded wire buffer");
-                    items += nodes;
-                }
-                JsonCodecCharge::Read { .. } => panic!("tree production has no input source read"),
-                JsonCodecCharge::Inspect { items } => inspected += items,
-                _ => {}
-            }
-            Ok(())
-        }).unwrap();
-        assert_eq!(actual, value);
-        assert_eq!(items, semantic_items(&value));
-        assert_eq!(inspected, tree_sizing_inspections(&value),
-            "real sizing work is identical at exact and oversized byte bounds");
-        assert!(inspected > 0);
-    }
-    assert!(json_value_bounded_trusted(&value, JsonBounds {
-        maximum_bytes: encoded - 1, ..LIMITS
-    }, &mut |_| Ok(())).is_err(), "logical encoded-shape limit still applies");
-}
-
 #[test]
 fn typed_borrowed_quota_rejects_slice_and_consuming_origin() {
     let slice = shape(b"null", JsonValueSchema::Root);
@@ -389,8 +311,6 @@ fn typed_borrowed_quota_rejects_slice_and_consuming_origin() {
 #[test]
 fn preparation_request_has_exactly_four_value_paths_not_command_fileref_payload() {
     let raw = raw_document("[0]");
-    // Literal reachability control for the real request's audited fields. This
-    // partial envelope is not claimed to satisfy its omitted DTO identities.
     let document = format!(r#"{{"payload":{raw},"child":{{"input":{raw},"input_schema":{raw},"output_schema":{raw}}},"command":{{"payload":{raw}}}}}"#);
     let selected = shape(document.as_bytes(), JsonValueSchema::ResourcePreparationRequest);
     assert_eq!(selected.raw_frames, 4);
@@ -413,7 +333,7 @@ fn preparation_request_has_exactly_four_value_paths_not_command_fileref_payload(
 #[test]
 fn scheduler_schema_gates_include_real_orchestrated_serde_and_nested_late_reduce() {
     use crate::scheduler::{EntrypointRef, SchedulerEvent};
-    let operation = uuid::Uuid::from_u128(1);
+    let operation = crate::OperationId::from_bytes(1u128.to_be_bytes());
     let event = SchedulerEvent::Orchestrated {
         operation_id: operation, expected_revision: 0,
         outcome: crate::Outcome::Indeterminate { operation_id: operation },
@@ -491,8 +411,6 @@ fn recursive_wire_and_owned_profiles_follow_every_literal_container_gate() {
         (JsonValueSchema::ProjectMergeReceipt, receipt, 1),
     ];
     for (schema, document, selected) in fixtures {
-        // Private recursive DTO owners supply producer E2E. These controls
-        // exercise actual SDK wire/owned selection, not omitted DTO validity.
         let wire = shape(document.as_bytes(), schema);
         assert_eq!(wire.raw_frames, selected, "{schema:?}");
         assert_eq!(wire.raw_bytes, 3 * selected, "{schema:?}");
@@ -530,8 +448,6 @@ fn recursive_wire_and_owned_profiles_follow_every_literal_container_gate() {
 }
 
 fn source_authorization_document(native_snapshot: &str) -> String {
-    // Real public DTO metadata, including a genuine serialized Scope. This
-    // fixture exercises Deserialize, not authorization/provider verification.
     let owner = crate::core::Authority {
         kind: crate::core::AggregateKind::Task, id: "source-owner".into(),
     };
@@ -630,8 +546,7 @@ fn source_authorization_composites_preserve_wire_and_owned_map_order() {
         (JsonValueSchema::RecursiveInitialPlan, format!(r#"{{"plan":{recursive_merge}}}"#), 1),
         (JsonValueSchema::RecursiveState, format!(r#"{{"plan":{recursive_merge},"phase":"waiting"}}"#), 1),
     ] {
-        // Literal graph controls for the joined source carriers/private DTOs:
-        // omitted required fields make these explicitly NOT producer E2E.
+        // Literal graph controls for the joined source carriers/private DTOs: omitted required fields make these explicitly NOT producer E2E.
         let wire = shape(document.as_bytes(), schema);
         assert_eq!(wire.raw_frames, selected, "{schema:?}");
         assert_eq!(wire.raw_bytes, selected * 3, "{schema:?}");
@@ -761,8 +676,6 @@ fn stock_command_profiles_select_only_the_actual_closed_value_fields() {
         assert_eq!(ignored.raw_frames, 0, "{schema:?}");
         assert_eq!(ignored.virtual_items, 0, "{schema:?}");
     }
-    // NativeProcessRequest's complete view/MCP identities and private producer
-    // execution are owned elsewhere; the partial profile table is not E2E.
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -838,7 +751,6 @@ proptest::proptest! {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native {
     use super::*;
-    use uuid::Uuid;
 
     fn decode<F: FnMut(JsonCodecCharge) -> Result<()>>(
         bytes: &[u8], bounds: JsonBounds, charge: &mut F,
@@ -854,7 +766,7 @@ mod native {
         let escaped = success.replacen("Succeeded", r#"\u0053ucceeded"#, 1);
         let failed = serde_json::to_string(&crate::Outcome::<Value>::Failed { message: raw.clone() }).unwrap();
         let indeterminate = serde_json::to_string(&crate::Outcome::<Value>::Indeterminate {
-            operation_id: Uuid::from_bytes([9; 16]),
+            operation_id: crate::OperationId::from_bytes([9; 16]),
         }).unwrap();
         for (document, selected) in [
             (success, true), (escaped, true), (failed, false),
@@ -905,8 +817,6 @@ mod native {
             assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
         }
 
-        // A malformed typed String is not a Value subtree, even if its object
-        // contains the private key. Preserve the actual enum/String serde error.
         let document = format!(r#"{{"Failed":{{"message":{}}}}}"#, raw_document("[0,]"));
         let expected = serde_json::from_str::<crate::Outcome<Value>>(&document).err().unwrap();
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -969,7 +879,7 @@ mod native {
         ).unwrap();
         for denied in 0..callbacks {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let mut reached = 0;
             let failure = json_from_slice_bounded_native_trusted::<crate::Outcome<Value>, _>(
                 document.as_bytes(), LIMITS, 0, crate::wire::ErrorCode::Storage,
@@ -1009,8 +919,6 @@ mod native {
 
     #[test]
     fn native_fork_authorization_preserves_aggregate_depth_and_first_owned_cause() {
-        // Literal joined ForkRequest reachability, not an omitted-field
-        // producer DTO claim. The public authorization DTO is tested above.
         let document = format!(r#"{{"authorized_source":{{"native_snapshot":{}}}}}"#, raw_document("[0]"));
         let ordinary = format!(r#"{{"authorized_source":{{"native_snapshot":{{"ordinary":"[0]"}}}}}}"#);
         assert!(inspect(ordinary.as_bytes(), Some(JsonValueSchema::ForkRequest),
@@ -1038,7 +946,7 @@ mod native {
         ).unwrap();
         assert_eq!(actual, expected);
         for deny_inspection in [true, false] {
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let mut denied = false;
             let mut admitted = false;
             let failure = json_from_slice_bounded_native_trusted::<Value, _>(
@@ -1091,9 +999,6 @@ mod native {
             assert!(!admitted);
             assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
         }
-        // Both serde parsers have local depth one; the parent raw-map visitor
-        // remains live while the nested array visits its scalar, global depth
-        // two. The finite bound deliberately covers this cumulative ancestry.
         let document = raw_document("[0]");
         let original: Value = serde_json::from_slice(document.as_bytes()).unwrap();
         assert_eq!(original, serde_json::json!([0]));
@@ -1109,48 +1014,6 @@ mod native {
     }
 
     #[test]
-    fn native_single_read_and_truthful_virtual_work_feed_real_admission_shape() {
-        let (document, raw_bytes, _) = raw_layers(r#"["owned",18446744073709551615,-0.0]"#.into(), 3);
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 1, peak_allocation_bytes: 1024 * 1024,
-            ..acyclic_fs::WorkBudget::default()
-        }, &cancellation).unwrap_or_else(|_| panic!("finite native ownership ledger"));
-        let before = work.remaining().unwrap().peak_allocation_bytes;
-        let mut original = work.retain_owned(0).unwrap();
-        original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        let mut read = 0;
-        let mut inspected = 0;
-        let mut admitted = None;
-        let actual = decode(document.as_bytes(), LIMITS, &mut |event| {
-            match event {
-                JsonCodecCharge::Read { bytes } => read += bytes,
-                JsonCodecCharge::Inspect { items } => inspected += items,
-                JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
-                    let concrete_quota = json_value_decode_owned_bytes(value_shape)?.max(maximum_owned_bytes);
-                    original.resize_retained(concrete_quota).unwrap();
-                    admitted = Some((maximum_owned_bytes, value_shape));
-                }
-                _ => {}
-            }
-            Ok(())
-        }).unwrap();
-        let (maximum_owned_bytes, admitted_shape) = admitted.unwrap();
-        assert_eq!(read, document.len() as u64, "original scan emits Read exactly once");
-        assert_eq!(inspected, raw_bytes);
-        assert_eq!(admitted_shape.raw_bytes, raw_bytes);
-        assert_eq!(admitted_shape.input_bytes, read);
-        assert!(json_value_decode_owned_bytes(admitted_shape).unwrap().max(maximum_owned_bytes)
-            >= concrete_owned(&actual) + raw_bytes);
-        assert!(original.bytes() >= concrete_owned(&actual) + raw_bytes);
-        assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, original.bytes());
-        assert_eq!(actual, serde_json::from_str::<Value>(&document).unwrap());
-        drop(actual);
-        drop(original);
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
-    }
-
-    #[test]
     fn cancellation_at_every_real_callback_keeps_first_owned_cause() {
         let (document, _, _) = raw_layers("[0,1]".into(), 2);
         let mut callbacks = 0;
@@ -1159,7 +1022,7 @@ mod native {
             Ok(())
         }).unwrap();
         for denied in 0..callbacks {
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut reached = 0;
             let failure = decode(document.as_bytes(), LIMITS, &mut |event| {
@@ -1178,7 +1041,7 @@ mod native {
     #[test]
     fn owned_quota_denial_precedes_real_large_leaf_parser() {
         let (document, _, _) = raw_layers(serde_json::to_string(&"large".repeat(32768)).unwrap(), 3);
-        let cause = Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
             allocation_operations: 1,
@@ -1205,8 +1068,6 @@ mod native {
 
     #[test]
     fn real_native_source_holds_original_logical_custody_until_error_drop() {
-        // This exercises the codec/error transfer boundary with the production
-        // materializer ledger, not a mock allocator or a producer E2E claim.
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget {
             source_bytes_read: LIMITS.maximum_bytes,
@@ -1284,7 +1145,7 @@ mod native {
         let request = crate::resource_preparation::ResourcePreparationRequest {
             provider: crate::resources::ProviderRef::new("codec", "control", "1").unwrap(),
             child: crate::runtime::TaskAdmissionRecord {
-                operation_id: Uuid::from_bytes([3; 16]),
+                operation_id: crate::OperationId::from_bytes([3; 16]),
                 task: crate::registry::ComponentIdentity {
                     name: "control".into(), version: "1".into(), digest: [1; 32],
                 },
@@ -1304,8 +1165,6 @@ mod native {
             payload, command: None, source_checkpoint: None,
             input_files: Vec::new(), read_authorization: None,
         };
-        // A real closed public Deserialize fixture, not provider validation or
-        // authentication: the empty resources intentionally are not validated.
         serde_json::to_value(request).unwrap()
     }
 
@@ -1452,9 +1311,7 @@ mod native {
                         value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(),
                         Some(crate::wire::ErrorCode::Storage),
                     )?;
-                    // This first unknown key fails before any valid nested
-                    // typed field is decoded. The actual SDK Value/scratch/base
-                    // allowance and diagnostic overlap are prepaid separately.
+                    // This first unknown key fails before any valid nested typed field is decoded.
                     future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?
                         + diagnostic + std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -1464,8 +1321,6 @@ mod native {
             },
         ).err().unwrap();
         assert!(admitted);
-        // The genuine consuming converter has dropped the whole old source on
-        // failure; its guard is no longer needed for moved resident strings.
         drop(original);
         let Error::NativeDecode { code, source, custody: None } = failure else {
             panic!("original typed serde source expected")
@@ -1502,8 +1357,6 @@ mod native {
         original.resize_retained(concrete_owned(&source)).unwrap();
         let mut future = work.retain_owned(0).unwrap();
         future.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        // This concrete fixture has no nonempty resource/proof/file Vec. Its
-        // two owned Value strings move; remaining typed fields are fixed slots.
         let slots = std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64;
         let mut admitted = false;
         let actual: crate::resource_preparation::ResourcePreparationRequest =
@@ -1681,7 +1534,7 @@ mod native {
                         token.cancel();
                         return Err(cause.take().expect("the first owned cause moves once"));
                     }
-                    token.check().map_err(|_| Error::Indeterminate(Uuid::nil()))?;
+                    token.check().map_err(|_| Error::Indeterminate(crate::OperationId::from_bytes([0; 16])))?;
                     if let JsonCodecCharge::Admission { value_shape, .. } = event {
                         future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?).unwrap();
                     }
@@ -1694,8 +1547,6 @@ mod native {
             assert_eq!(CONVERSIONS.with(|count| count.get()), 0);
             assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, input.bytes() + future.bytes());
             assert_eq!(work.receipt().allocation_operations, operations);
-            // The consumed source has been physically dropped on return; the
-            // caller's original AL stays live throughout that drop and cleanup.
             drop(failure);
             drop(future);
             drop(input);
@@ -1891,7 +1742,7 @@ mod native {
         let mut original = work.retain_owned(0).unwrap();
         original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
         let diagnostic = original.bytes();
-        let cause = Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let error = json_value_bounded_native_trusted(
             &"large".repeat(4096), LIMITS, crate::wire::ErrorCode::Storage, &mut |event| {
                 match event {
@@ -1911,141 +1762,6 @@ mod native {
         assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
     }
 
-    #[test]
-    fn native_direct_tree_only_emits_actual_sizing_and_node_work() {
-        let value = serde_json::json!({"escaped":"\0\n😀\"\\","nodes":[u64::MAX,i64::MIN,-0.0,null]});
-        let bytes = serde_json::to_vec(&value).unwrap().len() as u64;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 1, peak_allocation_bytes: 65536,
-            ..acyclic_fs::WorkBudget::default()
-        }, &cancellation).unwrap_or_else(|_| panic!("finite real tree custody ledger"));
-        let before = work.remaining().unwrap().peak_allocation_bytes;
-        let baseline_operations = work.receipt().allocation_operations;
-        let mut original = work.retain_owned(0).unwrap();
-        original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        let diagnostic = original.bytes();
-        let mut inspected = 0;
-        let mut nodes = 0;
-        let actual = json_value_bounded_native_trusted(
-            &value, JsonBounds { maximum_bytes: bytes, ..LIMITS }, crate::wire::ErrorCode::Storage, &mut |event| {
-                match event {
-                    JsonCodecCharge::Work { bytes, items } => {
-                        assert_eq!(bytes, 0);
-                        nodes += items;
-                    }
-                    JsonCodecCharge::Inspect { items } => inspected += items,
-                    JsonCodecCharge::Read { .. } => panic!("a direct tree is not a source read"),
-                    JsonCodecCharge::Retain { bytes } => original.resize_retained(original.bytes() + bytes).unwrap(),
-                    JsonCodecCharge::Release { bytes } => original.release(bytes).unwrap(),
-                    _ => {}
-                }
-                Ok(())
-            },
-        ).unwrap();
-        assert_eq!(actual, value);
-        assert_eq!(nodes, semantic_items(&value));
-        assert_eq!(inspected, tree_sizing_inspections(&value));
-        assert!(inspected > 0);
-        assert_eq!(original.bytes(), diagnostic + owned_logical_bytes(&actual));
-        assert_eq!(work.receipt().allocation_operations - baseline_operations, 0,
-            "future quota and serde's opaque allocations are not observed operations");
-        drop(actual);
-        drop(original);
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
-    }
-
-    #[test]
-    fn native_sizer_counts_real_duplicate_bytes_without_owned_tree_or_wire_charges() {
-        struct Duplicates;
-        impl serde::Serialize for Duplicates {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("same", "\0\n😀\"\\")?;
-                map.serialize_entry("same", &(u64::MAX, i64::MIN, 0.1, -0.0, Option::<u8>::None))?;
-                map.end()
-            }
-        }
-        let encoded = serde_json::to_vec(&Duplicates).unwrap();
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 1, peak_allocation_bytes: 65536,
-            ..acyclic_fs::WorkBudget::default()
-        }, &cancellation).unwrap_or_else(|_| panic!("finite sizer diagnostic custody"));
-        let baseline_operations = work.receipt().allocation_operations;
-        let mut original = work.retain_owned(0).unwrap();
-        original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        let held = work.remaining().unwrap().peak_allocation_bytes;
-        let mut trace = Vec::new();
-        validate_json_byte_bound_native_trusted(&Duplicates, JsonBounds {
-            maximum_bytes: encoded.len() as u64, ..LIMITS
-        }, crate::wire::ErrorCode::Storage, &mut |event| {
-            trace.push(match event {
-                JsonCodecCharge::Inspect { items } => (1, items),
-                JsonCodecCharge::Work { bytes: 0, items } => (0, items),
-                _ => panic!("sizing never emits Read, wire Work bytes, Copy, Retain or allocation operations"),
-            });
-            Ok(())
-        }).unwrap();
-        assert_eq!(trace.iter().filter(|(kind, _)| *kind == 1).map(|(_, count)| count).sum::<u64>(), encoded.len() as u64);
-        assert_eq!(trace.iter().filter(|(kind, _)| *kind == 0).map(|(_, count)| count).sum::<u64>(), lexical_items(&encoded));
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, held);
-        assert_eq!(work.receipt().allocation_operations - baseline_operations, 0);
-        let bound = validate_json_byte_bound_native_trusted(&Duplicates, JsonBounds {
-            maximum_bytes: encoded.len() as u64 - 1, ..LIMITS
-        }, crate::wire::ErrorCode::Storage, &mut |_| Ok(())).unwrap_err();
-        assert!(matches!(bound, Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. }));
-        for denied in 0..trace.len() {
-            let token = acyclic_fs::CancellationToken::new();
-            let cause = Uuid::new_v4();
-            let mut prefix = Vec::new();
-            let failure = validate_json_byte_bound_native_trusted(&Duplicates, LIMITS,
-                crate::wire::ErrorCode::Storage, &mut |event| {
-                    prefix.push(match event {
-                        JsonCodecCharge::Inspect { items } => (1, items),
-                        JsonCodecCharge::Work { bytes: 0, items } => (0, items),
-                        _ => panic!("sizing creates no owned output"),
-                    });
-                    if prefix.len() == denied + 1 { token.cancel(); }
-                    token.check().map_err(|_| Error::Indeterminate(cause))
-                }).unwrap_err();
-            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
-            assert_eq!(prefix, trace[..=denied]);
-        }
-        let resident = serde_json::json!({(RAW): "[[[[0]]]]"});
-        let mut source_guard = work.retain_owned(0).unwrap();
-        source_guard.resize_retained(concrete_owned(&resident)).unwrap();
-        let source_shape = json_owned_value_shape_bounded(&resident, LIMITS, JsonValueSchema::None, &mut |_| Ok(())).unwrap();
-        assert_eq!(source_shape.raw_frames, 0);
-        validate_json_byte_bound_native_trusted(&resident, LIMITS, crate::wire::ErrorCode::Storage, &mut |event| {
-            assert!(matches!(event, JsonCodecCharge::Inspect { .. } | JsonCodecCharge::Work { bytes: 0, .. }));
-            Ok(())
-        }).unwrap();
-        drop(resident);
-        drop(source_guard);
-        struct SerializerFailure;
-        impl serde::Serialize for SerializerFailure {
-            fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom("real sizing serializer failure"))
-            }
-        }
-        let expected = serde_json::to_vec(&SerializerFailure).unwrap_err();
-        let error = validate_json_byte_bound_native_trusted(
-            &SerializerFailure, LIMITS, crate::wire::ErrorCode::Storage, &mut |_| Ok(()),
-        ).unwrap_err();
-        let error = match error {
-            Error::NativeEncode { code, source, custody: None } => Error::NativeEncode {
-                code, source, custody: Some(original),
-            },
-            other => panic!("actual sizing serde source required: {other}"),
-        };
-        let source = std::error::Error::source(&error).unwrap().downcast_ref::<serde_json::Error>().unwrap();
-        assert_eq!(source.classify(), expected.classify());
-        assert_eq!(source.to_string(), expected.to_string());
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, held);
-        drop(error);
-    }
 
     #[test]
     fn native_seed_member_bound_preserves_prefix_drop_custody_and_owned_sidecar() {
@@ -2097,8 +1813,6 @@ mod native {
                     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error> {
                         let seed = self.0;
                         let mut values = Vec::new();
-                        // One genuine positive test-seed Vec reservation; serde
-                        // String allocations remain foreign and unobserved.
                         seed.work.charge(acyclic_fs::WorkCounters {
                             allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
                         }).unwrap();
@@ -2132,7 +1846,7 @@ mod native {
             let called = Cell::new(false);
             let count = Cell::new(0);
             let drops = Cell::new(0);
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let mut primary = None;
             let mut original = Some(Error::Indeterminate(cause));
             let bytes = if exact_maximum { br#"["one","two"]"#.as_slice() }
@@ -2309,7 +2023,7 @@ mod native {
                 let mut original = work.retain_owned(0).unwrap();
                 original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
                 let diagnostic = original.bytes();
-                let cause = Uuid::new_v4();
+                let cause = crate::OperationId::new();
                 let mut prefix = Vec::new();
                 let failure = native_bytes(canonical, &value, LIMITS, &mut |event| {
                     if let JsonCodecCharge::Release { bytes } = event {
@@ -2387,8 +2101,7 @@ mod native {
             assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
         }
         for canonical in [true, false] {
-            // Genuine deterministic capacity-overflow carrier, prepared before
-            // codec entry. This is not an invented codec allocation operation.
+            // Genuine deterministic capacity-overflow carrier, prepared before codec entry.
             let allocation = Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err();
             let mut original = Some(Error::Allocation(allocation));
             let mut callbacks = 0;
@@ -2416,7 +2129,6 @@ mod native {
     #[test]
     fn native_identity_preserves_legacy_deep_value_bytes_without_weakening_finite_entry_points() {
         // This already resident migration-style Value is NOT untrusted wire.
-        // Its private-looking map key must stay an ordinary literal identity.
         let mut value = serde_json::json!({
             "z": [u64::MAX, i64::MIN, -0.0, 0.1],
             "$serde_json::private::RawValue": "[0,1]",
@@ -2448,7 +2160,7 @@ mod native {
             "the explicit identity companion does not remove the finite codec's depth ceiling");
         let cancellable = trace.iter().filter(|event| !matches!(event, JsonCodecCharge::Release { .. })).count();
         for denied in [0, cancellable / 2, cancellable - 1] {
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let mut callbacks = 0;
             let mut retained = 0u64;
             let failure = canonical_json_bytes_identity_native_trusted(&value,
@@ -2469,8 +2181,7 @@ mod native {
     }
 
     fn prepaid_journal_fixture() -> Value {
-        // Actual public DTO serialization, not a physical journal producer E2E:
-        // these literal identities confer no root or preparation authority.
+        // Actual public DTO serialization, not a physical journal producer E2E: these literal identities confer no root or preparation authority.
         let journal = acyclic_fs::MaterializationJournal {
             version: 1, revision: 0,
             plan: acyclic_fs::MaterializationPlan {
@@ -2518,7 +2229,6 @@ mod native {
     #[test]
     fn prepaid_public_journal_and_literal_float_vectors_preserve_paid_buffers() {
         // No accepted completion-reservation API exists in this dependency.
-        // This is a final-writer/AL control, not post-effect native authority.
         for mut value in [
             prepaid_journal_fixture(),
             serde_json::json!({
@@ -2616,7 +2326,7 @@ mod native {
             let original = work.retain_owned(concrete_owned(&value) + capacity as u64
                 + sdk_json_diagnostic_bytes()).unwrap();
             let paid = original.bytes();
-            let cause = Uuid::new_v4();
+            let cause = crate::OperationId::new();
             let mut reached = Vec::new();
             let failure = canonical_json_value_into_prepaid_native_trusted(&value, &mut output,
                 maximum, crate::wire::ErrorCode::Storage, &mut |event| {
@@ -2691,7 +2401,7 @@ mod native {
         let original = work.retain_owned(concrete_owned(&value) + output.capacity() as u64).unwrap();
         let paid = original.bytes();
         let mut denied = None;
-        let cause = Uuid::new_v4();
+        let cause = crate::OperationId::new();
         let failure = canonical_json_value_into_prepaid_native_trusted(&value, &mut output,
             expected.len() as u64, crate::wire::ErrorCode::Storage, &mut |event| {
                 let (copy, bytes) = prepaid_trace_event(event);

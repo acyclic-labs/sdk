@@ -249,7 +249,6 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         ["AGENTS.md", "project/AGENTS.md"]
     );
     assert_eq!(captured.skills.len(), 1);
-    // Discovery succeeds although the complete body exceeds the bound reader.
     assert!(
         first_skill(&captured)?
             .source
@@ -312,7 +311,6 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         as Arc<dyn acyclic_harness::context::ContextStage>]);
     assert_eq!(old_context, restarted.run(&input).await?);
     assert_ne!(old_context, new.run(&input).await?);
-    // A failed replacement cannot change the old source or its contract.
     fixture
         .put(
             "skills/inspect/SKILL.md",

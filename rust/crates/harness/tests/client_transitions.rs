@@ -141,7 +141,6 @@ fn dependency_capacity_is_retained_and_charged_atomically() {
     assert_eq!(client.begin(oversized), Err(Error::Budget));
     assert_eq!(client.residency(), before);
     assert_eq!(client.sequence(), 0);
-    // A failed creation did not reserve the original operation identity.
     let mut retained = request(1, 0, 10, 11, Some(9), vec![]);
     retained.dependencies = Vec::with_capacity(128);
     let capacity_bytes = retained.dependencies.capacity() * std::mem::size_of::<Dependency>();
@@ -172,9 +171,6 @@ fn dependency_capacity_is_retained_and_charged_atomically() {
             assert_eq!(client.sequence(), 0);
         }
     }
-    // A safe Vec cannot have a backing size beyond isize::MAX. Exercise checked
-    // aggregate capacity accounting with a conservative near-maximum adapter
-    // estimate, without allocating that estimate or constructing an invalid Vec.
     let domain = Numbers::default();
     let metadata = charged - before.0 - capacity_bytes - domain.prediction_bytes;
     let domain = Numbers {
@@ -218,7 +214,6 @@ fn incoming_cleanup_work_is_checked_before_discard_or_expiry() {
                     PredictionOutcome::Pending
                 );
             }
-            // Failed expiry also leaves the host tick unchanged.
             assert!(client.advance(0).is_ok());
         } else {
             assert_eq!(expired.unwrap(), ids);
@@ -259,7 +254,6 @@ fn incoming_cleanup_work_is_checked_before_discard_or_expiry() {
         client.begin(request(1, 0, 10, 11, Some(9), vec![])),
         Err(Error::Conflict)
     );
-    // Reverse edges and the operation index remain usable after repeated failure.
     assert_eq!(client.discard(child).unwrap(), vec![child]);
     assert_eq!(client.discard(leaf).unwrap(), vec![leaf]);
     assert_eq!(client.discard(leaf), Err(Error::Missing));
@@ -286,7 +280,6 @@ fn confirmed_only_edges_require_correspondence_and_never_revive() {
     client
         .observe(1, &status(1, 9, OperationOutcome::Indeterminate))
         .unwrap();
-    // Reordered admission does not clear uncertainty or establish correspondence.
     client
         .observe(1, &status(1, 9, OperationOutcome::Admitted))
         .unwrap();
@@ -316,7 +309,6 @@ fn confirmed_only_edges_require_correspondence_and_never_revive() {
         )
         .unwrap();
     assert!(!duplicate.authoritative && duplicate.hypotheses.is_empty());
-    // Later canonical state invalidates confirmed source correspondence too.
     client
         .observe(
             1,
@@ -552,7 +544,6 @@ fn different_results_rejection_and_selective_transitive_invalidation() {
         client.hypothesis(independent).unwrap().prediction,
         PredictionOutcome::Pending
     );
-    // Late completion cannot make an invalid dependent available again.
     client
         .observe(
             2,
@@ -737,8 +728,6 @@ fn every_budget_failure_is_atomic_and_expiry_is_bounded() {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn bounded_evidence_permutations_missing_duplicate_delayed_and_conflicting() {
-    // All 4^4 traces through production transitions; three concurrent hypotheses.
-    // Domain receipt validation is assumed; stale/gapped revisions explicitly fail.
     for encoded in 0..256usize {
         let mut client = Client::new(Numbers::default(), 71, 0, limits()).unwrap();
         client.observe(1, &evidence(1, 0, 10, None)).unwrap();

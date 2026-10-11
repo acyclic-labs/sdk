@@ -13,8 +13,6 @@ pub enum ModelToolsProgress {
 
 impl StockExecutor {
     /// Resolves ONLY calls from an already completed retained model response.
-    /// Call identities, pinned contracts, grants, policy and provider recovery
-    /// are derived by the same resolver used by the stock control loop.
     pub async fn resolve_model_tools(
         &self, journal: &dyn ExecutionJournal, input: &TurnInput, step: u32,
     ) -> Result<ModelToolsProgress> {
@@ -32,7 +30,6 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                 "model step is outside admitted turn bounds"));
         }
-        // Unlike model_step this cannot create Started or start a model attempt.
         let records = self.prefix_records(journal, input.operation_id, step).await?;
         match records.first() {
             Some(ExecutionRecord { sequence: 1, event: ExecutionEvent::Started { request_digest }, .. })

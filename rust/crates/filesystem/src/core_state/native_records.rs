@@ -50,7 +50,7 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
     held.release(old_bytes)?;
     let actual = values.capacity().checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let capacity_result = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes);
+        let (mut excess, result) = work.record_completed_allocation(actual - bytes, None);
         held.absorb(&mut excess)?;
         result
     } else if actual < bytes { held.release(bytes - actual) } else { Ok(()) };
@@ -68,7 +68,7 @@ fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<Strin
         result.try_reserve_exact(value.len()).map_err(NativeError::AllocationFailed)?;
         held.absorb(&mut claim)?;
         if result.capacity() > value.len() {
-            let (mut excess, completed) = work.record_completed_allocation((result.capacity() - value.len()) as u64);
+            let (mut excess, completed) = work.record_completed_allocation((result.capacity() - value.len()) as u64, None);
             held.absorb(&mut excess)?;
             completed?;
         }

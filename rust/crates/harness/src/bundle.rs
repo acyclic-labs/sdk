@@ -64,9 +64,7 @@ impl HarnessBuilder {
         Self::default()
     }
 
-    /// Installs one immutable runtime binding set. Later builder calls may
-    /// replace individual entries or register additional tasks and tools.
-    /// Provider ownership is transferred, not duplicated across runtimes.
+    /// Installs one immutable runtime binding set.
     #[must_use]
     pub fn bindings(mut self, value: Bindings) -> Self {
         self.capabilities = value.scope.grants().iter().map(str::to_owned).collect();
@@ -94,7 +92,6 @@ impl HarnessBuilder {
     }
 
     /// Replaces agent behavior with a typed live loop over `TaskContext`.
-    /// It can spawn recursive work without model turns or a turn journal.
     #[must_use]
     pub fn agent_loop(mut self, value: Arc<dyn AgentLoop>) -> Self {
         self.agent_loop = Some(value);
@@ -130,10 +127,7 @@ impl HarnessBuilder {
         self
     }
 
-    /// Binds already captured declared instructions and skill metadata through
-    /// the ordinary context pipeline. Capture/reload is an explicit authorized
-    /// caller operation; construction performs no reads and grants no authority.
-    /// A later `context` call replaces these stages as well.
+    /// Binds already captured declared instructions and skill metadata through the ordinary context pipeline.
     pub fn declared_context(mut self, snapshot: crate::context::DiscoveredContext) -> Result<Self> {
         self.context = self.context.with(Arc::new(
             snapshot.stage(crate::context::ContextPlacement::Prepend)?,
@@ -197,8 +191,7 @@ impl HarnessBuilder {
         self
     }
 
-    /// Replaces durable task admission while retaining the separately bound
-    /// state host for observation, resume, cancellation, and effects.
+    /// Replaces durable task admission while retaining the separately bound state host for observation, resume, cancellation, and effects.
     #[must_use]
     pub fn spawner(mut self, value: Arc<dyn TaskSpawner>) -> Self {
         self.bindings.spawner = Some(value);
@@ -247,8 +240,7 @@ impl HarnessBuilder {
         self
     }
 
-    /// Binds fork capture for one exact parent revision. Recompose after that
-    /// conversation advances; an old binding cannot select a newer prefix.
+    /// Binds fork capture for one exact parent revision.
     #[must_use]
     pub fn fork_preparer(mut self, value: Arc<dyn crate::fork::ForkPreparer>) -> Self {
         self.bindings.fork_preparer = Some(value);
@@ -283,8 +275,7 @@ impl HarnessBuilder {
         self
     }
 
-    /// Captures an authenticated agent's committed extension selection for
-    /// this bundle and every task admitted through it.
+    /// Captures an authenticated agent's committed extension selection for this bundle and every task admitted through it.
     pub fn extensions_from(mut self, agent: &Reducer) -> Result<Self> {
         if self.original_extensions.is_some() {
             return Err(Error::Unauthorized(
@@ -300,8 +291,7 @@ impl HarnessBuilder {
         Ok(self)
     }
 
-    /// Attaches a linked native extension composition. Required extension
-    /// tasks retain exact executable versions at admission.
+    /// Attaches a linked native extension composition.
     #[must_use]
     pub fn extensions(mut self, runtime: Arc<ExtensionRuntime>) -> Self {
         self.extension_runtime = Some(runtime);
@@ -477,7 +467,6 @@ impl HarnessBundle {
     }
 
     /// Creates a new immutable view pinned to a later parent fork snapshot.
-    /// Already admitted tasks retain the original provider and revision.
     pub fn at_parent_snapshot(&self, preparer: Arc<dyn crate::fork::ForkPreparer>) -> Result<Self> {
         let mut next = self.clone();
         next.runtime = self.runtime.at_parent_snapshot(preparer)?;
@@ -546,8 +535,7 @@ impl HarnessBundle {
         executor.execute(input, journal.as_ref()).await
     }
 
-    /// Runs the typed custom agent loop as a local task, preserving its full
-    /// terminal outcome and task identity. Durable loops use resumable tasks.
+    /// Runs the typed custom agent loop as a local task, preserving its full terminal outcome and task identity.
     pub async fn run_agent(&self, input: AgentInput) -> Result<AgentRunOutput> {
         if !self.agent_loop {
             return Err(Error::Unsupported("custom agent loop is not bound".into()));
@@ -1076,8 +1064,6 @@ mod tests {
             .executor(executor.clone())
             .build()?;
 
-        // Distinct invocations catch both cached output and reconstruction that
-        // loses file parts, selected-history provenance, metadata or attachments.
         for (input, output) in inputs.iter().zip(&outputs) {
             assert_eq!(
                 bundle.run(input.clone()).await?,
