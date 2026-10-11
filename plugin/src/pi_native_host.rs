@@ -6,6 +6,8 @@
 //! Pi dispatch requires the SDK's checked native-command lane and frozen task
 //! context. Background driver results carry their original query/attempt custody;
 //! consumers must drop the attempt, lease and result value before that custody.
+//! Live-source and binding queries use that same span and retain original binding
+//! DTO custody; a source query never substitutes a new scope or current head.
 
 use crate::{LocalAuthorityBackend, LocalCoreStateStore, LocalLazySource, LocalObjectBackend,
     LocalLazyWorkspace, LocalSingleMount, PiScratchAllocation, PiTaskBinding, ServiceResources,
@@ -44,6 +46,8 @@ pub(crate) struct PiNativeLiveSource {
     pub(crate) owner: Arc<TaskJournalOwner<LocalStream>>,
     pub(crate) context: Arc<NativeTaskContext>,
     pub(crate) binding: PiTaskBinding,
+    // The original prepared binding's guarded DTO copy outlives every field.
+    _binding_custody: NativeAllocation,
 }
 
 /// Catalog identity plus an already authenticated selected source capability.
@@ -401,10 +405,27 @@ impl PiNativeCommandHost {
         view
     }
 
+    pub(crate) fn binding_with_work(&self, task: TaskId, work: &NativeMaterializationWork)
+        -> Result<Option<(PiTaskBinding, NativeAllocation)>> {
+        let Some(prepared) = self.source_prepared(task) else { return Ok(None); };
+        self.copy_binding_with_work(&prepared, work).map(Some)
+    }
+
+    fn copy_binding_with_work(&self, prepared: &PreparedNative, work: &NativeMaterializationWork)
+        -> Result<(PiTaskBinding, NativeAllocation)> {
+        let maximum = self.protected.policy().maximum_payload_bytes.min(prepared.admission.limits.file_bytes);
+        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&prepared.binding, maximum, work)?;
+        crate::pi_root_provider::guarded_pi_decode::<PiTaskBinding>(
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn binding(&self, task: TaskId) -> Option<PiTaskBinding> {
         self.source_prepared(task).map(|prepared| prepared.binding.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn source(&self, task: TaskId) -> Option<RecursiveSourceSnapshot> {
         self.source_prepared(task).map(|prepared| prepared.source.clone())
     }
@@ -418,18 +439,19 @@ impl PiNativeCommandHost {
     /// Original live source owner/context, available while its background run
     /// waits on native tool RPC. This conveys no authority to the requesting task;
     /// the recursive fork engine still independently authorizes a selected source.
-    pub(crate) async fn live_source(&self, task: TaskId) -> Result<Option<PiNativeLiveSource>> {
+    pub(crate) async fn live_source(&self, task: TaskId, work: &NativeMaterializationWork) -> Result<Option<PiNativeLiveSource>> {
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
         let effect = entry.handles.lock().await.effect.clone();
         let Some(effect) = effect else { return Ok(None); };
         let Some(view) = self.live_view(task) else { return Ok(None); };
         let Some(prepared) = self.prepared(task) else { return Ok(None); };
-        effect.owner.verify_dispatch().await?;
+        effect.owner.verify_with_native_work(false, work).await?;
         if effect.owner.task_id() != task || effect.context().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi live source differs from its original owner/context"));
         }
+        let (binding, binding_custody) = self.copy_binding_with_work(&prepared, work)?;
         Ok(Some(PiNativeLiveSource { view, workspace: prepared.workspace.clone(), owner: effect.owner.clone(),
-            context: effect.context.clone(), binding: prepared.binding.clone() }))
+            context: effect.context.clone(), binding, _binding_custody: binding_custody }))
     }
 
     /// The parent's immutable writeback baseline, never a recaptured head.
