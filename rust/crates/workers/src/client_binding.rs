@@ -28,6 +28,10 @@ use tonic::codegen::{Body, Bytes, StdError};
 pub struct WorkersCancellation {
     token: CancellationToken,
 }
+#[cfg(all(feature = "node-binding", not(target_arch = "wasm32")))]
+impl WorkersCancellation {
+    pub(crate) fn token(&self) -> CancellationToken { self.token.clone() }
+}
 
 #[cfg_attr(
     all(feature = "node-binding", not(target_arch = "wasm32")),
@@ -135,9 +139,11 @@ impl tonic::service::Interceptor for BrowserAuth {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
+        if !request.metadata().contains_key("authorization") {
+            request
+                .metadata_mut()
+                .insert("authorization", self.0.clone());
+        }
         Ok(request)
     }
 }
@@ -155,10 +161,14 @@ impl Client {
         &self,
         options: WorkersCallOptions,
     ) -> Result<(Option<u32>, tonic::metadata::MetadataMap), Failure> {
-        Ok((
-            validate_deadline(options.deadline_millis.or(self.deadline))?,
-            append_metadata(self.metadata.clone(), options.metadata)?,
-        ))
+        let deadline = validate_deadline(options.deadline_millis.or(self.deadline))?;
+        let mut metadata = append_metadata(self.metadata.clone(), options.metadata)?;
+        if let Some(token) = options.bearer_token {
+            let authorization = crate::client_config::authorization(&token)
+                .map_err(|()| Failure::local("invalid_argument", "invalid bearer credential"))?;
+            metadata.insert("authorization", authorization);
+        }
+        Ok((deadline, metadata))
     }
 
     /// Connect with Rust-owned configuration and cancellable construction.

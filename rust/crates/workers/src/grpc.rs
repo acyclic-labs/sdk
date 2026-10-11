@@ -16,9 +16,11 @@ pub struct BearerAuth(MetadataValue<Ascii>);
 
 impl Interceptor for BearerAuth {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
+        if !request.metadata().contains_key("authorization") {
+            request
+                .metadata_mut()
+                .insert("authorization", self.0.clone());
+        }
         Ok(request)
     }
 }

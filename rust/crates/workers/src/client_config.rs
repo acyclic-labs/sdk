@@ -58,6 +58,9 @@ pub struct WorkersCallOptions {
     /// Additional caller metadata pairs.
     #[ts(optional)]
     pub metadata: Option<Vec<(String, String)>>,
+    /// Optional current opaque bearer, admitted independently of caller metadata.
+    #[ts(optional)]
+    pub bearer_token: Option<String>,
 }
 
 /// Shared diagnostic exported from Rust for both byte bridges.

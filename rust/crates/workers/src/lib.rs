@@ -1,5 +1,12 @@
 #![doc = include_str!("../README.md")]
 
+
+#[cfg(all(feature = "browser-binding", target_arch = "wasm32"))]
+mod account_binding;
+#[cfg(all(feature = "node-binding", not(target_arch = "wasm32")))]
+mod account_binding_native;
+#[cfg(all(feature = "node-binding", not(target_arch = "wasm32")))]
+mod customer_binding;
 mod admission;
 mod client_config;
 /// Source-defined binding configuration, diagnostics and message ceiling.
