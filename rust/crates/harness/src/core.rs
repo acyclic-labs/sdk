@@ -31,6 +31,8 @@ pub(crate) use snapshot::{
     resource_creation_proof_clone_with_custody,
     resource_preparation_owned_bytes,
 };
+#[cfg(feature = "filesystem")]
+pub(crate) use snapshot::resource_creation_clone_reservation;
 pub(crate) use native_custody::{
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
     copy_file, copy_vector, copy_boxed, copy_configuration, copy_value, copy_capabilities,

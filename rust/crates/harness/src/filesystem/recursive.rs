@@ -601,10 +601,10 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         grants.push(file.read_capability()?);
     }
     child.grants = Capabilities::new(grants);
-    child = child.with_resource_proofs(preparer.creation_proofs(&fork, preparation_task)?)?;
+    child = child.with_resource_proofs(preparer.creation_proofs(&fork, preparation_task, None)?)?;
     let request = ResourcePreparationRequest {
         provider: fork.preparation.child_project_volume.provider().clone(),
-        resources: preparer.creation_resources(&fork)?,
+        resources: preparer.creation_resources(&fork, None)?,
         child,
         creation_grant: "fork:publish".into(),
         maximum_resources: limits.resources,
@@ -660,8 +660,8 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
                 "native child claims lack an exact authenticated input-file read"));
         }
     }
-    let mut resources = preparer.creation_resources_with_native_work(fork, work)?;
-    let mut proofs = preparer.creation_proofs_with_native_work(fork, preparation_task, work)?;
+    let resources = preparer.creation_resources(fork, Some(&io))?;
+    let proofs = preparer.creation_proofs(fork, preparation_task, Some(&io))?;
     let provider = {
         let mut history = io.history_io();
         fork.preparation.child_project_volume.provider().clone_with_io(&io)?
@@ -675,9 +675,9 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
     };
     let creation_grant = crate::filesystem::fork_preparer_io::clone_text("fork:publish", Some(&io))?;
     let payload = super::default_tools::recursive_encode(fork, Some(&io))?;
-    child.resource_proofs = proofs.0;
+    child.resource_proofs = proofs;
     let request = ResourcePreparationRequest {
-        provider, child, resources: resources.0, creation_grant,
+        provider, child, resources, creation_grant,
         maximum_resources: limits.resources, maximum_work: limits.work, maximum_bytes: limits.bytes,
         payload,
         command: Some(command), source_checkpoint, input_files, read_authorization,
@@ -688,10 +688,7 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
         request.child.validate_with_work(&mut observer)?;
         request.validate_with_work(&mut observer)?;
     }
-    let mut output = (request, io.take_native_custody(io.owned_bytes()?)?);
-    output.1.absorb(&mut resources.1)?;
-    output.1.absorb(&mut proofs.1)?;
-    Ok(output)
+    Ok((request, io.take_native_custody(io.owned_bytes()?)?))
 }
 
 /// One ordinary task: exact preparation input -> ref-only command -> retained report.

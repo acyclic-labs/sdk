@@ -423,7 +423,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             grants.push(grant.clone());
             scoped.push(grant);
         }
-        for reference in source.preparer.required_reference_grants(&source.request).await? {
+        for reference in source.preparer.required_reference_grants(&source.request, None).await? {
             if reference.reader != arguments.id {
                 return Err(Error::Unauthorized("configured inherited reference targets an unlisted child reader".into()));
             }
@@ -996,9 +996,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native child allocation differs from original caller or agent" });
         }
-        let references = source.preparer.required_reference_grants_with_native_work(
-            &source.request, work,
-        )?.await?;
+        let reference_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let references = crate::NativeFutureBundle::new(work, ||
+            source.preparer.required_reference_grants(&source.request, Some(&reference_io)))?.await?;
         let mut grants = Vec::new();
         let mut scoped = Vec::new();
         let append = |values: &mut Vec<String>, value: &str| -> Result<()> {
@@ -1036,7 +1036,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             drop(grant);
             io.release(bytes)?;
         }
-        for reference in &references.0 {
+        for reference in &references {
             if reference.reader != arguments.id {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native inherited reference targets another child reader" });
