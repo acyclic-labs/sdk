@@ -440,7 +440,12 @@ pub enum PtyEvent {
     /// Actual terminal text/binary bytes, without lossy conversion or copying.
     Output(Message),
     /// Actual provider exit control frame. A missing exit code remains unknown.
-    Exited { exit_code: Option<i64>, reason: Option<String> },
+    Exited {
+        /// Actual provider-reported process status; absence remains unknown.
+        exit_code: Option<i64>,
+        /// Actual provider exit reason, when present.
+        reason: Option<String>,
+    },
     /// Actual provider control error.
     Error(String),
     /// WebSocket closed without a native exit receipt.
