@@ -1423,6 +1423,19 @@ pub enum Error {
         /// Existing custody for any SDK-owned diagnostic payload.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// The bytes committed, but their frozen publication proof could not be retained.
+    /// The authored generation is evidence of completion, never permission to retry.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("source publication {generation:?} is indeterminate: {source}")]
+    NativeSourcePublicationUncertain {
+        /// The actual generation returned by the completed SDK transaction.
+        generation: acyclic_fs::GenerationId,
+        /// The complete postpublication proof failure, including intrinsic custody.
+        #[source]
+        source: acyclic_fs::LazyWorkspaceError,
+        /// Existing additional custody, released after the original cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual native workspace failure, moved without diagnostic conversion.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1595,6 +1608,8 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeMcpIncomplete { .. } => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSourcePublicationUncertain { .. } => ErrorCode::Indeterminate,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
             | Self::NativeDecode { code, .. } | Self::NativeProstDecode { code, .. }
             | Self::NativeEncode { code, .. }
@@ -1644,6 +1659,7 @@ impl Error {
             | Self::NativeMcpIncomplete { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
+            | Self::NativeSourcePublicationUncertain { .. }
             | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeReservation { .. }
@@ -1685,6 +1701,14 @@ impl From<acyclic_fs::FsError> for Error {
 impl From<acyclic_fs::WorkspaceError> for Error {
     fn from(source: acyclic_fs::WorkspaceError) -> Self {
         Self::NativeWorkspace { source, custody: None }
+    }
+}
+
+/// Moves the complete lazy-source failure and its intrinsic custody without formatting.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::LazyWorkspaceError> for Error {
+    fn from(source: acyclic_fs::LazyWorkspaceError) -> Self {
+        Self::NativeSource { source, custody: None }
     }
 }
 
