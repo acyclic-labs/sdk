@@ -163,6 +163,11 @@ The SDK stock worker may retain its original per-command journal interaction
 router in tool-local metadata without replacing the shared task or its policy.
 This override is not a public custom-executor setter; its producer and policy
 pipeline must independently verify the original task, owner and fence.
+`with_native_scope` monotonically attenuates tool-local grants, content limits
+and run bounds before copying. `effective_scope` is the grant/limit facade;
+`task()` and `native_task()` still identify the same original issued context.
+Derived scope metadata retains original created-resource/extension provenance;
+caller scope metadata supplies restrictions, never a replacement issuer or proof.
 
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native

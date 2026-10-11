@@ -7547,6 +7547,8 @@ pub struct ToolContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    effective_scope: Option<(RuntimeScope, Option<acyclic_fs::NativeAllocation>)>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -7558,6 +7560,8 @@ impl Clone for ToolContext {
             call_id: self.call_id.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            effective_scope: self.effective_scope.as_ref().map(|(scope, _)| (scope.clone(), None)),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -7582,6 +7586,8 @@ impl ToolContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            effective_scope: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         })
     }
@@ -7594,6 +7600,17 @@ impl ToolContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             ToolTaskContext::Native(task) => task.context(),
         }
+    }
+
+    /// Borrows this tool's attenuated authority without replacing its task.
+    /// Ordinary tool contexts retain the original enclosing task scope.
+    #[must_use]
+    pub fn effective_scope(&self) -> &RuntimeScope {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some((scope, _)) = &self.effective_scope {
+            return scope;
+        }
+        self.task().scope()
     }
 
     /// Returns the exact call identity.
