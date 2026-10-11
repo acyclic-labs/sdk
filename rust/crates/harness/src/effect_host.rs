@@ -942,6 +942,27 @@ mod native_metadata_controls {
     }
 
     #[test]
+    fn native_host_rejects_real_foreign_scope_and_cancelled_metadata_source() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original scope ledger");
+        let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
+        let mut host = ordinary_host()?;
+        let foreign = AuthorityIssuer::new("foreign-effect-issuer", [43; 32], host.authority.clone());
+        host.scope = foreign.root_for_agent(
+            crate::AgentId::from_bytes([42; 16]), "foreign-effect-scope",
+            crate::Capabilities::new([capability::EFFECT_RUN]),
+        );
+        assert!(host.clone_with_native_work(&work).is_err());
+        assert_eq!(work.remaining().expect("rejected clone dropped").peak_allocation_bytes, baseline);
+        cancellation.cancel();
+        let before = work.receipt().allocation_operations;
+        assert!(matches!(host.clone_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert_eq!(work.receipt().allocation_operations, before);
+        Ok(())
+    }
+
+    #[test]
     fn native_host_refuses_a_foreign_arc_ledger_before_allocation() -> Result<()> {
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(budget(), &cancellation)
