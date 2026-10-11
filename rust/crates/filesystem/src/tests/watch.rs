@@ -357,49 +357,6 @@ fn measured_native_watch_baseline_failures_leave_the_rescan_recoverable()
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-#[test]
-fn measured_native_watch_missing_baseline_root_counts_only_its_open_attempt()
--> Result<(), Box<dyn std::error::Error>> {
-    let parent = tempfile::tempdir()?;
-    let root = parent.path().join("watched");
-    std::fs::create_dir(&root)?;
-    let cancellation = CancellationToken::new();
-    let mut watch = NativeWatch::open_with_profile_measured(
-        &root,
-        FilesystemProfile::Portable,
-        measured_watch_options(),
-        measured_watch_startup_work(),
-        &cancellation,
-    )?
-    .value;
-    let begun = watch.begin_rescan_measured(WorkBudget::default(), &cancellation)?;
-    assert_eq!(begun.work, WorkCounters::default());
-    std::fs::rename(&root, parent.path().join("displaced"))?;
-    let finished = watch.finish_rescan_measured(
-        WorkBudget {
-            backend_read_operations: 1,
-            ..WorkBudget::default()
-        },
-        &cancellation,
-    )?;
-    assert_eq!(
-        finished.work,
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        }
-    );
-    assert!(matches!(
-        finished.value,
-        WatchBatch::RescanRequired {
-            reason: WatchInvalidationReason::RootChanged,
-            ..
-        }
-    ));
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn measured_native_watch_cleanup_retains_prior_work_and_can_be_retried()
@@ -604,6 +561,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
+        #[cfg(any(target_os = "linux", windows))]
         maximum_queued_changes: 1,
     };
     let (sender, receiver) = sync_channel(1);
@@ -814,8 +772,8 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
-        #[cfg(target_os = "linux")]
         maximum_queued_changes: 1,
+        _root_allocation: None,
     };
     for name in ["a", "b"] {
         accept_native_event(

@@ -27,8 +27,7 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// One authenticated Objects bucket/volume binding. The bucket identity is
-/// part of the logical volume, so a ref cannot silently route to another bucket.
+/// One authenticated Objects bucket/volume binding.
 pub struct ObjectContentStore {
     objects: Arc<dyn ObjectsProvider>,
     bucket: wire::BucketRef,
@@ -265,8 +264,7 @@ impl ObjectContentStore {
         decode_attachment_manifest(file, &bytes, count)
     }
 
-    /// Converts content in this bucket into an immutable artifact key
-    /// selection without copying its bytes or weakening the bucket boundary.
+    /// Converts content in this bucket into an immutable artifact key selection without copying its bytes or weakening the bucket boundary.
     pub fn artifact_ref(&self, file: &FileRef) -> Result<ArtifactRef> {
         file.validate()?;
         if file.volume() != &self.volume {
@@ -348,18 +346,13 @@ impl ObjectContentStore {
     }
 }
 
-/// Lazily routes immutable Objects refs to separately registered owner
-/// bindings.  A registration captures an authenticated owner or delegated
-/// reader scope; the scope is checked again for the exact ref on every mount.
-/// The router contains no raw Objects handle and never treats a ref as a
-/// bearer read capability.
+/// Lazily routes immutable Objects refs to separately registered owner bindings.
 pub struct ObjectContentMountResolver {
     stores: BTreeMap<String, Arc<ObjectContentStore>>,
 }
 
 impl ObjectContentMountResolver {
     /// Creates a resolver from independently authenticated bucket bindings.
-    /// Duplicate logical volumes are rejected rather than silently replaced.
     pub fn new(stores: impl IntoIterator<Item = Arc<ObjectContentStore>>) -> Result<Self> {
         let mut resolver = Self {
             stores: BTreeMap::new(),
@@ -425,10 +418,7 @@ impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
         Box::pin(async move {
             reference.validate()?;
             let store = self.store(reference.volume())?;
-            // Authenticate the current scope against this exact content reference before
-            // returning either the grant or the owner reader.  ObjectContentStore
-            // repeats this check when bytes are read, closing the ref-as-grant gap
-            // even if the returned reader is retained by a caller.
+            // Authenticate the current scope against this exact content reference before returning either the grant or the owner reader.
             let grant = ContentGrant::verify_read(&store.verifier, &store.scope, reference)?;
             grant.require_file_read(reference)?;
             Ok((grant, store as Arc<dyn ContentResidencyVerifier>))
@@ -593,7 +583,6 @@ impl ContentPublisher for ObjectContentStore {
             let reference =
                 FileRef::new(self.volume.clone(), path, content, descriptor, display_name)?;
             // A retry receipt does not establish continued byte residency.
-            // Verify the exact immutable content key before returning the reference.
             let committed = self.read_content(&reference).await?;
             if committed.as_slice() != bytes {
                 return Err(Error::Conflict(

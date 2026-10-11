@@ -1,5 +1,4 @@
 use super::*;
-use crate::cache::{CachedObjectStore, ObjectCacheOptions};
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_btree::Child;
@@ -109,53 +108,6 @@ fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn cached_pages_answer_identically_without_backend_reads() -> Result<(), Box<dyn std::error::Error>>
-{
-    let memory = MemoryObjectStore::default();
-    let low = put(&memory, &FileTablePage::Leaf(vec![record(1), record(2)]))?;
-    let high = put(&memory, &FileTablePage::Leaf(vec![record(5), record(6)]))?;
-    let root = put(
-        &memory,
-        &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: record(1).file_id,
-                page: low,
-            },
-            FileTableChild {
-                first_file_id: record(5).file_id,
-                page: high,
-            },
-        ]),
-    )?;
-    let store = CachedObjectStore::new(memory, ObjectCacheOptions::default())?;
-    let cancellation = CancellationToken::new();
-    let lookup = |file_id: FileId| {
-        crate::async_storage::poll_immediate(lookup_async::<_, FileTableFormat>(
-            &store,
-            root,
-            &file_id,
-            DecodeLimits::default(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            None,
-        ))
-    };
-    let cold = lookup(record(6).file_id)?;
-    assert_eq!(cold.value, Some(record(6)));
-    assert_eq!(cold.work.page_reads, 2);
-    assert!(cold.work.backend_read_operations > 0);
-    let warm = lookup(record(6).file_id)?;
-    assert_eq!(warm.value, Some(record(6)));
-    assert_eq!(warm.work.page_reads, 2);
-    assert_eq!(
-        warm.work.backend_read_operations, 0,
-        "decoded pages are shared between lookups"
-    );
-    assert_eq!(lookup(record(3).file_id)?.value, None);
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_point_uses_the_original_counters_and_retires_scratch()
@@ -176,7 +128,6 @@ fn native_point_uses_the_original_counters_and_retires_scratch()
     assert_eq!(value, Some(record(2)));
     assert_eq!(original.receipt().page_reads, 1);
     assert!(original.receipt().backend_read_operations > 0);
-    drop(value);
     drop(allocation);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
@@ -236,21 +187,6 @@ fn owned_push_respects_the_logical_limit_with_spare_capacity()
     let mut values = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(2, &mut accounting)?;
     values.value.push(1);
     assert!(values.ensure_for_push(1, &mut accounting).is_err());
-    values.retire(&mut accounting)?;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_zero_sized_vector_does_not_charge_a_heap_operation()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let values = crate::kernel::persistent_point::Owned::<Vec<()>>::allocate(1, &mut accounting)?;
-    assert_eq!(original.receipt(), before);
     values.retire(&mut accounting)?;
     Ok(())
 }

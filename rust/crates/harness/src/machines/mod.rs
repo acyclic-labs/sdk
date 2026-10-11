@@ -250,9 +250,7 @@ impl ForkSeedVerifier for MachinesHost {
     }
 }
 
-/// Exact, read-only capture of a forkable process checkpoint. A child's
-/// sandbox remains a separately admitted Machines operation, not a cloned
-/// active process or an implicit side effect of conversation publication.
+/// Exact, read-only capture of a forkable process checkpoint.
 impl ForkCaptureProvider for MachinesHost {
     fn provider(&self) -> &ProviderRef {
         &self.provider_ref

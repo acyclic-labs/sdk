@@ -714,8 +714,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                     .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
                 native.prompt_command(command, command_operation).await?
             };
-            // Publish the caller-held identity before attempting admission. On
-            // lost acknowledgement, /reconcile observes it without resending.
+            // Publish the caller-held identity before attempting admission.
             writeln!(output, "admission-attempt operation={operation} command-operation={}", command.operation_id)
                 .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
             return match native.queue(operation, command, *parent).await? {

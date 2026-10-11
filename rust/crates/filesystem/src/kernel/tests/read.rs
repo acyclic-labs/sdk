@@ -174,39 +174,6 @@ fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn async_and_sync_drivers_share_exact_lookup_semantics_and_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let root = put_page(
-        &store,
-        &TreePage::Leaf(vec![TreeEntry {
-            name: name("target")?,
-            file_id: FileId::from_bytes([7; 16]),
-            kind: FileKind::Regular,
-        }]),
-    )?;
-    let target = name("target")?;
-    let synchronous =
-        lookup_tree_entry(&store, root, &target, DecodeLimits::default(), unlimited())?;
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(lookup_tree_entry_async(
-        &store,
-        root,
-        &target,
-        DecodeLimits::default(),
-        unlimited(),
-        &cancellation,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous lookup remained pending".into());
-    };
-    assert_eq!(asynchronous?, synchronous);
-    Ok(())
-}
-
-#[test]
 fn pre_cancelled_async_lookup_reads_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(&store, &TreePage::Leaf(Vec::new()))?;

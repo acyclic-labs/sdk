@@ -1,16 +1,4 @@
 //! Provider-neutral immutable model values and streaming host contract.
-//!
-//! Measured request admission preserves these canonical bytes and validators.
-//! Its receipt bounds cumulative SDK JSON traversal, encoding, hashing, explicit
-//! copies/allocations, and conservative live logical DTO reservations. JSON
-//! Schema library CPU/graph allocations and allocator nodes/RSS are excluded.
-//! Native providers must produce paid, closed SDK event DTOs on the original
-//! ledger. Opaque provider/network allocations are outside SDK DTO accounting;
-//! ordinary provider callbacks are never a native fallback.
-//! Native completed custody is substituted with actual known String/Vec
-//! capacities and closed DTO headers, excluding dropped codec scratch.
-//! Native clones copy typed fields directly, preserving JSON Value/Number and
-//! raw-marker representations; they never serialize and decode a clone.
 
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -109,8 +97,7 @@ pub(crate) fn model_string_clone_with_io(
     Ok(copied)
 }
 
-// This only allocates concrete Vec backing; every caller copies its known DTO
-// fields directly. Actual capacity is recorded before late cancellation.
+// This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
 fn model_vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
@@ -158,7 +145,6 @@ pub(crate) fn model_file_clone_with_io(
 }
 
 /// Copies the actual Value representation, including private/raw marker keys.
-/// Numeric primitives and opaque map allocator internals are not serialized.
 pub(crate) fn model_value_clone_with_io(
     value: &Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
@@ -174,7 +160,6 @@ pub(crate) fn model_value_clone_with_io(
     let _ = io;
     Ok(value.clone())
 }
-
 
 pub(crate) fn model_media_policy_clone_with_io(
     policy: &NativeMediaPolicy, io: Option<&crate::executor::PreparationIo>,
@@ -208,22 +193,20 @@ pub(crate) fn model_tool_result_clone_with_io(
     Ok(content.clone())
 }
 
-
 pub(crate) fn model_content_clone_with_io(
     content: &ModelContent, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ModelContent> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut observer = io.history_io();
-        return clone_content_with_work(content, &mut Some(&mut observer)).map(|(content, _)| content);
+        return clone_content(content, &mut Some(&mut observer)).map(|(content, _)| content);
     }
     let _ = io;
     Ok(content.clone())
 }
 
 /// Copies the closed provider-neutral content graph on the original observer.
-/// The returned claim is deep storage only; its enclosing DTO funds inline headers.
-pub(crate) fn clone_content_with_work(
+pub(crate) fn clone_content(
     content: &ModelContent, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(ModelContent, u64)> {
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -506,7 +489,6 @@ fn model_validate_limits_with_io(
     limits.validate_with_work(&mut None)
 }
 
-
 fn model_validate_file_shape_with_io(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -555,17 +537,17 @@ fn model_history_bounds(
     Ok(crate::contract::JsonBounds { maximum_bytes: maximum, maximum_items, maximum_depth: 256 })
 }
 
-fn model_json_bound_with_work<T: Serialize>(
+fn model_json_bound<T: Serialize>(
     value: &T, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if work.is_none() {
-        return crate::contract::validate_json_byte_bound(value, maximum)
-            .map_err(|_| model_history_invalid(work, "model tool projection exceeds render limit"));
-    }
-    crate::contract::validate_trusted_json_byte_bound_with_work(value, maximum, work)
+    let unobserved = work.is_none();
+    let result = crate::contract::validate_trusted_json_byte_bound(value, maximum, work);
+    if unobserved {
+        result.map_err(|_| model_history_invalid(work, "model tool projection exceeds render limit"))
+    } else { result }
 }
 
-fn model_value_json_bound_with_work(
+fn model_value_json_bound(
     value: &Value, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if work.is_some() {
@@ -574,10 +556,10 @@ fn model_value_json_bound_with_work(
             crate::contract::JsonValueSchema::None,
             &mut |next| work.as_deref_mut().expect("observed model value").codec_charge(next))?;
     }
-    model_json_bound_with_work(value, maximum, work)
+    model_json_bound(value, maximum, work)
 }
 
-fn model_tool_result_json_bound_with_work(
+fn model_tool_result_json_bound(
     content: &ToolResultContent, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if work.is_some() {
@@ -603,7 +585,7 @@ fn model_tool_result_json_bound_with_work(
             },
         }
     }
-    model_json_bound_with_work(content, maximum, work)
+    model_json_bound(content, maximum, work)
 }
 
 fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
@@ -761,8 +743,7 @@ impl ModelContent {
         }
     }
 
-    /// Applies the same byte and part ceilings to direct inputs and selected
-    /// history before either can reach a provider or durable request journal.
+    /// Applies the same byte and part ceilings to direct inputs and selected history before either can reach a provider or durable request journal.
     pub fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
         self.validate_limits_with_work(limits, &mut None)
     }
@@ -808,13 +789,13 @@ impl ModelContent {
             match part {
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes =>
                     return Err(model_history_invalid(work, "model text exceeds render limit")),
-                ModelContentPart::File { file, policy } => policy.validate_file_with_work(file, limits, work)?,
+                ModelContentPart::File { file, policy } => policy.validate_file(file, limits, work)?,
                 ModelContentPart::ToolCall { name, arguments, .. } => {
                     model_history_step(work, name.len() as u64)?;
                     if !crate::contract::is_valid_component_label(name) {
                         return Err(model_history_invalid(work, "tool name is invalid"));
                     }
-                    model_value_json_bound_with_work(arguments, limits.render_bytes, work)?;
+                    model_value_json_bound(arguments, limits.render_bytes, work)?;
                 }
                 ModelContentPart::ToolResult { name, content, .. } => {
                     model_history_step(work, name.len() as u64)?;
@@ -924,7 +905,6 @@ impl ModelContent {
     }
 
     /// Detects native media in ordinary data and paired result data.
-    /// Option JSON files alone never make a message native media.
     #[must_use]
     pub fn contains_native_media(&self) -> bool {
         self.parts().iter().any(|part| match part {
@@ -1086,7 +1066,6 @@ pub struct NativeConfigurationBinding {
 
 impl NativeConfigurationBinding {
     /// Verifies the claim against the original immutable composition before IO.
-    /// File authority, effective bounds and authenticated bytes remain caller-owned.
     pub(crate) fn verify_original<'a>(
         &self,
         admission: Option<&crate::core::ExtensionAdmission>,
@@ -1301,7 +1280,7 @@ impl NativeMediaPolicy {
 }
 
 impl FileProjectionPolicy {
-    fn validate_file_with_work(
+    fn validate_file(
         &self, file: &FileRef, limits: crate::conversation::Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1327,7 +1306,6 @@ impl FileProjectionPolicy {
 
 impl ToolResultContent {
     /// Runs the original borrowed Value deserializer with paid DTO admission.
-    /// This does not clone the Value or serialize/decode it through wire bytes.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn decode_with_native_work(
         value: &Value, work: &NativeMaterializationWork,
@@ -1340,7 +1318,6 @@ impl ToolResultContent {
     }
 
     /// Completed closed payload size, without allocation or cancellation.
-    /// Map key/value slots are logical storage; opaque tree nodes are excluded.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let root = std::mem::size_of::<Self>() as u64;
         let payload = match self {
@@ -1401,7 +1378,7 @@ impl ToolResultContent {
                     ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes =>
                         return Err(model_history_invalid(work, "tool result text exceeds render limit")),
                     ModelDataPart::File { file, policy } => {
-                        policy.validate_file_with_work(file, limits, work)?;
+                        policy.validate_file(file, limits, work)?;
                         references = references.checked_add(1).ok_or_else(||
                             model_history_invalid(work, "tool result reference count overflow"))?;
                         if matches!(policy, FileProjectionPolicy::Native(policy) if policy.configuration.is_some()) {
@@ -1416,7 +1393,7 @@ impl ToolResultContent {
                 return Err(model_history_invalid(work, "tool result reference count exceeds limit"));
             }
         }
-        model_tool_result_json_bound_with_work(self, limits.render_bytes, work)
+        model_tool_result_json_bound(self, limits.render_bytes, work)
     }
 }
 
@@ -1439,7 +1416,6 @@ fn model_owned_mul(capacity: usize, slot: usize) -> Result<u64> {
 }
 
 /// Out-of-line known JSON storage; the caller already owns its Value header.
-/// Opaque map allocator nodes and serializer internals are not measured here.
 pub(crate) fn model_value_owned_bytes(value: &Value) -> Result<u64> {
     match value {
         Value::String(text) => Ok(text.capacity() as u64),
@@ -1609,8 +1585,6 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
-        // Borrowed entries are the actual SDK-owned map payload. Opaque tree
-        // nodes/allocator calls are not asserted by this logical reservation.
         #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;
@@ -1759,8 +1733,7 @@ impl PreparedModelRequest {
         request: ModelRequest, request_custody: NativeAllocation,
         limits: crate::conversation::Limits, work: &NativeMaterializationWork,
     ) -> Result<(Self, NativeAllocation)> {
-        // Keep the payload physically alive until after its incoming guard is
-        // absorbed, including failed ledger admission and all engine errors.
+        // Keep the payload physically alive until after its incoming guard is absorbed, including failed ledger admission and all engine errors.
         let incoming = (request, request_custody);
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let (request, custody) = incoming;
@@ -1774,8 +1747,7 @@ impl PreparedModelRequest {
         Ok((prepared, custody))
     }
 
-    /// Reconstructs exact retained canonical bytes; unknown/defaulted fields or
-    /// alternative encodings cannot silently change an admitted request.
+    /// Reconstructs exact retained canonical bytes; unknown/defaulted fields or alternative encodings cannot silently change an admitted request.
     pub fn decode(bytes: &[u8], limits: crate::conversation::Limits) -> Result<Self> {
         Self::decode_engine(bytes, limits, None)
     }
@@ -1810,7 +1782,6 @@ impl PreparedModelRequest {
     }
 
     /// Admits explicit input without retrieval, compaction or truncation.
-    /// Providers are trusted to honor the token ceiling and native encoding.
     pub fn prepare(request: ModelRequest, limits: crate::conversation::Limits) -> Result<Self> {
         Self::prepare_engine(request, limits, None)
     }
@@ -1825,8 +1796,6 @@ impl PreparedModelRequest {
             // Native callers transfer already admitted DTO ownership into io.
             return Self::prepare_engine(request, limits, Some(io));
         }
-        // Admit the owned caller DTO without cloning it. The witness is a
-        // conservative logical allowance, not allocator nodes or RSS.
         let before = io.receipt().items_examined;
         let _witness;
         let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
@@ -1951,8 +1920,7 @@ impl PreparedModelRequest {
     }
 }
 
-/// One immutable, append-only model prefix segment. Persist using the existing
-/// content host and retain its pinned `FileRef` in the authoritative fork.
+/// One immutable, append-only model prefix segment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPrefix {
@@ -1975,9 +1943,7 @@ impl ModelPrefix {
     /// Media type distinguishing shared model segments from request artifacts.
     pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.harness.model-prefix+json";
 
-    /// Selects all admitted messages, or just the exact suffix after a pinned
-    /// parent. Publication must authenticate the parent reference against its
-    /// authoritative fork; supplying a `FileRef` alone does not establish that.
+    /// Selects all admitted messages, or just the exact suffix after a pinned parent.
     pub fn select(
         request: &PreparedModelRequest,
         parent: Option<(&FileRef, &PreparedModelRequest)>,
@@ -2025,7 +1991,7 @@ impl ModelPrefix {
         if messages.is_empty() {
             return Err(Error::Invalid("model prefix must advance its parent".into()));
         }
-        let message_digest = ordered_message_digest_with_io(&request.manifest.message_digests, io)?;
+        let message_digest = ordered_message_digest(&request.manifest.message_digests, io)?;
         model_claim_owned(io, std::mem::size_of::<Self>() as u64)?;
         Ok(Self {
             version: 1, parent: parent.map(|reference| model_file_clone_with_io(reference, io)).transpose()?,
@@ -2053,21 +2019,7 @@ impl ModelPrefix {
     }
 }
 
-fn message_prefix_hasher() -> blake3::Hasher {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"harness:model-prefix:ordered:v1");
-    hasher
-}
-
-fn ordered_message_digest(digests: &[[u8; 32]]) -> [u8; 32] {
-    let mut hasher = message_prefix_hasher();
-    for digest in digests {
-        hasher.update(digest);
-    }
-    *hasher.finalize().as_bytes()
-}
-
-fn ordered_message_digest_with_io(
+fn ordered_message_digest(
     digests: &[[u8; 32]], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<[u8; 32]> {
     #[cfg(not(feature = "filesystem"))]
@@ -2081,18 +2033,17 @@ fn ordered_message_digest_with_io(
     };
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { io.preflight(work)?; }
-    let digest = ordered_message_digest(digests);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness:model-prefix:ordered:v1");
+    for digest in digests { hasher.update(digest); }
+    let digest = *hasher.finalize().as_bytes();
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { io.charge(work)?; }
     Ok(digest)
 }
 
 impl PreparedModelRequest {
-    /// Resolves only the direct-parent chain, in order, then appends explicit
-    /// local messages. No retrieval, summarization, history scan or truncation.
-    /// The verifier must enforce the reader's exact generation-pinned grants.
-    /// The original binding digest is provenance, not a restriction on future
-    /// models. The resulting request validates against its selected tools/model.
+    /// Resolves only the direct-parent chain, in order, then appends explicit local messages.
     pub async fn inherit(
         local: ModelRequest,
         prefix: &FileRef,
@@ -2253,8 +2204,6 @@ impl PreparedModelRequest {
                 ));
             }
         }
-        // Validate inherited messages with the exact selected bindings by moving
-        // the buffers, not by cloning the model/tool graph.
         let local_messages = std::mem::replace(&mut local.messages, messages);
         local.validate_with_io(limits, io)?;
         for message in local_messages { model_vec_push(&mut local.messages, message, io)?; }
@@ -2419,10 +2368,6 @@ pub struct NativeModelAttempt<'a> {
 }
 
 /// An actual concrete stream box admitted before invoking its builder.
-///
-/// The provider must yield closed SDK DTOs with their original-ledger custody,
-/// obtained during production, not an ordinary event followed by postcounting.
-/// The physical stream box is destroyed before its allocation guard.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
     stream: BoxStream<'a, Result<(ModelEvent, NativeAllocation)>>,
@@ -2563,7 +2508,6 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     }
 
     /// Returns deterministic additive token upper bounds for this exact request.
-    /// Unsupported media/counting must fail explicitly; the SDK never guesses tokens.
     fn count_tokens(
         &self,
         _request: &PreparedModelRequest,
@@ -3211,8 +3155,7 @@ mod tests {
         changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
         let changed_parent = PreparedModelRequest::prepare(changed_parent, limits)?;
         assert!(ModelPrefix::select(&changed_parent, Some((&head, &prepared))).is_err());
-        // An authenticated, canonical parent with the same shape and binding
-        // still must contain the exact messages claimed by the child segment.
+        // An authenticated, canonical parent with the same shape and binding still must contain the exact messages claimed by the child segment.
         let impostor = store_prefix(
             &mut reader,
             &ModelPrefix::select(&changed_parent, None)?,

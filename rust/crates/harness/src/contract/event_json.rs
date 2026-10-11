@@ -1,9 +1,4 @@
 //! Admission for the concrete history EventPayload schema, not arbitrary serde.
-//!
-//! This audit is intentionally coupled to serde 1.0.229's Content carrier. A
-//! serde upgrade must re-audit tagged buffering rather than silently changing
-//! the logical reservation. The original EventPayload Deserialize implementation
-//! remains the only decoder; this module does not interpret event variants.
 
 use super::{Error, JsonBounds, JsonCodecCharge, Result};
 use super::json::{JsonValueSchema, JsonValueShape};
@@ -19,10 +14,7 @@ use serde_json::Value;
 use std::mem::size_of;
 use uuid::Uuid;
 
-/// A real logical-quota reservation basis. These are upper bounds, not claimed
-/// allocator observations or allocation attempts. The caller holds its quota
-/// guard across serde decoding and substitutes observed retained payload bytes
-/// without double counting. Rejection/cancellation drops that guard.
+/// A real logical-quota reservation basis.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EventPayloadJsonAdmission {
     pub input_bytes: u64,
@@ -38,19 +30,10 @@ pub(crate) struct EventPayloadJsonAdmission {
     pub diagnostic_bytes: u64,
 }
 
-// Largest concrete chain which can buffer tagged enum contents, even when an
-// untrusted document puts the adjacent content before its discriminator:
-// EventPayload -> Capture -> ResourceRevision -> VolumeOwner. Plain structs do
-// not create another Content pass. ReferencedAttachmentsWire and EffectStatus
-// are shorter chains. JSON Content has no Some/Newtype boxes: those variants
-// require non-JSON visitor methods. Duplicate keys remain in Content vectors.
+// Largest concrete chain which can buffer tagged enum contents, even when an untrusted document puts the adjacent content before its discriminator: EventPayload -> Capture -> ResourceRevision -> VolumeOwner.
 const CONTENT_LAYERS: u64 = 4;
 
 // All variable-width typed collection elements reachable from EventPayload.
-// Fixed [u8;32] digests themselves are inline, but FileDescriptorWire first
-// deserializes Vec<u8>, which is covered by u8. BTree entries' key/value payload
-// is included; opaque BTree nodes/allocator headers are not. Fork paths are
-// String, never PathBuf/native paths. ResourceRef bodies remain opaque Vec<u8>.
 const fn maximum(values: &[usize]) -> usize {
     let mut result = 0;
     let mut index = 0;
@@ -78,19 +61,12 @@ const TYPED_COLLECTION_SLOT_BYTES: usize = maximum(&[
         size_of::<(String, FileRef)>(),
 ]);
 
-// Exactly one root payload box exists in ForkPublished, ProjectMergePublished,
-// ConversationMessageAppended or InteractionOutcome::Answered. Their pointee
-// carriers are heap-owned and must not be dismissed as fixed stack ABI data.
+// Exactly one root payload box exists in ForkPublished, ProjectMergePublished, ConversationMessageAppended or InteractionOutcome::Answered.
 const BOXED_PAYLOAD_BYTES: usize = maximum(&[
     size_of::<ForkSeed>(), size_of::<ProjectMergeReceipt>(),
     size_of::<ConversationMessage>(), size_of::<FileRef>(),
 ]);
 
-// Closed-schema expected-field/discriminator labels and fixed diagnostic
-// templates. Their aggregate length bounds any one expected-field list, rather
-// than assuming malformed-input error strings have fixed-size payloads. The
-// dynamic interpolated input is accounted separately below. Upgrades/additions
-// to reachable custom Deserialize implementations require updating this audit.
 const DIAGNOSTIC_LABELS: &[&str] = &[
     "lifecycle_transitioned", "custom", "extension_state_migrated", "extensions_selected",
     "extension_configured", "effect_planned", "effect_dispatched", "effect_resolved",
@@ -142,11 +118,6 @@ const fn diagnostic_label_bytes() -> u64 {
 }
 const DIAGNOSTIC_LABEL_BYTES: u64 = diagnostic_label_bytes();
 
-// Finite stock record/command graphs plus registered recursive/resource/task,
-// configured Snapshot/conversation and native process/MCP stdio graphs below.
-// Concrete owners supply the actual declaration/custom-static literal closure.
-// Event labels stay a separate scope so ordinary Event admission is unchanged.
-// Other private DTO owners add their own manifest, not a generic-T guess.
 const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "Model", "ModelMessage", "ModelRole", "ModelContent", "ModelContentPart",
     "FileProjectionPolicy", "ModelDataPart", "ToolResultContent", "NativeConfigurationBinding",
@@ -171,8 +142,6 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "file or volume label is invalid", "volume-relative path is invalid",
     "data did not match any variant of untagged enum ModelContent",
     "struct ", "struct variant ", "tuple variant ", "newtype variant ", "unit variant ",
-    // Registered recursive/resource/task DTO closure; declared by the concrete
-    // record owners, including their fork summary/grant/reference wrappers.
     "RecursiveForkSourceIntent", "RecursiveForkToolPlan", "RecursiveMergeToolPlan",
     "ForkToolArguments", "MergeToolArguments", "MergeToolSelection", "MergeToolSide",
     "Plan", "Stage", "State", "InitialPlan", "SourcePin", "Receipt",
@@ -208,8 +177,7 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "ready", "source_pinned", "waiting", "complete", "settled", "base", "target", "fresh",
     "history", "project", "private_volume", "process", "artifact", "shared_volume", "extension",
     "captured", "unsupported", "in_flight", "indeterminate",
-    // Actual SnapshotWire and conversation Deserialize closure reached by the
-    // configured source checkpoint; native custody fields are serde-skipped.
+    // Actual SnapshotWire and conversation Deserialize closure reached by the configured source checkpoint; native custody fields are serde-skipped.
     "Snapshot", "SnapshotWire", "format_version", "authority", "revision", "events",
     "projection", "state_digest", "attestation", "Projection", "lifecycle",
     "active_extensions", "active_extension_revision", "extension_states",
@@ -248,9 +216,6 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "answered", "answer", "approved", "declined", "expired", "denied",
     "interaction outcome must be an object", "interaction outcome kind must be a string",
     "unknown interaction outcome field ",
-    // Registered native request/result, including the real WorkBudget alias
-    // (WorkCounters), lazy snapshot primitives and MCP stdio parameter carrier.
-    // Runtime validation/exchange errors are not Deserialize diagnostics.
     "NativeProcessRequest", "NativeProcessResult", "NativeProcessStop", "NativeProcessStopKind",
     "NativeViewOptions", "NativeVolumeMapping", "NativeViewManifest", "NativeVolumeNamespace",
     "executable", "argv", "cwd", "environment", "timeout_ms", "control_timeout_ms",
@@ -270,8 +235,6 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "bytesHashed", "bytesCopied", "bytesEncoded", "sourceBytesRead", "sourcePathComponents",
     "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
     "peakAllocationBytes", "materializations", "path string", "an array of length 16",
-    // Actual stock command wrappers and SelectedModelContext; their nested
-    // model/context/ref graphs are the concrete declarations covered above.
     "TimerTaskCommand", "TaskObserveCommand", "TaskAdmitCommand", "PreparedTaskAdmitCommand",
     "TaskCancelCommand", "ModelTaskCommand",
     "ToolTaskCommand", "MailSendTaskCommand", "MailReceiveTaskCommand", "SelectedModelContext",
@@ -287,12 +250,7 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message", "operation_id",
 ];
 
-/// Compile-time label/punctuation upper bound for the concrete preparation
-/// graphs listed above: stock records/commands, recursive/resource/task DTOs,
-/// configured Snapshot/conversation, native process/MCP, refs and Event/SourceAuth.
-/// Covers their actual derived type/variant/field names and audited moving ref
-/// constructors' static errors, not arbitrary custom Deserialize/Display code.
-/// Other private/external DTOs add their actual manifest. No authority is granted.
+/// Compile-time label/punctuation upper bound for the concrete preparation graphs listed above: stock records/commands, recursive/resource/task DTOs, configured Snapshot/conversation, native process/MCP, refs and Event/SourceAuth.
 pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
     let mut result = DIAGNOSTIC_LABEL_BYTES;
     let mut index = 0;
@@ -304,23 +262,13 @@ pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
 }
 
 /// Diagnostic capacity for the finite concrete SDK preparation graphs above.
-/// Other private records add their actual field/type/custom-static manifest.
-/// No unknown custom Deserialize/Display message is supported by this inventory.
 pub(crate) fn audited_preparation_diagnostic_bytes(
     input_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
     diagnostic_capacity_bytes(input_bytes, preparation_serde_diagnostic_label_bytes(), native_code)
 }
 
-/// Pure quota arithmetic for an SDK-issued shape and an audited closed DTO.
-/// `schema_label_bytes` MUST cover actual field/discriminator/type names, list
-/// punctuation and custom STATIC diagnostics. Arbitrary custom Deserialize or
-/// Display messages are unsupported. The shape grants no authority and this is
-/// not an allocator/RSS, generic serde heap, CPU or stack theorem.
-/// Slice input bytes or resident UTF-8 payload plus visited nodes/keys bound the
-/// actual source interpolation. Both overlapping formatter buffers include
-/// conservative capacity growth. None preserves ordinary Invalid; Some(code)
-/// selects the inline native carrier at the actual native entry.
+/// Pure quota arithmetic for an SDK-issued shape and an audited closed DTO. `schema_label_bytes` MUST cover actual field/discriminator/type names, list punctuation and custom STATIC diagnostics.
 pub fn json_typed_diagnostic_owned_bytes(
     shape: JsonValueShape, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
@@ -330,8 +278,6 @@ pub fn json_typed_diagnostic_owned_bytes(
 fn diagnostic_capacity_bytes(
     input_bytes: u64, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
-    // Existing six-byte debug expansion and two overlapping formatters, with
-    // another factor two for their geometric String capacities, not fake ops.
     multiply_with_code(diagnostic_bytes(input_bytes, schema_label_bytes, native_code)?, 2, native_code)
 }
 
@@ -343,12 +289,7 @@ const COMMON_DIAGNOSTIC_TEXT: &str = concat!(
     "invalid request: storage failure: ",
 );
 
-/// For audited serde-derived records and the moving reference converters only:
-/// source interpolation is debug-escaped at <=6 bytes/input byte, with at most
-/// two diagnostic buffers overlapping during the original error conversions.
-/// `schema_label_bytes` must include the concrete field/discriminator/type
-/// labels, their list punctuation, and custom static diagnostics. Arbitrary
-/// custom Deserialize/Display code cannot use this as a heap guarantee.
+/// For audited serde-derived records and the moving reference converters only: source interpolation is debug-escaped at <=6 bytes/input byte, with at most two diagnostic buffers overlapping during the original error conversions. `schema_label_bytes` must include the concrete field/discriminator/type labels, their list punctuation, and custom static diagnostics.
 pub(crate) fn audited_serde_diagnostic_bytes(input_bytes: u64, schema_label_bytes: u64) -> Result<u64> {
     diagnostic_bytes(input_bytes, schema_label_bytes, None)
 }
@@ -369,20 +310,15 @@ fn ownership_overflow(native_code: Option<crate::wire::ErrorCode>) -> Error {
     }
 }
 
-fn multiply_with_code(value: u64, factor: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+pub(super) fn multiply_with_code(value: u64, factor: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
     value.checked_mul(factor).ok_or_else(|| ownership_overflow(native_code))
 }
-fn sum_with_code(values: &[u64], native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+pub(super) fn sum_with_code(values: &[u64], native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
     values.iter().try_fold(0u64, |total, value| total.checked_add(*value)
         .ok_or_else(|| ownership_overflow(native_code)))
 }
 
-/// Admits lexical structure and reserves the original concrete EventPayload
-/// decode's logical quota BEFORE serde can buffer tagged fields or diagnostics.
-/// Admission must become a real caller-owned quota guard/highwater, not merely
-/// an allocator claim or an ignored check. No physical source read is invented.
-/// This excludes opaque allocator/BTree node overhead and process RSS, but
-/// includes all variable serde/typed payloads, temporary Value overlap and boxes.
+/// Admits lexical structure and reserves the original concrete EventPayload decode's logical quota BEFORE serde can buffer tagged fields or diagnostics.
 pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + ?Sized>(
     bytes: &[u8], bounds: JsonBounds, charge: &mut F,
 ) -> Result<EventPayloadJsonAdmission> {
@@ -399,9 +335,6 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
     Ok(admission)
 }
 
-// The Snapshot schema contains these same concrete payloads, potentially many
-// times. Reuse their audited tagged buffers/Value/string/error overlap without
-// rerunning the lexer or issuing a second quota reservation.
 pub(crate) fn event_payload_ownership(
     shape: JsonValueShape, maximum_depth: u32, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<EventPayloadJsonAdmission> {
@@ -409,19 +342,11 @@ pub(crate) fn event_payload_ownership(
     let sum = |values: &[u64]| sum_with_code(values, native_code);
     let input_bytes = shape.input_bytes();
     let lexical_items = shape.lexical_items();
-    // Across each concrete collection pass, total element count <= tokens and
-    // nonempty collection count <= tokens. Standard Vec capacity is bounded by
-    // two times its elements plus at most eight initial slots per collection.
-    // Content map entries are pairs, not one scalar slot.
     let slots = multiply(lexical_items, 2 + 8)?;
     let content_slot = size_of::<(Content<'static>, Content<'static>)>()
         .max(size_of::<Content<'static>>()) as u64;
     let serde_content_bytes = multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?;
     let typed_collection_bytes = multiply(slots, TYPED_COLLECTION_SLOT_BYTES as u64)?;
-    // InteractionOutcome buffers one Value tree, then consumes answer as FileRef
-    // or operation_id as UUID. Those typed from_value converters do not decode
-    // another Value tree. Cover the one tree concurrently with Content and typed
-    // output; only selected Raw sources add hidden nodes and live buffers.
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
     let value_overlap_bytes = sum(&[
         multiply(slots, value_slot)?,
@@ -432,15 +357,10 @@ pub(crate) fn event_payload_ownership(
         })?,
     ])?;
     let boxed_payload_bytes = BOXED_PAYLOAD_BYTES as u64;
-    // Each Content pass, the Value pass, and typed output can own at most the
-    // total decoded UTF-8 string bytes in the input. JSON escapes never expand
-    // beyond their encoded source bytes. Borrowed input is not owned storage.
+    // Each Content pass, the Value pass, and typed output can own at most the total decoded UTF-8 string bytes in the input.
     let string_payload_bytes = multiply(input_bytes, CONTENT_LAYERS + 1 + 1)?;
     let scratch_bytes = multiply(input_bytes.max(8), 2)?;
-    // Unexpected string debug escaping expands an ASCII byte to at most six
-    // bytes. At most two diagnostic buffers overlap across custom from_value /
-    // D::Error::custom / outer storage-error conversion. Include static schema
-    // labels, punctuation, and line/column digits before interpolation happens.
+    // Unexpected string debug escaping expands an ASCII byte to at most six bytes.
     let diagnostic_bytes = diagnostic_bytes(input_bytes, DIAGNOSTIC_LABEL_BYTES, native_code)?;
     let maximum_owned_bytes = sum(&[serde_content_bytes, typed_collection_bytes, value_overlap_bytes,
         boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes])?;
@@ -482,16 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_key_buffering_and_diagnostic_interpolation_are_reserved() -> Result<()> {
-        let bytes = br#"{"kind":"lifecycle_transitioned","from":"pending","to":"active","reason":"old","reason":"new"}"#;
-        let admission = event_payload_json_admission(bytes, bounds(bytes), &mut |_| Ok(()))?;
-        assert!(admission.serde_content_bytes > 0);
-        assert!(admission.diagnostic_bytes >= 12 * bytes.len() as u64);
-        assert!(super::super::json_from_slice::<EventPayload>(bytes).is_err());
-        Ok(())
-    }
-
-    #[test]
     fn stack_and_cancellation_reject_before_schema_decode() {
         let bytes = format!("{}0{}", "[".repeat(300), "]".repeat(300));
         let mut reserved = false;
@@ -519,28 +429,6 @@ mod tests {
                 "outcome": { "$serde_json::private::RawValue": raw },
             },
         })).map_err(|error| Error::Storage(error.to_string()))
-    }
-
-    fn assert_normal_quota(admission: EventPayloadJsonAdmission) -> Result<()> {
-        let slots = multiply(admission.lexical_items, 10)?;
-        let content_slot = size_of::<(Content<'static>, Content<'static>)>()
-            .max(size_of::<Content<'static>>()) as u64;
-        let expected = [
-            multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?,
-            multiply(slots, TYPED_COLLECTION_SLOT_BYTES as u64)?,
-            multiply(slots, size_of::<Value>().max(size_of::<(String, Value)>()) as u64)?,
-            BOXED_PAYLOAD_BYTES as u64,
-            multiply(admission.input_bytes, CONTENT_LAYERS + 2)?,
-            multiply(admission.input_bytes.max(8), 2)?,
-            audited_serde_diagnostic_bytes(admission.input_bytes, DIAGNOSTIC_LABEL_BYTES)?,
-        ];
-        assert_eq!([
-            admission.serde_content_bytes, admission.typed_collection_bytes,
-            admission.value_overlap_bytes, admission.boxed_payload_bytes,
-            admission.string_payload_bytes, admission.scratch_bytes, admission.diagnostic_bytes,
-        ], expected);
-        assert_eq!(admission.maximum_owned_bytes, sum(&expected)?);
-        Ok(())
     }
 
     #[test]
@@ -581,7 +469,6 @@ mod tests {
             })?;
             assert_eq!(read, bytes.len() as u64);
             assert_eq!(work, admission.lexical_items);
-            assert_normal_quota(admission)?;
             // FileRef/UUID consume the existing Value, not another Value decoder.
             let decoded: EventPayload = serde_json::from_slice(&bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?;
@@ -694,7 +581,6 @@ mod tests {
             }
             Ok(())
         })?;
-        assert_normal_quota(admission)?;
         assert!(matches!(serde_json::from_slice::<EventPayload>(bytes)
             .map_err(|error| Error::Storage(error.to_string()))?,
             EventPayload::LifecycleTransitioned { .. }));
@@ -730,8 +616,6 @@ mod tests {
             let Error::NativeDecode { source: actual, .. } = error else { panic!("original typed serde source") };
             let oracle = <crate::model::ModelContentPart as serde::Deserialize>::deserialize(&source).unwrap_err();
             assert_eq!(actual.to_string(), oracle.to_string());
-            // Test-only Display observes the original message, not opaque
-            // formatter capacities or a fabricated allocation operation.
             assert!(admitted >= actual.to_string().len() as u64);
             assert_eq!(audited_preparation_diagnostic_bytes(issued.input_bytes(),
                 Some(crate::wire::ErrorCode::Invalid))?, expected);

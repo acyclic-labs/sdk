@@ -1,10 +1,4 @@
 //! Shared bounded in-memory content state used by native and WASM Harness hosts.
-//!
-//! The native filesystem provider remains responsible for durable journals and
-//! authenticated provider operations. This small core owns the common
-//! ephemeral semantics that must be identical in a local host: immutable file
-//! identity, byte deduplication, path heads, generation history, and bounded
-//! residency.
 
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::contract::canonical_json_digest;
@@ -152,11 +146,7 @@ impl MemoryStore {
         self.stage_reference(&reference, bytes, update_path)
     }
 
-    /// Admits a provider-created reference while retaining the same bounded
-    /// bytes, path-head, and generation semantics as WASM staging. Native
-    /// filesystem refs carry a provider generation in `version`, so the
-    /// shared core must retain that exact ref instead of deriving a second
-    /// identity for it.
+    /// Admits a provider-created reference while retaining the same bounded bytes, path-head, and generation semantics as WASM staging.
     pub(crate) fn stage_reference(
         &mut self,
         reference: &FileRef,
@@ -318,8 +308,6 @@ impl MemoryStore {
                 }
                 #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
-                    // This is the actual nonempty payload buffer attempt,
-                    // immediately followed by Arc::from; opaque header excluded.
                     io.allocation_attempt(length)?;
                 }
                 let resident: Arc<[u8]> = Arc::from(bytes);
@@ -568,10 +556,7 @@ impl MemoryStore {
     }
 
     fn file_key(file: &FileRef) -> Result<String> {
-        // Version is the provider's immutable identity. Descriptor and
-        // display name remain part of the contract and are checked against
-        // an existing entry below, but must not create a second resident copy
-        // when the same provider version is retried with altered metadata.
+        // Version is the provider's immutable identity.
         String::from_utf8(crate::contract::canonical_json_bytes(&(
             file.volume(),
             file.path(),

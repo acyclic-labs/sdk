@@ -4,7 +4,6 @@ use crate::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Copies a known metadata field immediately after its own allocation admission.
-/// The caller retains the closed value's capacity ceiling before entering.
 #[cfg(feature = "filesystem")]
 pub(crate) fn copy_metadata_string(
     source: &str, io: &crate::filesystem::PreparationIo,
@@ -73,7 +72,6 @@ impl ProviderRef {
     }
 
     /// Copies a validated identity under the caller's original native work.
-    /// Constructing an identity grants no access to the represented provider.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         namespace: &str, family: &str, version: &str,
@@ -169,7 +167,6 @@ impl ProviderRef {
         }
         Ok(())
     }
-
 
     pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.validation_reason()
@@ -468,8 +465,6 @@ typed_reference!(
 
 impl GenerationRef {
     /// Copies one generation identity on the original native ledger.
-    /// Custody covers deep SDK-owned capacities; the enclosing DTO owns its
-    /// inline reference slot. This operation grants no storage authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         provider: &ProviderRef, key: &[u8], version: Option<&str>,
@@ -628,7 +623,6 @@ typed_reference!(
     "Reference to an immutable model context."
 );
 typed_reference!(RunRef, Run, "Reference to a recoverable model run.");
-
 
 #[cfg(test)]
 mod tests {
