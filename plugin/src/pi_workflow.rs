@@ -147,7 +147,7 @@ impl<'a> PiWorkflowHost<'a> {
     ) -> acyclic_harness::Result<Option<((FileRef, pi_root_allocation::PiRootAllocation), acyclic_fs::NativeAllocation)>> {
         let work = self.work()?;
         let Some(provider) = self.root_provider.lock().await.clone() else { return Ok(None); };
-        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
             owner.policy().root_task, pi_root_inputs::preparation_operation_with_native_work(owner.policy().root_task, work)?, work,
@@ -163,7 +163,7 @@ impl<'a> PiWorkflowHost<'a> {
         &self, operation: acyclic_harness::OperationId, kind: &str, payload: &Value,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
         let work = self.work()?;
-        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         let payload_custody;
         let staged_payload;
@@ -212,7 +212,7 @@ impl<'a> PiWorkflowHost<'a> {
     pub(crate) async fn control_step_with_native_work(
         &self, command: WorkflowCommand, wake_pending: bool,
     ) -> acyclic_harness::Result<Option<(Value, acyclic_fs::NativeAllocation)>> {
-        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, self.work()?)?;
         self.runtime.verify_owner_with_native_work(&owner, self.work()?)?;
         let host = self.runtime.runtime.task_host();
         let task = owner.policy().root_task;
@@ -358,7 +358,7 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi command has no original task",
             },
         )?;
-        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
+        let owner = pi_owner::PiOwnerConfig::load_with_native_work(self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
             && command.operation_id == pi_root_inputs::preparation_operation_with_native_work(task, work)?

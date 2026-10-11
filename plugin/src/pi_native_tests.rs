@@ -195,6 +195,13 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let original = raw.sanitize().unwrap();
     assert!(original.environment.contains_key("ACYCLIC_PI_PROVIDER_EXTENSION"));
     assert!(!original.environment.keys().any(|key| is_caller_environment(key)));
+    let baseline = work.live_allocation_bytes();
+    let copied = original.clone_with_native_work(&work).unwrap();
+    assert!(copied.0 == original);
+    assert!(copied.1.work().shares_ledger(&work));
+    assert_eq!(work.live_allocation_bytes(), baseline + copied.1.bytes());
+    drop(copied);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     let limits = PiNativeCaptureLimits { timeout_ms: input.timeout_ms, control_timeout_ms: input.control_timeout_ms,
         cancellation_poll_ms: input.cancellation_poll_ms, maximum_output_bytes: input.maximum_output_bytes, maximum_result_bytes: input.maximum_result_bytes };
     let (source, bytes) = source_and_session();
@@ -723,4 +730,11 @@ async fn native_callback_preserves_the_whole_original_root_cause_and_denies_befo
     assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), baseline);
+    let input = invocation();
+    let host = PiNativeHostRuntime { version: input.version, executable: input.executable,
+        executable_prefix: input.executable_prefix, extension: input.extension,
+        provider_extension: input.provider_extension, environment: input.environment }.sanitize().unwrap();
+    assert!(matches!(host.clone_with_native_work(&work),
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt(), before);
 }

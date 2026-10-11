@@ -193,8 +193,10 @@ One immutable attachment input pins all selected source/native identities before
 any project creation. Canonical upload metadata and original Filesystem creation
 operations, not stored paths or mutable heads, authenticate the immutable result.
 An uncancelled original owner may finish its original bounded local creator after
-a lost acknowledgement; cancelled and historical observers never create resources
-or acquire native sources. These producer/test sources are not qualification evidence.
+a lost acknowledgement. Cancelled and historical observers never create missing
+resources; reopening a created project additionally requires its original sealed
+READ authority and immutable creation evidence. These sources are not qualification
+evidence.
 The same bounded canonical publisher stages control, mailbox and child-intent
 inputs under the original operation's `pi-inputs` directory. Tasks receive read
 authority there, not the protected owner's private journal writer.
@@ -206,6 +208,10 @@ after canonical successful-creation and original binding-ACK verification. The
 SDK verifies the admitted task's exact write grant and original FS operation,
 then installs its opaque output source in the original context's fixed slot.
 No new scope, context clone or bootstrap-journal writer is exposed.
+The configured `SystemUnixMillisClock` is zero-sized; its opaque Arc control
+header is outside the logical payload model. Native bootstrap borrows that
+trusted configuration, without inventing zero-work allocations or a new clock
+policy. A custom clock's owner remains responsible for its actual payload.
 The finite Root driver recovers the original reservation before discovery and
 keeps its lease/attempt custody through the worker result. Checked native command
 futures retain the original shared context instead of cloning or retrofitting
@@ -602,6 +608,10 @@ Native cut decoding declares its exact Value schema; closed DTOs declare no Valu
 fields. Their audited fixed metadata accompanies the canonical SDK's actual
 source-shape admission, rather than an input-byte multiplier. Process result
 controls use the SDK's own closed-record decoder and retained-capacity receipt.
+Protected host-runtime copies use direct funded String, path and prefix-vector
+operations, not a codec round-trip. Environment pairs acquire logical metadata
+quota before insertion; opaque standard-library tree nodes are excluded rather
+than reported as invented allocator attempts.
 Runner construction borrows the staged plan; the original SDK provider owns its
 funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.
@@ -611,6 +621,11 @@ requires the original opaque created-child Scratch proof, original native
 root/leaf/preparation identities and current-fenced WRITE on every deletion.
 Unknown pre-journal paths or replaced directories are preserved as uncertainty.
 Original preparation rollback is not post-execution session cleanup.
+Pinned process fixtures preserve the whole canonical reservation failure. Their
+physical root is marked pending before reservation IO and is deleted only after
+an actual successful gate release; uncertain setup, failed cleanup or an
+interrupted test retains and reports the root rather than deleting beneath a
+live cleanup owner.
 
 Required source-bound lanes (not executed by this change):
 
