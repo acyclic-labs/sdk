@@ -190,6 +190,11 @@ complete source cut with no fabricated publication operation. The readonly path
 rejects stale sources rather than rebinding or writing a companion. Ordinary
 snapshot calls retain their existing rebinding behavior. Qualification is DATA:
 callers still authenticate current Project READ before and after selecting it.
+Snapshot APIs return fixed metadata only. Decoded state, backing payloads and their
+original allocation guards retire together inside the capture phase; a returned
+snapshot does not retain quota for already-freed state. Output containers fund
+their own actual capacity before collection. Primary and reconciliation failures
+remain separately typed at the mounted boundary.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
