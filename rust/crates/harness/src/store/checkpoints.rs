@@ -310,11 +310,11 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let (outcome, native_received) = if native {
             let key_owned = retained - path_owned;
             retained -= key_owned;
-            let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
+            let mut request = crate::distributed::PreparedCommitRequest::new(
                 key, key_owned, work);
             request.push_condition(CommitCondition::Absent { path: path.clone() })?;
             request.append(path.clone(), bytes.clone())?;
-            let committed = request.commit_once_with_work(client).await;
+            let committed = request.commit_once(client, None).await;
             drop(request);
             committed?.map_err(|error| error.into_error(work))?
         } else {

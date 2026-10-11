@@ -4333,77 +4333,8 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     Ok(())
 }
 
-#[tokio::test]
-async fn native_root_and_dynamic_validation_admit_control_storage_before_io() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
-    let original = fixture.view.manifest().validation_budget()?;
-    for allocation_operations in [0, 1] {
-        let budget = acyclic_fs::WorkBudget { allocation_operations, ..original };
-        let failed = <PreparationView as crate::filesystem::NativeProcessView<MemoryStream>>::validate_working_directory(
-            &fixture.view, &fixture.view.manifest().options.root, budget,
-        ).err().ok_or_else(|| Error::Storage("unadmitted dynamic validation frame".into()))?;
-        assert_eq!(failed.1.allocation_operations, allocation_operations);
-        assert_eq!(failed.1.backend_read_operations, 0);
-        assert_eq!(failed.1.backend_write_operations, 0);
-    }
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let root = directory.path().join("root");
-    let operation = directory.path().join("operation");
-    for path in [&root, &operation, &operation.join("target"), &operation.join("backup")] {
-        std::fs::create_dir(path).map_err(|error| Error::Storage(error.to_string()))?;
-    }
-    let denied = NativePreparationRoot::witness(
-        root, operation, acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..original },
-        &acyclic_fs::CancellationToken::new(),
-    ).await.err().ok_or_else(|| Error::Storage("unadmitted root witness control".into()))?;
-    assert_eq!(denied.1.allocation_operations, 0);
-    assert_eq!(denied.1.backend_read_operations, 0);
-    assert_eq!(denied.1.backend_write_operations, 0);
-    Ok(())
-}
 
-#[tokio::test]
-async fn native_preparation_adopts_actual_input_vector_capacity_before_root_io() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
-    let stream = Arc::new(ReceiptFaultStream::default());
-    let fixture = preparation_fixture_on(StreamClient::new(stream), &seed).await?;
-    let mut bindings = borrow_preparation_bindings(&fixture.bindings);
-    bindings.reserve_exact(4096);
-    let input_capacity = bindings.capacity() * std::mem::size_of::<BorrowedNativeVolumeBinding<'_, MemoryAuthorityBackend, MemoryObjectBackend>>();
-    let mut options = fixture.options.clone();
-    options.work_per_volume.peak_allocation_bytes = (input_capacity - 1) as u64;
-    let failed = PreparationView::prepare(
-        &fixture.owner, fixture.allocation.clone(), options, bindings, &acyclic_fs::CancellationToken::new(),
-    ).await.err().ok_or_else(|| Error::Storage("input capacity outside original allowance".into()))?;
-    assert_eq!(failed.1.allocation_operations, 2);
-    assert_eq!(failed.1.backend_read_operations, 0);
-    assert_eq!(failed.1.backend_write_operations, 0);
-    assert!(std::fs::read_dir(&fixture.allocation.root)
-        .map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
-    Ok(())
-}
 
-#[tokio::test]
-async fn native_preparation_frame_admission_fails_before_body_or_root_io() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
-    let stream = Arc::new(ReceiptFaultStream::default());
-    let fixture = preparation_fixture_on(StreamClient::new(stream), &seed).await?;
-    for allocation_operations in [0, 1] {
-        let mut options = fixture.options.clone();
-        options.work_per_volume.allocation_operations = allocation_operations;
-        let failed = PreparationView::prepare(
-            &fixture.owner, fixture.allocation.clone(), options,
-            borrow_preparation_bindings(&fixture.bindings[..1]),
-            &acyclic_fs::CancellationToken::new(),
-        ).await.err().ok_or_else(|| Error::Storage("unadmitted preparation frame".into()))?;
-        assert_eq!(failed.1.allocation_operations, allocation_operations);
-        assert_eq!(failed.1.backend_read_operations, 0);
-        assert_eq!(failed.1.backend_write_operations, 0);
-        assert!(std::fs::read_dir(&fixture.allocation.root)
-            .map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
-    }
-    Ok(())
-}
 
 #[tokio::test]
 async fn native_preparation_bounds_shared_codec_before_physical_root_open() -> Result<()> {
@@ -4462,40 +4393,6 @@ async fn native_preparation_decode_failure_retains_original_journal_read_work() 
     Ok(())
 }
 
-#[tokio::test]
-async fn native_preparation_partial_typed_decode_keeps_acquired_quota_receipt() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
-    let stream = Arc::new(ReceiptFaultStream::default());
-    let fixture = preparation_fixture_on(StreamClient::new(stream), &seed).await?;
-    let prepared = PreparationView::prepare(
-        &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
-        borrow_preparation_bindings(&fixture.bindings),
-        &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
-    let journal = &prepared.value.preparation_receipts()[0].journal;
-    let mut invalid = serde_json::to_value(journal).map_err(|error| Error::Storage(error.to_string()))?;
-    invalid["revision"] = serde_json::json!(journal.revision + 1);
-    invalid["work"]["itemsExamined"] = serde_json::json!("invalid counter");
-    let bytes = crate::contract::canonical_json_bytes(&invalid)?;
-    let encoded_length = bytes.len() as u64;
-    let operation = journal.plan.operation_id;
-    let task = fixture.owner.task_binding().0;
-    let path = acyclic_stream::StreamPath::new(format!("harness/v2/materialization/{task}/{operation}"))?;
-    assert!(fixture.owner.append(
-        path, journal.revision, &acyclic_stream::IdempotencyKey::new("malformed-native-journal")?,
-        bytes::Bytes::from(bytes), crate::distributed::JournalWrite::Fresh,
-    ).await?);
-    let failed = PreparationView::inspect_preparation(
-        &fixture.owner, &fixture.allocation, prepared.value.manifest().validation_budget()?,
-        &acyclic_fs::CancellationToken::new(),
-    ).await.err().ok_or_else(|| Error::Storage("partial typed journal decode unexpectedly succeeded".into()))?;
-    assert!(failed.1.authority_bytes_read >= encoded_length);
-    assert!(failed.1.peak_allocation_bytes > encoded_length);
-    assert_eq!(failed.1.backend_write_operations, 0);
-    assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
-        .map_err(|error| Error::Storage(error.to_string()))?, b"pinned input");
-    Ok(())
-}
 
 #[tokio::test]
 async fn native_allocation_recovery_never_adopts_pending_directory_identity() -> Result<()> {

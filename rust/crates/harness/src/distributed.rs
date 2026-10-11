@@ -2475,7 +2475,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     operation_id, execution, expected_tail, workflow_guard, work,
                 ).await
             } else {
-                append_keyed_with_work(
+                append_keyed(
                     (&self.stream, &self.client), record, Some(self.revision),
                     stream_key, operation_id, "coordinator retry identity", work,
                 ).await
@@ -3708,19 +3708,7 @@ fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
     }
 }
 
-/// Appends one keyed record.
 pub(crate) async fn append_keyed<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>),
-    record: OwnedBytes,
-    if_tail: Option<u64>,
-    key: StreamIdempotencyKey,
-    operation_id: OperationId,
-    identity: &str,
-) -> Result<AppendOutcome> {
-    append_keyed_with_work((stream, client), record, if_tail, key, operation_id, identity, &mut None).await
-}
-
-pub(crate) async fn append_keyed_with_work<P: StreamProvider>(
     (stream, client): (&Stream<P>, &StreamClient<P>),
     record: OwnedBytes,
     if_tail: Option<u64>,
@@ -3827,7 +3815,7 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
         }
         Err(error) if *error.source() == StreamError::Unavailable => {
             let mut received = crate::wire_codec::CodecQuota::from_retained(custody.work(), 0);
-            match inspect_idempotency_once_with_work(client, key, 0, received.work(), None).await? {
+            match inspect_idempotency_once(client, key, 0, received.work(), None, None).await? {
                 Ok(Some((observation, retained))) => {
                     received.adopt(retained)?;
                     match observation.outcome {
@@ -3870,11 +3858,7 @@ fn append_error_with_work(
     }
 }
 
-pub(crate) fn execution_path(operation: OperationId) -> Result<acyclic_stream::StreamPath> {
-    execution_path_with_work(operation, &mut None)
-}
-
-pub(crate) fn execution_path_with_work(
+pub(crate) fn execution_path(
     operation: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<acyclic_stream::StreamPath> {
@@ -4004,7 +3988,7 @@ impl PreparedMaterializationCommit {
             .and_then(|bytes| bytes.checked_add(size_of::<Self>() as u64))
             .ok_or_else(overflow)?
             .max(size_of::<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
-        let mut prepared = PreparedCommitRequest::new_with_retained_key(template.key().clone(), 0, work);
+        let mut prepared = PreparedCommitRequest::new(template.key().clone(), 0, work);
         reserve_prepared_vector(
             &mut prepared.request.conditions, 2, &mut prepared.custody, &mut prepared.vectors,
         )?;
@@ -4067,7 +4051,7 @@ impl PreparedMaterializationCommit {
             let mut io = crate::store::history::native_work_io(&original)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let mut optional = Some(&mut io as &mut dyn HistoryIo);
-            let mut header = PreparedCommitRequest::new_with_retained_key(
+            let mut header = PreparedCommitRequest::new(
                 self.request.idempotency_key.clone(), 0, &mut optional,
             );
             for condition in &self.request.conditions {
@@ -4186,7 +4170,7 @@ impl PreparedMaterializationCommit {
                 vectors: self.vectors,
                 phase: CommitPhase::NotCalled,
             };
-            commit_prepared_with_native_dispatch_and_phase(
+            commit_prepared(
                 client, prepared, self.operation, phase,
                 Some((self.sdk.take().expect("pre-action SDK ingress"), actual_record)),
                 self.sdk_recovery.take(),
@@ -4361,25 +4345,13 @@ pub(crate) async fn inspect_idempotency_with_work<P: StreamProvider>(
     let retained_key = if work.is_some()
         && !work.as_deref().is_some_and(crate::store::operations::original_native_decode_mode)
     { key.as_bytes().len() as u64 } else { 0 };
-    match inspect_idempotency_once_with_work(client, key, retained_key, work, None).await? {
+    match inspect_idempotency_once(client, key, retained_key, work, None, None).await? {
         Ok(observation) => Ok(observation),
         Err(source) => Err(source.into_error(work)),
     }
 }
 
-async fn inspect_idempotency_once_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    key: StreamIdempotencyKey,
-    retained_key: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    phase: Option<&mut CommitPhase>,
-) -> Result<std::result::Result<Option<(acyclic_stream::IdempotencyObservation, u64)>, SdkCallError>> {
-    inspect_idempotency_once_with_native_recovery(
-        client, key, retained_key, work, phase, None,
-    ).await
-}
-
-async fn inspect_idempotency_once_with_native_recovery<P: StreamProvider>(
+pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
     client: &StreamClient<P>,
     key: StreamIdempotencyKey,
     retained_key: u64,
@@ -4504,21 +4476,9 @@ fn reserve_prepared_vector<T>(
 }
 
 impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
-    pub(crate) fn new(
-        key: StreamIdempotencyKey,
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        Ok(Self {
-            request: acyclic_stream::CommitRequest {
-                conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
-            },
-            custody: crate::wire_codec::CodecQuota::new(work, 0)?,
-            vectors: 0,
-            phase: CommitPhase::NotCalled,
-        })
-    }
 
-    pub(crate) fn new_with_retained_key(
+
+    pub(crate) fn new(
         key: StreamIdempotencyKey,
         retained_key_bytes: u64,
         work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
@@ -4543,12 +4503,9 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let key = StreamIdempotencyKey::new(bytes)
             .map_err(|source| crate::store::operations::stream_error_with_work(source, custody.work()))?;
-        Ok(Self {
-            request: acyclic_stream::CommitRequest {
-                conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
-            },
-            custody, vectors: 0, phase: CommitPhase::NotCalled,
-        })
+        custody.transfer();
+        drop(custody);
+        Ok(Self::new(key, retained, work))
     }
 
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn crate::store::history::HistoryIo> {
@@ -4576,15 +4533,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         Ok(())
     }
 
-    /// Calls the original SDK once.
-    pub(crate) async fn commit_once_with_work<P: StreamProvider>(
-        &mut self,
-        client: &StreamClient<P>,
-    ) -> Result<std::result::Result<(acyclic_stream::CommitOutcome, u64), SdkCallError>> {
-        self.commit_once_with_native_dispatch(client, None).await
-    }
-
-    async fn commit_once_with_native_dispatch<P: StreamProvider>(
+    pub(crate) async fn commit_once<P: StreamProvider>(
         &mut self,
         client: &StreamClient<P>,
         dispatch: Option<PreparedNativeDispatch>,
@@ -4712,27 +4661,10 @@ pub(crate) async fn commit_keyed<P: StreamProvider>(
         request, custody: crate::wire_codec::CodecQuota::new(&mut work, 0)?, vectors: 0,
         phase: CommitPhase::NotCalled,
     };
-    commit_prepared_with_work(client, prepared, operation).await.map(|(outcome, _)| outcome)
+    commit_prepared(client, prepared, operation, None, None, None).await.map(|(outcome, _)| outcome)
 }
 
-pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    prepared: PreparedCommitRequest<'_, '_>,
-    operation: OperationId,
-) -> Result<(acyclic_stream::CommitOutcome, u64)> {
-    commit_prepared_with_work_and_phase(client, prepared, operation, None).await
-}
-
-pub(crate) async fn commit_prepared_with_work_and_phase<P: StreamProvider>(
-    client: &StreamClient<P>,
-    prepared: PreparedCommitRequest<'_, '_>,
-    operation: OperationId,
-    phase: Option<&mut CommitPhase>,
-) -> Result<(acyclic_stream::CommitOutcome, u64)> {
-    commit_prepared_with_native_dispatch_and_phase(client, prepared, operation, phase, None, None).await
-}
-
-async fn commit_prepared_with_native_dispatch_and_phase<P: StreamProvider>(
+pub(crate) async fn commit_prepared<P: StreamProvider>(
     client: &StreamClient<P>,
     mut prepared: PreparedCommitRequest<'_, '_>,
     operation: OperationId,
@@ -4742,7 +4674,7 @@ async fn commit_prepared_with_native_dispatch_and_phase<P: StreamProvider>(
 ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
     if let Some(phase) = phase.as_deref_mut() { *phase = prepared.commit_phase(); }
     let key = prepared.request.idempotency_key.clone();
-    let committed = prepared.commit_once_with_native_dispatch(client, dispatch).await;
+    let committed = prepared.commit_once(client, dispatch).await;
     if let Some(phase) = phase.as_deref_mut() { *phase = prepared.commit_phase(); }
     let committed = committed?;
     let mut received = crate::wire_codec::CodecQuota::from_retained(prepared.work(), 0);
@@ -4752,7 +4684,7 @@ async fn commit_prepared_with_native_dispatch_and_phase<P: StreamProvider>(
             outcome
         }
         Err(error) if *error.source() == StreamError::Unavailable => {
-            match inspect_idempotency_once_with_native_recovery(
+            match inspect_idempotency_once(
                 client, key, 0, received.work(), phase.as_deref_mut(), recovery,
             ).await? {
                 Ok(Some((observation, retained))) => {
@@ -4794,44 +4726,6 @@ fn path_with_work(
     Ok(path)
 }
 
-fn commit_outcome_owned_bytes(
-    outcome: &acyclic_stream::CommitOutcome,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<u64> {
-    use acyclic_stream::{CommitConflict, CommitOutcome, CommittedMutation};
-    let add = |left: u64, right: u64| left.checked_add(right)
-        .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Storage, "commit source custody overflows"));
-    match outcome {
-        CommitOutcome::Committed(envelope) => {
-            let mut bytes = (envelope.mutations.capacity() * std::mem::size_of::<CommittedMutation>()) as u64;
-            for mutation in &envelope.mutations {
-                let records = match mutation {
-                    CommittedMutation::Append(append) => {
-                        bytes = add(bytes, append.path.as_str().len() as u64)?;
-                        &append.records
-                    }
-                    CommittedMutation::Fork(fork) => {
-                        bytes = add(bytes, fork.source.as_str().len() as u64)?;
-                        bytes = add(bytes, fork.destination.as_str().len() as u64)?;
-                        &fork.records
-                    }
-                };
-                bytes = add(bytes, (records.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64)?;
-                for record in records { bytes = add(bytes, record.value.len() as u64)?; }
-            }
-            Ok(bytes)
-        }
-        CommitOutcome::Conflict(conflicts) => {
-            let mut bytes = (conflicts.capacity() * std::mem::size_of::<CommitConflict>()) as u64;
-            for conflict in conflicts {
-                let (CommitConflict::Tail { path, .. } | CommitConflict::Exists { path }) = conflict;
-                bytes = add(bytes, path.as_str().len() as u64)?;
-            }
-            Ok(bytes)
-        }
-    }
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "one original coordinator append with exact execution and workflow conditions"
@@ -4852,7 +4746,7 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let record = record;
     let key = key;
-    let path = execution_path_with_work(execution, custody.work())?;
+    let path = execution_path(execution, custody.work())?;
     if custody.work().is_some() { custody.adopt(path.as_str().len() as u64)?; }
     let bounds = if custody.work().as_deref()
         .is_some_and(crate::store::operations::original_native_decode_mode)
@@ -4907,7 +4801,7 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
     request.push_condition(guard)?;
     if let Some(condition) = workflow_condition { request.push_condition(condition)?; }
     request.append(stream.path().clone(), record.clone())?;
-    let (outcome, outcome_bytes) = commit_prepared_with_work(client, request, operation).await?;
+    let (outcome, outcome_bytes) = commit_prepared(client, request, operation, None, None, None).await?;
     custody.adopt(outcome_bytes)?;
     let receipt = (|| {
         let CommitOutcome::Committed(envelope) = &outcome else {
@@ -5041,52 +4935,6 @@ mod tests {
             ..acyclic_fs::WorkBudget::default()
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
-    async fn native_atomic_batch_counts_two_actual_sdk_acks_not_recovery() {
-        use std::sync::atomic::Ordering;
-        for lost_ack in [false, true] {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
-            let stream = client.stream("native-atomic-pair").expect("original source stream");
-            let key = StreamIdempotencyKey::new(OwnedBytes::from_static(b"native-atomic-pair-key")).expect("original key");
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let native = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
-                .expect("original native work");
-            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
-            provider.native_only.store(true, Ordering::SeqCst);
-            for attempt in 0..2 {
-                let mut observer = crate::store::history::native_work_io(&native).expect("original observer");
-                let mut optional: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-                let mut custody = crate::wire_codec::CodecQuota::new(&mut optional, 0).expect("request custody");
-                let mut records = Vec::new();
-                let bytes = (2 * std::mem::size_of::<OwnedBytes>()) as u64;
-                custody.work().as_deref_mut().expect("observer").admit_owned(bytes).expect("fund slots");
-                custody.work().as_deref_mut().expect("observer").admit_allocation(bytes).expect("fund allocation");
-                records.try_reserve_exact(2).expect("original vector growth");
-                let retained = (records.capacity() * std::mem::size_of::<OwnedBytes>()) as u64;
-                custody.work().as_deref_mut().expect("observer").retain_owned(retained).expect("original claim");
-                custody.adopt(retained).expect("adopt actual paid slots");
-                records.extend([OwnedBytes::from_static(b"declared"), OwnedBytes::from_static(b"limits")]);
-                custody.transfer();
-                let outcome = append_records_keyed_with_work(
-                    (&stream, &client), records, retained, Some(0), key.clone(),
-                    OperationId::from_bytes([18; 16]), "native atomic retry", custody.work(),
-                ).await.expect("original batch engine").expect("actual SDK outcome");
-                assert!(matches!(outcome, AppendOutcome::Committed(_)));
-                drop(custody);
-                drop(optional);
-                assert_eq!(observer.into_custody().bytes(), 0, "physical request precedes release");
-                let acknowledgments = (attempt + 1) - u64::from(lost_ack);
-                assert_eq!(native.receipt().authority_records_appended, 2 * acknowledgments);
-                assert_eq!(native.receipt().authority_bytes_written, 14 * acknowledgments);
-            }
-            provider.native_only.store(false, Ordering::SeqCst);
-            assert_eq!(stream.tail().await.expect("original SDK tail"), 2);
-            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 2);
-            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), u64::from(lost_ack));
-        }
-    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
@@ -5127,40 +4975,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
-    async fn keyed_append_native_counts_sdk_ack_not_inspected_or_physical_new_records() {
-        use std::sync::atomic::Ordering;
-        for lost_ack in [false, true] {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
-            let stream = client.stream("keyed-append-native-ack").expect("source stream");
-            let key = StreamIdempotencyKey::new(OwnedBytes::from_static(b"original-key")).expect("key");
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let work = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
-                .expect("original ledger");
-            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
-            provider.native_only.store(true, Ordering::SeqCst);
-            for attempt in 0..2 {
-                let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-                let outcome = append_keyed_with_work(
-                    (&stream, &client), OwnedBytes::from_static(b"original"), Some(0), key.clone(),
-                    OperationId::from_bytes([13; 16]), "original retry", &mut Some(&mut observer),
-                ).await.expect("same engine append or recovery");
-                assert!(matches!(outcome, AppendOutcome::Committed(_)));
-                assert_eq!(observer.into_custody().bytes(), 0, "request and receiver custody released");
-                assert_eq!(work.receipt().authority_records_appended,
-                    (attempt + 1) - u64::from(lost_ack));
-                assert_eq!(work.receipt().authority_bytes_written,
-                    8 * ((attempt + 1) - u64::from(lost_ack)));
-            }
-            provider.native_only.store(false, Ordering::SeqCst);
-            assert_eq!(stream.tail().await.expect("actual tail"), 1, "same identity never appends twice");
-            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 2);
-            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), u64::from(lost_ack));
-        }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
     async fn keyed_append_native_denials_precede_actual_provider_request() {
         use std::sync::atomic::Ordering;
         for denial in 0..5 {
@@ -5183,7 +4997,7 @@ mod tests {
             provider.native_only.store(true, Ordering::SeqCst);
             let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
             if denial == 4 { cancellation.cancel(); }
-            let error = append_keyed_with_work(
+            let error = append_keyed(
                 (&stream, &client), OwnedBytes::from_static(b"original"), Some(0), key,
                 OperationId::from_bytes([14; 16]), "denied retry", &mut Some(&mut observer),
             ).await.expect_err("native quota or cancellation");
@@ -5207,12 +5021,12 @@ mod tests {
         let key = StreamIdempotencyKey::new(OwnedBytes::from_static(b"mismatch-key")).expect("key");
         let operation = OperationId::from_bytes([15; 16]);
         append_keyed((&stream, &client), OwnedBytes::from_static(b"original"), Some(0),
-            key.clone(), operation, "original retry").await.expect("original append");
+            key.clone(), operation, "original retry", &mut None).await.expect("original append");
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
             .expect("original ledger");
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        let error = append_keyed_with_work((&stream, &client), OwnedBytes::from_static(b"changed"),
+        let error = append_keyed((&stream, &client), OwnedBytes::from_static(b"changed"),
             Some(0), key.clone(), operation, "original retry", &mut Some(&mut observer))
             .await.expect_err("SDK mismatch");
         assert!(matches!(&error, Error::NativeStream {
@@ -5222,42 +5036,7 @@ mod tests {
         assert_eq!(observer.into_custody().bytes(), 0);
         assert_eq!(work.receipt().authority_records_appended, 0);
         assert!(matches!(append_keyed((&stream, &client), OwnedBytes::from_static(b"changed"),
-            Some(0), key, operation, "original retry").await, Err(Error::Conflict(_))));
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
-    async fn native_record_receive_denial_keeps_raw_prefix_without_retention() {
-        use std::sync::atomic::Ordering;
-        for denied_before_sdk in [true, false] {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
-            let stream = client.stream("native-receiver-prefix").expect("source stream");
-            stream.append_batch(
-                vec![OwnedBytes::from_static(b"a"), OwnedBytes::from_static(b"bc")], Some(0), None,
-            ).await.expect("original physical records");
-            provider.native_only.store(true, Ordering::SeqCst);
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = keyed_append_native_budget();
-            budget.backend_read_operations = u64::from(!denied_before_sdk);
-            budget.authority_bytes_read = 1;
-            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .expect("original ledger");
-            let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = read_records_with_work(&client, &stream, 0, 2, &mut Some(&mut observer))
-                .await.expect_err("exact receiver or SDK admission denial");
-            let expected_counter = if denied_before_sdk { "backend_read_operations" } else { "authority_bytes_read" };
-            assert!(matches!(error, Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { counter, .. },
-                ), ..
-            } if counter == expected_counter));
-            assert_eq!(work.receipt().authority_records_read, if denied_before_sdk { 0 } else { 2 });
-            assert_eq!(work.receipt().authority_bytes_read, if denied_before_sdk { 0 } else { 3 });
-            assert_eq!(provider.io.reads.load(Ordering::SeqCst), 1, "actual native provider entry");
-            assert_eq!(work.receipt().backend_read_operations, u64::from(!denied_before_sdk));
-            assert_eq!(observer.into_custody().bytes(), 0, "all actual records dropped before release");
-        }
+            Some(0), key, operation, "original retry", &mut None).await, Err(Error::Conflict(_))));
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5302,69 +5081,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
-    async fn native_coordinator_open_uses_original_read_gate_and_intrinsic_path_custody() {
-        use std::sync::atomic::Ordering;
-        for mode in 0..3 {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
-            provider.native_only.store(true, Ordering::SeqCst);
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = keyed_append_native_budget();
-            budget.bytes_copied = COORDINATOR_PATH.len() as u64;
-            if mode == 1 { budget.backend_read_operations = 0; }
-            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .expect("original startup ledger");
-            if mode == 2 { cancellation.cancel(); }
-            let result = DistributedCoordinator::open_with_native_work(
-                &client, Arc::new(TestContentVerifier), &native,
-            ).await;
-            if mode == 0 {
-                let coordinator = result.expect("same canonical empty coordinator");
-                assert_eq!(coordinator.revision(), 0);
-                assert_eq!(coordinator.stream.path().as_str(), COORDINATOR_PATH);
-                let held = coordinator._native_metadata_custody.as_ref().expect("intrinsic path owner");
-                assert_eq!(held.bytes(), COORDINATOR_PATH.len() as u64);
-                assert!(held.work().shares_ledger(&native));
-                cancellation.cancel();
-                assert_eq!(coordinator.stream.path().as_str(), COORDINATOR_PATH,
-                    "cancellation cannot retire an owned path while its coordinator remains live");
-                drop(coordinator);
-            } else {
-                assert!(matches!(result, Err(Error::NativeWork { .. })));
-            }
-            assert_eq!(provider.io.reads.load(Ordering::SeqCst), u64::from(mode != 2),
-                "startup must not fall back to an ordinary ungated replay");
-            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 0);
-            assert_eq!(native.receipt().backend_read_operations, u64::from(mode == 0));
-        }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_envelope_cancellation_releases_original_adopted_input() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = keyed_append_native_budget();
-        budget.bytes_copied = 2;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .expect("original ledger");
-        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        let mut canonical = Vec::new();
-        crate::store::history::HistoryIo::reserve_bytes(&mut observer, &mut canonical, 2)
-            .expect("fund original buffer before growth");
-        crate::store::history::HistoryIo::copy_bytes(&mut observer, 2).expect("fund original copy");
-        canonical.extend_from_slice(b"{}");
-        cancellation.cancel();
-        let error = encode_with_work(
-            1, OperationId::from_bytes([17; 16]), "native-cancelled-envelope",
-            *blake3::hash(b"{}").as_bytes(), canonical, 1, &mut Some(&mut observer),
-        ).expect_err("original cancellation before metadata construction");
-        assert!(matches!(error, Error::NativeWork { .. }));
-        assert_eq!(observer.into_custody().bytes(), 0, "input physically dropped before release");
-        assert_eq!(work.receipt().backend_write_operations, 0);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
     async fn native_commit_once_preserves_original_sdk_error_and_separate_inspection() {
         use std::sync::atomic::Ordering;
         for lost_ack in [false, true] {
@@ -5378,7 +5094,7 @@ mod tests {
             let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
             let mut optional = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
             let (key, retained) = stream_key_with_work("native-once-key", &mut optional).expect("original paid key");
-            let mut prepared = PreparedCommitRequest::new_with_retained_key(key, retained, &mut optional);
+            let mut prepared = PreparedCommitRequest::new(key, retained, &mut optional);
             assert_eq!(prepared.commit_phase(), CommitPhase::NotCalled);
             prepared.push_condition(acyclic_stream::CommitCondition::Tail {
                 path: path.clone(), expected: 0,
@@ -5386,7 +5102,7 @@ mod tests {
             prepared.append(path.clone(), OwnedBytes::from_static(b"original")).expect("original record");
             provider.native_only.store(true, Ordering::SeqCst);
             provider.lose_ack.store(lost_ack, Ordering::SeqCst);
-            let result = prepared.commit_once_with_work(&client).await.expect("one SDK boundary");
+            let result = prepared.commit_once(&client, None).await.expect("one SDK boundary");
             assert_eq!(prepared.commit_phase(), if lost_ack { CommitPhase::Unknown } else { CommitPhase::Committed });
             assert_eq!(provider.io.inspections.load(Ordering::SeqCst), 0, "once never reconciles or inspects");
             let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
@@ -5447,7 +5163,7 @@ mod tests {
             let mut io = crate::store::history::native_work_io(&native).expect("original observer");
             let mut work = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
             let (key, retained) = stream_key_with_work("native-phase-key", &mut work).expect("original key");
-            let mut prepared = PreparedCommitRequest::new_with_retained_key(key, retained, &mut work);
+            let mut prepared = PreparedCommitRequest::new(key, retained, &mut work);
             prepared.push_condition(acyclic_stream::CommitCondition::Tail {
                 path: path.clone(), expected: 0,
             }).expect("original guarded condition");
@@ -5456,8 +5172,8 @@ mod tests {
             provider.native_only.store(true, Ordering::SeqCst);
             provider.lose_ack.store(lost_ack, Ordering::SeqCst);
             let mut phase = CommitPhase::Failed; // The engine must initialize its real pre-call state.
-            let result = commit_prepared_with_work_and_phase(
-                &client, prepared, OperationId::from_bytes([21; 16]), Some(&mut phase),
+            let result = commit_prepared(
+                &client, prepared, OperationId::from_bytes([21; 16]), Some(&mut phase), None, None
             ).await;
             assert_eq!(phase, expected_phase);
             assert_eq!(provider.io.writes.load(Ordering::SeqCst), 1);
@@ -5506,7 +5222,7 @@ mod tests {
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
         let mut work = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let (key, retained) = stream_key_with_work("native-hidden-key", &mut work).expect("original paid key");
-        let mut prepared = PreparedCommitRequest::new_with_retained_key(key, retained, &mut work);
+        let mut prepared = PreparedCommitRequest::new(key, retained, &mut work);
         prepared.push_condition(acyclic_stream::CommitCondition::Tail {
             path: path.clone(), expected: 0,
         }).expect("canonical tail guard");
@@ -5516,8 +5232,8 @@ mod tests {
         provider.hide_receipt.store(true, Ordering::SeqCst);
         let operation = OperationId::from_bytes([23; 16]);
         let mut phase = CommitPhase::NotCalled;
-        let result = commit_prepared_with_work_and_phase(
-            &client, prepared, operation, Some(&mut phase),
+        let result = commit_prepared(
+            &client, prepared, operation, Some(&mut phase), None, None
         ).await;
         assert!(matches!(result, Err(Error::Indeterminate(actual)) if actual == operation));
         assert_eq!(phase, CommitPhase::Unknown);
@@ -5562,8 +5278,8 @@ mod tests {
             .expect("original absence condition");
         prepared.append(path, OwnedBytes::from_static(b"original")).expect("original payload");
         let mut phase = CommitPhase::NotCalled;
-        let error = commit_prepared_with_work_and_phase(
-            &client, prepared, OperationId::from_bytes([93; 16]), Some(&mut phase),
+        let error = commit_prepared(
+            &client, prepared, OperationId::from_bytes([93; 16]), Some(&mut phase), None, None
         ).await.expect_err("SDK default must remain the actual source");
         assert!(matches!(error, Error::NativeStream { source: StreamError::Unsupported, .. }));
         assert_eq!(phase, CommitPhase::Failed);
@@ -5573,56 +5289,6 @@ mod tests {
         assert_eq!(io.into_custody().bytes(), 0);
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[tokio::test]
-    async fn ordinary_owned_observer_cold_replays_real_admission_without_native_capability() -> Result<()> {
-        use std::sync::atomic::Ordering;
-        let provider = Arc::new(crate::test_stream::NoNative::default());
-        let client = StreamClient::new(provider.clone());
-        let operation = OperationId::from_bytes([94; 16]);
-        let declaration = spec(operation, 0)?;
-        let mut original = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(
-            declare(&mut original, declaration, "ordinary-owned-real-admission").await?,
-            CoordinatorApply::Applied,
-        );
-        let expected_revision = original.revision();
-        let expected_scheduler = original.scheduler().clone();
-        let expected_binding = original.binding.clone();
-        assert!(expected_revision > 0);
-        assert!(expected_binding.is_some(), "original admission must configure its protected owner");
-        assert!(expected_scheduler.operation(operation).is_some());
-        drop(original);
-        let source_tail = client.bounds(COORDINATOR_PATH).await?.tail;
-        let before = provider.ordinary_calls.load(Ordering::SeqCst);
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = keyed_append_native_budget();
-        budget.items_returned = 8;
-        budget.authority_bytes_read = 32_768;
-        let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
-        work.preflight().expect("ordinary owned budget");
-        let result = DistributedCoordinator::open_with_work(
-            &client, Arc::new(TestContentVerifier), &mut Some(&mut work)).await;
-        let receipt = work.finish(result).expect("ordinary SDK must replay the real protected admission");
-        assert_eq!(receipt.value.revision(), expected_revision);
-        assert_eq!(receipt.value.scheduler(), &expected_scheduler);
-        assert_eq!(receipt.value.binding, expected_binding);
-        assert!(receipt.value.intents.contains_key("ordinary-owned-real-admission"));
-        assert!(receipt.work.authority_records_read > 0);
-        assert!(receipt.work.authority_bytes_read > 0);
-        assert!(receipt.work.backend_read_operations > 0);
-        assert!(provider.ordinary_calls.load(Ordering::SeqCst) > before);
-        assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, source_tail, "cold observation must not republish");
-        drop(receipt);
-
-        cancellation.cancel();
-        let mut cancelled = crate::store::history::HistoryWork::new(budget, &cancellation);
-        let before = provider.ordinary_calls.load(Ordering::SeqCst);
-        assert!(DistributedCoordinator::open_with_work(
-            &client, Arc::new(TestContentVerifier), &mut Some(&mut cancelled)).await.is_err());
-        assert_eq!(provider.ordinary_calls.load(Ordering::SeqCst), before, "cancelled real cold read cannot enter the SDK");
-        Ok(())
-    }
     struct TestReducer {
         entrypoint: EntrypointRef,
         value: Value,
@@ -8138,11 +7804,11 @@ mod tests {
                 if let Some(tail) = existing_tail {
                     client
                         .stream(COORDINATOR_PATH)?
-                        .fork(execution_path(execution)?.as_str(), Some(0), None)
+                        .fork(execution_path(execution, &mut None)?.as_str(), Some(0), None)
                         .await?;
                     if tail != 0 {
                         client
-                            .stream(execution_path(execution)?.as_str())?
+                            .stream(execution_path(execution, &mut None)?.as_str())?
                             .append_batch(
                                 vec![
                                     OwnedBytes::from_static(b"settled observation");
@@ -8197,7 +7863,7 @@ mod tests {
                     assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
                     assert_eq!(
                         client
-                            .stream(execution_path(execution)?.as_str())?
+                            .stream(execution_path(execution, &mut None)?.as_str())?
                             .tail()
                             .await?,
                         expected_tail + 1
@@ -8232,17 +7898,17 @@ mod tests {
                                 },
                                 if existing_tail.is_some() {
                                     acyclic_stream::CommitCondition::Tail {
-                                        path: execution_path(execution)?,
+                                        path: execution_path(execution, &mut None)?,
                                         expected: expected_tail,
                                     }
                                 } else {
                                     acyclic_stream::CommitCondition::Absent {
-                                        path: execution_path(execution)?,
+                                        path: execution_path(execution, &mut None)?,
                                     }
                                 },
                             ],
                             mutations: vec![acyclic_stream::CommitMutation::Append {
-                                path: execution_path(execution)?,
+                                path: execution_path(execution, &mut None)?,
                                 records: vec![OwnedBytes::from_static(b"stale dispatch")],
                             }],
                             idempotency_key: stream_key_with_work("stale-idle-dispatch", &mut None).map(|(key, _)| key)?,
