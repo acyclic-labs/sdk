@@ -1387,7 +1387,7 @@ fn hash_native_entry(
     override_metadata: Option<&NativeMetadataImage>,
     buffer: &mut [u8],
 ) -> Result<(), std::io::Error> {
-    use cap_fs_ext::{DirExt as _, OpenOptionsFollowExt as _};
+    use cap_fs_ext::OpenOptionsFollowExt as _;
     use std::io::Read as _;
     let file_type = metadata.file_type();
     hasher.update(if file_type.is_symlink() { b"link" } else if file_type.is_dir() { b"directory" } else if file_type.is_file() { b"file" } else { b"special" });

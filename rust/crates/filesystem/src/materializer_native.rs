@@ -2,6 +2,8 @@
 #![allow(unsafe_code, reason = "isolates descriptor-relative native rename and metadata calls")]
 
 use crate::native_host::HostRoot;
+#[cfg(windows)]
+use cap_fs_ext::OpenOptionsFollowExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions};
 use std::ffi::OsStr;
 use std::io;
@@ -94,7 +96,7 @@ impl<'a> Entry<'a> {
             let mut status_block = IO_STATUS_BLOCK::default();
             // SAFETY: the held handle and complete information/status structures outlive the call.
             let status = unsafe { NtSetInformationFile(HANDLE(file.as_handle().as_raw_handle()), &raw mut status_block, (&raw const information).cast(), u32::try_from(size_of::<FILE_BASIC_INFORMATION>()).map_err(|_| io::Error::other("metadata information overflow"))?, FileBasicInformation) };
-            if !status.is_ok() { return Err(nt_status_error(status)); }
+            if !status.is_ok() { return Err(crate::native_host::status_error(status)); }
             sync_directory(&self.parent)?;
             let _ = posix_mode;
         }
@@ -179,12 +181,6 @@ fn rename_no_replace(source: &Entry, destination: &Entry) -> io::Result<()> {
     crate::native_host::rename_windows_entry(&source_file, &destination.parent, destination.name)
 }
 
-#[cfg(windows)]
-pub(super) fn nt_status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
-    use windows::Wdk::Foundation::RtlNtStatusToDosError;
-    // SAFETY: this value-only conversion accepts any NTSTATUS.
-    io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) }.cast_signed())
-}
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn rename_no_replace(_source: &Entry, _destination: &Entry) -> io::Result<()> {

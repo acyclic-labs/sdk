@@ -4,8 +4,11 @@
     reason = "isolates the reviewed platform calls of native filesystem access"
 )]
 
+#[cfg(not(windows))]
 use cap_fs_ext::DirExt as _;
-use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
+use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions};
+#[cfg(not(windows))]
+use cap_std::fs::ReadDir;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -495,7 +498,7 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
 /// handle holds its file stays listed until that handle closes, yet nothing
 /// can open it again: it is gone, where Win32 would report denied access.
 #[cfg(windows)]
-fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
+pub(crate) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
     const DELETE_PENDING: windows::Win32::Foundation::NTSTATUS =
         windows::Win32::Foundation::NTSTATUS(0xC000_0056_u32.cast_signed());
     if status == DELETE_PENDING {
