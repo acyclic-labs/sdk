@@ -370,3 +370,138 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
     assert_eq!(setup.fixture.stream.bounds(seed.child.stream_path()?.as_str()).await?.tail, 1);
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry() -> Result<()> {
+    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+    let fixture = crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
+    let owner = fixture.host.journal_owner(
+        fixture.root, (&fixture.root_lease.reservation).into(),
+    ).await?;
+    let agent = owner.authenticated_binding_agent()?
+        .ok_or_else(|| Error::Invalid("original ROOT fixture has no authenticated agent".into()))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "original-native-root-conversation".into(),
+    };
+    let original_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
+    let scope = original_issuer.root_for_agent(
+        agent, "original-native-root-bind", Capabilities::new(["conversation:bind".into()]),
+    );
+    let command = Command {
+        operation_id: OperationId::from_bytes([124; 16]),
+        idempotency_key: IdempotencyKey::new("original-native-root-bind")?,
+        expected_revision: 0, scope, causal_parent: None,
+        action: Action::BindConversation { agent },
+    };
+    let mut aggregate = StreamAggregate::open(
+        &fixture.stream, audience.clone(), original_issuer.verifier(), SchemaRegistry::new(),
+    ).await?;
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
+        .expect("original ROOT ledger");
+    let (first, first_custody) = aggregate.execute_task_command_with_native_work(
+        command.clone(), &owner, &native,
+    ).await?;
+    assert!(matches!(&first, ApplyResult::Applied { event }
+        if event.revision == 1 && event.operation_id == command.operation_id));
+    assert_eq!(aggregate.reducer().conversation().and_then(|state| state.agent), Some(agent));
+    assert!(first_custody.bytes() > 0);
+    assert!(first_custody.work().shares_ledger(&native));
+    assert!(aggregate.native_root_state_custody.as_ref()
+        .is_some_and(|custody| custody.bytes() > 0 && custody.work().shares_ledger(&native)));
+    owner.authenticate_fork_parent(&audience)?;
+    let canonical = aggregate.operation_event(command.operation_id).await?
+        .ok_or_else(|| Error::NotFound("original canonical ROOT event".into()))?;
+    assert!(matches!(&first, ApplyResult::Applied { event } if event == &canonical));
+    let record = operations::one_record_with_work(
+        &fixture.stream, aggregate.stream.path(), 0, &mut None,
+    ).await?.ok_or_else(|| Error::NotFound("original canonical ROOT record".into()))?;
+    let raw_bytes = record.value.len() as u64;
+    let dto_owned = crate::core::event_clone_reservation(&canonical)?;
+    assert_eq!(native.receipt().output_bytes, raw_bytes);
+    assert_eq!(native.receipt().items_returned, 1);
+    assert_eq!(first_custody.bytes(), dto_owned);
+    let prefix = native.receipt();
+    let (retry, retry_custody) = aggregate.execute_task_command_with_native_work(
+        command.clone(), &owner, &native,
+    ).await?;
+    assert!(matches!(&retry, ApplyResult::Replayed { event } if event == &canonical));
+    assert!(native.receipt().backend_read_operations > prefix.backend_read_operations);
+    assert!(retry_custody.work().shares_ledger(&native));
+    assert_eq!(retry_custody.bytes(), dto_owned);
+    assert_eq!(native.receipt().output_bytes - prefix.output_bytes, raw_bytes);
+    assert_eq!(native.receipt().items_returned - prefix.items_returned, 1);
+    assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
+
+    // A new query ledger authenticates the same immutable retry without
+    // rebinding the original owner proof or the aggregate's existing state.
+    let independent = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
+        .expect("independent original query ledger");
+    let (independent_retry, independent_custody) = aggregate.execute_task_command_with_native_work(
+        command.clone(), &owner, &independent,
+    ).await?;
+    assert!(matches!(&independent_retry, ApplyResult::Replayed { event } if event == &canonical));
+    assert!(independent_custody.work().shares_ledger(&independent));
+    assert_eq!(independent_custody.bytes(), dto_owned);
+    assert_eq!(independent.receipt().output_bytes, raw_bytes);
+    assert_eq!(independent.receipt().items_returned, 1);
+    assert!(aggregate.native_root_state_custody.as_ref()
+        .is_some_and(|custody| custody.work().shares_ledger(&native)));
+
+    let mut wrong_actor = command.clone();
+    wrong_actor.action = Action::BindConversation { agent: AgentId::from_bytes([125; 16]) };
+    let mut missing_grant = command.clone();
+    missing_grant.scope = original_issuer.root_for_agent(
+        agent, "original-native-root-bind", Capabilities::new([]),
+    );
+    let mut causal_binding = command.clone();
+    causal_binding.causal_parent = Some(EventReference { authority: audience.clone(), revision: 1 });
+    for invalid in [wrong_actor, missing_grant, causal_binding] {
+        let error = aggregate.execute_task_command_with_native_work(invalid, &owner, &native)
+            .await.err().expect("original ROOT actor, grant and no-parent policy remain required");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    }
+
+    let wrong_issuer = crate::core::AuthorityIssuer::new("created-owner", [81; 32], audience.clone());
+    let mut wrong_scope = command.clone();
+    wrong_scope.scope = wrong_issuer.root_for_agent(
+        agent, "original-native-root-bind", Capabilities::new(["conversation:bind".into()]),
+    );
+    let wrong_scope_error = aggregate.execute_task_command_with_native_work(
+        wrong_scope, &owner, &native,
+    ).await.err().expect("original issuer key must authenticate the binding scope");
+    assert_eq!(wrong_scope_error.code(), crate::wire::ErrorCode::Unauthorized);
+    let denied = NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..guarded_publication_budget() }, &cancellation,
+    ).expect("zero-copy original ledger");
+    assert!(matches!(aggregate.execute_task_command_with_native_work(
+        command.clone(), &owner, &denied,
+    ).await, Err(Error::NativeWork {
+        cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+            counter: "bytes_copied", ..
+        }), ..
+    })));
+    let cancelled_token = CancellationToken::new();
+    let cancelled = NativeMaterializationWork::new(guarded_publication_budget(), &cancelled_token)
+        .expect("original ledger before cancellation");
+    cancelled_token.cancel();
+    assert!(matches!(aggregate.execute_task_command_with_native_work(
+        command, &owner, &cancelled,
+    ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
+    drop(first);
+    drop(first_custody);
+    drop(retry);
+    drop(retry_custody);
+    drop(independent_retry);
+    drop(independent_custody);
+    // The intrinsic reducer and immutable owner proof remain usable after
+    // every caller-owned result payload and its query custody have dropped.
+    assert_eq!(aggregate.reducer().revision(), 1);
+    owner.authenticate_fork_parent(&audience)?;
+    drop(aggregate);
+    drop(owner);
+    Ok(())
+}

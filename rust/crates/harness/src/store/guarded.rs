@@ -2,6 +2,45 @@ use super::*;
 use crate::durable_host::TaskJournalOwner;
 use acyclic_fs::{CancellationToken, MeasuredResult, OperationReceipt, WorkBudget};
 
+fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(&error, Error::NativeWork { .. } | Error::NativeBoundary { .. }) { return error; }
+    Error::Indeterminate(operation)
+}
+
+enum GuardedBoundary {
+    Invalid,
+    Unauthorized,
+    Conflict,
+    Unsupported,
+    Storage,
+}
+
+fn guarded_boundary(
+    work: &Option<&mut dyn history::HistoryIo>, kind: GuardedBoundary,
+    reason: &'static str,
+) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+        let code = match kind {
+            GuardedBoundary::Invalid => crate::wire::ErrorCode::Invalid,
+            GuardedBoundary::Unauthorized => crate::wire::ErrorCode::Unauthorized,
+            GuardedBoundary::Conflict => crate::wire::ErrorCode::Conflict,
+            GuardedBoundary::Unsupported => crate::wire::ErrorCode::Unsupported,
+            GuardedBoundary::Storage => crate::wire::ErrorCode::Storage,
+        };
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match kind {
+        GuardedBoundary::Invalid => Error::Invalid(reason.into()),
+        GuardedBoundary::Unauthorized => Error::Unauthorized(reason.into()),
+        GuardedBoundary::Conflict => Error::Conflict(reason.into()),
+        GuardedBoundary::Unsupported => Error::Unsupported(reason.into()),
+        GuardedBoundary::Storage => Error::Storage(reason.into()),
+    }
+}
+
 impl<P: StreamProvider> StreamAggregate<P> {
     /// Executes or authenticates the original ROOT Bind command on the ordinary
     /// conversation engine. A retry never republishes or derives a plugin ID.
@@ -12,85 +51,152 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let Action::BindConversation { agent } = &command.action else {
-                return Err(Error::Invalid("measured ROOT binding requires the original BindConversation command".into()));
-            };
-            if self.reducer.authority().kind != crate::core::AggregateKind::Conversation
-                || command.causal_parent.is_some()
-                || command.scope.agent() != Some(*agent)
-                || owner.authenticated_binding_agent()? != Some(*agent)
-            {
-                return Err(Error::Unauthorized("ROOT binding differs from its original owner, actor or causal policy".into()));
-            }
-            owner.authenticate_binding_scope(self.reducer.authority(), &command.scope, &mut Some(&mut work))?;
-            let gate = owner.lock_root_binding().await
-                .ok_or_else(|| Error::Unauthorized("published children use their canonical child binding, not ROOT binding".into()))?;
-            work.preflight()?;
-            let intent = crate::core::canonical_intent_with_work(&command, &mut Some(&mut work))?;
-            owner.check_root_binding(self.reducer.authority(), command.operation_id, intent)?;
-            const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
-            let audience = self.reducer.authority();
-            history::HistoryIo::hashed_bytes(&mut work,
-                (ROOT_CHOICE_DOMAIN.len() + b"conversation".len() + 8 + audience.id.len()) as u64)?;
-            let mut choice = blake3::Hasher::new();
-            choice.update(ROOT_CHOICE_DOMAIN);
-            choice.update(b"conversation");
-            choice.update(&(audience.id.len() as u64).to_le_bytes());
-            choice.update(audience.id.as_bytes());
-            owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes())?;
-            // Reserve the actual future immutable proof before any guarded IO.
-            let (original_task, admission_digest, original_fence) = owner.binding_origin();
-            let proof = VerifiedRootBinding {
-                original_task, admission_digest,
-                fence: crate::scheduler::LeaseFence {
-                    reservation_id: history::HistoryIo::clone_text(&mut work, &original_fence.reservation_id)?,
-                    placement: history::HistoryIo::clone_text(&mut work, &original_fence.placement)?,
-                },
-                agent: *agent,
-                audience: history::HistoryIo::clone_authority(&mut work, self.reducer.authority())?,
-                bind_operation: command.operation_id,
-                intent_digest: intent,
-            };
-            // An exact immutable replay needs the original admission/scope but
-            // no new publication lease. New publication retains the real fence.
-            let result = if let Some(replayed) = self.replay_indexed_with_work(&command, &mut Some(&mut work)).await? {
-                replayed
-            } else {
-                self.execute_guarded_publication_with_work(command, owner,
-                    crate::distributed::JournalWrite::Fresh, &mut Some(&mut work)).await?
-            };
-            owner.retain_root_binding(proof)?;
-            drop(gate);
-            Ok(result)
+            self.execute_root_bind_with_work(command, owner, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
+    }
+
+    /// Executes the same protected ROOT binding on the original native ledger.
+    /// Reducer and immutable owner proof retain their own native source custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn execute_task_command_with_native_work(
+        &mut self, command: Command, owner: &TaskJournalOwner<P>,
+        original_work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ApplyResult, acyclic_fs::NativeAllocation)> {
+        let mut native_io = history::native_work_io(original_work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let result = self.execute_root_bind_with_work(
+            command, owner, &mut Some(&mut native_io),
+        ).await?;
+        native_io.return_staged_output()?;
+        Ok((result, native_io.into_custody()))
+    }
+
+    async fn execute_root_bind_with_work(
+        &mut self, command: Command, owner: &TaskJournalOwner<P>,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+        let Action::BindConversation { agent } = &command.action else {
+            return Err(guarded_boundary(work, GuardedBoundary::Invalid, "measured ROOT binding requires the original BindConversation command"));
+        };
+        if self.reducer.authority().kind != crate::core::AggregateKind::Conversation
+            || command.causal_parent.is_some()
+            || command.scope.agent() != Some(*agent)
+            || owner.authenticated_binding_agent()? != Some(*agent)
+        {
+            return Err(guarded_boundary(work, GuardedBoundary::Unauthorized, "ROOT binding differs from its original owner, actor or causal policy"));
+        }
+        owner.authenticate_binding_scope(self.reducer.authority(), &command.scope, work)?;
+        let gate = owner.lock_root_binding().await
+            .ok_or_else(|| guarded_boundary(work, GuardedBoundary::Unauthorized, "published children use their canonical child binding, not ROOT binding"))?;
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+        let intent = crate::core::canonical_intent_with_work(&command, work)?;
+        owner.check_root_binding(self.reducer.authority(), command.operation_id, intent)?;
+        const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
+        let audience = self.reducer.authority();
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(
+                (ROOT_CHOICE_DOMAIN.len() + b"conversation".len() + 8 + audience.id.len()) as u64)?;
+        }
+        let mut choice = blake3::Hasher::new();
+        choice.update(ROOT_CHOICE_DOMAIN);
+        choice.update(b"conversation");
+        choice.update(&(audience.id.len() as u64).to_le_bytes());
+        choice.update(audience.id.as_bytes());
+        owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes())?;
+        // Reserve the actual future immutable proof before any guarded IO.
+        let (original_task, admission_digest, original_fence) = owner.binding_origin();
+        let proof = VerifiedRootBinding {
+            original_task, admission_digest,
+            fence: crate::scheduler::LeaseFence {
+                reservation_id: match work.as_deref_mut() {
+                    Some(work) => work.clone_text(&original_fence.reservation_id)?,
+                    None => original_fence.reservation_id.clone(),
+                },
+                placement: match work.as_deref_mut() {
+                    Some(work) => work.clone_text(&original_fence.placement)?,
+                    None => original_fence.placement.clone(),
+                },
+            },
+            agent: *agent,
+            audience: match work.as_deref_mut() {
+                Some(work) => work.clone_authority(self.reducer.authority())?,
+                None => self.reducer.authority().clone(),
+            },
+            bind_operation: command.operation_id,
+            intent_digest: intent,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let proof = {
+            let custody = if let Some(observer) = work.as_deref_mut() {
+                if observer.original_native_work().is_some() {
+                    let bytes = (proof.fence.reservation_id.capacity() as u64)
+                        .checked_add(proof.fence.placement.capacity() as u64)
+                        .and_then(|bytes| bytes.checked_add(proof.audience.id.capacity() as u64))
+                        .ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "root binding proof custody overflows",
+                        })?;
+                    Some(observer.take_native_custody(bytes)?)
+                } else { None }
+            } else { None };
+            // The proof is physically dropped before its exact source guard
+            // on any early error; successful publication moves both to owner.
+            (proof, custody)
+        };
+        // An exact immutable replay needs the original admission/scope but
+        // no new publication lease. New publication retains the real fence.
+        let result = if let Some(replayed) = self.replay_indexed_with_work(&command, true, work).await? {
+            replayed
+        } else {
+            self.execute_guarded_publication_with_work(command, owner,
+                crate::distributed::JournalWrite::Fresh, true, work).await?
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (proof, custody) = proof;
+            match custody {
+                Some(custody) => { owner.retain_root_binding_with_native_custody(proof, custody)?; },
+                None => owner.retain_root_binding(proof)?,
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        owner.retain_root_binding(proof)?;
+        drop(gate);
+        Ok(result)
     }
 
     pub(super) async fn execute_guarded_publication_with_work(
         &mut self, command: Command, owner: &TaskJournalOwner<P>,
         write: crate::distributed::JournalWrite,
+        return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<ApplyResult> {
         owner.verify_with_work(write.settlement(), work).await?;
-        if let Some(result) = self.replay_indexed_with_work(&command, work).await? {
+        if let Some(result) = self.replay_indexed_with_work(&command, return_event, work).await? {
             if let Action::PublishFork { seed } = &command.action {
                 self.fork_verifier.as_ref().ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?
                     .release_private_fence_with_work(seed, work).await?;
             }
             return Ok(result);
         }
-        let planned = if work.is_some() {
-            self.reducer.plan_indexed_with_work(&command, false, work)?
+        let (planned, planned_quota) = if work.is_some() {
+            self.reducer.plan_indexed_with_retained_quota(&command, false, work)?
         } else {
-            self.plan_command(&command, false).await?
+            (self.plan_command(&command, false).await?, 0)
         };
         let ApplyResult::Applied { event } = planned else { return Ok(planned); };
         if work.is_none() { self.validate_admission_content(&command.action).await?; }
         else if !matches!(command.action, Action::BindConversation { .. } | Action::PublishFork { .. }) {
-            return Err(Error::Unsupported("this measured guarded producer requires ROOT or published-child binding/fork publication".into()));
+            return Err(guarded_boundary(work, GuardedBoundary::Unsupported,
+                "this measured guarded producer requires ROOT or published-child binding/fork publication"));
         }
         self.validate_causal_reference_with_work(event.causal_parent.as_ref(), work).await?;
         let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, work).await?;
+        if return_event && let Some(work) = work.as_deref_mut() {
+            work.stage_output(publication.bytes.len() as u64, 1)?;
+        }
         let key = stream_idempotency_key_with_work(
             self.stream.path().as_str(), &command.idempotency_key, work)?;
         let reservation = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
@@ -100,6 +206,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .activate_with_work(seed, work).await?)
         } else { None };
         let appended = owner.append_conversation_with_work(&publication, &key, write, work).await;
+        let released_publication = match work.as_deref_mut() {
+            Some(work) => work.release_owned(publication.into_retained_owned()),
+            None => Ok(()),
+        };
         drop(key);
         let released_key = match work.as_deref_mut() {
             Some(work) => work.release_owned(32),
@@ -107,15 +217,18 @@ impl<P: StreamProvider> StreamAggregate<P> {
         };
         match appended {
             Ok(true) => {
-                released_key.map_err(|_| Error::Indeterminate(command.operation_id))?;
+                released_publication.map_err(|error| guarded_publication_error(error, command.operation_id))?;
+                released_key.map_err(|error| guarded_publication_error(error, command.operation_id))?;
             },
             Ok(false) => {
                 let _ = released_key;
+                let _ = released_publication;
                 if let Some(guard) = fork_guard.as_deref() { crate::fork::release_fork_guard_with_work(guard, work).await?; }
-                return Err(Error::Conflict("task publication lost its owner or conversation tail".into()));
+                return Err(guarded_boundary(work, GuardedBoundary::Conflict, "task publication lost its owner or conversation tail"));
             }
             Err(error) => {
                 let _ = released_key;
+                let _ = released_publication;
                 if !matches!(error, Error::Indeterminate(_)) {
                     if let Some(guard) = fork_guard.as_deref() { crate::fork::release_fork_guard_with_work(guard, work).await?; }
                 }
@@ -123,44 +236,111 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
         }
         if let Some(work) = work.as_deref_mut() { work.retain_owned(reservation)?; }
-        let applied = self.reducer.apply_committed_with_work(event.clone(), work)
+        let applied = self.apply_committed_with_root_state(event.clone(), work)
             .and_then(|result| self.reducer.mark_indexed_terminal_effect(&event).map(|()| result));
         if let Some(guard) = fork_guard.as_deref() {
             crate::fork::release_fork_guard_with_work(guard, work).await
-                .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                .map_err(|error| guarded_publication_error(error, command.operation_id))?;
         }
-        applied.map_err(|_| Error::Indeterminate(command.operation_id))
+        drop(event);
+        let released_planned = match work.as_deref_mut() {
+            Some(work) => work.release_owned(planned_quota),
+            None => Ok(()),
+        };
+        match applied {
+            Ok(result) => {
+                released_planned.map_err(|error| guarded_publication_error(error, command.operation_id))?;
+                Ok(result)
+            },
+            Err(error) => {
+                let _ = released_planned;
+                Err(guarded_publication_error(error, command.operation_id))
+            },
+        }
     }
 
     pub(super) async fn replay_indexed_with_work(
-        &mut self, command: &Command, work: &mut Option<&mut dyn history::HistoryIo>,
+        &mut self, command: &Command, return_event: bool,
+        work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<Option<ApplyResult>> {
         self.reducer.verify_command_scope_with_work(command, work)?;
-        let (event, _) = operations::find_operation_bounded_with_work(
-            &self.client, self.reducer.authority(), &self.reducer.event_verifier(),
-            command.operation_id, default_projection_read_limits().maximum_bytes, work,
-        ).await?;
+        let verifier = if work.is_some() {
+            self.reducer.event_verifier_with_work(work)?
+        } else { self.reducer.event_verifier() };
+        let verifier_bytes = if work.is_some() { verifier.logical_owned_bytes()? } else { 0 };
+        let read = operations::find_operation_bounded_with_work(
+            &self.client, self.reducer.authority(), &verifier,
+            command.operation_id, default_projection_read_limits().maximum_bytes, return_event, work,
+        ).await;
+        drop(verifier);
+        let released_verifier = match work.as_deref_mut() {
+            Some(work) => work.release_owned(verifier_bytes),
+            None => Ok(()),
+        };
+        let (event, _) = match read {
+            Ok(read) => { released_verifier?; read },
+            Err(error) => {
+                let _ = released_verifier;
+                return Err(error);
+            },
+        };
         let Some(event) = event else {
             if self.reducer.operation_revision(command.operation_id).is_some() {
-                return Err(Error::Storage("resident operation has no atomic canonical location".into()));
+                return Err(guarded_boundary(work, GuardedBoundary::Storage, "resident operation has no atomic canonical location"));
             }
             return Ok(None);
         };
         self.reducer.verify_retained_command_with_work(command, &event, work)?;
         if event.revision > self.reducer.revision() {
             if event.revision != crate::contract::next_revision(self.reducer.revision())? {
-                return Err(Error::Conflict("aggregate must refresh to the indexed operation boundary".into()));
+                return Err(guarded_boundary(work, GuardedBoundary::Conflict, "aggregate must refresh to the indexed operation boundary"));
             }
             let indexed = effects::retirement_proof_for_event_with_work(
                 &self.client, self.reducer.authority(), &event, work).await?;
             let reservation = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
             if let Some(work) = work.as_deref_mut() { work.retain_owned(reservation)?; }
-            let result = self.reducer.apply_committed_with_work(event.clone(), work)?;
+            let result = self.apply_committed_with_root_state(event.clone(), work)?;
             if indexed { self.reducer.mark_indexed_terminal_effect(&event)?; }
             self.reducer.enforce_terminal_effect_limit()?;
+            drop(event);
+            if let Some(work) = work.as_deref_mut() { work.release_owned(reservation)?; }
             return Ok(Some(result));
         }
         Ok(Some(ApplyResult::Replayed { event }))
+    }
+
+    fn apply_committed_with_root_state(
+        &mut self, event: crate::core::Event,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<ApplyResult> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(event.payload, crate::core::EventPayload::ConversationBound { .. })
+            && event.revision > self.reducer.revision()
+            && let Some(observer) = work.as_deref_mut()
+            && observer.original_native_work().is_some()
+        {
+            let previous_revision = self.reducer.revision();
+            let new_owner = self.native_root_state_custody.is_none();
+            if new_owner {
+                self.native_root_state_custody = Some(observer.take_native_custody(0)?);
+            }
+            if let (Some(original_work), Some(custody)) =
+                (observer.original_native_work(), self.native_root_state_custody.as_mut())
+            {
+                let applied = match history::native_state_work_io(original_work, custody) {
+                    Ok(mut state_io) => self.reducer.apply_committed_with_work(
+                        event, &mut Some(&mut *state_io)),
+                    Err(cause) => Err(Error::NativeWork { cause, custody: None }),
+                };
+                // The synchronous canonical ROOT reducer retains its cache
+                // before mutation. A failed unchanged reducer owns no delta.
+                if new_owner && self.reducer.revision() == previous_revision {
+                    self.native_root_state_custody = None;
+                }
+                return applied;
+            }
+        }
+        self.reducer.apply_committed_with_work(event, work)
     }
 
     pub(super) async fn read_event_at_with_work(

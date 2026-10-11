@@ -269,6 +269,10 @@ pub struct StreamAggregate<P> {
     extension_migrations: Option<Arc<dyn ExtensionMigrationProvider>>,
     limits: Limits,
     effect_history_limits: HistoryReadLimits,
+    // ROOT binding mutates an empty conversation once. This source custody
+    // drops after the reducer's resident event and operation-index storage.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_root_state_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
@@ -545,6 +549,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 },
                 owner,
                 crate::distributed::JournalWrite::Fresh,
+                false,
                 custody.work(),
             ).await;
             result
@@ -733,6 +738,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 },
                 owner,
                 crate::distributed::JournalWrite::Fresh,
+                false,
                 custody.work(),
             ).await;
             result?;
@@ -790,21 +796,57 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open_inner(
+            let aggregate = Self::open_with_work(
                 client,
                 authority,
                 authority_verifier,
                 schemas,
-                None,
-                default_projection_read_limits(),
-                DEFAULT_TERMINAL_EFFECTS,
-                None,
                 &mut Some(&mut work),
             ).await?;
             work.return_staged_output()?;
             Ok(aggregate)
         }.await;
         work.finish(result)
+    }
+
+    /// Restores the same authenticated checkpoint and suffix on the original
+    /// native ledger. Drop the aggregate before releasing its returned custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn open_with_native_work(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        original_work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut native_io = history::native_work_io(original_work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let aggregate = async {
+            history::HistoryIo::check_cancellation(&native_io)?;
+            let aggregate = Self::open_with_work(
+                client,
+                authority,
+                authority_verifier,
+                schemas,
+                &mut Some(&mut native_io),
+            ).await?;
+            native_io.return_staged_output()?;
+            Ok::<Self, Error>(aggregate)
+        }.await?;
+        Ok((aggregate, native_io.into_custody()))
+    }
+
+    pub(crate) async fn open_with_work(
+        client: &StreamClient<P>,
+        authority: Authority,
+        authority_verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<Self> {
+        Self::open_inner(
+            client, authority, authority_verifier, schemas, None,
+            default_projection_read_limits(), DEFAULT_TERMINAL_EFFECTS, None, work,
+        ).await
     }
 
     /// Restores the original authenticated checkpoint at or before an exact
@@ -1012,14 +1054,46 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "projection read bounds must be positive".into(),
             ));
         }
-        let reader = HistoryReader::new(client, &authority, authority_verifier.clone())?;
+        let reader = match work.as_deref_mut() {
+            Some(work) => HistoryReader::new_with_work(
+                client, &authority, &authority_verifier, Some(work))?,
+            None => HistoryReader::new(client, &authority, authority_verifier.clone())?,
+        };
+        let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let loaded = match snapshot {
             Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
             None if work.is_none() && original_revision.is_none() => checkpoints::load(client, &authority, &authority_verifier, limits).await?,
             None => checkpoints::load_with_work(client, &authority, &authority_verifier, limits, original_revision, work).await?,
         };
-        let path = authority.stream_path()?;
-        let stream = client.stream(path)?;
+        let stream = match work.as_deref_mut() {
+            None => {
+                let path = authority.stream_path()?;
+                client.stream(path)?
+            },
+            Some(observer) => {
+                let path = authority.stream_path_with_work(&mut Some(&mut *observer))?;
+                let temporary_bytes = path.capacity() as u64;
+                let path_bytes = path.len() as u64;
+                let stream: Result<_> = (|| {
+                    observer.admit_allocation(path_bytes)?;
+                    observer.copy_bytes(path_bytes)?;
+                    Ok(client.stream(&path)?)
+                })();
+                drop(path);
+                let released = observer.release_owned(temporary_bytes);
+                match stream {
+                    Ok(stream) => {
+                        released?;
+                        observer.retain_owned(path_bytes)?;
+                        stream
+                    },
+                    Err(error) => {
+                        let _ = released;
+                        return Err(error);
+                    },
+                }
+            },
+        };
         let mut reducer = if let Some(snapshot) = loaded.snapshot {
             if snapshot.authority != authority {
                 return Err(Error::Invalid(
@@ -1053,6 +1127,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?;
         }
+        drop(reader);
+        if let Some(work) = work.as_deref_mut() { work.release_owned(reader_bytes)?; }
         if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
         crate::obs::obs_record!(
             "rev" = reducer.revision(),
@@ -1068,6 +1144,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             extension_migrations: None,
             limits: Limits::default(),
             effect_history_limits: default_projection_read_limits(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_root_state_custody: None,
         })
     }
 
