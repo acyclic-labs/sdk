@@ -103,23 +103,16 @@ impl<'a> PiWorkflowHost<'a> {
         // Recovery precedes discovery: an uncertain retained reservation is
         // never replaced with a new pull or a new effect/attempt identity.
         let host = self.runtime.runtime.task_host();
-        let mut recovered_custody;
+        let recovered_custody;
         let recovered;
         (recovered, recovered_custody) =
             host.recover_work_with_native_work(binding.task_id, work).await?;
         match recovered {
             WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
-                let mut attempt_custody;
-                let attempt;
-                (attempt, attempt_custody) = self.runtime.runtime
-                    .resume_task_with_native_work(lease, self, 8, work).await?;
-                if let Err(cause) = attempt_custody.absorb(&mut recovered_custody) {
-                    drop(attempt);
-                    drop(attempt_custody);
-                    drop(recovered_custody);
-                    return Err(acyclic_harness::Error::NativeWork { cause, custody: None });
-                }
-                Ok((Some(attempt), attempt_custody))
+                let result = self.runtime.runtime
+                    .resume_task_with_native_work(lease, recovered_custody, self, 8, work)
+                    .await?;
+                Ok((Some(result.0), result.1))
             }
             WorkPull::Idle => {
                 drop(recovered_custody);
