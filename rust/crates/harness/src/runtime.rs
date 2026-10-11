@@ -2038,6 +2038,30 @@ impl RuntimeScope {
         Ok(())
     }
 
+    /// Checks the canonical session scalar ceilings with a static native denial.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_session_limits_with_native_work(
+        limits: &crate::scheduler::SessionLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if limits.active_tasks == 0
+            || limits.total_tasks == 0
+            || limits.model_steps == 0
+            || limits.active_tasks > limits.total_tasks
+            || [limits.active_tasks, limits.total_tasks, limits.model_steps]
+                .iter()
+                .any(|value| *value > crate::conversation::MAX_EXACT_JS_INTEGER)
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "session limits are invalid",
+            });
+        }
+        Ok(())
+    }
+
     /// Attenuates every grant and numeric bound.
     pub fn narrow(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         limits.validate()?;
@@ -7618,6 +7642,47 @@ mod tests {
         drop(copy_custody);
         drop(root);
         drop(root_custody);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_session_scalar_validation_preserves_the_original_policy() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        use crate::scheduler::SessionLimits;
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
+            ..WorkBudget::default()
+        }, &cancellation).expect("scalar validator original ledger");
+        let valid = SessionLimits { active_tasks: 1, total_tasks: 2, depth: 0, model_steps: 3 };
+        let too_large = crate::conversation::MAX_EXACT_JS_INTEGER + 1;
+        for limits in [
+            valid,
+            SessionLimits { depth: u32::MAX, ..valid },
+            SessionLimits { active_tasks: 0, ..valid },
+            SessionLimits { total_tasks: 0, ..valid },
+            SessionLimits { model_steps: 0, ..valid },
+            SessionLimits { active_tasks: 3, ..valid },
+            SessionLimits { active_tasks: too_large, total_tasks: too_large, ..valid },
+            SessionLimits { total_tasks: too_large, ..valid },
+            SessionLimits { model_steps: too_large, ..valid },
+        ] {
+            let native = RuntimeScope::validate_session_limits_with_native_work(&limits, &work);
+            let allowed = limits.validate().is_ok();
+            assert_eq!(native.is_ok(), allowed);
+            if !allowed {
+                assert!(matches!(native, Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "session limits are invalid",
+                })));
+            }
+        }
+        assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        cancellation.cancel();
+        assert!(matches!(RuntimeScope::validate_session_limits_with_native_work(&valid, &work),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     }
 
     fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {

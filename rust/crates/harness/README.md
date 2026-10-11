@@ -217,9 +217,10 @@ policy/journal iterators), examines duplicates without copying them, and retains
 known String slots plus actual UTF-8 capacity on the original ledger.
 `RuntimeScope::new_with_native_work` consumes that paid set without cloning it;
 its private custody follows the grants, while the returned guard covers the
-scope's logical Self slot without claiming a heap allocation. Native run-limit
-and limit validation keep ordinary wire codes and authority attenuation, with
-cancellation and static denial text. Drop each returned value before its guard.
+scope's logical Self slot without claiming a heap allocation. Native run-limit,
+session-limit, and limit validation keep ordinary wire codes and authority
+attenuation, with cancellation and static denial text. Drop each returned value
+before its guard.
 `RuntimeScope::clone_with_native_work` and `narrow_with_native_work` retain
 concrete proof/extension vector slots and buffers before copying, then reconcile
 actual private field capacities. Narrowing consumes already-paid child grants;
