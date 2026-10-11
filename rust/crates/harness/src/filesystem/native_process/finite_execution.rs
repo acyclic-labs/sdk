@@ -706,7 +706,7 @@ mod supervisor_tests {
             ..acyclic_fs::WorkBudget::UNCHARGED
         }, &acyclic_fs::CancellationToken::new()).unwrap();
         let before = work.receipt();
-        supervisor.settle_process_with_native_work(&work).unwrap();
+        supervisor.settle_process_with_native_work(&work, None).unwrap();
         assert!(matches!(supervisor.snapshot(attempt).unwrap().1, NativeCapturePhase::Uncertain));
         assert_eq!(work.receipt(), before);
     }

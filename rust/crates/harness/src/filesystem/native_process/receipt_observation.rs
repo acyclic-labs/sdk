@@ -491,12 +491,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, NativeReceiptError> {
         crate::NativeFutureBundle::new(work, || async move {
-            Ok::<_, Error>(self.receipt_original(attempt, Some(work)).await)
+            Ok::<_, Error>(self.receipt_original(attempt, Some(work), None).await)
         })?.await?
     }
 
     pub(super) async fn receipt_original(
         &self, attempt: crate::EffectAttemptId, work: Option<&NativeMaterializationWork>,
+        expected_approval_digest: Option<[u8; 32]>,
     ) -> std::result::Result<Option<NativeProcessReceipt>, NativeReceiptError> {
         let outcome_custody = if let Some(work) = work {
             let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
@@ -527,6 +528,11 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 NativeAdmission::ReceiptOnly => true,
             })? {
             return Err(NativeReceiptError::Record("native receipt belongs to a different admission"));
+        }
+        if let Some(expected) = expected_approval_digest
+            && !examine(work, || launch.approval_digest == expected)?
+        {
+            return Err(NativeReceiptError::Record("native receipt differs from its original approved request digest"));
         }
         authenticate_core_launch(&self.history, &launch, &self.authority, work).await?;
         if let Some(work) = work {

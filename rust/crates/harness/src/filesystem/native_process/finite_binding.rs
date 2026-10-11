@@ -42,9 +42,18 @@ const NATIVE_SERDE_LABELS: &str = concat!(
 );
 
 
-struct ContentPayload {
-    bytes: Vec<u8>,
-    _custody: Option<NativeAllocation>,
+enum ContentPayload {
+    Ordinary(Vec<u8>),
+    Original(acyclic_stream::OwnedBytes),
+}
+
+impl AsRef<[u8]> for ContentPayload {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Ordinary(bytes) => bytes,
+            Self::Original(bytes) => bytes.as_ref(),
+        }
+    }
 }
 
 
@@ -125,10 +134,10 @@ async fn content(
 ) -> Result<ContentPayload> {
     match work {
         Some(work) => {
-            let (bytes, custody) = authority.content.read_with_native_work(reference, maximum, work)?.await?;
-            Ok(ContentPayload { bytes, _custody: Some(custody) })
+            let bytes = authority.content.read_with_native_work(reference, maximum, work)?.await?;
+            Ok(ContentPayload::Original(bytes))
         }
-        None => Ok(ContentPayload { bytes: authority.content.read(reference).await?, _custody: None }),
+        None => Ok(ContentPayload::Ordinary(authority.content.read(reference).await?)),
     }
 }
 
@@ -228,11 +237,11 @@ async fn bind_body<P: StreamProvider + 'static>(
     let bytes = content(&authority, &plan.request, owner.input_limits().file_bytes, work).await?;
     // The native content contract returns exact authenticated, descriptor-
     // verified bytes and records that checksum on this same original ledger.
-    if io.is_none() { plan.request.descriptor().verify(&bytes.bytes)?; }
+    if io.is_none() { plan.request.descriptor().verify(bytes.as_ref())?; }
     let request = match io {
         Some(io) => io.decode_preparation_with_code::<NativeProcessRequest>(
-            &bytes.bytes, crate::wire::ErrorCode::Invalid)?.into_retained(),
-        None => crate::contract::json_from_slice(&bytes.bytes)
+            bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained(),
+        None => crate::contract::json_from_slice(bytes.as_ref())
             .map_err(|error| Error::Invalid(error.to_string()))?,
     };
     drop(bytes);
@@ -273,11 +282,11 @@ async fn bind_body<P: StreamProvider + 'static>(
     let result_schema = match io {
         Some(io) => {
             let decoded = io.decode_preparation_with_code::<serde_json::Value>(
-                &schema.bytes, crate::wire::ErrorCode::Invalid)?;
+                schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
             crate::contract::compile_json_schema_with_io(&decoded.value, "effect result", Some(io))?;
             decoded.into_retained()
         }
-        None => crate::effects::validate_schema_bytes(&plan.result_schema, &schema.bytes)?,
+        None => crate::effects::validate_schema_bytes(&plan.result_schema, schema.as_ref())?,
     };
     drop(schema);
     for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {

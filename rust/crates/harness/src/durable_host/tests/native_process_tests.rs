@@ -339,6 +339,132 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
 }
 
 #[tokio::test]
+async fn native_process_drain_factory_rejects_other_attempt_before_admission() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &original,
+    ).await?;
+    let process = fixture.provider_with_native_work(&original).await?;
+    let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+    let cleanup = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let before = cleanup.receipt();
+    assert!(matches!(process.drain_with_native_work(
+        crate::EffectAttemptId::from_bytes([255; 16]), &fixture.view, &cleanup, &cleanup_cancellation,
+    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
+    assert_eq!(cleanup.receipt(), before);
+    let recovered = Process::recover_with_native_work(
+        fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
+        fixture.authority(), &cleanup,
+    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    assert!(matches!(recovered.drain_with_native_work(
+        process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
+    )?.await, Err(Error::Indeterminate(_))));
+    assert_eq!(cleanup.receipt().authority_records_appended, 0);
+    assert_eq!(cleanup.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &original,
+    ).await?;
+    let process = fixture.provider_with_native_work(&original).await?;
+    let effects = fixture.effects(process.clone())?;
+    let (status, status_custody) = effects.run_task_effect_with_native_work(
+        &fixture.owner, fixture.command, &fixture.plan, &original,
+    ).await?;
+    assert!(matches!(status, EffectStatus::Succeeded { .. }));
+    let attempt = process.original_attempt();
+    cancellation.cancel();
+    let original_prefix = original.receipt();
+    let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+    let cleanup = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let recovered = Process::recover_with_native_work(
+        fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
+        fixture.authority(), &cleanup,
+    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    let proof = recovered.drain_with_native_work(
+        attempt, &fixture.view, &cleanup, &cleanup_cancellation,
+    )?.await?;
+    proof.require_view_binding(fixture.view.as_ref(), fixture.owner.as_ref(), &original)?;
+    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert_eq!(original.receipt(), original_prefix);
+    assert_eq!(cleanup.receipt().authority_records_appended, 0);
+    assert_eq!(cleanup.receipt().backend_write_operations, 0);
+    assert_eq!(cleanup.receipt().materializations, 0);
+    let live = cleanup.live_allocation_bytes();
+    drop(proof);
+    assert!(cleanup.live_allocation_bytes() < live);
+    drop(status);
+    drop(status_custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_span() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "wait", &original,
+    ).await?;
+    let process = fixture.provider_with_native_work(&original).await?;
+    let effects = fixture.effects(process.clone())?;
+    let owner = fixture.owner.clone();
+    let command = fixture.command;
+    let plan = fixture.plan.clone();
+    let dispatch_work = original.clone();
+    let dispatch = tokio::spawn(async move {
+        effects.run_task_effect_with_native_work(&owner, command, &plan, &dispatch_work).await
+    });
+    let root = fixture.view.manifest().options.root.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !root.join("ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.map_err(|error| Error::Storage(error.to_string()))?;
+    let cleanup_cancellation = acyclic_fs::CancellationToken::new();
+    let cleanup = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &cleanup_cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    assert!(!cleanup.shares_ledger(&original));
+    let recovered = Process::recover_with_native_work(
+        fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
+        fixture.authority(), &cleanup,
+    ).await.map_err(crate::filesystem::NativeReceiptError::into_root_error)?;
+    assert!(matches!(recovered.drain_with_native_work(
+        process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
+    )?.await, Err(Error::Indeterminate(_))));
+    assert!(!dispatch.is_finished());
+    cancellation.cancel();
+    let proof = process.drain_with_native_work(
+        process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
+    )?.await?;
+    proof.require_view_binding(fixture.view.as_ref(), fixture.owner.as_ref(), &original)?;
+    assert!(fixture.view.operation_cancellation().is_cancelled());
+    let _actual_completion = dispatch.await.map_err(|error| Error::Storage(error.to_string()))?;
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert!(!root.join("escaped").exists());
+    assert_eq!(cleanup.receipt().authority_records_appended, 0);
+    assert_eq!(cleanup.receipt().materializations, 0);
+    drop(proof);
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_redispatch() -> Result<()> {
     for (kind, lost_reply) in [
         ("launch", false), ("launch", true), ("observed", false), ("observed", true),
