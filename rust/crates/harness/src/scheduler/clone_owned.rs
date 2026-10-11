@@ -185,20 +185,9 @@ fn copy_resources(source: &BTreeMap<String, u64>, quota: &mut CodecQuota<'_, '_>
 }
 
 fn copy_entrypoint(source: &EntrypointRef, quota: &mut CodecQuota<'_, '_>) -> Result<EntrypointRef> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if native_observer(quota.work()) {
-        let io = quota.work().as_mut().expect("original scheduler observer");
-        let remaining = io.remaining()?;
-        crate::contract::json_owned_value_shape_bounded(
-            &source.result_schema,
-            crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined, maximum_depth: 256 },
-            crate::contract::JsonValueSchema::None, &mut |charge| io.codec_charge(charge),
-        )?;
-    }
+    let result_schema = crate::core::copy_value(&source.result_schema, quota)?;
     let name = copy_text(&source.name, quota)?;
     let version = copy_text(&source.version, quota)?;
-    let result_schema = crate::core::copy_value(&source.result_schema, quota)?;
     Ok(EntrypointRef { name, version, digest: source.digest, result_schema })
 }
 
