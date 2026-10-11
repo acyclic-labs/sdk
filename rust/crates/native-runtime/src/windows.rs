@@ -1419,6 +1419,7 @@ fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NativeReadMeter;
     use std::fs::OpenOptions;
     use std::io::{Seek as _, SeekFrom, Write as _};
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -1593,7 +1594,7 @@ mod tests {
                 Bytes::from_static(b"op"),
             ]
         );
-        assert_eq!((&***file).stream_position()?, 13);
+        assert_eq!((&**file).stream_position()?, 13);
         Ok(())
     }
 

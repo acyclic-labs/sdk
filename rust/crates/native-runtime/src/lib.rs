@@ -5072,7 +5072,7 @@ mod tests {
         let borrowed = Arc::downgrade(&meter);
         let read = file.read_bounded_async(0, 3, meter.clone())?;
         let result = {
-            let _blocking = ScopedInlineBlocking::enter();
+            let _blocking = InlineBlocking::enter();
             complete_measured(read)
         }?;
         assert_eq!(result.bytes.as_ref(), b"abc");
