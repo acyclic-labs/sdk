@@ -84,6 +84,21 @@ a static typed mismatch or bound error without allocating or reporting absence.
 The unified `OwnedBytes` record and key aliases retain their original payload
 custody through the last alias, including an empty sliced view.
 
+`native_commit_guarded` uses the same canonical Commit engine with the caller's
+owned original guard and typed error. Memory prepares real controls, releases
+its state lock while awaiting that guard, and then immediately tries the CAS
+lock. Contention or a changed canonical mutation revision discards the attempt
+and reruns the original guard; no permission survives an asynchronous lock wait.
+The revision covers publication, retained conflicts, fork/history, residency
+and reservation transitions on the existing state identity. Recovery replaces
+that identity, and revision exhaustion fails new guarded acceptance closed
+without preventing actual cleanup or previously accepted completion.
+Guarded publication binds its preallocated record timestamps to the protected
+provider clock; cached replay facts retain their original timestamp and digest.
+No new namespace authority or work meter is created. The already preaccepted
+physical-completion ingress deliberately does not acquire fresh task authority
+after its source action.
+
 `persistence::encode_observation` / `decode_observation` and `encode_envelope` / `decode_envelope` preserve complete terminal retry outcomes and immutable envelopes using existing generated Stream v1 protobuf messages. Each takes an explicit positive byte bound. Invalid facts, malformed bytes and noncanonical encodings fail closed, including unknown fields. The storage owner supplies its own checksum/container, account and request-digest binding, accepted ID/time durability and atomic publication; these codecs do not establish acceptance or authenticate stored bytes. No optional feature is required.
 
 Use `children_page` to discover large agent or stream hierarchies. Its ordered continuation carries the exact last hierarchy-changing commit ID; a concurrent path creation returns `HierarchyChanged`, so restart the traversal instead of silently missing or duplicating a child. Ancestor paths are materialized lazily when descendants are created; no fork lineage is required for discovery.
