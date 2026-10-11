@@ -28,7 +28,17 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
     memory::normalize_commit(request)?;
     memory::validate_commit_shape(request)?;
-    Ok(memory::commit_digest(request))
+    Ok(normalized_commit_digest(request))
+}
+
+/// Computes the canonical digest of a pre-normalized, caller-validated request.
+///
+/// This borrowed projection performs no validation, normalization, authorization,
+/// or proof authentication. Callers must establish those prerequisites before
+/// using the digest; it is not independently an authority or capability receipt.
+#[must_use]
+pub fn normalized_commit_digest(request: &CommitRequest) -> [u8; 32] {
+    memory::commit_digest(request)
 }
 
 #[cfg(test)]

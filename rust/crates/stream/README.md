@@ -71,6 +71,11 @@ Native servers can use `http_response::encode(route, protobuf_bytes, maximum_jso
 
 Replicated providers can use `request::append_digest`, `request::fork_digest`, and `request::commit_digest` for the canonical state-independent validation and retry digest. Commit normalization sorts participants and rejects duplicate paths; providers still own atomic authorization, state checks, admission, durability and deadline decisions.
 
+`request::normalized_commit_digest` borrows an already normalized, validated
+Commit request without changing it. It uses the same canonical retry identity,
+but performs no validation or authorization; those prerequisites remain the
+caller's responsibility.
+
 `preparation::append`, `preparation::fork`, and `preparation::commit` construct canonical outcomes and immutable envelopes from pre-commit existence/tails, an accepted commit ID and commit timestamp. Coordinated preparation requires explicit observations for every participant and fork source; missing observations are invalid. Forks always use the source's pre-commit prefix, including when that commit also appends to the source. The memory provider shares these condition, authority and record construction helpers. Providers must perform retry lookup first and obtain observations, authorize, reserve capacity and publish atomically; preparation itself performs no durable acceptance or retention.
 
 Native completion preparation accepts only two exact Tail conditions, one Append
