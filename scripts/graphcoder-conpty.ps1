@@ -55,6 +55,8 @@ public static class GraphcoderConPty {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr handle, byte[] bytes, uint size, out uint written, IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint exit);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetStdHandle(int kind, IntPtr handle);
     static void Require(bool ok, string operation) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), operation); }
     static string Quote(string value) {
         var result = new StringBuilder("\""); int slashes = 0;
@@ -76,7 +78,6 @@ public static class GraphcoderConPty {
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
             int hr = CreatePseudoConsole(new Coord { X = 32767, Y = 100 }, inRead, outWrite, 0, out console);
             if (hr != 0) throw new COMException("CreatePseudoConsole unavailable; real Windows ConPTY is mandatory", hr);
-            CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
             IntPtr size = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
             if (size == IntPtr.Zero) throw new Win32Exception("ConPTY process attribute size unavailable");
@@ -88,8 +89,23 @@ public static class GraphcoderConPty {
             var limit = new ExtendedLimit(); limit.basic.flags = 0x00002000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             Require(SetInformationJobObject(job, 9, ref limit, (uint)Marshal.SizeOf(typeof(ExtendedLimit))), "SetInformationJobObject");
             var startup = new StartupInfoEx(); startup.info.cb = Marshal.SizeOf(typeof(StartupInfoEx)); startup.attributes = attributes;
-            Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --session " + Quote(config)), IntPtr.Zero, IntPtr.Zero, false,
-                0x00080000 | 0x00000004, IntPtr.Zero, Path.GetDirectoryName(config), ref startup, out process), "CreateProcessW with real ConPTY");
+            // This dedicated host must not pass its redirected standard handles
+            // into the console child. Restore them before starting transport threads.
+            IntPtr parentInput = GetStdHandle(-10), parentOutput = GetStdHandle(-11), parentError = GetStdHandle(-12);
+            try {
+                Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
+                Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
+                Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --session " + Quote(config)), IntPtr.Zero, IntPtr.Zero, false,
+                    0x00080000 | 0x00000004, IntPtr.Zero, Path.GetDirectoryName(config), ref startup, out process), "CreateProcessW with real ConPTY");
+            } finally {
+                bool restoredInput = SetStdHandle(-10, parentInput);
+                bool restoredOutput = SetStdHandle(-11, parentOutput);
+                bool restoredError = SetStdHandle(-12, parentError);
+                Require(restoredInput && restoredOutput && restoredError, "restore host standard handles");
+            }
+            // Retain the pseudoconsole's channel endpoints through child creation.
+            CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
             Require(AssignProcessToJobObject(job, process.process), "AssignProcessToJobObject");
             IntPtr inputHandle = inWrite, outputHandle = outRead, jobHandle = job;
             outputThread = new Thread(delegate() {

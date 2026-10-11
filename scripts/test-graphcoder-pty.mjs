@@ -49,6 +49,11 @@ function inventory(directory) {
   }
 }
 inventory(join(sourceRoot, "rust"));
+inventory(join(sourceRoot, "proto"));
+inventory(join(sourceRoot, ".cargo"));
+for (const name of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]) {
+  sources.push({ path: name, sha256: hash(join(sourceRoot, name)) });
+}
 sources.sort((a, b) => a.path.localeCompare(b.path));
 const sourceInventory = join(evidence, "source-hashes.json");
 writeFileSync(sourceInventory, JSON.stringify(sources, null, 2) + "\n", { mode: 0o600 });

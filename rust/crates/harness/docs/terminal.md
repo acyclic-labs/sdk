@@ -233,6 +233,15 @@ and process attribute attachment. It requires the native runtime banner and
 `terminal-mode stdin-is-terminal=true interactive=true headless=false` marker
 with the actual runtime PID, not a pipe or pseudoterminal-shaped mock. Retain raw
 terminal bytes, platform/launch metadata and exact source/binary/suite hashes.
+The source inventory includes Rust sources, root Protobufs, `.cargo` configuration,
+and root Cargo manifest, lockfile and toolchain inputs. Inventory hashes alone do
+not prove that an installed binary was built from those inputs.
+The dedicated Windows transport host clears its redirected standard-handle table
+only while creating the pseudoconsole child, then restores it before starting
+the input/output threads. It retains the pseudoconsole channel endpoints through
+child creation. Merely attaching the pseudoconsole attribute does not prove that
+the child's standard input is a console; the runtime's terminal-mode marker is
+mandatory.
 Without `--headless`, it exercises prompt/queued input and cancellation,
 scrolling/paging, original root process death/resume, typed identities, selective
 history/files, cross-source admission, diffs and approval/native writeback.
