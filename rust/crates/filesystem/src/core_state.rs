@@ -1288,7 +1288,6 @@ fn child_bucket_count(descendants: Option<usize>) -> Result<Option<ContextChildC
         })
     }).transpose()
 }
-
 /// Original after-images and their original-ledger payload/capacity custody.
 #[derive(Debug)]
 pub(super) struct NativeChange {
