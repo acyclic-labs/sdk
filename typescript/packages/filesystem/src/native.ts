@@ -65,6 +65,7 @@ import type {
   NativeRawWorkspaceGraph,
   NativeRawWorkspaceLineageRecord,
   WasmRawJoinResult,
+  WasmRawGeneration,
   NativeSourceOptions,
   NativeRawResolvedFile,
   NativeRawJoinPlan,
@@ -78,6 +79,7 @@ import type {
   CompatibilityWire,
   OperationIdentity,
   OperationWindowCoordinator,
+  OperationWindowLease,
   WorkspaceGraph,
   WorkspaceContextRegistry,
   WorkspaceIdentity,
@@ -931,7 +933,7 @@ function adaptWorkspace(
     async operationGeneration(idempotencyKey: Uint8Array): Promise<FsGeneration | undefined> {
       requireIdentity(idempotencyKey, "idempotency key");
       const generation = await raw.operationGeneration(copyBytes(idempotencyKey));
-      return generation == null ? undefined : scope.adaptGeneration(generation);
+      return generation == null ? undefined : scope.adaptGeneration(nativeBoundary<WasmRawGeneration>(generation));
     },
     async restoreGeneration(generation: FsGeneration, ifCurrent: Uint8Array, idempotencyKey: Uint8Array, lease?: OperationWindowLease): Promise<NativeWorkspaceRestoreResult> {
       requireIdentity(idempotencyKey, "idempotency key");
