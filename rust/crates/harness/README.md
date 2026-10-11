@@ -272,6 +272,14 @@ Root writers retain the same existing coordinator-only publication lease;
 callbacks never retain a host/context cycle, and a terminal historical READ
 cannot acquire a fresh write lease.
 
+Original succeeded-result reads return the descriptor-verified canonical
+`OwnedBytes`, not a reserialized `Value`. Byte custody is intrinsic through the
+last alias (including empty slices); the separate allocation guard owns only
+returned descriptor/header metadata. Native journal and timer payloads likewise
+transfer the original encoded vector claim into the unified carrier before IO.
+Portable observed reads release only the producer-reported external retention
+scalar after the carrier drops; they never infer capacity from visible length.
+
 Native preparation may attach one genuine `NativeTaskWorkingView` to that
 same issued dispatch context. Its retained physical view and original owner
 never capture the context. Builtin callbacks borrow it only after protected

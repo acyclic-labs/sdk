@@ -505,11 +505,11 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         &original_root, bootstrap.binding(), &native,
     ).await?;
     assert_ne!(owner.root_bootstrap_owner(), &audience);
-    let creator = AuthorityIssuer::new(
+    let creator = crate::core::AuthorityIssuer::new(
         "created-owner", [80; 32], owner.root_bootstrap_owner().clone(),
     );
     owner.authenticate_root_bootstrap_creator_with_native_work(&creator.verifier(), &native).await?;
-    let wrong_creator = AuthorityIssuer::new(
+    let wrong_creator = crate::core::AuthorityIssuer::new(
         "created-owner", [81; 32], owner.root_bootstrap_owner().clone(),
     );
     let creator_denied = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)

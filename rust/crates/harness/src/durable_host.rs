@@ -29,7 +29,7 @@ use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
     UnixMillisClock,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -741,16 +741,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             Some(io) => {
                 let mut borrowed = io.history_io();
                 self.verify_with_work(true, &mut Some(&mut borrowed)).await?;
-                let bytes = crate::store::history::HistoryIo::read_content(
+                let (bytes, retained) = crate::store::history::HistoryIo::read_content(
                     &mut borrowed, reader.as_ref(), file)?.await?;
-                bytes_hold = Some(io.guard_owned(bytes.capacity() as u64)?);
+                bytes_hold = Some(io.guard_owned(retained)?);
                 crate::store::history::HistoryIo::hashed_bytes(&mut borrowed, bytes.len() as u64)?;
                 bytes
             }
             None => {
                 bytes_hold = None;
                 self.verify(true).await?;
-                reader.read(file).await?
+                acyclic_stream::OwnedBytes::from(reader.read(file).await?)
             }
         };
         file.descriptor().verify(&bytes)?;
@@ -843,9 +843,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let (schemas, expected) = self.validate_native_configuration_with_io(binding, io)?;
         let bytes_hold;
         let mut borrowed = io.history_io();
-        let bytes = crate::store::history::HistoryIo::read_content(
+        let (bytes, retained) = crate::store::history::HistoryIo::read_content(
             &mut borrowed, self.host.reader.as_ref(), &binding.configuration.content)?.await?;
-        bytes_hold = io.guard_owned(bytes.capacity() as u64)?;
+        bytes_hold = io.guard_owned(retained)?;
         let result = schemas.verify_configuration_binding_with_io(
             &binding.configuration, expected, &bytes, self.input_limits, io);
         drop(bytes);
@@ -2242,7 +2242,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<bool> {
         self.append_execution_with_work(
@@ -2255,7 +2255,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         event: &crate::executor::ExecutionEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
@@ -2280,17 +2280,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         admission: bool,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
     ) -> Result<bool> {
         self.append_workflow_with_work(admission, expected_tail, key, bytes, &mut None).await
     }
 
     pub(crate) async fn append_workflow_with_work(
-        &self, admission: bool, expected_tail: u64, key: &StreamKey, bytes: Bytes,
+        &self, admission: bool, expected_tail: u64, key: &StreamKey, bytes: OwnedBytes,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
                 return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Invalid,
                     reason:"workflow record exceeds canonical Stream byte bound"});
@@ -2351,13 +2351,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         path: &acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: &Bytes,
+        bytes: &OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
         use acyclic_stream::CommitCondition;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(Error::Invalid("owned journal record exceeds the canonical byte bound".into()));
+            return Err(CoordinatorTaskHost::<P>::admission_boundary(
+                work, crate::wire::ErrorCode::Invalid,
+                "owned journal record exceeds the canonical byte bound",
+            ));
         }
         let owner = self.condition_with_work(write, work).await?;
         if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
@@ -2446,7 +2449,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
         self.append_with_work(path, expected_tail, key, bytes, write, &mut None).await
@@ -2458,7 +2461,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
@@ -2472,7 +2475,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
         key: &StreamKey,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
@@ -2802,12 +2805,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn succeeded_result_with_native_work(
         &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<(FileRef, Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
         use crate::store::history::HistoryIo as _;
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let metadata = std::mem::size_of::<
-            Option<(FileRef, Vec<u8>, acyclic_fs::NativeAllocation)>
+            Option<(FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>
         >() as u64;
         io.retain_owned(metadata)?;
         let reference = {
@@ -2831,13 +2834,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.release_owned(metadata)?;
             return Ok(None);
         };
-        let (value, bytes, value_owned) = self.read_json_payload_with_work(
+        let (value, bytes, value_owned, byte_retained) = self.read_json_payload_with_work(
             &reference, &mut Some(&mut io),
         ).await?;
         drop(value);
         io.release_owned(value_owned)?;
         let owned = metadata.checked_add(reference_owned)
-            .and_then(|owned| owned.checked_add(bytes.capacity() as u64))
+            .and_then(|owned| owned.checked_add(byte_retained))
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "succeeded result custody overflows" })?;
         let custody = io.take_native_custody(owned)?;
@@ -2987,72 +2990,81 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, owner: &TaskJournalOwner<P>, operation: OperationId, deadline_unix_ms: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
-        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
         if deadline_unix_ms == 0 {
-            return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Invalid,
+            return Err(Self::admission_boundary(custody.work(), crate::wire::ErrorCode::Invalid,
                 "timer deadline is invalid"));
         }
         let (task, fence) = owner.task_binding();
         if !owner.input_grants.contains("timer:wait") {
-            return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
+            return Err(Self::admission_boundary(custody.work(), crate::wire::ErrorCode::Unauthorized,
                 "task scope lacks timer:wait"));
         }
-        let (path, _) = Self::timer_path_with_work(task, work)?;
+        let (path, path_retained) = Self::timer_path_with_work(task, custody.work())?;
+        custody.adopt(path_retained)?;
         let mut identity = String::new();
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(91)?;
-            io.reserve_text(&mut identity, 91)?;
-            io.copy_bytes(91)?;
+        let identity_bytes = "harness/v2/timers/".len() + 36 + 1 + 36;
+        if let Some(io) = custody.work().as_deref_mut() {
+            io.admit_copy(identity_bytes as u64)?;
+            io.reserve_text(&mut identity, identity_bytes)?;
         }
+        custody.adopt(identity.capacity() as u64)?;
+        if let Some(io) = custody.work().as_deref_mut() { io.copy_bytes(identity_bytes as u64)?; }
         use std::fmt::Write as _;
         write!(&mut identity, "harness/v2/timers/{task}/{operation}").expect("writing into String");
-        if let Some(io) = work.as_deref_mut() { io.hashed_bytes(identity.len() as u64)?; }
+        if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(identity.len() as u64)?; }
         let digest = blake3::hash(identity.as_bytes());
         let capacity = identity.capacity() as u64;
         drop(identity);
-        let key = match work.as_deref_mut() {
-            Some(io) => {
-                io.release_owned(capacity)?;
-                let mut bytes = Vec::new();
+        custody.relinquish(capacity)?;
+        let (key, key_retained) = {
+            let mut key_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+            let mut bytes = Vec::new();
+            if let Some(io) = key_custody.work().as_deref_mut() {
                 io.reserve_bytes(&mut bytes, 32)?;
-                io.copy_bytes(32)?;
-                bytes.extend_from_slice(digest.as_bytes());
-                StreamKey::new(Bytes::from(bytes))?
-            },
-            None => StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?,
+            } else {
+                bytes.try_reserve_exact(32).map_err(|cause| Error::Storage(cause.to_string()))?;
+            }
+            key_custody.adopt(bytes.capacity() as u64)?;
+            if let Some(io) = key_custody.work().as_deref_mut() { io.copy_bytes(32)?; }
+            bytes.extend_from_slice(digest.as_bytes());
+            key_custody.transfer();
+            let (bytes, retained) = crate::store::operations::owned_bytes_from_retained_vec(
+                bytes, key_custody.work(),
+            )?;
+            (StreamKey::new(bytes)?, retained)
         };
-        let bytes = Bytes::from(crate::store::history::canonical_bytes_with_work(&TimerEvent {
+        custody.adopt(key_retained)?;
+        let encoded = crate::store::history::canonical_bytes_with_work(&TimerEvent {
             task_id: task,
             operation_id: operation,
             deadline_unix_ms,
-        }, acyclic_stream::MAX_RECORD_BYTES as u64, work)?);
+        }, acyclic_stream::MAX_RECORD_BYTES as u64, custody.work())?;
+        let (bytes, byte_retained) = crate::store::operations::owned_bytes_from_retained_vec(
+            encoded, custody.work(),
+        )?;
+        custody.adopt(byte_retained)?;
         // Only the selected timer is retained. Paging bounds resident records;
         // no session-wide history ceiling is imposed.
         loop {
-            self.verify_owner_with_work(task, fence, false, work).await?;
-            let (tail, found) = self.timer_state_with_work(task, operation, deadline_unix_ms, work).await?;
+            self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+            let (tail, found) = self.timer_state_with_work(
+                task, operation, deadline_unix_ms, custody.work(),
+            ).await?;
             if found {
-                self.verify_owner_with_work(task, fence, false, work).await?;
-                if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+                self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+                if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
-            // The original path owner remains alive through this append; Arc
-            // aliases neither copy its text nor consume another payload quota.
-            let append_path = path.clone();
-            let appended = owner
-                .append_with_work(
-                    append_path,
-                    tail,
-                    &key,
-                    bytes.clone(),
-                    crate::distributed::JournalWrite::Fresh,
-                    work,
-                )
-                .await;
-            let appended = appended?;
+            // Stream aliases retain the intrinsic original byte guard.
+            let appended = owner.append_with_work(
+                path.clone(), tail, &key, bytes.clone(),
+                crate::distributed::JournalWrite::Fresh, custody.work(),
+            ).await?;
             if appended {
-                self.verify_owner_with_work(task, fence, false, work).await?;
-                if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+                self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+                if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
         }
@@ -3096,7 +3108,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         // Validate the original task/lease before retaining or observing mail.
         self.journal_owner(sender, fence.clone()).await?;
         let ack = MailSendAck { sender, recipient, operation_id: message_id, payload };
-        let bytes = Bytes::from(
+        let bytes = OwnedBytes::from(
             self.mail_bytes(sender, recipient, message_id, ack.payload.clone())
                 .await?,
         );
@@ -5206,10 +5218,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, reference: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Value,u64)> {
-        let (value, bytes, retained) = self.read_json_payload_with_work(reference, work).await?;
-        let byte_capacity = bytes.capacity() as u64;
+        let (value, bytes, retained, byte_retained) = self.read_json_payload_with_work(reference, work).await?;
         drop(bytes);
-        if let Some(io) = work.as_deref_mut() { io.release_owned(byte_capacity)?; }
+        if let Some(io) = work.as_deref_mut() { io.release_owned(byte_retained)?; }
         Ok((value, retained))
     }
 
@@ -5219,7 +5230,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn read_json_payload_with_work(
         &self, reference: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Value, Vec<u8>, u64)> {
+    ) -> Result<(Value, acyclic_stream::OwnedBytes, u64, u64)> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
@@ -5234,42 +5245,47 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 work, crate::wire::ErrorCode::Invalid, "durable task payload is not JSON",
             ));
         }
-        let bytes = match work.as_deref_mut() {
+        // Declare quota first: actual byte aliases and decoded values retire
+        // before their external producer-reported claims on every failure.
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let (bytes, byte_retained) = match custody.work().as_deref_mut() {
             Some(io) => io.read_content(self.reader.as_ref(), reference)?.await?,
-            None => self.reader.read(reference).await?,
+            None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference).await?), 0),
         };
+        custody.adopt(byte_retained)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+        if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
             reference.descriptor().verify_with_native_work(&bytes, native)?;
         } else {
-            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
             reference.descriptor().verify(&bytes)?;
         }
         #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
         {
-            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
             reference.descriptor().verify(&bytes)?;
         }
-        let (value, retained) = match work.as_deref_mut() {
+        let (value, retained) = match custody.work().as_deref_mut() {
             Some(io) => io.decode_json_value(&bytes)?,
             None => (crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?, 0),
         };
+        custody.adopt(retained)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
-            &value, reference.descriptor().byte_length(), work,
+            &value, reference.descriptor().byte_length(), custody.work(),
         )?;
-        let differs = canonical != bytes;
         let canonical_capacity = canonical.capacity() as u64;
+        custody.adopt(canonical_capacity)?;
+        let differs = canonical.as_slice() != bytes.as_ref();
         drop(canonical);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(canonical_capacity)?;
-        }
+        custody.relinquish(canonical_capacity)?;
         if differs {
             return Err(Self::admission_boundary(
-                work, crate::wire::ErrorCode::Invalid, "durable task payload is not canonical JSON",
+                custody.work(), crate::wire::ErrorCode::Invalid, "durable task payload is not canonical JSON",
             ));
         }
-        Ok((value, bytes, retained))
+        custody.transfer();
+        Ok((value, bytes, retained, byte_retained))
     }
 
     async fn retained_declaration(
@@ -5855,7 +5871,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     fn event_key(kind: &str, task_id: TaskId, operation_id: OperationId) -> Result<StreamKey> {
         let identity = format!("harness/v2/{kind}/{task_id}/{operation_id}");
-        StreamKey::new(Bytes::copy_from_slice(
+        StreamKey::new(OwnedBytes::copy_from_slice(
             blake3::hash(identity.as_bytes()).as_bytes(),
         ))
         .map_err(|error| Error::Invalid(error.to_string()))
@@ -6081,7 +6097,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message: OperationId,
         sequence: u64,
         bytes: &[u8],
-    ) -> Result<(MailLocation, Bytes)> {
+    ) -> Result<(MailLocation, OwnedBytes)> {
         let location = MailLocation {
             sender,
             message_id: message,
@@ -6092,7 +6108,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             value_digest: *blake3::hash(bytes).as_bytes(),
         };
         crate::contract::validate_json_byte_bound(&location, MAX_MAIL_LOCATION_BYTES as u64)?;
-        let encoded = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
+        let encoded = OwnedBytes::from(crate::contract::canonical_json_bytes(&location)?);
         Ok((location, encoded))
     }
 
@@ -6118,7 +6134,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic.harness.mail-publication.v2\0");
         hash.update(&physical);
-        Ok(StreamKey::new(Bytes::copy_from_slice(
+        Ok(StreamKey::new(OwnedBytes::copy_from_slice(
             hash.finalize().as_bytes(),
         ))?)
     }
@@ -6128,7 +6144,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         sender: TaskId,
         recipient: TaskId,
         message: OperationId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         fence: Option<crate::scheduler::LeaseFence>,
     ) -> Result<()> {
         use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
@@ -6357,13 +6373,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             digest.update(b"harness/v2/control-tail\0");
             digest.update(key.as_bytes());
             digest.update(&tail.to_le_bytes());
-            StreamKey::new(Bytes::copy_from_slice(digest.finalize().as_bytes()))?
+            StreamKey::new(OwnedBytes::copy_from_slice(digest.finalize().as_bytes()))?
         } else {
             key
         };
         let outcome = crate::distributed::append_keyed(
             (stream, &self.stream),
-            Bytes::copy_from_slice(bytes),
+            OwnedBytes::copy_from_slice(bytes),
             expected_tail,
             key,
             operation_id,
@@ -6963,7 +6979,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             {
                 return Err(Error::Unauthorized("unfenced custom mail requires explicit mail and file grants".into()));
             }
-            let bytes = Bytes::from(
+            let bytes = OwnedBytes::from(
                 self.mail_bytes(sender, recipient, message_id, payload)
                     .await?,
             );
@@ -7329,6 +7345,7 @@ pub(crate) mod tests {
             + admission.logical_owned_bytes()?);
         drop(admission);
         drop(admission_guard);
+        assert!(fixture.host.succeeded_result_with_native_work(fixture.root, &work).await?.is_none());
         // A lost response must recover this original reservation, not claim a
         // fresh one or choose another task.
         let (recovered, recovered_guard) = fixture.host.recover_work_with_native_work(fixture.root, &work).await?;
@@ -7378,11 +7395,30 @@ pub(crate) mod tests {
         assert!(outcome_guard.bytes() >= std::mem::size_of::<Option<Outcome<Value>>>() as u64);
         drop(outcome);
         drop(outcome_guard);
+        let (reference, bytes, metadata_guard) = fixture.host
+            .succeeded_result_with_native_work(fixture.root, &work).await?
+            .expect("actual protected terminal result");
+        assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
+        reference.descriptor().verify(&bytes)?;
+        let before_alias = work.receipt();
+        let retained = bytes.clone();
+        let empty_alias = retained.slice(..0);
+        assert_eq!(work.receipt(), before_alias);
+        drop(bytes);
+        drop(reference);
+        drop(metadata_guard);
+        assert_eq!(retained.as_ref(), br#"{"ok":true}"#);
+        drop(retained);
+        assert!(empty_alias.is_empty());
+        drop(empty_alias);
         assert!(work.receipt().backend_read_operations > 0);
         assert!(work.receipt().backend_write_operations > 0);
         let before = work.receipt();
         cancellation.cancel();
         assert!(matches!(fixture.host.outcome_with_native_work(fixture.root, &work).await,
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+        assert!(matches!(fixture.host.succeeded_result_with_native_work(fixture.root, &work).await,
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
         Ok(())
@@ -7668,7 +7704,7 @@ pub(crate) mod tests {
                 schema_revision, route_revision,
                 ..MailEvent::decode(&retained[0].value, recipient)?
             };
-            let bytes = Bytes::from(crate::contract::canonical_json_bytes(&altered)?);
+            let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&altered)?);
             assert!(matches!(
                 host.publish_mail(sender, recipient, message, bytes, None).await,
                 Err(Error::Conflict(_))
@@ -7706,7 +7742,7 @@ pub(crate) mod tests {
             if value.get("message_id").is_some() {
                 value["message_id"] = serde_json::json!(operation);
             }
-            let bytes = Bytes::from(crate::contract::canonical_json_bytes(&value)?);
+            let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&value)?);
             // Retain hostile bytes through the real atomic engine, including a
             // genuine shared-commit location. Rejection must come from the
             // production envelope reader, not a missing receipt or mock.
@@ -7725,7 +7761,7 @@ pub(crate) mod tests {
                 route_revision: MAIL_ROUTE_REVISION,
                 payload: payload.clone(),
             };
-            let bytes = Bytes::from(event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)?);
+            let bytes = OwnedBytes::from(event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)?);
             let mailbox = host.mailbox(recipient)?;
             let sequence = mailbox.bounds().await?.tail;
             let (location, _) = CoordinatorTaskHost::<MemoryStream>::mail_location(
@@ -7752,10 +7788,10 @@ pub(crate) mod tests {
                     CommitMutation::Append { path: mailbox.path().clone(), records: vec![bytes] },
                     CommitMutation::Append {
                         path: location_path,
-                        records: vec![Bytes::from(crate::contract::canonical_json_bytes(&receipt)?)],
+                        records: vec![OwnedBytes::from(crate::contract::canonical_json_bytes(&receipt)?)],
                     },
                 ],
-                idempotency_key: StreamKey::new(Bytes::from(vec![200 + fault]))?,
+                idempotency_key: StreamKey::new(OwnedBytes::from(vec![200 + fault]))?,
             }).await?;
             assert!(matches!(committed, CommitOutcome::Committed(_)));
             assert!(matches!(
@@ -9147,13 +9183,13 @@ pub(crate) mod tests {
             );
             let path =
                 acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
-            let key = StreamKey::new(Bytes::from_static(b"owned-before-replacement"))?;
+            let key = StreamKey::new(OwnedBytes::from_static(b"owned-before-replacement"))?;
             let original_pending = original_owner
                 .prepare_append_with_work(
                     &path,
                     1,
                     &key,
-                    &Bytes::from_static(b"never published"),
+                    &OwnedBytes::from_static(b"never published"),
                     crate::distributed::JournalWrite::Fresh,
                     &mut workflow_prepare_io,
                 )
@@ -9191,8 +9227,8 @@ pub(crate) mod tests {
                 .await?;
             let pending_operation = OperationId::from_bytes([80; 16]);
             let digest = blake3::hash(format!("{pending_operation}:pending-execution").as_bytes());
-            let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
-            let bytes = Bytes::from(
+            let key = StreamKey::new(OwnedBytes::copy_from_slice(digest.as_bytes()))?;
+            let bytes = OwnedBytes::from(
                 serde_json::to_vec(&serde_json::json!({
                     "operation_id": pending_operation,
                     "turn_operation": pending_operation,
@@ -9501,8 +9537,8 @@ pub(crate) mod tests {
                 .prepare_append_with_work(
                     &acyclic_stream::StreamPath::new(conversation.stream_path()?)?,
                     2,
-                    &StreamKey::new(Bytes::from_static(b"approval-before-replacement"))?,
-                    &Bytes::from_static(b"must not publish"),
+                    &StreamKey::new(OwnedBytes::from_static(b"approval-before-replacement"))?,
+                    &OwnedBytes::from_static(b"must not publish"),
                     crate::distributed::JournalWrite::Fresh,
                     &mut approval_prepare_io,
                 )
@@ -9589,8 +9625,8 @@ pub(crate) mod tests {
                         conversation_issuer.verifier().audience().stream_path()?,
                     )?,
                     2,
-                    &StreamKey::new(Bytes::from_static(b"approval-before-cancellation"))?,
-                    &Bytes::from_static(b"must not publish"),
+                    &StreamKey::new(OwnedBytes::from_static(b"approval-before-cancellation"))?,
+                    &OwnedBytes::from_static(b"must not publish"),
                     crate::distributed::JournalWrite::Fresh,
                     &mut approval_prepare_io,
                 )
@@ -9666,13 +9702,13 @@ pub(crate) mod tests {
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let path =
                 acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
-            let key = StreamKey::new(Bytes::from_static(b"owned-pending"))?;
+            let key = StreamKey::new(OwnedBytes::from_static(b"owned-pending"))?;
             let pending = binding
                 .prepare_append_with_work(
                     &path,
                     1,
                     &key,
-                    &Bytes::from_static(b"never published"),
+                    &OwnedBytes::from_static(b"never published"),
                     crate::distributed::JournalWrite::Fresh,
                     &mut workflow_prepare_io,
                 )
@@ -9713,8 +9749,8 @@ pub(crate) mod tests {
                 ));
                 let digest =
                     blake3::hash(format!("{pending_operation}:pending-execution").as_bytes());
-                let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
-                let bytes = Bytes::from(serde_json::to_vec(&serde_json::json!({
+                let key = StreamKey::new(OwnedBytes::copy_from_slice(digest.as_bytes()))?;
+                let bytes = OwnedBytes::from(serde_json::to_vec(&serde_json::json!({
                 "operation_id": pending_operation,
                 "turn_operation": pending_operation,
                 "version": 2,
@@ -10638,7 +10674,7 @@ pub(crate) mod tests {
         // A retained control path must still contain exactly one record.
         // Full Stream history remains readable even when that invariant fails.
         manifest
-            .append_at(Bytes::from_static(b"unexpected-second-record"), 1)
+            .append_at(OwnedBytes::from_static(b"unexpected-second-record"), 1)
             .await?;
         assert!(matches!(
             reopened.retained_batch(request.batch_id).await,
