@@ -162,6 +162,40 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify(false).await?;
         cancellation.check().map_err(|_| Error::Unauthorized("selected project invocation cancelled".into()))
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_project_source_handle_with_native_work(
+        self: &Arc<Self>, context: &crate::runtime::TaskContext,
+        handle: &ProjectSourceReadHandle, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let cancellation = self.invocation_cancellation.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "selected project read requires actual invocation cancellation",
+        })?;
+        work.remaining()?;
+        if cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        if !context.original_task_binding_matches(self.task_id, &self.fence)
+            || context.scope().grants() != &self.input_grants
+            || context.scope().limits() != self.input_limits
+            || handle.authorization().caller_admission_digest != self.original_admission_digest
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "selected project read lacks its current original owner",
+            });
+        }
+        self.verify_with_native_work(false, work).await?;
+        self.host.verify_project_source_authorization_with_native_work(
+            handle.authorization(), self.task_id, work,
+        ).await?;
+        self.verify_with_native_work(false, work).await?;
+        if cancellation.is_cancelled() {
+            return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+        }
+        Ok(())
+    }
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {

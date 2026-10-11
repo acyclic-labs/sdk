@@ -598,6 +598,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         (self.task_id, &self.fence)
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn matches_task_binding(
+        &self, task: TaskId, fence: &crate::scheduler::LeaseFence,
+    ) -> bool {
+        self.task_id == task && &self.fence == fence
+    }
+
     pub(crate) async fn suspend_quiescent_execution(
         &self,
         execution: OperationId,

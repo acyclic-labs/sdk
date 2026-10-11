@@ -222,6 +222,9 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
         self.owner.task_binding()
     }
+    fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool {
+        self.owner.matches_task_binding(task, fence)
+    }
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {

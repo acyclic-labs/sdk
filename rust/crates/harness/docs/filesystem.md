@@ -332,6 +332,16 @@ Workspace approval never grants transcript access: foreign-source forks use
 fresh empty conversation lineage. Requests to inherit a selected foreign
 transcript are rejected; this workspace token is not transcript authorization.
 
+`FilesystemTaskRuntime::inspect_project_source_with_native_work` consumes that
+same sealed selection under the supplied original native ledger. Authentication,
+source admission and allocation metadata, workspace open and generation lookup
+use the existing observed bodies. Metadata keeps its actual returned allocation
+custody through physical drop, including when a later boundary rejects the
+original owner. The context/fence comparison borrows the existing task binding;
+it neither clones the owner's scope nor reacquires a lease. The ordinary
+`inspect_project_source` and frozen `WorkBudget` methods remain separate measured
+interfaces; their receipts do not claim original-native output custody.
+
 `ForkPreparation.child_result_volume` optionally declares one distinct
 child-owned unmounted result namespace. Its report and seed retain the paired
 original allocation generation; it is neither scratch nor a merge destination.

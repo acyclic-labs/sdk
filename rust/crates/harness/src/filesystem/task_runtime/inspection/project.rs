@@ -30,22 +30,28 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, budget: WorkBudget,
     ) -> Result<Self> {
-        limits.validate()?;
-        let authorization = handle.authorization();
         let cancellation = owner.invocation_cancellation().ok_or_else(|| {
             Error::Unauthorized("selected source has no original invocation token".into())
         })?;
         let io = PreparationIo::from_budget(budget, cancellation)?;
+        Self::open_with_io(host, owner, handle, limits, io).await
+    }
+
+    pub(super) async fn open_with_io(
+        host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
+        handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let authorization = handle.authorization();
         host.require_private_directory(&authorization.project, handle.grant(), "")?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
-        owner.verify(false).await?;
+        Self::verify_owner(&owner, &io).await?;
         let workspace = bounded_io::open(&host, &reference, &io).await?;
-        owner.verify(false).await?;
+        Self::verify_owner(&owner, &io).await?;
         // Both handles share the opened workspace name payload.
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = bounded_io::generation(&host, &workspace, &authorization.generation, &io).await?;
-        owner.verify(false).await?;
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        Self::verify_owner(&owner, &io).await?;
         Ok(Self { host, owner, handle, generation, workspace_id: workspace.id(), limits, io,
             serial: tokio::sync::Mutex::new(()) })
     }
@@ -54,9 +60,29 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) fn work(&self) -> WorkCounters { self.io.receipt() }
 
     pub(super) async fn guard(&self) -> Result<()> {
-        self.io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
-        self.owner.verify(false).await?;
-        self.io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        Self::verify_owner(&self.owner, &self.io).await
+    }
+
+    async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            let cancellation = owner.invocation_cancellation().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "selected source has no original invocation token",
+            })?;
+            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+                return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+            }
+            work.remaining()?;
+            owner.verify_with_native_work(false, work).await?;
+            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+                return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
+            }
+            return Ok(());
+        }
+        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        owner.verify(false).await?;
+        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
     fn path(&self, volume: &VolumeRef, prefix: &str, path: &str, generation: &GenerationRef) -> Result<()> {

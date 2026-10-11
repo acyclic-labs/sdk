@@ -4102,6 +4102,8 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence);
+    #[cfg(feature = "filesystem")]
+    fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: FileRef,
     ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>>;
@@ -4202,6 +4204,14 @@ impl TaskContext {
             return Err(Error::Unauthorized("task context differs from original owner".into()));
         }
         Ok(fence)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn original_task_binding_matches(
+        &self, task: TaskId, fence: &crate::scheduler::LeaseFence,
+    ) -> bool {
+        self.durable_task == Some(task) && self.owned_mailbox.as_ref()
+            .is_some_and(|owner| owner.matches_task_binding(task, fence))
     }
 
     #[cfg(feature = "filesystem")]

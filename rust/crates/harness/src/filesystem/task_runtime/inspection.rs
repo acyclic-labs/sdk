@@ -17,8 +17,10 @@ enum SourceReader<P, A, O> {
 /// source never adopts its grants, mounts its resources, or acquires a lease.
 pub struct TaskSourceInspection<P, A, O> {
     source: TaskAdmissionRecord,
-    reader: SourceReader<P, A, O>,
     volumes: Vec<crate::durable_host::TaskVolumeSnapshot>,
+    reader: SourceReader<P, A, O>,
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_metadata_custody: Option<(acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation)>,
 }
 
 impl<P, A, O> TaskSourceInspection<P, A, O>
@@ -145,8 +147,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let caller_admission = self.host.observe_admission(caller).await?;
         let source = self.host.observe_admission(source).await?;
         let reader = self.harness.durable_context(caller, caller_admission.operation_id).await?;
-        let volumes = self.host.observe_volume_snapshots(TaskId::from_bytes(source.operation_id.into_bytes())).await?;
-        Ok(TaskSourceInspection { source, reader: SourceReader::Caller(reader), volumes })
+        let volumes = self.host.observe_volume_snapshots(source.task_id()).await?;
+        Ok(TaskSourceInspection { source, reader: SourceReader::Caller(reader), volumes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata_custody: None,
+        })
     }
 
     /// Opens one operation-authorized project selection without changing caller
@@ -174,7 +179,46 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
         owner.verify(false).await?;
         let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), budget).await?;
-        Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes })
+        Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata_custody: None,
+        })
+    }
+
+    /// Opens the same sealed selected-project reader under the original native
+    /// ledger. Returned source metadata stays in that ledger's custody until
+    /// its physical drop; caller authority is neither cloned nor broadened.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "original owner, exact selection and native work are explicit")]
+    pub async fn inspect_project_source_with_native_work(
+        &self, context: &TaskContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+        handle: crate::source_authorization::ProjectSourceReadHandle,
+        operation: OperationId, source: TaskId,
+        snapshot: &crate::source_authorization::ProjectSourceSnapshot,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<TaskSourceInspection<P, A, O>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        handle.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref())?;
+        io.remaining()?.verify(crate::filesystem::finite_budget(
+            handle.authorization().maximum_work, handle.authorization().maximum_bytes,
+        )).map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "selected native inspection exceeds its original source allowances",
+        })?;
+        owner.verify_project_source_handle_with_native_work(context, &handle, work).await?;
+        // Keep each payload and its guard together across fallible boundaries.
+        // Tuple field order drops the payload before its allocation custody.
+        let admission = self.host.observe_admission_with_native_work(source, work).await?;
+        owner.verify_with_native_work(false, work).await?;
+        let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
+        owner.verify_with_native_work(false, work).await?;
+        let reader = ProjectSourceReader::open_with_io(
+            self.filesystem.clone(), owner, handle, context.scope().limits(), io,
+        ).await?;
+        Ok(TaskSourceInspection {
+            source: admission.0, volumes: volumes.0, reader: SourceReader::Project(reader),
+            _native_metadata_custody: Some((admission.1, volumes.1)),
+        })
     }
 }
 

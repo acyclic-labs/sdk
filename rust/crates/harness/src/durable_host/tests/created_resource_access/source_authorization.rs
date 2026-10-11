@@ -114,6 +114,41 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let budget: acyclic_fs::WorkBudget = serde_json::from_value(budget_value)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let snapshot = ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let native_cancellation = acyclic_fs::CancellationToken::new();
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            creation_control_budget(), &native_cancellation,
+        ).expect("finite original source invocation");
+        let baseline = native.remaining().expect("source quota").peak_allocation_bytes;
+        let selected = runtime.inspect_project_source_with_native_work(
+            &context, owner.clone(), handle.clone(), operation, child, &snapshot, &native,
+        ).await?;
+        assert_eq!(selected.source().task_id(), child);
+        assert_eq!(selected.project()?.volume, project);
+        assert_eq!(context.scope().grants(), &original);
+        assert!(native.receipt().backend_read_operations > 0);
+        assert!(native.remaining().expect("retained source quota").peak_allocation_bytes < baseline);
+        drop(selected);
+        assert_eq!(native.remaining().expect("released source quota").peak_allocation_bytes, baseline);
+
+        let mut denied_budget = creation_control_budget();
+        denied_budget.backend_read_operations = 0;
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            denied_budget, &native_cancellation,
+        ).expect("finite denied source invocation");
+        assert!(matches!(runtime.inspect_project_source_with_native_work(
+            &context, owner.clone(), handle.clone(), operation, child, &snapshot, &denied,
+        ).await, Err(Error::NativeWork { .. })));
+        assert_eq!(denied.receipt().backend_read_operations, 0);
+        assert_eq!(denied.receipt().backend_write_operations, 0);
+
+        let wrong_operation = OperationId::from_bytes([153;16]);
+        assert!(runtime.inspect_project_source_with_native_work(
+            &context, owner.clone(), handle.clone(), wrong_operation, child, &snapshot, &native,
+        ).await.is_err());
+        assert_eq!(native.remaining().expect("rejected source quota").peak_allocation_bytes, baseline);
+    }
     let inspected = runtime.inspect_project_source(&context, owner.clone(), handle.clone(), operation, child, &snapshot, budget).await?;
     let (selected_file, selected_bytes) = inspected.read_path(&project, "", "selected.txt", &generation).await?;
     assert_eq!(selected_bytes, b"frozen selected");
