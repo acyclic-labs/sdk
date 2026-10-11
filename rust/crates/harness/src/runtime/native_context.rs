@@ -8,6 +8,10 @@ use std::sync::Arc;
 pub(super) struct NativeMetadataSource {
     work: NativeMaterializationWork,
     bytes: u64,
+    // Set only by the SDK's current-owner Fresh dispatch producer after its
+    // actual authority/purpose check. Generic metadata and READ sources do not
+    // qualify for dispatch, even when they share this same allocation ledger.
+    pub(super) dispatch_source: bool,
 }
 
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
@@ -15,7 +19,7 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
 }
 
 fn same_work(left: &NativeMaterializationWork, right: &NativeMaterializationWork) -> bool {
-    std::ptr::eq(left.runtime_meter(), right.runtime_meter())
+    left.shares_ledger(right)
 }
 
 /// The SDK-issued task context shared without cloning its sealed metadata.
@@ -37,7 +41,23 @@ impl TaskContext {
     ) -> Result<()> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.native_metadata_source = Some(NativeMetadataSource { work: work.clone(), bytes });
+        self.native_metadata_source = Some(NativeMetadataSource {
+            work: work.clone(), bytes, dispatch_source: false,
+        });
+        Ok(())
+    }
+
+    /// Requires the SDK's original metadata source and cancellation ledger.
+    /// This source-membership gate does not grant resource or dispatch authority.
+    pub(crate) fn require_original_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+        work.charge(WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.native_metadata_source.as_ref()
+            .is_some_and(|source| source.work.shares_ledger(work))
+        {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "task context differs from its original native metadata source"));
+        }
         Ok(())
     }
 
@@ -163,6 +183,41 @@ impl ToolContext {
                 .checked_add(self.call_id.capacity() as u64)
                 .is_some_and(|bytes| custody.bytes() >= bytes)
     }
+
+    /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
+    /// This cached context gate does not authorize an MCP namespace or endpoint;
+    /// the pinned remote-tool registry must check those grants separately.
+    pub fn validate_native_mcp_context(&self, work: &NativeMaterializationWork) -> Result<()> {
+        work.charge(WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.native_metadata_matches(work) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "MCP context has no original native tool metadata source"));
+        }
+        let Some(shared) = self.native_task() else {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "MCP context is not the original shared native task"));
+        };
+        let context = shared.context();
+        context.require_original_native_work(work)?;
+        if !context.native_metadata_source.as_ref()
+            .is_some_and(|source| source.dispatch_source)
+        {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "native context purpose does not permit MCP dispatch"));
+        }
+        let Some((task, fence)) = context.owned_mailbox.as_ref()
+            .and_then(|owner| owner.task_binding())
+        else {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "MCP context has no borrowed original owner binding"));
+        };
+        if !context.original_task_binding_matches(task, fence) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "MCP context differs from its original task and fence"));
+        }
+        Ok(())
+    }
 }
 
 struct NativeContextVerifier {
@@ -285,6 +340,10 @@ mod tests {
         let context = fixture.harness.durable_context(
             fixture.root, fixture.root_lease.operation.operation_id,
         ).await?;
+        let before = original.receipt();
+        assert!(matches!(context.require_original_native_work(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(original.receipt(), before);
         let custody = original.claim(65_536)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let before = original.receipt();
@@ -393,6 +452,18 @@ mod tests {
             task, created.request.child.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
+        let mcp_tool = ToolContext::new_with_native_work(
+            Arc::clone(&shared), crate::OperationId::from_bytes([120; 16]),
+            "native-mcp-control", &original,
+        )?;
+        let before = original.receipt();
+        mcp_tool.validate_native_mcp_context(&original)?;
+        assert_eq!(original.receipt(), before);
+        let unqualified = mcp_tool.clone();
+        assert!(matches!(unqualified.validate_native_mcp_context(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(original.receipt(), before);
+        drop(unqualified);
         let owner = fixture.host.journal_owner_with_native_work(task, &fence, &original).await?
             .into_native_shared(&original)?;
         let shared_users = Arc::strong_count(&shared);
@@ -466,6 +537,8 @@ mod tests {
         drop(blocker);
         cancellation.cancel();
         let before = original.receipt();
+        assert!(matches!(mcp_tool.validate_native_mcp_context(&original),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert!(matches!(reader.read_with_native_work(&staged.0, 65_536, &original),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(original.receipt(), before);
@@ -482,6 +555,7 @@ mod tests {
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
         assert!(same_work(shared.native_work(), &original));
+        shared.context().require_original_native_work(&original)?;
         let operation = crate::OperationId::from_bytes([119; 16]);
         let call_id = operation.to_string();
         let baseline = original.live_allocation_bytes();

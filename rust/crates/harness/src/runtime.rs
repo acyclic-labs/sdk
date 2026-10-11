@@ -5240,7 +5240,7 @@ impl TaskContext {
             let output = reader.read_with_native_work(
                 file,self.scope.limits.file_bytes,work,
             )?.await?;
-            if !std::ptr::eq(output.1.work().runtime_meter(), work.runtime_meter())
+            if !output.1.work().shares_ledger(work)
                 || output.1.bytes() < output.0.capacity() as u64
             {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,

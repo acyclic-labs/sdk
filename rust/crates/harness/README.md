@@ -155,6 +155,10 @@ backing retained by weak references.
 observes its owned call-ID string on the original ledger. Ordinary tool-context
 clones preserve the context and policy but invalidate native tool-metadata
 funding; allocation membership never replaces original invocation admission.
+Native MCP preflight additionally requires the SDK's original current-dispatch
+purpose and borrowed task/fence binding. Metadata-only and READ/query contexts
+cannot authorize transport dispatch. The preflight performs no provider IO or
+allocation and does not replace invocation admission or remote-namespace grants.
 
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native
