@@ -61,6 +61,9 @@ pub use attribute_access::{
     AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure,
     lookup_attribute, lookup_attribute_async, lookup_attributes, lookup_attributes_async,
 };
+pub(crate) use attribute_access::{
+    lookup_attribute_async_with_accounting, lookup_attributes_async_with_accounting,
+};
 pub use attribute_list::{
     AttributeListError, AttributeListFailure, AttributeListing, list_attributes,
     list_attributes_async,
@@ -86,7 +89,7 @@ pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,
 };
-pub use codec::{CanonicalDecodeError, DecodeLimits};
+pub use codec::{CanonicalDecodeError, CanonicalInvariant, DecodeLimits};
 pub(crate) use codec::{Decoder, Encoder};
 pub use historical_evidence::{
     HistoricalGenerationEvidence, HistoricalGenerationProjection,
@@ -113,6 +116,10 @@ pub use file_read::{
     FileRangeRead, FileRangeReadError, FileRangeReadFailure, FileRangeRequest,
     read_file_range_async,
 };
+pub(crate) use file_read::{
+    ReadOwned, read_file_range_with_accounting, read_objects_with_accounting,
+    retained_object_reads_bytes,
+};
 pub use file_table::{
     FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup,
     FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableEncodeError, FileTableError,
@@ -126,11 +133,17 @@ pub(crate) use file_table::{
     encode_file_table_leaf_records_measured,
     lookup_file_record_async_with_custody, lookup_file_records_async_with_custody,
 };
+pub(crate) use file_table::{
+    lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting,
+};
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
     FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async,
 };
 pub(crate) use generation::generation_root_parent_count;
+pub(crate) use generation::{
+    read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
+};
 pub use generation::{
     GenerationRoot, GenerationRootEncodeError, MAXIMUM_GENERATION_ROOT_BYTES,
     decode_generation_root, encode_generation_root, encode_generation_root_measured, generation_root_id,
@@ -166,6 +179,7 @@ pub use metadata::{
     FileMetadata, FileMetadataEncodeError, MetadataField, decode_file_metadata, encode_file_metadata,
     encode_file_metadata_measured, file_metadata_id,
 };
+pub(crate) use metadata::decode_file_metadata_with_accounting;
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub(crate) use path_access::{
@@ -173,11 +187,21 @@ pub(crate) use path_access::{
     observe_path_edges_async, observe_path_refs_async, observe_path_with_data_async,
     observe_paths_with_data_async,
 };
+pub(crate) use path_access::{
+    AccountedPath, lookup_path_async_with_accounting, lookup_path_refs_async_with_accounting,
+    lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting,
+    observe_path_async_with_accounting, observe_path_refs_async_with_accounting,
+    observe_paths_async_with_accounting,
+};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
     PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs,
     lookup_path_refs_async, lookup_paths, lookup_paths_async, observe_path_async,
     observe_paths_async,
+};
+pub(crate) use persistent_point::{Owned, retire_allocation};
+pub(crate) use persistent_pagination::{
+    paginate_async_with_accounting, paginate_async_at_or_after_with_accounting,
 };
 pub(crate) use persistent_diff::{
     DiffError as PersistentDiffError, diff_file_records_async, diff_tree_entries_async,
@@ -200,11 +224,15 @@ pub use range::{
     ExtentSeekTarget, ExtentSlice, plan_extent_range, plan_extent_range_async, seek_extent,
     seek_extent_async,
 };
+pub(crate) use range::seek_extent_with_accounting;
 pub use read::{
     TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries,
     lookup_tree_entries_async, lookup_tree_entry, lookup_tree_entry_async,
 };
 pub(crate) use read::lookup_tree_entry_async_with_custody;
+pub(crate) use read::{
+    lookup_tree_entries_async_with_accounting, lookup_tree_entry_async_with_accounting,
+};
 pub(crate) use rebase::{ProofDataClaim, ProofDataCustody};
 pub use rebase::{
     AsyncRebaseProbe, CheckoutDependencies, Dependency, DependencyError, DependencyRegion,
