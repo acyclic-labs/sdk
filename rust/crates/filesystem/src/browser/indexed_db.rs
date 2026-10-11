@@ -37,7 +37,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 1;
 const OBJECTS: &str = "objects";
 const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
@@ -118,11 +118,12 @@ pub struct IndexedDbObjectStore {
 }
 
 impl IndexedDbObjectStore {
-    /// Opens or upgrades one browser-local filesystem database.
+    /// Opens or creates the canonical version-1 browser-local filesystem database.
     ///
     /// # Errors
     ///
-    /// Rejects empty options and any blocked or failed `IndexedDB` upgrade.
+    /// Rejects empty options, obsolete database versions without deletion or
+    /// implicit migration, and any blocked or failed `IndexedDB` initialization.
     pub async fn open(
         database_name: &str,
         maximum_object_bytes: u64,
@@ -682,12 +683,13 @@ impl IndexedDbAuthorityStore {
         }
     }
 
-    /// Opens one browser-local authority database.
+    /// Opens or creates the canonical version-1 browser-local authority database.
     ///
     /// # Errors
     ///
     /// Rejects empty options, payload bounds that cannot be represented by
-    /// browser buffers, and blocked or failed schema upgrades.
+    /// browser buffers, obsolete versions without deletion or implicit migration,
+    /// and blocked or failed schema initialization.
     pub async fn open(
         database_name: &str,
         maximum_payload_bytes: u64,
