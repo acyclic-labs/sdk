@@ -87,7 +87,7 @@ impl SessionLimits {
     pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         if self.active_tasks == 0
             || self.total_tasks == 0
             || self.model_steps == 0
@@ -575,6 +575,33 @@ impl Scheduler {
         self.validate_declaration_with_work(spec,&mut None)
     }
 
+    pub(crate) fn validate_session_with_work(
+        &self, spec: &OperationSpec, limits: &SessionLimits,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate_declaration_with_work(spec, work)?;
+        limits.validate_with_work(work)?;
+        self.validate_session_configuration(
+            spec.operation_id, spec.parent.is_some(), false, limits, work,
+        )
+    }
+
+    fn validate_session_configuration(
+        &self, operation_id: OperationId, has_parent: bool, dispatched: bool,
+        limits: &SessionLimits,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if has_parent || dispatched || self.children(operation_id).next().is_some() {
+            return Err(diagnostic(work, crate::wire::ErrorCode::Conflict,
+                "session must be configured before descendants or dispatch"));
+        }
+        if self.sessions.get(&operation_id).is_some_and(|existing| existing != limits) {
+            return Err(diagnostic(work, crate::wire::ErrorCode::Conflict,
+                "session limits are already pinned"));
+        }
+        Ok(())
+    }
+
     fn validate_declaration_with_work(
         &self, spec: &OperationSpec,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -762,7 +789,7 @@ impl Scheduler {
         // Observe the original borrowed subtraction inputs before any output
         // String or logical map slot is allocated.
         for operation in self.operations.values() {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             if let Some(reservation) = &operation.reservation {
                 observe_text(&reservation.placement, work)?;
                 if reservation.placement == placement {
@@ -822,7 +849,7 @@ impl Scheduler {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized, Unsupported};
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         let primary = event.operation_id();
         let declared_parent = match event {
             SchedulerEvent::Declared { spec } => spec.parent.as_ref().map(|parent| parent.operation_id),
@@ -833,7 +860,7 @@ impl Scheduler {
         }
         if let SchedulerEvent::Orchestrated { cancel, .. } = event {
             for id in cancel {
-                observe(work.as_deref_mut())?;
+                observe(work)?;
                 if let Some(operation) = self.operation(*id) { revision_with_work(operation.revision, work)?; }
             }
         }
@@ -842,16 +869,12 @@ impl Scheduler {
             SchedulerEvent::SessionConfigured { limits, .. } => {
                 limits.validate_with_work(work)?;
                 let operation = self.validated_operation(primary, work)?;
-                if operation.spec.parent.is_some() || operation.reservation.is_some()
-                    || operation.cancellation_requested
-                    || !matches!(operation.phase, OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity)
-                    || self.children(primary).next().is_some()
-                {
-                    return Err(diagnostic(work, Conflict, "session must be configured before descendants or dispatch"));
-                }
-                if self.sessions.get(&primary).is_some_and(|existing| existing != limits) {
-                    return Err(diagnostic(work, Conflict, "session limits are already pinned"));
-                }
+                self.validate_session_configuration(
+                    primary, operation.spec.parent.is_some(),
+                    operation.reservation.is_some() || operation.cancellation_requested
+                        || !matches!(operation.phase, OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity),
+                    limits, work,
+                )?;
             }
             SchedulerEvent::ModelDispatchClaimed { attempt_id, step, request_digest, fence, ceiling, .. } => {
                 let operation = self.validated_operation(primary, work)?;
@@ -876,7 +899,7 @@ impl Scheduler {
                 } else {
                     let mut used = 0_u64;
                     for (id, claims) in &self.model_claims {
-                        observe(work.as_deref_mut())?;
+                        observe(work)?;
                         if self.session_root_with_work(*id, work)?.0 == root {
                             used = used.checked_add(claims.used())
                                 .ok_or_else(|| diagnostic(work, Invalid, "model step accounting overflows"))?;
@@ -999,7 +1022,7 @@ impl Scheduler {
             SchedulerEvent::CancellationRequested { recursive, .. } => {
                 self.validated_operation(primary, work)?;
                 for (id, operation) in &self.operations {
-                    observe(work.as_deref_mut())?;
+                    observe(work)?;
                     if *id == primary || (*recursive && self.cancellation_descendant(*id, primary, work)?) {
                         revision_with_work(operation.revision, work)?;
                     }
@@ -1261,7 +1284,7 @@ impl Scheduler {
     ) -> Result<bool> {
         let owner = self.operation(root).map(|operation| operation.spec.owner.authority());
         while candidate != root {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             let Some(state) = self.operation(candidate) else { return Ok(false); };
             if Some(state.spec.owner.authority()) != owner { return Ok(false); }
             let Some(parent) = &state.spec.parent else { return Ok(false); };
@@ -1510,7 +1533,7 @@ impl Scheduler {
         &self, parent: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<BorrowedOrchestration<'_>> {
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         let Some(state) = self.operation(parent) else { return Ok(BorrowedOrchestration::Wait); };
         if state.phase != OperationPhase::WaitingForChildren || state.cancellation_requested {
             return Ok(BorrowedOrchestration::Wait);
@@ -1520,7 +1543,7 @@ impl Scheduler {
         let mut successful = true;
         let mut possible = 0;
         for (_, child) in self.children(parent) {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             count += 1;
             let success = matches!(child.outcome, Some(Outcome::Succeeded(_)));
             terminal &= child.phase == OperationPhase::Terminal;
@@ -1538,9 +1561,9 @@ impl Scheduler {
             Orchestration::Race | Orchestration::Quorum { .. } => {
                 let mut successes = 0;
                 for completed in &self.completion_order {
-                    observe(work.as_deref_mut())?;
+                    observe(work)?;
                     for (_, child) in self.children(parent) {
-                        observe(work.as_deref_mut())?;
+                        observe(work)?;
                         if child.spec.operation_id == *completed {
                             if let Some(Outcome::Succeeded(file)) = &child.outcome {
                                 if matches!(state.spec.orchestration, Orchestration::Race) {
@@ -1587,7 +1610,7 @@ impl Scheduler {
     ) -> Result<BorrowedOrchestration<'_>> {
         let mut count = 0;
         for (slot, child) in self.children(parent) {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             match &child.outcome {
                 Some(Outcome::Succeeded(_)) => { count += 1; }
                 Some(Outcome::Failed { message }) => return Ok(BorrowedOrchestration::Complete {
@@ -1667,7 +1690,7 @@ impl Scheduler {
                 while index < frontier.len() {
                     let parent = frontier[index];
                     for (_, child) in self.children(parent) {
-                        observe(work.as_deref_mut())?;
+                        observe(work)?;
                         if owner == Some(child.spec.owner.authority()) && !frontier.contains(&child.spec.operation_id) {
                             push_scheduler_item(&mut frontier, child.spec.operation_id, &mut held, work)?;
                         }
@@ -1742,7 +1765,7 @@ impl Scheduler {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<SessionLimits> {
         let (root, _) = self.session_root_with_work(operation_id, work)?;
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         self.sessions.get(&root).copied()
             .ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Unsupported, "session budget is not configured"))
     }
@@ -1761,15 +1784,15 @@ impl Scheduler {
     ) -> Result<()> {
         let reason = "model dispatch lacks its exact shared budget claim";
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         let Some(claims) = self.model_claims.get(&task) else {
             return Err(diagnostic(work, crate::wire::ErrorCode::Conflict, reason));
         };
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         let Some(attempt) = claims.attempts.get(&attempt) else {
             return Err(diagnostic(work, crate::wire::ErrorCode::Conflict, reason));
         };
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         if attempt.get(&step) == Some(digest) { Ok(()) }
         else { Err(diagnostic(work, crate::wire::ErrorCode::Conflict, reason)) }
     }
@@ -1785,7 +1808,7 @@ impl Scheduler {
         let mut depth = 0_u32;
         let mut traversed = 0_usize;
         loop {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             let state = self.operation(id)
                 .ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::NotFound, "session task"))?;
             traversed += 1;
@@ -1812,7 +1835,7 @@ impl Scheduler {
         if self.operation(id).is_some_and(|state| state.reservation.is_some()) { return Ok(()); }
         let mut owned = 0_u64;
         for (candidate, state) in &self.operations {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             if state.reservation.is_some() && self.session_root_with_work(*candidate, work)?.0 == root { owned += 1; }
         }
         if owned >= limits.active_tasks {
@@ -1845,7 +1868,7 @@ impl Scheduler {
     ) -> Result<()> {
         let operation = self.validated_operation(id, work)?;
         for dependency in &operation.spec.dependencies {
-            observe(work.as_deref_mut())?;
+            observe(work)?;
             if !matches!(self.operation(*dependency).and_then(|state| state.outcome.as_ref()), Some(Outcome::Succeeded(_))) {
                 return Err(diagnostic(work, crate::wire::ErrorCode::Conflict, "operation dependencies are not ready"));
             }
@@ -1868,7 +1891,7 @@ impl Scheduler {
         &self, candidate: OperationId, target: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
-        observe(work.as_deref_mut())?;
+        observe(work)?;
         if candidate == target { return Ok(true); }
         if let Some(operation) = self.operation(candidate) {
             for dependency in &operation.spec.dependencies {
@@ -1973,7 +1996,7 @@ impl BorrowedOutcome<'_> {
         match self {
             Self::Failed(message) => observe_text(message, work),
             Self::ChildFailed { slot, message } => { observe_text(slot, work)?; observe_text(message, work) }
-            _ => observe(work.as_deref_mut()),
+            _ => observe(work),
         }
     }
 
@@ -2089,8 +2112,8 @@ fn push_scheduler_item<T>(
     Ok(())
 }
 
-fn observe(work: Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-    if let Some(io) = work {
+fn observe(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+    if let Some(io) = work.as_mut() {
         io.check_cancellation()?;
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
@@ -2098,11 +2121,14 @@ fn observe(work: Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()
 }
 
 fn observe_text(_text: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-    if let Some(io) = work.as_deref_mut() {
-        io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-    }
-    Ok(())
+    observe(work)
+}
+
+fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = work.as_ref() { return io.original_native_work().is_some(); }
+    let _ = work;
+    false
 }
 
 fn diagnostic(
@@ -2110,7 +2136,7 @@ fn diagnostic(
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() { return Error::NativeBoundary { code, reason }; }
+    if native_observer(work) { return Error::NativeBoundary { code, reason }; }
     let _ = work;
     match code {
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
@@ -3267,6 +3293,85 @@ mod tests {
         assert!(scheduler.apply_with_work(&valid, &mut Some(&mut io)).expect_err("pre-cancel").is_native_failure());
         assert_eq!(scheduler, original);
         assert_eq!(work.receipt(), before);
+        Ok(())
+    }
+
+    #[test]
+    fn prospective_session_validation_reuses_configured_root_policy() -> Result<()> {
+        let limits = SessionLimits { active_tasks: 1, total_tasks: 2, depth: 1, model_steps: 2 };
+        let scheduler = Scheduler::new();
+        let root = spec(id(89), Orchestration::Leaf)?;
+        scheduler.validate_session_with_work(&root, &limits, &mut None)?;
+        let mut projected = scheduler;
+        projected.apply(SchedulerEvent::Declared { spec: Box::new(root.clone()) })?;
+        projected.apply(SchedulerEvent::SessionConfigured { operation_id: root.operation_id, limits })?;
+        assert!(matches!(projected.validate_session_with_work(&root, &limits, &mut None),
+            Err(Error::Conflict(_))));
+        let mut child = spec(id(90), Orchestration::Leaf)?;
+        child.parent = Some(ParentLink { operation_id: root.operation_id, slot: "child".into() });
+        assert!(matches!(projected.validate_session_with_work(&child, &limits, &mut None),
+            Err(Error::Conflict(_))));
+        projected.apply(SchedulerEvent::Declared { spec: Box::new(child) })?;
+        assert!(matches!(projected.apply(SchedulerEvent::SessionConfigured { operation_id: id(90), limits }),
+            Err(Error::Conflict(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_entrypoint_clone_keeps_existing_unbounded_depth() -> Result<()> {
+        let mut result_schema = Value::Null;
+        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
+        let entrypoint = EntrypointRef { name: "ordinary".into(), version: "1".into(),
+            digest: [1; 32], result_schema };
+        assert_eq!(entrypoint.clone_with_work(&mut None)?, entrypoint);
+        assert!(entrypoint.logical_owned_bytes()? > 0);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn ordinary_observer_is_not_native_policy_and_keeps_deep_clone() -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut io = crate::store::history::HistoryWork::new(native_scheduler_budget(), &cancellation);
+        let invalid = SessionLimits { active_tasks: 0, total_tasks: 1, depth: 1, model_steps: 1 };
+        assert!(matches!(invalid.validate_with_work(&mut Some(&mut io)), Err(Error::Invalid(_))));
+        let mut result_schema = Value::Null;
+        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
+        let entrypoint = EntrypointRef { name: "observed".into(), version: "1".into(),
+            digest: [1; 32], result_schema };
+        assert_eq!(entrypoint.clone_with_work(&mut Some(&mut io))?, entrypoint);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_field_copy_denial_retires_prior_fields_and_depth_is_native_only() -> Result<()> {
+        let entrypoint = EntrypointRef { name: "first".into(), version: "second".into(),
+            digest: [1; 32], result_schema: Value::Null };
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = native_scheduler_budget();
+        budget.bytes_copied = entrypoint.name.len() as u64;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original partial-field ledger");
+        let mut io = crate::store::history::native_work_io(&work).expect("original field observer");
+        let error = entrypoint.clone_with_work(&mut Some(&mut io)).expect_err("second field is denied");
+        assert!(error.is_native_failure());
+        assert_eq!(work.receipt().bytes_copied, entrypoint.name.len() as u64);
+        drop(error);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        let mut result_schema = Value::Null;
+        for _ in 0..300 { result_schema = Value::Array(vec![result_schema]); }
+        let deep = EntrypointRef { result_schema, ..entrypoint };
+        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
+            .expect("original depth-bound ledger");
+        let mut io = crate::store::history::native_work_io(&work).expect("original depth observer");
+        let error = deep.clone_with_work(&mut Some(&mut io)).expect_err("native depth bound");
+        assert!(error.is_native_failure());
+        assert_eq!(work.receipt().bytes_copied, 0);
+        drop(error);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         Ok(())
     }
 
