@@ -74,7 +74,7 @@ fn canonical_native_records_preserve_integer_and_resource_constraints() -> Resul
 #[wasm_bindgen_test::wasm_bindgen_test]
 fn actual_native_turn_bytes_decode_through_wasm_without_narrowing()
 -> std::result::Result<(), wasm_bindgen::JsValue> {
-    use acyclic_harness::wasm::{
+    use acyclic_harness::{
         decode_execution_record_json, decode_turn_input_json, decode_turn_output_json,
         encode_canonical_json,
     };

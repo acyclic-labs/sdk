@@ -64,6 +64,11 @@ pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::{
+    decode_execution_record_json, decode_turn_input_json, decode_turn_output_json,
+    encode_canonical_json,
+};
 pub mod wire_api;
 mod wire_codec;
 pub use wire_codec::encode_error;
