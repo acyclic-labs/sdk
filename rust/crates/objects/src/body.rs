@@ -232,10 +232,16 @@ impl StoredBody {
     /// This body with every local leaf found in `relocations` moved, if any leaf moves.
     #[cfg(feature = "local")]
     pub(crate) fn relocated(&self, relocations: &LocalBodyRelocations) -> Option<Self> {
-        self.relocated_with_mode(
+        match self.relocated_with_mode(
             &|location, digest| relocations.get(&(location.clone(), *digest)).cloned(),
             &BodyReadMode::Ordinary,
-        ).expect("ordinary relocation performs no fallible admission")
+        ) {
+            Ok(relocated) => relocated,
+            Err(error) => {
+                let _cause = error;
+                unreachable!("ordinary relocation performs no fallible admission")
+            }
+        }
     }
 
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -369,12 +375,13 @@ impl StoredBody {
 
     // Composite recursion shares one logical read span instead of emitting a span
     // for every constituent body.
-    async fn read_inner_async(
+    fn read_inner_async(
         &self,
         start: usize,
         end: usize,
         mode: BodyReadMode,
-    ) -> Result<acyclic_stream::OwnedBytes, BodyReadError> {
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
+        async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let BodyReadMode::Native(meter) = &mode {
             meter.check().map_err(crate::v1::NativeObjectsError::from)?;
@@ -420,6 +427,7 @@ impl StoredBody {
                     root, digest, *length, location, start, end, meter,
                 ).await.map_err(Into::into),
             },
+        }
         }
     }
 

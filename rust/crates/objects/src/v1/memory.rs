@@ -1175,7 +1175,7 @@ impl NativeBatchObjects for MemoryObjects {
                 }
                 let selected = {
                     let Ok(state) = self.lock_state() else {
-                        return vec![Err(Unavailable.into()); requests.len()];
+                        return (0..requests.len()).map(|_| Err(Unavailable.into())).collect();
                     };
                     requests
                         .into_iter()
