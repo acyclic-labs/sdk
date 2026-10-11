@@ -40,7 +40,8 @@ pub enum JsonCodecCharge {
         /// Structural items.
         items: u64,
     },
-    /// Admit requested logical payload/slot storage before allocation.
+    /// Admit requested logical payload/slot storage before allocation. This is
+    /// quota growth, NOT an allocator operation or observed allocated bytes.
     Retain {
         /// Logical storage bytes, excluding opaque allocator/map node overhead.
         bytes: u64,
@@ -52,7 +53,21 @@ pub enum JsonCodecCharge {
         /// Previously admitted logical storage bytes.
         bytes: u64,
     },
-    /// Bytes copied into owned buffers.
+    /// Preflight copy allowance before a potentially unnecessary allocation.
+    /// Check the original ledger without spending bytes or making a receipt.
+    CopyAdmission {
+        /// Bytes that the subsequent SDK buffer copy would copy.
+        bytes: u64,
+    },
+    /// Immediately before one genuine positive SDK String/Vec try_reserve call.
+    /// Opaque map/serde allocations are not observed or invented here.
+    AllocationOperation {
+        /// Full requested new capacity in bytes, not the logical growth delta
+        /// or an observation of allocator metadata/RSS.
+        bytes: u64,
+    },
+    /// Bytes about to be copied into an already-reserved buffer. Once accepted,
+    /// the copy is infallible: no intervening SDK allocation/failure/checkpoint.
     Copy {
         /// Copied bytes.
         bytes: u64,
@@ -87,18 +102,24 @@ fn owned_logical_bytes(value: &Value) -> u64 {
 enum CodecError {
     Interrupted,
     Json(serde_json::Error),
+    Allocation(std::collections::TryReserveError),
 }
 impl std::fmt::Display for CodecError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Interrupted => formatter.write_str("JSON admission interrupted"),
             Self::Json(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Allocation(error) => std::fmt::Display::fmt(error, formatter),
         }
     }
 }
 impl std::error::Error for CodecError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Interrupted => None, Self::Json(error) => Some(error) }
+        match self {
+            Self::Interrupted => None,
+            Self::Json(error) => Some(error),
+            Self::Allocation(error) => Some(error),
+        }
     }
 }
 impl ser::Error for CodecError {
@@ -109,11 +130,22 @@ impl ser::Error for CodecError {
 impl From<serde_json::Error> for CodecError {
     fn from(error: serde_json::Error) -> Self { Self::Json(error) }
 }
+impl From<std::collections::TryReserveError> for CodecError {
+    fn from(error: std::collections::TryReserveError) -> Self { Self::Allocation(error) }
+}
 impl CodecError {
     fn into_io(self) -> std::io::Error {
         match self {
             Self::Interrupted => std::io::ErrorKind::Interrupted.into(),
             Self::Json(error) => std::io::Error::other(error),
+            Self::Allocation(_) => unreachable!("SDK reserve errors return directly to Root, not through serde's writer bridge"),
+        }
+    }
+    fn into_root(self) -> Error {
+        match self {
+            Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
+            Self::Json(error) => Error::Invalid(error.to_string()),
+            Self::Allocation(error) => Error::Allocation(error),
         }
     }
 }
@@ -242,6 +274,12 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         self.retained = retained;
         Ok(())
     }
+    fn allocation(&mut self, requested_capacity: usize) -> JsonResult<()> {
+        if requested_capacity != 0 {
+            self.charge(JsonCodecCharge::AllocationOperation { bytes: requested_capacity as u64 })?;
+        }
+        Ok(())
+    }
 
     fn string(&mut self, value: &str) -> JsonResult<String> {
         // Charge before scanning/copying a potentially huge borrowed string.
@@ -259,9 +297,13 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
         }
         serde_json::to_writer(StringCounter(self), value)?;
         self.retain(value.len())?;
-        self.charge(JsonCodecCharge::Copy { bytes: value.len() as u64 })?;
+        self.charge(JsonCodecCharge::CopyAdmission { bytes: value.len() as u64 })?;
         let mut output = String::new();
-        output.try_reserve_exact(value.len()).map_err(Self::error)?;
+        if !value.is_empty() {
+            self.allocation(value.len())?;
+            output.try_reserve_exact(value.len()).map_err(CodecError::from)?;
+        }
+        self.charge(JsonCodecCharge::Copy { bytes: value.len() as u64 })?;
         output.push_str(value);
         Ok(output)
     }
@@ -412,7 +454,14 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::fmt::Write for BoundedText<'_
             }
             self.meter.charge(JsonCodecCharge::Work { bytes: value.len() as u64, items: 0 })?;
             self.meter.retain(value.len())?;
-            self.text.try_reserve_exact(value.len()).map_err(Meter::<F>::error)?;
+            self.meter.charge(JsonCodecCharge::CopyAdmission { bytes: value.len() as u64 })?;
+            let requested = self.text.len().checked_add(value.len())
+                .ok_or_else(|| Meter::<F>::error("JSON capacity overflow"))?;
+            if requested > self.text.capacity() {
+                self.meter.allocation(requested)?;
+                self.text.try_reserve_exact(value.len()).map_err(CodecError::from)?;
+            }
+            self.meter.charge(JsonCodecCharge::Copy { bytes: value.len() as u64 })?;
             self.text.push_str(value);
             Ok(())
         })();
@@ -432,7 +481,11 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Sequence<'_, '_, F> {
             let growth = self.values.capacity().max(1).min(usize::try_from(remaining).unwrap_or(usize::MAX));
             let bytes = growth.checked_mul(std::mem::size_of::<Value>()).ok_or_else(|| Meter::<F>::error("JSON capacity overflow"))?;
             self.encoder.meter.retain(bytes)?;
-            self.values.try_reserve_exact(growth).map_err(Meter::<F>::error)?;
+            let requested = self.values.len().checked_mul(std::mem::size_of::<Value>())
+                .and_then(|current| current.checked_add(bytes))
+                .ok_or_else(|| Meter::<F>::error("JSON capacity overflow"))?;
+            self.encoder.meter.allocation(requested)?;
+            self.values.try_reserve_exact(growth).map_err(CodecError::from)?;
         }
         self.values.push(value.serialize(Encoder { meter: self.encoder.meter, depth: self.encoder.depth + 1 })?);
         Ok(())
@@ -626,11 +679,11 @@ pub fn json_value_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
         .ok_or_else(|| Error::Invalid("JSON retention accounting differs".into()))?;
     if released != 0 {
         if let Err(error) = meter.release(released) {
-            return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+            return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
         }
     }
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
-        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
     }
     meter.retained = 0;
     Ok(value)
@@ -641,13 +694,13 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
 ) -> Result<Value> {
     let mut value = match value.serialize(Encoder { meter: &mut *meter, depth: 0 }) {
         Ok(value) => value,
-        Err(error) => return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string()))),
+        Err(error) => return Err(meter.failure.take().unwrap_or_else(|| error.into_root())),
     };
     if let Some(error) = meter.failure.take() { return Err(error); }
     // serde_json::Map may use insertion-order storage. Explicit sorting pins
     // the same raw UTF-8 key ordering for all feature configurations.
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
-        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
     }
     value.sort_all_objects();
     Ok(value)
@@ -666,11 +719,15 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     if size > bounds.maximum_bytes { return Err(Error::Invalid("JSON exceeds declared byte bound".into())); }
     let size = usize::try_from(size).map_err(|_| Error::Invalid("JSON output exceeds address space".into()))?;
     if let Err(error) = meter.retain(size) {
-        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
     }
     (meter.charge)(JsonCodecCharge::Work { bytes: size as u64, items: 0 })?;
+    if let Err(error) = meter.charge(JsonCodecCharge::CopyAdmission { bytes: size as u64 })
+        .and_then(|()| meter.allocation(size)) {
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
+    }
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(size).map_err(|error| Error::Invalid(error.to_string()))?;
+    if size != 0 { bytes.try_reserve_exact(size).map_err(Error::Allocation)?; }
     struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { bytes: &'a mut Vec<u8>, maximum: usize, meter: &'a mut Meter<'b, F> }
     impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -688,7 +745,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     let released = meter.retained - size as u64;
     drop(value);
     if let Err(error) = meter.release(released) {
-        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
     }
     // Transfer only the returned output reservation to the caller. Every
     // temporary reservation has already been released after its data was freed.
@@ -826,10 +883,14 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
         usize::try_from(first.scan.bytes).map_err(|_| Error::Invalid("JSON output exceeds address space".into()))?
     };
     if let Err(error) = meter.retain(size) {
-        return Err(meter.failure.take().unwrap_or_else(|| Error::Invalid(error.to_string())));
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
+    }
+    if let Err(error) = meter.charge(JsonCodecCharge::CopyAdmission { bytes: size as u64 })
+        .and_then(|()| meter.allocation(size)) {
+        return Err(meter.failure.take().unwrap_or_else(|| error.into_root()));
     }
     let mut output = Vec::new();
-    output.try_reserve_exact(size).map_err(|error| Error::Invalid(error.to_string()))?;
+    if size != 0 { output.try_reserve_exact(size).map_err(Error::Allocation)?; }
     {
         let mut second = Writer { scan: Scan::default(), bounds, meter: &mut meter, output: Some(&mut output), maximum: size };
         if let Err(error) = serde_json::to_writer(&mut second, value) {
@@ -1163,6 +1224,86 @@ mod tests {
         assert_eq!(live, bytes.len() as u64);
         assert!(peak > live);
         Ok(())
+    }
+
+    #[test]
+    fn copy_preflight_allocator_and_copy_preserve_the_real_prefix() -> Result<()> {
+        // One direct String avoids opaque map/parser allocations entirely.
+        for denied in 0..3 {
+            let mut live = 0u64;
+            let mut attempted = 0u64;
+            let mut copied = 0u64;
+            let cause = Uuid::new_v4();
+            let result = json_value_bounded_trusted("SDK bytes", BOUNDS, &mut |event| {
+                match event {
+                    JsonCodecCharge::Retain { bytes } => live += bytes,
+                    JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("drop before release"),
+                    JsonCodecCharge::CopyAdmission { bytes } => {
+                        assert_eq!(bytes, 9);
+                        assert_eq!(attempted, 0);
+                        assert_eq!(copied, 0);
+                        if denied == 0 { return Err(Error::Indeterminate(cause)); }
+                    }
+                    JsonCodecCharge::AllocationOperation { bytes } => {
+                        assert_eq!(bytes, 9);
+                        assert_eq!(copied, 0);
+                        if denied == 1 { return Err(Error::Indeterminate(cause)); }
+                        attempted += 1;
+                    }
+                    JsonCodecCharge::Copy { bytes } => {
+                        assert_eq!(attempted, 1);
+                        assert_eq!(bytes, 9);
+                        if denied == 2 { return Err(Error::Indeterminate(cause)); }
+                        copied += bytes;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            });
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == cause));
+            assert_eq!(copied, 0);
+            assert_eq!(attempted, u64::from(denied == 2));
+            assert_eq!(live, 0);
+        }
+        let mut sequence = Vec::new();
+        let value = json_value_bounded_trusted("SDK bytes", BOUNDS, &mut |event| {
+            match event {
+                JsonCodecCharge::CopyAdmission { bytes } => sequence.push((0, bytes)),
+                JsonCodecCharge::AllocationOperation { bytes } => sequence.push((1, bytes)),
+                JsonCodecCharge::Copy { bytes } => sequence.push((2, bytes)),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        assert_eq!(sequence, [(0, 9), (1, 9), (2, 9)]);
+        assert_eq!(value, "SDK bytes");
+        // Empty strings have no allocation/reservation operation.
+        json_value_bounded_trusted("", BOUNDS, &mut |event| {
+            assert!(!matches!(event, JsonCodecCharge::AllocationOperation { .. }));
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn actual_reserve_rejection_moves_its_typed_cause_without_formatting() {
+        let mut operations = 0;
+        let mut meter = Meter { bounds: BOUNDS, items: 0, bytes: 0, retained: 0,
+            failure: None, charge: &mut |event| {
+                if let JsonCodecCharge::AllocationOperation { bytes } = event {
+                    assert_eq!(bytes, usize::MAX as u64);
+                    operations += 1;
+                }
+                Ok(())
+            } };
+        meter.allocation(usize::MAX).expect("operation admitted");
+        let mut buffer = Vec::<u8>::new();
+        let cause = buffer.try_reserve_exact(usize::MAX).expect_err("actual capacity-overflow rejection");
+        let root = CodecError::from(cause).into_root();
+        assert!(matches!(root, Error::Allocation(_)));
+        assert_eq!(buffer.capacity(), 0);
+        drop(meter);
+        assert_eq!(operations, 1);
     }
 
     #[test]
