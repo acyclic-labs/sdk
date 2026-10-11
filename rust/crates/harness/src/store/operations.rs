@@ -12,6 +12,7 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
+use crate::distributed::SdkCallError;
 pub(crate) fn original_native_decode_mode(observer: &dyn super::history::HistoryIo) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     { observer.original_native_work().is_some() }
@@ -821,22 +822,17 @@ impl IndexedPublication {
         work: &mut Option<&mut dyn super::history::HistoryIo>,
     ) -> Result<CommitCondition> {
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
-        let bounds = if work.is_none() {
-            client.bounds(self.path.as_str()).await
-        } else {
-            let handle = stream_with_work(client, &self.path, work)?;
-            if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-            handle.stream.bounds().await
-        };
+        let bounds = bounds_with_work(client, &self.path, work).await?;
         match bounds {
             Ok(_) => Ok(CommitCondition::Tail {
                 path: self.path.clone(),
                 expected: self.expected_tail,
             }),
-            Err(acyclic_stream::StreamError::NotFound) if self.expected_tail == 0 => {
+            Err(error) if *error.source() == acyclic_stream::StreamError::NotFound && self.expected_tail == 0 => {
+                drop(error);
                 Ok(CommitCondition::Absent { path: self.path.clone() })
             }
-            Err(error) => Err(stream_error_with_work(error, work)),
+            Err(error) => Err(error.into_error(work)),
         }
     }
 
@@ -960,7 +956,161 @@ pub(crate) fn stream_text_with_work<P: StreamProvider>(
     })
 }
 
-pub(super) async fn tail_with_work<P: StreamProvider>(
+/// SDK native records keep physical storage in their immutable Bytes owner.
+pub(crate) fn sdk_record_retained_bytes(
+    record: &Record,
+    work: &Option<&mut dyn super::history::HistoryIo>,
+) -> u64 {
+    if work.as_deref().is_some_and(original_native_decode_mode) { 0 }
+    else { record.value.len() as u64 }
+}
+
+/// The original finite producer; the native cursor guard follows its box.
+pub(crate) enum ObservedRecords {
+    Ordinary(acyclic_stream::RecordStream),
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Native(acyclic_stream::NativeStreamOutput<acyclic_stream::NativeRecordStream>),
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct NativeRecordBytes {
+    bytes: Bytes,
+    _producer_custody: acyclic_stream::NativeStreamOutput<()>,
+    _owner_custody: acyclic_fs::NativeAllocation,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl AsRef<[u8]> for NativeRecordBytes {
+    fn as_ref(&self) -> &[u8] { &self.bytes }
+}
+
+impl ObservedRecords {
+    pub(crate) async fn next(
+        &mut self,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<Option<Record>> {
+        match self {
+            Self::Ordinary(records) => {
+                let record = records.try_next().await
+                    .map_err(|error| stream_error_with_work(error, work))?;
+                if let Some(record) = &record
+                    && let Some(observer) = work.as_deref_mut()
+                {
+                    observer.receive_record(record.value.len() as u64)?;
+                }
+                Ok(record)
+            }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(records) => {
+                let original = work.as_deref().and_then(|observer| observer.original_native_work())
+                    .expect("native cursor has its original observer");
+                let Some(record) = records.value_mut().try_next().await
+                    .map_err(|error| Error::NativeWork { cause: original.runtime_error(error), custody: None })?
+                else { return Ok(None); };
+                let record = super::history::native_sdk_result(original, Ok(record))?;
+                work.as_deref_mut().expect("native cursor observer")
+                    .receive_native_record(record.value().value.len() as u64)?;
+                let (record, allocation) = record.into_parts();
+                // Rejoin the producer's owners before any fallible admission.
+                let has_custody = allocation.bytes() != 0;
+                let same_meter = std::sync::Arc::ptr_eq(
+                    allocation.meter(),
+                    &work.as_deref().and_then(|observer| observer.original_native_work())
+                        .expect("native cursor original").runtime_meter_owner(),
+                );
+                let output = acyclic_stream::NativeStreamOutput::new(record, allocation);
+                if !same_meter {
+                    return Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
+                    });
+                }
+                if !has_custody {
+                    return Ok(Some(output.into_parts().0));
+                }
+                let original = work.as_deref().and_then(|observer| observer.original_native_work())
+                    .expect("native cursor has its original observer");
+                let owner_custody = original.retain_owned(std::mem::size_of::<NativeRecordBytes>() as u64)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                original.runtime_meter_owner().allocate_refcount_header()
+                    .map_err(|error| Error::NativeWork { cause: original.runtime_error(error), custody: None })?;
+                let (mut record, allocation) = output.into_parts();
+                record.value = Bytes::from_owner(NativeRecordBytes {
+                    bytes: record.value,
+                    _producer_custody: acyclic_stream::NativeStreamOutput::new((), allocation),
+                    _owner_custody: owner_custody,
+                });
+                Ok(Some(record))
+            }
+        }
+    }
+}
+
+pub(crate) async fn read_records_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    stream: &acyclic_stream::Stream<P>,
+    from: u64,
+    count: u32,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
+        return native_records_with_work(client, stream.path(), from, count, original).await;
+    }
+    if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+    Ok(stream.read(from, count).await.map(ObservedRecords::Ordinary).map_err(SdkCallError::ordinary))
+}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+async fn native_records_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    from: u64,
+    count: u32,
+    original: &acyclic_fs::NativeMaterializationWork,
+) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
+    let result = client.native_read(acyclic_stream::ReadRequest {
+        path: path.clone(), from, limit: count,
+    }, original.runtime_meter_owner()).await;
+    crate::distributed::native_call_result(original, result)
+        .map(|result| result.map(ObservedRecords::Native))
+}
+
+async fn read_path_records_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    from: u64,
+    count: u32,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
+        return native_records_with_work(client, path, from, count, original).await;
+    }
+    let handle = stream_with_work(client, path, work)?;
+    read_records_with_work(client, &handle.stream, from, count, work).await
+}
+
+
+/// Preserves the provider's NotFound result for the canonical CAS selector.
+pub(crate) async fn bounds_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<std::result::Result<acyclic_stream::StreamBounds, SdkCallError>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
+        let result = client.native_bounds(path.clone(), original.runtime_meter_owner()).await;
+        return crate::distributed::native_call_result(original, result)
+            .map(|result| result.map(|output| *output.value()));
+    }
+    if work.is_none() {
+        return Ok(client.bounds(path.as_str()).await.map_err(SdkCallError::ordinary));
+    }
+    let handle = stream_with_work(client, path, work)?;
+    if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+    Ok(handle.stream.bounds().await.map_err(SdkCallError::ordinary))
+}
+
+pub(crate) async fn tail_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
@@ -969,11 +1119,24 @@ pub(super) async fn tail_with_work<P: StreamProvider>(
         .ok_or_else(|| stream_error_with_work(acyclic_stream::StreamError::NotFound, work))
 }
 
-pub(super) async fn tail_optional_with_work<P: StreamProvider>(
+pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<Option<u64>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
+        let result = client.native_tail(path.clone(), original.runtime_meter_owner()).await;
+        let result = crate::distributed::native_call_result(original, result)?;
+        return match result {
+            Ok(output) => Ok(Some(*output.value())),
+            Err(error) if *error.source() == acyclic_stream::StreamError::NotFound => {
+                drop(error);
+                Ok(None)
+            },
+            Err(error) => Err(error.into_error(work)),
+        };
+    }
     let handle = stream_with_work(client, path, work)?;
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
     match handle.stream.tail().await {
@@ -998,32 +1161,27 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
     from: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<Option<Record>> {
-    let handle = stream_with_work(client, path, work)?;
-    if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-    let mut records = match handle.stream.read(from, 1).await {
+    let mut records = match read_path_records_with_work(client, path, from, 1, work).await? {
         Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(stream_error_with_work(error, work)),
+        Err(error) if *error.source() == acyclic_stream::StreamError::NotFound => {
+            drop(error);
+            return Ok(None);
+        },
+        Err(error) => return Err(error.into_error(work)),
     };
     let mut first = None;
     let mut extra = None;
     let mut received = 0;
     let result = async {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        first = records.try_next().await.map_err(|error| stream_error_with_work(error, work))?;
-        if let Some(record) = &first
-            && let Some(observer) = work.as_deref_mut()
-        {
-            observer.receive_record(record.value.len() as u64)?;
-            received += record.value.len() as u64;
+        first = records.next(work).await?;
+        if let Some(record) = &first {
+            received += sdk_record_retained_bytes(record, work);
         }
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        extra = records.try_next().await.map_err(|error| stream_error_with_work(error, work))?;
+        extra = records.next(work).await?;
         if let Some(record) = &extra {
-            if let Some(observer) = work.as_deref_mut() {
-                observer.receive_record(record.value.len() as u64)?;
-                received += record.value.len() as u64;
-            }
+            received += sdk_record_retained_bytes(record, work);
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_deref().is_some_and(original_native_decode_mode) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
@@ -1045,7 +1203,6 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
     }.await;
     drop(records);
     drop(extra);
-    drop(handle);
     match result {
         Ok(()) => Ok(first),
         Err(error) => {
@@ -1133,7 +1290,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
                 "operation location is missing before its committed tail")),
         };
     };
-    raw_owned = index.value.len() as u64;
+    raw_owned = sdk_record_retained_bytes(&index, work);
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
         return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
@@ -1264,9 +1421,10 @@ pub(super) async fn verify_operation_locator_with_retained_quota<P: StreamProvid
         }
         Ok(((event, owned), consumed_bytes))
     })();
+    let record_retained = sdk_record_retained_bytes(&record, work);
     drop(record);
     let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(record_bytes),
+        Some(observer) => observer.release_record(record_retained),
         None => Ok(()),
     };
     match result {
@@ -1463,9 +1621,10 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
         verify_message_locator_with_work(client, authority, verifier, &index,
             expected_id, expected_sequence, through_revision, maximum_bytes, work).await
     }.await;
+    let index_retained = sdk_record_retained_bytes(&index, work);
     drop(index);
     let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(index_bytes),
+        Some(observer) => observer.release_record(index_retained),
         None => Ok(()),
     };
     match result {
@@ -1838,5 +1997,204 @@ mod native_publication_custody_tests {
         drop(source);
         drop(custody);
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "native-execution", not(target_arch = "wasm32")))]
+mod native_only_provider_tests {
+    use super::*;
+    use acyclic_stream::{
+        AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
+        ForkReceipt, ForkRequest, IdempotencyObservation, NativeProviderFuture, NativeRecordStream,
+        ReadRequest, RecordStream, StreamBounds, StreamError,
+    };
+    use acyclic_native_runtime::NativeReadMeter;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use std::sync::Arc;
+
+    struct NativeOnly<P>(Arc<P>);
+
+    #[async_trait::async_trait]
+    impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
+        async fn inspect_idempotency(&self, _: IdempotencyKey)
+            -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
+            panic!("ordinary inspection on a native-only provider")
+        }
+        async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
+            panic!("ordinary tail on a native-only provider")
+        }
+        async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
+            panic!("ordinary bounds on a native-only provider")
+        }
+        async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
+            panic!("ordinary append on a native-only provider")
+        }
+        async fn fork(&self, _: ForkRequest) -> std::result::Result<ForkReceipt, StreamError> {
+            panic!("ordinary fork on a native-only provider")
+        }
+        async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
+            panic!("ordinary read on a native-only provider")
+        }
+        async fn follow(&self, _: StreamPath, _: u64) -> std::result::Result<RecordStream, StreamError> {
+            panic!("ordinary follow on a native-only provider")
+        }
+        async fn children(&self, _: ChildrenRequest) -> std::result::Result<ChildStream, StreamError> {
+            panic!("ordinary children on a native-only provider")
+        }
+        async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
+            panic!("ordinary commit on a native-only provider")
+        }
+        async fn read_commit(&self, _: CommitId) -> std::result::Result<CommittedEnvelope, StreamError> {
+            panic!("ordinary envelope read on a native-only provider")
+        }
+        fn native_tail(&self, path: StreamPath, meter: Arc<dyn NativeReadMeter>)
+            -> NativeProviderFuture<'_, u64> {
+            self.0.native_tail(path, meter)
+        }
+        fn native_bounds(&self, path: StreamPath, meter: Arc<dyn NativeReadMeter>)
+            -> NativeProviderFuture<'_, StreamBounds> {
+            self.0.native_bounds(path, meter)
+        }
+        fn native_read(&self, request: ReadRequest, meter: Arc<dyn NativeReadMeter>)
+            -> NativeProviderFuture<'_, NativeRecordStream> {
+            self.0.native_read(request, meter)
+        }
+        fn native_commit(&self, request: CommitRequest, meter: Arc<dyn NativeReadMeter>)
+            -> NativeProviderFuture<'_, CommitOutcome> {
+            self.0.native_commit(request, meter)
+        }
+    }
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            authority_records_read: 32, authority_bytes_read: 1_048_576,
+            backend_read_operations: 32, source_bytes_read: 1_048_576,
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576, bytes_hashed: 1_048_576,
+            authority_records_appended: 32, authority_bytes_written: 1_048_576,
+            backend_write_operations: 32, items_examined: 1_048_576,
+            allocation_operations: 1_048_576, peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
+        use crate::core::{Action, AggregateKind, ApplyResult, AuthorityIssuer, Command,
+            LifecycleState, Reducer, SchemaRegistry};
+        use super::super::history::{HistoryIo, HistoryReader, HistoryReadLimits, native_work_io};
+        let ordinary = StreamClient::new(provider.clone());
+        let authority = Authority { kind: AggregateKind::Agent, id: "native-only-reader".into() };
+        let issuer = AuthorityIssuer::new("native-only", [29; 32], authority.clone());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let command = Command {
+            operation_id: OperationId::from_bytes([31; 16]),
+            idempotency_key: crate::IdempotencyKey("native-only-reader".into()),
+            expected_revision: 0,
+            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            causal_parent: None,
+            action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
+        };
+        let ApplyResult::Applied { event } = reducer.plan(&command)? else {
+            panic!("fresh lifecycle event")
+        };
+        let encoded = crate::wire_codec::encode_event(&authority, &event)?;
+        let event_bytes = encoded.len() as u64;
+        let publication = IndexedPublication::new(&authority, &event, encoded)?;
+        let request = publication.request(&ordinary,
+            IdempotencyKey::new(Bytes::from_static(b"native-only-reader"))?).await?;
+        assert!(matches!(ordinary.commit(request).await?, CommitOutcome::Committed(_)));
+        let corrupt_message = uuid::Uuid::from_bytes([37; 16]);
+        let corrupt_path = message_path(&authority, corrupt_message)?;
+        assert!(matches!(ordinary.commit(CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: corrupt_path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path: corrupt_path, records: vec![Bytes::from_static(b"{{")],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-only-corrupt"))?,
+        }).await?, CommitOutcome::Committed(_)));
+        let client = StreamClient::new(Arc::new(NativeOnly(provider)));
+        let reader = HistoryReader::new(&client, &authority, issuer.verifier())?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite original reader work");
+        let mut io = native_work_io(&native).expect("original reader observer");
+        let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+        assert_eq!(cursor.through_revision, 1);
+        let page = reader.read_page_with_work(&cursor,
+            HistoryReadLimits { maximum_events: 1, maximum_bytes: event_bytes }, true,
+            Some(&mut io)).await?;
+        assert_eq!(page.page.events.as_slice(), std::slice::from_ref(&event));
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(native.receipt().authority_records_read, 1);
+        assert_eq!(native.receipt().authority_bytes_read, event_bytes);
+        assert_eq!(native.receipt().source_bytes_read, event_bytes);
+        assert_eq!(native.receipt().backend_read_operations, 3,
+            "pin tail, page tail, and finite read each have one SDK boundary");
+        let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
+        let bounds = bounds_with_work(&client, &publication.path, &mut work).await?
+            .map_err(|error| error.into_error(&work))?;
+        assert_eq!(bounds.tail, 1);
+        drop(page);
+        drop(cursor);
+        drop(work);
+        drop(io.into_custody());
+
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original malformed locator work");
+        let mut io = native_work_io(&native).expect("original malformed locator observer");
+        let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+            corrupt_message, 1, 1_048_576, &mut Some(&mut io)).await
+            .expect_err("real raw locator reaches the original guarded wire decoder");
+        assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
+            if native.shares_ledger(custody.work())));
+        assert_eq!(native.receipt().authority_records_read, 1);
+        assert_eq!(native.receipt().authority_bytes_read, 2);
+        drop(error);
+        assert_eq!(io.into_custody().bytes(), 0);
+
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original checkpoint commit work");
+        let mut io = native_work_io(&native).expect("original checkpoint observer");
+        super::super::checkpoints::stage_immutable_record_with_work(
+            &client, StreamPath::new("harness/v3/native-only-checkpoint")?,
+            Bytes::from_static(b"native-checkpoint"), &mut Some(&mut io),
+        ).await?;
+        assert_eq!(native.receipt().authority_records_appended, 1);
+        assert_eq!(io.into_custody().bytes(), 0);
+
+        for maximum_bytes in [1, event_bytes] {
+            let native = NativeMaterializationWork::new(budget(), &cancellation)
+                .expect("separate finite denial work");
+            let mut io = native_work_io(&native).expect("original denial observer");
+            let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+            if maximum_bytes == 1 {
+                assert!(reader.read_page_with_work(&cursor,
+                    HistoryReadLimits { maximum_events: 1, maximum_bytes }, false, Some(&mut io))
+                    .await.is_err(), "raw encoded bound must reject before decode");
+                assert_eq!(native.receipt().authority_records_read, 1);
+            } else {
+                cancellation.cancel();
+                assert!(reader.read_page_with_work(&cursor,
+                    HistoryReadLimits { maximum_events: 1, maximum_bytes }, false, Some(&mut io))
+                    .await.is_err(), "native cancellation must fail before provider I/O");
+            }
+            drop(cursor);
+            drop(io.into_custody());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn real_memory_reader_never_uses_ordinary_provider_methods() -> Result<()> {
+        exercise(Arc::new(acyclic_stream::MemoryStream::default())).await
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn real_local_reader_never_uses_ordinary_provider_methods() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let local = acyclic_stream::LocalStream::open(
+            directory.path(), acyclic_stream::LocalStreamLimits::default(),
+        ).await.map_err(|error| Error::Storage(error.to_string()))?;
+        exercise(Arc::new(local)).await
     }
 }

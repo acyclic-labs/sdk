@@ -109,16 +109,19 @@ mod measured_open_tests {
         })?;
         prepared.append(publication.path.clone(), publication.bytes.clone())?;
         publication.add_index_with_work(&mut prepared)?;
-        let outcome = crate::distributed::commit_prepared_with_work(
+        let (outcome, retained) = crate::distributed::commit_prepared_with_work(
             &client, prepared, event.operation_id).await?;
         let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
             return Err(Error::Conflict("original indexed publication unexpectedly conflicted".into()));
         };
         publication.verify(&envelope)?;
+        let mutations = envelope.mutations.len() as u64;
+        drop(envelope);
+        observer.as_deref_mut().expect("original observer").release_owned(retained)?;
         drop(observer);
         let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
         assert_eq!(receipt.work.backend_write_operations, 1);
-        assert_eq!(receipt.work.authority_records_appended, envelope.mutations.len() as u64);
+        assert_eq!(receipt.work.authority_records_appended, mutations);
         let reader = writer.history_reader()?;
         assert_eq!(reader.operation_event(event.operation_id).await?, Some(event));
         Ok(())

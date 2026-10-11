@@ -1,4 +1,7 @@
 //! Pinned, bounded reads from the existing authoritative aggregate Stream.
+//! Genuine native observers use the same authenticated engine through the SDK's
+//! original native SPI. Cursor and record custody follow the actual data owners;
+//! portable, ordinary observed, and WASM readers keep their original SDK calls.
 
 use crate::{
     Error, Result,
@@ -6,7 +9,6 @@ use crate::{
     wire_codec::decode_event,
 };
 use acyclic_stream::{Stream, StreamClient, StreamProvider};
-use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "filesystem")]
@@ -16,7 +18,7 @@ pub(crate) use measured::HistoryWork;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::native_work_io;
+pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sdk_result, native_work_io};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
 /// The ordinary branch records the concrete frame admitted before boxing.
@@ -101,6 +103,24 @@ pub(crate) trait HistoryIo: Send {
     fn begin_call(&mut self) -> Result<()>;
     fn begin_write(&mut self) -> Result<()>;
     fn receive_record(&mut self, bytes: u64) -> Result<()>;
+    /// Records the SDK-returned authority prefix when the genuine native SDK
+    /// already owns raw buffers and accounts its source IO and item visits.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
+        let Some(original) = self.original_native_work() else {
+            return self.receive_record(bytes);
+        };
+        original.spent(acyclic_fs::WorkCounters {
+            authority_records_read: 1,
+            authority_bytes_read: bytes,
+            ..acyclic_fs::WorkCounters::default()
+        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // Preserve even malformed/oversize receiver prefixes before quota or
+        // cancellation rejection; SDK custody remains with its original DTO.
+        original.remaining()
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
     fn release_record(&mut self, bytes: u64) -> Result<()>;
     fn retain_owned(&mut self, bytes: u64) -> Result<()>;
     fn admit_owned(&self, bytes: u64) -> Result<()>;
@@ -852,9 +872,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<HistoryCursor> {
         let through_revision = self.committed_tail_with_work(&mut work).await?;
         if after_revision > through_revision {
-            return Err(Error::Invalid(
-                "history cursor exceeds committed tail".into(),
-            ));
+            return Err(history_read_invalid(&work, "history cursor exceeds committed tail"));
         }
         let authority = match work.as_deref_mut() {
             Some(work) => work.clone_authority(self.verifier.audience())?,
@@ -894,19 +912,15 @@ impl<P: StreamProvider> HistoryReader<P> {
         retain_records: bool,
         mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<CountedHistoryPage> {
-        self.verifier.verify_audience(&cursor.authority)?;
+        self.verifier.verify_audience_with_work(&cursor.authority, &mut work)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
             || cursor.after_revision > cursor.through_revision
         {
-            return Err(Error::Invalid(
-                "history read bounds or cursor are invalid".into(),
-            ));
+            return Err(history_read_invalid(&work, "history read bounds or cursor are invalid"));
         }
         if cursor.through_revision > self.committed_tail_with_work(&mut work).await? {
-            return Err(Error::Invalid(
-                "history cursor exceeds committed tail".into(),
-            ));
+            return Err(history_read_invalid(&work, "history cursor exceeds committed tail"));
         }
         let mut next = match work.as_deref_mut() {
             Some(work) => HistoryCursor {
@@ -919,7 +933,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let count = u32::try_from(
             (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
         )
-        .map_err(|_| Error::Invalid("history page count exceeds platform bounds".into()))?;
+        .map_err(|_| history_read_invalid(&work, "history page count exceeds platform bounds"))?;
         let mut events = Vec::new();
         let mut events_retained_bytes = 0_u64;
         if count == 0 {
@@ -934,27 +948,25 @@ impl<P: StreamProvider> HistoryReader<P> {
                 events_retained_bytes: 0,
             });
         }
-        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-        let mut records = self.stream.read(cursor.after_revision, count).await?;
+        let mut records = super::operations::read_records_with_work(
+            &self.client, &self.stream, cursor.after_revision, count, &mut work,
+        ).await?.map_err(|error| error.into_error(&work))?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         loop {
             if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-            let Some(record) = records.try_next().await? else { break; };
-            let record_bytes = record.value.len() as u64;
+            let Some(record) = records.next(&mut work).await? else { break; };
+            let record_bytes = super::operations::sdk_record_retained_bytes(&record, &work);
             if let Some(work) = work.as_deref_mut() {
-                work.receive_record(record_bytes)?;
                 work.check_cancellation()?;
             }
             if events.len() >= count as usize || record.sequence != next.after_revision {
-                return Err(Error::Storage(
-                    "history page is not bounded and contiguous".into(),
-                ));
+                return Err(history_record_boundary(&work, "history page is not bounded and contiguous"));
             }
             bytes = bytes
                 .checked_add(record.value.len() as u64)
                 .filter(|total| *total <= limits.maximum_bytes)
-                .ok_or_else(|| Error::Invalid("history page exceeds byte bound".into()))?;
+                .ok_or_else(|| history_read_invalid(&work, "history page exceeds byte bound"))?;
             let (event, event_retained) = verify_history_record_with_retained_quota(
                 &self.verifier,
                 &cursor.authority,
@@ -981,9 +993,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             }
         }
         if events.is_empty() {
-            return Err(Error::Storage(
-                "history page stopped before its pinned boundary".into(),
-            ));
+            return Err(history_record_boundary(&work, "history page stopped before its pinned boundary"));
         }
         if let Some(work) = work.as_deref_mut() {
             work.check_cancellation()?;
@@ -1008,6 +1018,14 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<u64> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_deref().is_some_and(super::operations::original_native_decode_mode) {
+            let tail = super::operations::tail_optional_with_work(
+                &self.client, self.stream.path(), work,
+            ).await?;
+            work.as_deref().expect("native tail observer").check_cancellation()?;
+            return Ok(tail.unwrap_or(0));
+        }
         if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
         let result = self.stream.tail().await;
         if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
@@ -1070,6 +1088,15 @@ pub(crate) fn verify_history_record_with_retained_quota(
     }
     if let Some(work) = work.as_deref_mut() { work.release_owned(authority_bytes)?; }
     Ok((event, owned_event))
+}
+
+fn history_read_invalid(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(super::operations::original_native_decode_mode) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    }
+    let _ = work;
+    Error::Invalid(reason.into())
 }
 
 fn history_record_boundary(

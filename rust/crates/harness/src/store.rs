@@ -938,6 +938,30 @@ impl<P: StreamProvider> StreamAggregate<P> {
         ).await
     }
 
+    pub(crate) async fn open_at_revision_with_work(
+        client: &StreamClient<P>, authority: Authority,
+        authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
+        original_revision: u64, limits: HistoryReadLimits,
+        work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<Self> {
+        Self::open_inner(client, authority, authority_verifier, schemas, None,
+            limits, DEFAULT_TERMINAL_EFFECTS, Some(original_revision), work).await
+    }
+
+    pub(crate) async fn open_with_read_limits_with_work(
+        client: &StreamClient<P>, authority: Authority,
+        authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
+        limits: HistoryReadLimits, work: &mut Option<&mut dyn history::HistoryIo>,
+    ) -> Result<Self> {
+        Self::open_inner(client, authority, authority_verifier, schemas, None,
+            limits, DEFAULT_TERMINAL_EFFECTS, None, work).await
+    }
+
+    /// Moves the canonical reducer out without copying or replaying it.
+    /// Native component custody remains intrinsic to the returned reducer.
+    pub fn into_reducer(self) -> Reducer {
+        self.reducer
+    }
     /// Restores the original authenticated checkpoint at or before an exact
     /// committed revision, then only its bounded canonical suffix through that
     /// revision. Later parent appends cannot change the restored projection.
@@ -1277,6 +1301,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let event_bytes = (read.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
         let record_capacity = (read.records.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64;
         let page_cursor_bytes = read.page.cursor.authority.id.capacity() as u64;
+        let events_retained_bytes = read.events_retained_bytes;
         drop(read.page.cursor);
         if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
         let mut used = read.bytes;
@@ -1294,28 +1319,20 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
                 .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            let clone_bytes = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
-            if let Some(work) = work.as_deref_mut() {
-                work.check_cancellation()?;
-                // Reserve only this original caller clone. The same canonical
-                // reducer separately admits its resident event/cache clone.
-                let copies = clone_bytes;
-                work.admit_owned(copies)?;
-                work.retain_owned(copies)?;
-            }
-            drop(reducer.apply_committed_with_work(event.clone(), work)?);
-            if let Some(work) = work.as_deref_mut() { work.release_owned(clone_bytes)?; }
+            let (cloned, clone_owned) = crate::core::native_event_clone_with_custody(&event, work)?;
+            drop(reducer.apply_committed_with_work(cloned, work)?);
+            if let Some(work) = work.as_deref_mut() { work.release_owned(clone_owned)?; }
             if indexed {
-                reducer.mark_indexed_terminal_effect(&event)?;
+                reducer.mark_indexed_terminal_effect_with_work(&event, work)?;
             }
             reducer.enforce_terminal_effect_limit()?;
             drop(event);
-            if let Some(work) = work.as_deref_mut() { work.release_owned(clone_bytes)?; }
-            let record_bytes = record.value.len() as u64;
+            let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
             if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
+            work.release_owned(events_retained_bytes)?;
             work.release_bytes(event_bytes)?;
             work.release_bytes(record_capacity)?;
             work.check_cancellation()?;

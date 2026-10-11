@@ -533,7 +533,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Ok(record) => { released_path?; record },
             Err(error) => { let _ = released_path; return Err(error); },
         }.ok_or_else(|| guarded_boundary(work, GuardedBoundary::NotFound, "causal event"))?;
-        let raw = record.value.len() as u64;
+        let raw = operations::sdk_record_retained_bytes(&record, work);
         let decoded = crate::wire_codec::decode_event_with_work_and_custody(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {

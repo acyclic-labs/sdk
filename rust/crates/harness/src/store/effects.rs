@@ -6,7 +6,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event, EventPayload, Reducer},
 };
-use acyclic_stream::{Record, StreamClient, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{Record, StreamClient, StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -140,13 +140,8 @@ async fn tail_with_work<P: StreamProvider>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
-    let stream = client.stream(path.as_str())?;
-    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-    match stream.tail().await {
-        Ok(tail) => Ok(tail),
-        Err(StreamError::NotFound) => Ok(0),
-        Err(error) => Err(error.into()),
-    }
+    operations::tail_optional_with_work(client, path, work).await
+        .map(|tail| tail.unwrap_or(0))
 }
 
 
@@ -246,7 +241,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                     client, reducer.authority(), &verifier, effect_id, &record,
                     2 * acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 ).await;
-                let record_bytes = record.value.len() as u64;
+                let record_bytes = operations::sdk_record_retained_bytes(&record, work);
                 drop(record);
                 let released = match work.as_deref_mut() {
                     Some(observer) => observer.release_record(record_bytes),
@@ -409,7 +404,7 @@ pub(super) async fn read_with_retained_quota<P: StreamProvider>(
                 }
                 Ok(())
             }.await;
-            let record_bytes = record.value.len() as u64;
+            let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
             release_record_after_drop(result, record_bytes, work)?;
             let (event, owned) = staged.take().expect("original authenticated output event");
@@ -521,7 +516,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
                     drop(effect);
                     operations::release_owned_after_drop(result, effect_bytes, work)
                 })();
-                let record_bytes = record.value.len() as u64;
+                let record_bytes = operations::sdk_record_retained_bytes(&record, work);
                 drop(record);
                 release_record_after_drop(result, record_bytes, work)
             }.await;
@@ -529,7 +524,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
             drop(location);
             operations::release_owned_after_drop(result, location_bytes, work)
         }.await;
-        let operation_bytes = operation.value.len() as u64;
+        let operation_bytes = operations::sdk_record_retained_bytes(&operation, work);
         drop(operation);
         release_record_after_drop(result, operation_bytes, work)
     }.await;
@@ -587,7 +582,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
             2 * acyclic_stream::MAX_RECORD_BYTES as u64, work,
         ).await.map(|(verified, _)| verified)
     }.await;
-    let record_bytes = record.value.len() as u64;
+    let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
     release_record_after_drop(result, record_bytes, work)
 }

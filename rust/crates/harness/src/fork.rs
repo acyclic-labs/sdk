@@ -2189,6 +2189,118 @@ impl ForkRequest {
         Ok(self)
     }
 
+    /// Moves a funded selection into a request being built before admission.
+    ///
+    /// This metadata is not a grant. Never edit the immutable request after
+    /// admission or during reconciliation. Both guards must cover their complete
+    /// payloads on the original allocation/resource context. The selection's
+    /// decoder DTO slot stays conservatively retained until the whole request
+    /// drops: this builder has no proof of that codec's exact slot claim.
+    /// Drop the request before its separately owned custody.
+    ///
+    /// On failure the caller's request and custody remain owned by the caller,
+    /// including any completed physical replacement; errors never own that guard.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn add_selection_with_native_work(
+        &mut self,
+        selection: ForkSelection,
+        request_custody: &mut acyclic_fs::NativeAllocation,
+        mut selection_custody: acyclic_fs::NativeAllocation,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        use crate::store::history::HistoryIo as _;
+        // Keep the owned input outside all fallible work, so its fields always
+        // die before the incoming guard, even when validation or reserve fails.
+        let mut selection = Some(selection);
+        let mut merged_input = 0;
+        let native_error = |cause| Error::NativeWork { cause, custody: None };
+        let result = (|| {
+            let old_backing = self.selections.capacity()
+                .checked_mul(std::mem::size_of::<ForkSelection>())
+                .ok_or_else(|| native_error(acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::Overflow)))? as u64;
+            if !request_custody.matches_work(original)
+                || !selection_custody.matches_work(original)
+                || request_custody.bytes() == 0
+                || request_custody.bytes() < old_backing
+                || selection_custody.bytes() == 0
+            {
+                return Err(native_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
+            }
+            request_custody.bytes().checked_add(selection_custody.bytes())
+                .ok_or_else(|| native_error(acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::Overflow)))?;
+            // Absorb also checks the SDK's private claim-time capture context.
+            // Reject incompatible guards before validation can allocate anything.
+            let input_bytes = selection_custody.bytes();
+            request_custody.absorb(&mut selection_custody).map_err(native_error)?;
+            merged_input = input_bytes;
+            let count = self.selections.len().checked_add(1)
+                .ok_or_else(|| native_error(acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::Overflow)))?;
+            let mut io = crate::store::history::native_work_io(original).map_err(native_error)?;
+            self.validate_selection_view_with_work(
+                self.selections.iter().chain(selection.iter()), count, &mut Some(&mut io))?;
+            io.check_cancellation()?;
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            let full = self.selections.len() == self.selections.capacity();
+            // These are actual inline moves, not clones of revision payloads.
+            let moved = if full { count } else { 1 };
+            let copied = moved.checked_mul(std::mem::size_of::<ForkSelection>())
+                .ok_or_else(|| native_error(acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::Overflow)))? as u64;
+            io.admit_copy(copied)?;
+            if !full {
+                io.copy_bytes(copied)?;
+                self.selections.push(selection.take().expect("funded selection"));
+                merged_input = 0;
+                return Ok(());
+            }
+            let capacity = self.selections.capacity().saturating_mul(2)
+                .max(count).min(MAX_FORK_RESOURCES as usize);
+            // Reserve a separate physical Vec. Both old backing and its guard
+            // remain live while the factory reconciles actual allocator capacity.
+            let mut replacement = {
+                let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+                let value = crate::core::reserve_copy_vector::<ForkSelection>(capacity, &mut quota)?;
+                quota.transfer();
+                value
+            };
+            let mut backing_custody = io.into_custody();
+            let new_backing = backing_custody.bytes();
+            if let Err(cause) = request_custody.absorb(&mut backing_custody) {
+                drop(replacement);
+                drop(backing_custody);
+                return Err(native_error(cause));
+            }
+            if let Err(cause) = original.charge(acyclic_fs::WorkCounters {
+                bytes_copied: copied, ..acyclic_fs::WorkCounters::default()
+            }) {
+                drop(replacement);
+                request_custody.release(new_backing).map_err(native_error)?;
+                return Err(native_error(cause));
+            }
+            // No fallible work separates the recorded inline copy from moves.
+            let old = std::mem::replace(&mut self.selections, Vec::new());
+            for value in old {
+                replacement.push(value);
+            }
+            replacement.push(selection.take().expect("funded selection"));
+            self.selections = replacement;
+            merged_input = 0;
+            // The exhausted IntoIter has actually freed only the old backing.
+            // Revision bodies moved intact; no DTO slot is guessed or retired.
+            request_custody.release(old_backing).map_err(native_error)
+        })();
+        drop(selection);
+        drop(selection_custody);
+        if result.is_err() && merged_input != 0 {
+            request_custody.release(merged_input).map_err(native_error)?;
+        }
+        result
+    }
+
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
         self.validate_with_work(&mut None)
@@ -2198,9 +2310,18 @@ impl ForkRequest {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        self.validate_selection_view_with_work(self.selections.iter(), self.selections.len(), work)
+    }
+
+    fn validate_selection_view_with_work<'a>(
+        &self,
+        selections: impl Iterator<Item = &'a ForkSelection> + Clone,
+        selection_count: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         let mut work = ForkValidationWork::new(work)?;
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
-            || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
+            || selection_count as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(work.invalid("fork request exceeds protocol limits"));
         }
@@ -2218,7 +2339,7 @@ impl ForkRequest {
         if let Some(source) = &self.authorized_source {
             source.validate_with_work(work.work())?;
             if source.operation_id != self.operation_id
-                || !self.selections.iter().any(|selection| matches!(
+                || !selections.clone().any(|selection| matches!(
                     &selection.revision,
                     ResourceRevision::Project { volume, generation }
                         if volume == &source.project && generation == &source.generation))
@@ -2247,14 +2368,14 @@ impl ForkRequest {
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(work.invalid("fork attached agents are not unique"));
         }
-        work.slots::<Vec<u8>>(self.selections.len())?;
+        work.slots::<Vec<u8>>(selection_count)?;
         let mut selected = BTreeSet::new();
         let mut histories = 0_usize;
         let mut projects = 0_usize;
         let mut private = 0_usize;
         let mut contexts = 0_usize;
         let mut processes = 0_usize;
-        for selection in &self.selections {
+        for selection in selections {
             work.checkpoint()?;
             selection.revision.validate_with_work(work.work())?;
             let identity = work.canonical(&selection.revision)?;
@@ -3735,6 +3856,263 @@ mod tests {
             items_examined: 100_000,
             ..acyclic_fs::WorkBudget::default()
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn funded_selection_request(
+        source: &ForkRequest, native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ForkRequest, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.retain_owned(std::mem::size_of::<ForkRequest>() as u64)?;
+        let (request, _) = source.clone_with_work_and_custody(&mut Some(&mut io))?;
+        Ok((request, io.into_custody()))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn funded_selection(
+        source: &ForkSelection, native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ForkSelection, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.retain_owned(std::mem::size_of::<ForkSelection>() as u64)?;
+        let revision = source.revision.clone_with_work(&mut Some(&mut io))?;
+        Ok((ForkSelection { required: source.required, revision }, io.into_custody()))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn additional_selection(index: u64) -> Result<ForkSelection> {
+        Ok(ForkSelection {
+            required: false,
+            revision: ResourceRevision::Artifact(crate::resources::ArtifactRef::new(
+                ProviderRef::new("test", "objects", "2")?,
+                index.to_le_bytes().to_vec(), None)?),
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_selection_builder_moves_repeated_funded_payloads_and_retires_only_old_backing() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        fixture.validate()?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("original builder ledger");
+        let (mut request, mut custody) = funded_selection_request(&fixture, &native)?;
+        let parent_pointer = request.parent.id.as_ptr();
+        let original_revision_pointer = match &request.selections[0].revision {
+            ResourceRevision::History(reference) => reference.as_resource().key().as_ptr(),
+            _ => unreachable!("required history"),
+        };
+        let mut saw_spare = false;
+        let mut saw_growth = false;
+        for index in 0..32 {
+            let source = additional_selection(index)?;
+            let (selection, incoming) = funded_selection(&source, &native)?;
+            let input_pointer = match &selection.revision {
+                ResourceRevision::Artifact(reference) => reference.as_resource().key().as_ptr(),
+                _ => unreachable!("artifact"),
+            };
+            let old_capacity = request.selections.capacity();
+            let old_bytes = custody.bytes();
+            let input_bytes = incoming.bytes();
+            let full = request.selections.len() == old_capacity;
+            request.add_selection_with_native_work(selection, &mut custody, incoming, &native)?;
+            let backing_change = (request.selections.capacity() - old_capacity)
+                * std::mem::size_of::<ForkSelection>();
+            assert_eq!(custody.bytes(), old_bytes + input_bytes + backing_change as u64);
+            assert_eq!(request.parent.id.as_ptr(), parent_pointer, "request fields are not cloned");
+            let ResourceRevision::Artifact(reference) = &request.selections.last()
+                .expect("moved selection").revision else { unreachable!("artifact") };
+            assert_eq!(reference.as_resource().key().as_ptr(), input_pointer, "payload is moved");
+            if full { saw_growth = true; } else { saw_spare = true; }
+            request.validate()?;
+        }
+        assert!(saw_growth && saw_spare);
+        let ResourceRevision::History(reference) = &request.selections[0].revision
+            else { unreachable!("history") };
+        assert_eq!(reference.as_resource().key().as_ptr(), original_revision_pointer);
+        let before = custody.bytes();
+        let (duplicate, incoming) = funded_selection(request.selections.last().expect("selection"), &native)?;
+        let length = request.selections.len();
+        let capacity = request.selections.capacity();
+        assert_eq!(request.add_selection_with_native_work(duplicate, &mut custody, incoming, &native)
+            .expect_err("duplicate canonical identity").code(), crate::wire::ErrorCode::Invalid);
+        assert_eq!((request.selections.len(), request.selections.capacity(), custody.bytes()),
+            (length, capacity, before));
+        // Exercise the portable numeric protocol cap through the shared view,
+        // without manufacturing an infeasibly large Vec merely to represent it.
+        let (selection, incoming) = funded_selection(&additional_selection(99)?, &native)?;
+        let mut io = crate::store::history::native_work_io(&native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        assert_eq!(request.validate_selection_view_with_work(
+            request.selections.iter().chain(std::iter::once(&selection)),
+            MAX_FORK_RESOURCES + 1, &mut Some(&mut io))
+            .expect_err("maximum selection bound").code(), crate::wire::ErrorCode::Invalid);
+        drop(io);
+        drop(selection);
+        drop(incoming);
+        drop(request);
+        drop(custody);
+        native.admit_retained(physical_fork_clone_budget().peak_allocation_bytes
+            - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_selection_builder_rejects_foreign_missing_and_cancelled_custody_before_mutation() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        for mode in 0..5 {
+            let cancellation = CancellationToken::new();
+            let foreign_cancellation = CancellationToken::new();
+            let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+                .expect("original request ledger");
+            let foreign = NativeMaterializationWork::new(physical_fork_clone_budget(), &foreign_cancellation)
+                .expect("distinct foreign ledger");
+            let request_work = if mode == 1 { &foreign } else { &native };
+            let selection_work = if mode == 0 { &foreign } else { &native };
+            let (mut request, mut custody) = funded_selection_request(&fixture, request_work)?;
+            let (selection, mut incoming) = funded_selection(&additional_selection(77)?, selection_work)?;
+            // Empty real guards represent missing custody; keep the funded
+            // payload guards live separately until the rejected fields die.
+            let mut held = None;
+            if mode == 2 {
+                held = Some(incoming);
+                incoming = native.retain_owned(0)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            }
+            if mode == 3 {
+                held = Some(custody);
+                custody = native.retain_owned(0)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            }
+            let before = native.receipt();
+            let old_bytes = custody.bytes();
+            let pointer = request.selections.as_ptr();
+            let capacity = request.selections.capacity();
+            if mode == 4 { cancellation.cancel(); }
+            assert!(matches!(request.add_selection_with_native_work(
+                selection, &mut custody, incoming, &native), Err(Error::NativeWork { custody: None, .. })));
+            assert_eq!(request, fixture);
+            assert_eq!((request.selections.as_ptr(), request.selections.capacity(), custody.bytes()),
+                (pointer, capacity, old_bytes));
+            assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
+            assert_eq!(native.receipt().bytes_copied, before.bytes_copied);
+            drop(request);
+            drop(custody);
+            drop(held);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_selection_builder_preserves_canonical_request_policy_and_denied_copy_state() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        for mode in 0..4 {
+            let cancellation = CancellationToken::new();
+            let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+                .expect("canonical mutation ledger");
+            let mut changed = fixture.clone();
+            match mode {
+                0 => changed.selections[0].required = false,
+                1 => changed.parent_revision += 1,
+                2 => { changed.selections.remove(0); },
+                _ => changed.boundary = Some(AttestedBoundary {
+                    provider: ProviderRef::new("test", "filesystem", "2")?, evidence: Vec::new(),
+                }),
+            }
+            let (mut request, mut custody) = funded_selection_request(&changed, &native)?;
+            let (selection, incoming) = funded_selection(&additional_selection(1)?, &native)?;
+            let bytes = custody.bytes();
+            let capacity = request.selections.capacity();
+            assert_eq!(request.add_selection_with_native_work(selection, &mut custody, incoming, &native)
+                .expect_err("unchanged canonical policy").code(), changed.validate().expect_err("invalid control").code());
+            assert_eq!(request, changed);
+            assert_eq!((custody.bytes(), request.selections.capacity()), (bytes, capacity));
+            drop(request);
+            drop(custody);
+        }
+        let cancellation = CancellationToken::new();
+        let sizing = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("actual setup scalar ledger");
+        let (request, guard) = funded_selection_request(&fixture, &sizing)?;
+        let (selection, input) = funded_selection(&additional_selection(1)?, &sizing)?;
+        let setup_copies = sizing.receipt().bytes_copied;
+        drop((request, selection));
+        drop((guard, input));
+        let denied = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            bytes_copied: setup_copies, ..physical_fork_clone_budget()
+        }, &cancellation).expect("original copy-denied ledger");
+        let (mut request, mut guard) = funded_selection_request(&fixture, &denied)?;
+        let (selection, input) = funded_selection(&additional_selection(1)?, &denied)?;
+        let bytes = guard.bytes();
+        let capacity = request.selections.capacity();
+        assert!(matches!(request.add_selection_with_native_work(selection, &mut guard, input, &denied),
+            Err(Error::NativeWork { custody: None, .. })));
+        assert_eq!(request, fixture);
+        assert_eq!((guard.bytes(), request.selections.capacity()), (bytes, capacity));
+        drop(request);
+        drop(guard);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_selection_builder_denies_replacement_allocation_without_retiring_the_old_vector() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let source = additional_selection(3)?;
+        let cancellation = CancellationToken::new();
+        let sizing = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("original sizing ledger");
+        let (request, guard) = funded_selection_request(&fixture, &sizing)?;
+        let (selection, input) = funded_selection(&source, &sizing)?;
+        let mut io = crate::store::history::native_work_io(&sizing)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        request.validate_selection_view_with_work(
+            request.selections.iter().chain(std::iter::once(&selection)),
+            request.selections.len() + 1, &mut Some(&mut io))?;
+        drop(io);
+        let setup_and_validation_allocations = sizing.receipt().allocation_operations;
+        drop((request, selection));
+        drop((guard, input));
+        let denied = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: setup_and_validation_allocations, ..physical_fork_clone_budget()
+        }, &cancellation).expect("original replacement-denied ledger");
+        let (mut request, mut guard) = funded_selection_request(&fixture, &denied)?;
+        let (selection, input) = funded_selection(&source, &denied)?;
+        assert_eq!(request.selections.len(), request.selections.capacity(), "full original vector");
+        let pointer = request.selections.as_ptr();
+        let bytes = guard.bytes();
+        let capacity = request.selections.capacity();
+        assert!(matches!(request.add_selection_with_native_work(selection, &mut guard, input, &denied),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
+                custody: None,
+            })));
+        assert_eq!(request, fixture);
+        assert_eq!((request.selections.as_ptr(), request.selections.capacity(), guard.bytes()),
+            (pointer, capacity, bytes));
+        assert_eq!(denied.receipt().allocation_operations, setup_and_validation_allocations);
+        drop(request);
+        drop(guard);
+        denied.admit_retained(physical_fork_clone_budget().peak_allocation_bytes
+            - NativeMaterializationWork::accounting_state_bytes())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

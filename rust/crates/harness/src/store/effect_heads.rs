@@ -324,7 +324,7 @@ async fn root_at<P: StreamProvider>(
     }
     Ok(Root { hash: certificate.root, consumed: used })
     })();
-    let canonical_bytes = canonical.value.len() as u64;
+    let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
     drop(canonical);
     let release = match work.as_deref_mut() {
         Some(observer) => observer.release_record(canonical_bytes),
@@ -339,7 +339,7 @@ async fn root_at<P: StreamProvider>(
     let result = release_after_drop(result, certificate_owned, work);
     result
     }.await;
-    let record_bytes = record.value.len() as u64;
+    let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
     let release = match work.as_deref_mut() {
         Some(observer) => observer.release_record(record_bytes),
@@ -371,9 +371,7 @@ async fn load_node<P: StreamProvider>(
     let node = async {
     charge(used, record.value.len() as u64, maximum)?;
     if record.value.len() as u64 > MAX_NODE_BYTES || {
-        let stream = client.stream(path.as_str())?;
-        if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-        stream.tail().await? != 1
+        operations::tail_with_work(client, &path, work).await? != 1
     } || {
         if let Some(observer) = work.as_deref_mut() {
             observer.hashed_bytes(record.value.len() as u64)?;
@@ -387,7 +385,7 @@ async fn load_node<P: StreamProvider>(
     }
     decode_node_with_work(&record.value, work)
     }.await;
-    let record_bytes = record.value.len() as u64;
+    let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
     let release = match work.as_deref_mut() {
         Some(observer) => observer.release_record(record_bytes),

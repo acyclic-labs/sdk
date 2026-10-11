@@ -805,6 +805,19 @@ impl Snapshot {
         Ok(value)
     }
 
+    /// Decodes the original closed wire carrier once on the supplied ledger,
+    /// including conversation cache rebuilding. Custody is intrinsic to the
+    /// returned snapshot; authority is authenticated by `Reducer::restore_native`.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn decode_with_native_work(
+        bytes: &[u8], maximum_bytes: u64,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut observer = crate::store::history::native_work_io(original)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Self::decode_with_work(bytes, maximum_bytes, &mut Some(&mut observer))
+    }
+
     pub(crate) fn decode_with_work(
         bytes: &[u8], maximum_bytes: u64,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -1746,9 +1759,7 @@ mod tests {
             let bytes = crate::contract::canonical_json_bytes(&forged)?;
             let token = CancellationToken::new();
             let source = NativeMaterializationWork::new(native_budget(), &token).expect("cold decoder ledger");
-            let mut io = crate::store::history::native_work_io(&source).expect("original decoder observer");
-            let decoded = Snapshot::decode_with_work(&bytes, 4_194_304, &mut Some(&mut io))?;
-            assert_eq!(io.into_custody().bytes(), 0);
+            let decoded = Snapshot::decode_with_native_work(&bytes, 4_194_304, &source)?;
             assert!(matches!(
                 Reducer::restore_native(decoded, issuer.verifier(), SchemaRegistry::new(), &source),
                 Err(Error::Unauthorized(_))

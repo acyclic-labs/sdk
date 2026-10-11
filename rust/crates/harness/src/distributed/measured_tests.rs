@@ -1,6 +1,6 @@
 use super::*;
 use super::tests::spec;
-use crate::store::history::HistoryWork;
+use crate::store::history::{HistoryIo as _, HistoryWork};
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, MemoryStream, StreamPath};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -184,7 +184,7 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
 async fn commit_fixture_with_work(
     client: &StreamClient<FaultStream>, tail: u64, key: &str, operation: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<CommitOutcome> {
+) -> Result<(CommitOutcome, u64)> {
     // Fixture-owned path/digest precede the request producer. Preserve the
     // original two-record mutation so partial returned envelopes remain tested.
     let path = StreamPath::new("harness/v2/execution/measured-commit")?;
@@ -233,7 +233,10 @@ async fn commit_receipts_distinguish_direct_ack_recovered_hidden_and_quota_block
         assert_eq!(counters.authority_bytes_read, if matches!(mode, 0 | 1 | 4) { 11 } else { 0 });
         assert_eq!(counters.source_bytes_read, counters.authority_bytes_read);
         if matches!(mode, 0 | 1) {
-            assert!(matches!(result?, CommitOutcome::Committed(_)));
+            let (outcome, retained) = result?;
+            assert!(matches!(&outcome, CommitOutcome::Committed(_)));
+            drop(outcome);
+            work.release_owned(retained)?;
         } else if mode == 2 {
             assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
         } else {
@@ -254,9 +257,11 @@ async fn repeated_commit_calls_share_one_cumulative_allowance_and_no_conflict_ac
     let mut work = HistoryWork::new(allowance, &cancellation);
     work.preflight()?;
     let operation = OperationId::from_bytes([107; 16]);
-    let first = commit_fixture_with_work(&client, 0, "first-measured-call",
+    let (first, retained) = commit_fixture_with_work(&client, 0, "first-measured-call",
         operation, &mut Some(&mut work)).await?;
     assert!(matches!(first, CommitOutcome::Committed(_)));
+    drop(first);
+    work.release_owned(retained)?;
     let second = commit_fixture_with_work(&client, 2, "second-measured-call",
         operation, &mut Some(&mut work)).await;
     assert!(matches!(second, Err(Error::Invalid(_))));
@@ -264,9 +269,11 @@ async fn repeated_commit_calls_share_one_cumulative_allowance_and_no_conflict_ac
     assert_eq!(provider.io_snapshot().writes, 1);
     assert_eq!(work.receipt().authority_records_appended, 2);
     let mut conflict_work = HistoryWork::new(budget(), &cancellation);
-    let conflict = commit_fixture_with_work(&client, 0, "conflict-measured-call",
+    let (conflict, retained) = commit_fixture_with_work(&client, 0, "conflict-measured-call",
         operation, &mut Some(&mut conflict_work)).await?;
     assert!(matches!(conflict, CommitOutcome::Conflict(_)));
+    drop(conflict);
+    conflict_work.release_owned(retained)?;
     assert_eq!(conflict_work.receipt().authority_records_appended, 0);
     assert_eq!(conflict_work.receipt().authority_bytes_read, 0);
     Ok(())
@@ -469,6 +476,11 @@ async fn direct_idempotent_commit_receipts_acknowledge_without_claiming_new_dura
     let second = commit_fixture_with_work(&client, 0, "direct-repeated-ack",
         operation, &mut Some(&mut work)).await?;
     assert_eq!(first, second);
+    let (first, first_retained) = first;
+    let (second, second_retained) = second;
+    drop(first);
+    drop(second);
+    work.release_owned(first_retained + second_retained)?;
     // These are SDK-confirmed acknowledgment records, not physical new appends.
     assert_eq!(work.receipt().authority_records_appended, 4);
     assert_eq!(work.receipt().authority_bytes_written, 22);

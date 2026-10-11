@@ -204,33 +204,46 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         } else {
             IdempotencyKey::new(Bytes::copy_from_slice(&digest))?
         };
-        let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
-        reserve_chunk_slot(&mut conditions, 1, work)?;
-        retained += conditions.capacity() as u64 * std::mem::size_of::<CommitCondition>() as u64;
-        conditions.push(CommitCondition::Absent { path: path.clone() });
-        let mut records = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
-        reserve_chunk_slot(&mut records, 1, work)?;
-        retained += records.capacity() as u64 * std::mem::size_of::<Bytes>() as u64;
-        records.push(bytes.clone());
-        let mut mutations = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
-        reserve_chunk_slot(&mut mutations, 1, work)?;
-        retained += mutations.capacity() as u64 * std::mem::size_of::<CommitMutation>() as u64;
-        mutations.push(CommitMutation::Append { path: path.clone(), records });
-        let request = CommitRequest { conditions, mutations, idempotency_key: key };
-        if let Some(observer) = work.as_deref_mut() {
-            observer.admit_acknowledgment(bytes.len() as u64, 1)?;
-            observer.begin_write()?;
-        }
-        let request_owned = retained - path_owned;
-        let outcome = client.commit(request).await.map_err(Error::from);
-        let outcome = operations::release_owned_after_drop(outcome, request_owned, work);
-        retained -= request_owned;
-        let outcome = outcome?;
+        let native = work.as_deref().is_some_and(operations::original_native_decode_mode);
+        let (outcome, native_received) = if native {
+            let key_owned = retained - path_owned;
+            retained -= key_owned;
+            let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
+                key, key_owned, work);
+            request.push_condition(CommitCondition::Absent { path: path.clone() })?;
+            request.append(path.clone(), bytes.clone())?;
+            let committed = request.commit_once_with_work(client).await;
+            drop(request);
+            committed?.map_err(|error| error.into_error(work))?
+        } else {
+            let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
+            reserve_chunk_slot(&mut conditions, 1, work)?;
+            retained += conditions.capacity() as u64 * std::mem::size_of::<CommitCondition>() as u64;
+            conditions.push(CommitCondition::Absent { path: path.clone() });
+            let mut records = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
+            reserve_chunk_slot(&mut records, 1, work)?;
+            retained += records.capacity() as u64 * std::mem::size_of::<Bytes>() as u64;
+            records.push(bytes.clone());
+            let mut mutations = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
+            reserve_chunk_slot(&mut mutations, 1, work)?;
+            retained += mutations.capacity() as u64 * std::mem::size_of::<CommitMutation>() as u64;
+            mutations.push(CommitMutation::Append { path: path.clone(), records });
+            let request = CommitRequest { conditions, mutations, idempotency_key: key };
+            if let Some(observer) = work.as_deref_mut() {
+                observer.admit_acknowledgment(bytes.len() as u64, 1)?;
+                observer.begin_write()?;
+            }
+            let request_owned = retained - path_owned;
+            let outcome = client.commit(request).await.map_err(Error::from);
+            let outcome = operations::release_owned_after_drop(outcome, request_owned, work);
+            retained -= request_owned;
+            (outcome?, 0)
+        };
         if let CommitOutcome::Committed(envelope) = outcome {
             let mut received_failure = None;
             let mut received_bytes = 0_u64;
-            let mut received_owned = 0_u64;
-            if let Some(observer) = work.as_deref_mut() {
+            let mut received_owned = native_received;
+            if let Some(observer) = work.as_deref_mut().filter(|_| !native) {
                 received_owned = envelope.mutations.capacity() as u64
                     * std::mem::size_of::<CommittedMutation>() as u64;
                 received_failure = observer.retain_owned(received_owned).err();
@@ -260,7 +273,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             let verified = if let Some(error) = received_failure {
                 Err(error)
             } else if valid {
-                match work.as_deref_mut() {
+                match work.as_deref_mut().filter(|_| !native) {
                     Some(observer) => observer.acknowledged(bytes.len() as u64, 1),
                     None => Ok(()),
                 }
@@ -289,11 +302,13 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 Err(error) => Err(error),
             };
         }
+        drop(outcome);
+        if let Some(observer) = work.as_deref_mut() { observer.release_owned(native_received)?; }
         // A competing publication may stage identical content. Only the later
         // canonical commit makes the checkpoint visible.
         let record = operations::one_record_with_work(client, &path, 0, work).await?;
         let identical = record.as_ref().is_some_and(|record| record.value == bytes);
-        let received_bytes = record.as_ref().map_or(0, |record| record.value.len() as u64);
+        let received_bytes = record.as_ref().map_or(0, |record| operations::sdk_record_retained_bytes(record, work));
         drop(record);
         let verified = if identical { Ok(()) } else {
             Err(Error::Conflict("immutable record identity differs".into()))
@@ -597,7 +612,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
             work,
         )
         .await?;
-    let index_bytes = index.value.len() as u64;
+    let index_bytes = operations::sdk_record_retained_bytes(&index, work);
     drop(index);
     if let Some(work) = work.as_deref_mut() { work.release_record(index_bytes)?; }
     Ok(LoadedProjection {
@@ -661,7 +676,7 @@ impl ProjectionLocation {
         }
         let capacity = bytes.capacity() as u64;
         drop(bytes);
-        let canonical_bytes = canonical.value.len() as u64;
+        let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
         drop(canonical);
         if let Some(work) = work.as_deref_mut() {
             work.release_bytes(capacity)?;
@@ -737,7 +752,7 @@ async fn load_chunks<P: StreamProvider>(
         }
         if let Some(work) = work.as_deref_mut() { work.copy_bytes(record.value.len() as u64)?; }
         bytes.extend_from_slice(&record.value);
-        let record_bytes = record.value.len() as u64;
+        let record_bytes = operations::sdk_record_retained_bytes(&record, work);
         drop(record);
         if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
     }
