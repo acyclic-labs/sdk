@@ -247,6 +247,18 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
     ).await?;
     assert!(fixture.view.original_native_work().is_some_and(|original| original.shares_ledger(&work)));
+    let foreign_cancellation = acyclic_fs::CancellationToken::new();
+    let foreign = acyclic_fs::NativeMaterializationWork::new(
+        process_work_budget(1_000_000_000)?, &foreign_cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign_prefix = foreign.receipt();
+    let original_prefix = work.receipt();
+    assert!(matches!(Process::new_with_native_work(
+        fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
+        fixture.approval, fixture.authority(), &foreign,
+    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
+    assert_eq!(foreign.receipt(), foreign_prefix);
+    assert_eq!(work.receipt(), original_prefix);
     let request = fixture.request().await?;
     assert_eq!(
         request.approval_digest_with_native_work(fixture.owner.task_binding().0, fixture.command, &work)?,
@@ -444,7 +456,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
 }
 
 #[tokio::test]
-async fn finite_native_binding_rejects_foreign_prepared_family_before_future_or_content_reads() -> Result<()> {
+async fn finite_native_binding_rejects_legacy_view_before_future_or_content_reads() -> Result<()> {
     let fixture = process_fixture("write", true).await?;
     let budget = fixture.request().await?.view.options.work_per_volume;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -456,7 +468,7 @@ async fn finite_native_binding_rejects_foreign_prepared_family_before_future_or_
         fixture.approval, fixture.authority(), &work,
     );
     assert!(matches!(result, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Conflict, ..
+        code: crate::wire::ErrorCode::Unsupported, ..
     })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.receipt().authority_records_appended, 0);
@@ -748,14 +760,13 @@ where
         return Err(Error::NotFound("native lease".into()));
     };
     task.task_host().start_task(&lease).await?;
-    let owner = Arc::new(
-        task.task_host()
-            .journal_owner(
-                task_id,
-                crate::scheduler::LeaseFence::from(&lease.reservation),
-            )
-            .await?,
-    );
+    let owner_fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+    let owner = match original_work {
+        Some(work) => task.task_host().journal_owner_with_native_work(
+            task_id, &owner_fence, work,
+        ).await?.into_native_shared(work)?,
+        None => Arc::new(task.task_host().journal_owner(task_id, owner_fence.clone()).await?),
+    };
     let mut aggregate = crate::store::StreamAggregate::open(
         &owner.stream(),
         issuer.verifier().audience().clone(),
@@ -954,9 +965,25 @@ where
     let options = NativeViewOptions { root, maximum_volumes, work_per_volume: work };
     let borrowed = borrow_preparation_bindings(&bindings);
     let view = match original_work {
-        Some(work) => NativeVolumeView::prepare_with_native_work(
-            &owner, &preparation_root, &options, &borrowed, work,
-        )?.await?.into_arc_with_native_work(work)?,
+        Some(work) => {
+            let context = task.task_context_with_native_work(task_id, &owner_fence, work).await?;
+            let guard_bytes = borrowed.len().checked_mul(
+                std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
+            ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native source guard slot count overflow" })?;
+            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0))
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let mut guards = (Vec::with_capacity(borrowed.len()), custody);
+            for binding in &borrowed {
+                guards.0.push(context.mount_callback_guard_with_native_work(
+                    Arc::clone(&owner), binding.volume, binding.verifier, binding.scope,
+                    binding.writable, work,
+                )?.await?);
+            }
+            NativeVolumeView::prepare_with_native_work(
+                &owner, &guards.0, &preparation_root, &options, &borrowed, work,
+            )?.await?.into_arc_with_native_work(work)?
+        },
         None => Arc::new(NativeVolumeView::prepare(
             &owner, preparation_root.clone(), options, borrowed,
             &acyclic_fs::CancellationToken::new(),

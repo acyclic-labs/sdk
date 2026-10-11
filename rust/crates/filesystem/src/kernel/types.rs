@@ -110,7 +110,7 @@ impl LogicalName {
         let maximum_bytes = u32::try_from(self.bytes.len())
             .map_err(|_| NamespacePathError::Name(TreePageError::NameTooLarge))?;
         owned.observe(NamespacePathStep::Admit(&WorkCounters {
-            bytes_copied: self.bytes.len() as u64, ..WorkCounters::UNCHARGED,
+            bytes_copied: self.bytes.len() as u64, ..WorkCounters::UNCHARGED
         }))?;
         let result = self.try_clone_with_steps(
             maximum_bytes, &mut |step| owned.observe(NamespacePathStep::Allocation(step)),
@@ -296,7 +296,7 @@ impl LogicalName {
     ) -> Result<(NameEncoding, &'a [u8]), E> {
         cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
         steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1, ..WorkCounters::UNCHARGED,
+            items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
         let encoding = NameEncoding::from_tag(
             decoder.u8().map_err(|error| E::from(NamespacePathError::Codec(error)))?,
@@ -438,7 +438,7 @@ impl LogicalName {
         });
         check()?;
         steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1, ..WorkCounters::UNCHARGED,
+            items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
         let borrowed = match self.encoding {
             NameEncoding::Utf8 | NameEncoding::PosixBytes => Some(

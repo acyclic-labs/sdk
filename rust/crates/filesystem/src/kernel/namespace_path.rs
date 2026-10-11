@@ -751,7 +751,7 @@ impl NamespacePath {
     ) -> Result<Self, E> {
         cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
         steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1, ..WorkCounters::UNCHARGED,
+            items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
         let count = decoder.u32().map_err(|error| E::from(NamespacePathError::Codec(error)))?;
         if count > u32::from(limits.maximum_path_depth) {
