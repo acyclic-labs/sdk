@@ -499,6 +499,10 @@ struct ProcessFixture<
     command: OperationId,
     approval: InteractionId,
     plan: TaskEffectPlan,
+    // Test teardown retains the actual never-launched mount, not a fake view.
+    lazy_mount: Option<Arc<acyclic_fs::LazyMount<A, O, acyclic_fs::NativeDemandSource,
+        acyclic_fs::MemoryLazyWorkspaceStore>>>,
+    lazy_work: Option<acyclic_fs::NativeMaterializationWork>,
     _native_root_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -610,6 +614,247 @@ async fn process_fixture_with_native_work<P: StreamProvider + 'static>(
     process_fixture_original(
         stream, directory, Fs::memory(), Fs::memory(), mode, true, Some(work),
     ).await
+}
+
+fn initialize_issued_view_fixture_services() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    acyclic_fs::initialize_native_mount_services()
+        .map_err(acyclic_fs::native_mount::MountLifecycleError::Native).map_err(Error::from)
+}
+
+#[tokio::test]
+async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_scratch() -> Result<()> {
+    use std::path::Path;
+    initialize_issued_view_fixture_services()?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "mixed-issued-view", &work,
+    ).await?;
+    assert!(matches!(fixture.view.manifest().volumes[0].namespace, NativeVolumeNamespace::LazyMount { .. }));
+    assert_eq!(fixture.view.manifest().volumes[0].volume.class(), VolumeClass::Project);
+    assert!(matches!(fixture.view.manifest().volumes[1].namespace, NativeVolumeNamespace::MaterializedDirectory));
+    let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
+    let operation = OperationId::from_bytes([216; 16]);
+    let before = work.receipt().source_bytes_read;
+    let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
+    assert_eq!(project.as_slice(), b"genuine cold project");
+    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
+    assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
+    drop(project);
+    // Demand observations may advance overlay/shadow state, never the original
+    // bound workspace/source cut or the protected prepared declaration.
+    issued.verify_with_native_work(&work)?.await?;
+    issued.write_builtin_file(operation, Path::new("dst/issued.txt"), "scratch",
+        false, None, &work)?.await?;
+    let scratch = issued.read_builtin_file(operation, Path::new("dst/issued.txt"), 16, &work)?.await?;
+    assert_eq!(scratch.as_slice(), b"scratch");
+    drop(scratch);
+    let before = work.receipt().backend_write_operations;
+    assert!(issued.write_builtin_file(operation, Path::new("src/denied.txt"), "denied",
+        false, None, &work)?.await.is_err());
+    assert!(issued.write_builtin_file(operation, Path::new("results/denied.txt"), "denied",
+        true, None, &work)?.await.is_err());
+    assert_eq!(work.receipt().backend_write_operations, before);
+    let foreign = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
+    assert_eq!(foreign.receipt().source_bytes_read, 0);
+    // This fixture has never created or launched a NativeProcessProvider.
+    // Teardown uses its actual original mount, not an invented drain boolean.
+    fixture.owner.verify_with_native_work(false, &work).await?;
+    fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
+        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").native_mount_work())
+        .map_err(Error::from)?;
+    Ok(())
+}
+
+
+#[tokio::test]
+async fn issued_working_view_retains_genuine_paid_owner_and_builtin_io() -> Result<()> {
+    use std::path::Path;
+    initialize_issued_view_fixture_services()?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
+    ).await?;
+    let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
+    let again = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
+    assert!(issued.same_identity(&again));
+    assert_eq!(issued.original_task(), fixture.owner.task_binding().0);
+    assert_eq!(issued.original_fence(), fixture.owner.task_binding().1);
+    assert_eq!(issued.manifest(), fixture.view.manifest());
+    issued.verify_with_native_work(&work)?.await?;
+    assert_eq!(issued.volume_for_builtin_path(Path::new("src/input.txt"), VolumeOperation::Read, &work)?,
+        &fixture.source);
+    let operation = OperationId::from_bytes([214; 16]);
+    let before = work.receipt();
+    issued.write_builtin_file(operation, Path::new("dst/nested/issued.txt"), "héllo",
+        true, None, &work)?.await?;
+    let output = issued.read_builtin_file(operation, Path::new("dst/nested/issued.txt"), 32, &work)?.await?;
+    assert_eq!(output.as_slice(), "héllo".as_bytes());
+    assert!(output.retained_capacity().expect("original physical read backing") >= output.len());
+    assert!(output.matches_meter(&work.runtime_meter_owner()));
+    assert_eq!(work.receipt().output_bytes - before.output_bytes, "héllo".len() as u64);
+    assert_eq!(work.receipt().source_bytes_read - before.source_bytes_read, "héllo".len() as u64);
+    assert!(issued.read_builtin_file(operation, Path::new("dst/nested/issued.txt"), 1, &work)?.await.is_err());
+    let before = work.receipt().backend_write_operations;
+    assert!(issued.write_builtin_file(operation, Path::new("src/denied.txt"), "denied",
+        true, None, &work)?.await.is_err());
+    assert!(issued.write_builtin_file(operation, Path::new("unmounted/denied.txt"), "denied",
+        true, None, &work)?.await.is_err());
+    assert_eq!(work.receipt().backend_write_operations, before);
+    assert!(!fixture.view.manifest().options.root.join("src/denied.txt").exists());
+    assert!(!fixture.view.manifest().options.root.join("unmounted").exists());
+    let remaining = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    work.charge(acyclic_fs::WorkCounters { allocation_operations: remaining.allocation_operations,
+        ..acyclic_fs::WorkCounters::UNCHARGED })
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    assert!(issued.read_builtin_file(operation, Path::new("dst/nested/issued.txt"), 32, &work).is_err());
+    assert!(issued.write_builtin_file(operation, Path::new("dst/budget-denied.txt"), "denied",
+        true, None, &work).is_err());
+    assert_eq!(work.receipt().backend_write_operations, before);
+    assert!(!fixture.view.manifest().options.root.join("dst/budget-denied.txt").exists());
+    // Physical bytes and their intrinsic original guard survive the producer,
+    // denial, cancellation and empty aliases without a new allocation attempt.
+    let before_alias = work.receipt().allocation_operations;
+    let retained = output.retained_capacity();
+    let alias = output.clone();
+    let empty = output.slice(0..0);
+    drop(output);
+    cancellation.cancel();
+    assert_eq!(alias.as_slice(), "héllo".as_bytes());
+    assert_eq!(empty.retained_capacity(), retained);
+    assert!(empty.is_empty());
+    assert_eq!(work.receipt().allocation_operations, before_alias);
+    drop(alias);
+    assert_eq!(empty.retained_capacity(), retained);
+    drop(empty);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_materialized_publication_uses_original_owned_volume_guard() -> Result<()> {
+    use std::path::Path;
+    initialize_issued_view_fixture_services()?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
+    ).await?;
+    let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
+    issued.write_builtin_file(OperationId::from_bytes([217; 16]), Path::new("dst/guarded.txt"),
+        "original guarded publication", false, None, &work)?.await?;
+    let before = work.receipt().backend_write_operations;
+    let publication = <PreparationView as crate::filesystem::NativeProcessView<MemoryStream>>
+        ::publish_with_native_work(fixture.view.as_ref(), fixture.owner.native_view_owner(), &work)?.await?;
+    let receipt = publication.map_err(|failure| failure.cause)?;
+    assert_eq!(receipt.completed.len(), 1);
+    assert_eq!(receipt.completed[0].volume, fixture.destination);
+    assert!(work.receipt().backend_write_operations > before);
+    drop(receipt);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_materialized_publication_retains_existing_issued_owner_arc() -> Result<()> {
+    use std::path::Path;
+    initialize_issued_view_fixture_services()?;
+    let fixture = process_fixture("write", true).await?;
+    assert!(fixture.view.original_native_work().is_none());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    fixture.view.write_builtin_file(fixture.owner.native_view_owner(), OperationId::from_bytes([218; 16]),
+        Path::new("dst/guarded.txt"), "ordinary existing owner", false, None, &work).await?;
+    let publication = <PreparationView as crate::filesystem::NativeProcessView<MemoryStream>>
+        ::publish_with_native_work(fixture.view.as_ref(), fixture.owner.native_view_owner(), &work)?.await?;
+    let receipt = publication.map_err(|failure| failure.cause)?;
+    assert_eq!(receipt.completed.len(), 1);
+    assert_eq!(receipt.completed[0].volume, fixture.destination);
+    drop(receipt);
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    let before = work.receipt().backend_write_operations;
+    let rejected = <PreparationView as crate::filesystem::NativeProcessView<MemoryStream>>
+        ::publish_with_native_work(fixture.view.as_ref(), fixture.owner.native_view_owner(), &work)?.await?;
+    assert!(rejected.is_err());
+    assert_eq!(work.receipt().backend_write_operations, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_owner() -> Result<()> {
+    use crate::runtime::DurableTaskHost as _;
+    use std::path::Path;
+    initialize_issued_view_fixture_services()?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let fixture = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
+    ).await?;
+    let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
+    let foreign_work = acyclic_fs::NativeMaterializationWork::new(process_work_budget(100_000_000)?, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    assert!(matches!(issued.verify_with_native_work(&foreign_work),
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, .. })));
+    assert_eq!(foreign_work.receipt().backend_write_operations, 0);
+    let foreign = process_fixture_with_native_work(
+        StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
+    ).await?;
+    assert_ne!(fixture.owner.task_binding().1, foreign.owner.task_binding().1);
+    assert!(fixture.view.task_working_view_with_native_work(&foreign.owner, &work)?.await.is_err());
+    let context = fixture.task.task_context_with_native_work(
+        fixture.owner.task_binding().0, fixture.owner.task_binding().1, &work,
+    ).await?;
+    let guard = context.volume_callback_guard_with_native_work(&fixture.owner, &work).await?;
+    let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?;
+    let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?;
+    let mount_work = work.native_mount_work();
+    assert!(callback.check(&mount_work).expect("original callback admission").await.is_ok());
+    assert!(writable_callback.check(&mount_work).expect("original writable callback admission").await.is_ok());
+    let foreign_mount_work = foreign_work.native_mount_work();
+    assert!(callback.check(&foreign_mount_work).expect("paid foreign callback frame").await.is_err());
+    let before_guards = work.receipt();
+    assert!(guard.for_volume(&fixture.owner, &fixture.source, true, &work).is_err());
+    assert!(guard.for_volume(&foreign.owner, &fixture.source, false, &work).is_err());
+    assert!(guard.for_volume(&fixture.owner, &fixture.source, false, &foreign_work).is_err());
+    let ungranted = VolumeRef::new(fixture.source.provider().clone(), "ungranted",
+        VolumeClass::AgentPrivate, fixture.source.owner().clone())?;
+    assert!(guard.for_volume(&fixture.owner, &ungranted, false, &work).is_err());
+    assert_eq!(work.receipt().backend_read_operations, before_guards.backend_read_operations);
+    assert_eq!(work.receipt().backend_write_operations, before_guards.backend_write_operations);
+    let legacy = process_fixture("write", true).await?;
+    assert!(legacy.view.task_working_view_with_native_work(&legacy.owner, &work)?.await.is_err());
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    let before = work.receipt().backend_write_operations;
+    assert!(issued.verify_with_native_work(&work)?.await.is_err());
+    assert!(issued.write_builtin_file(OperationId::from_bytes([215; 16]),
+        Path::new("dst/stale.txt"), "denied", true, None, &work)?.await.is_err());
+    assert_eq!(work.receipt().backend_write_operations, before);
+    assert!(!fixture.view.manifest().options.root.join("dst/stale.txt").exists());
+    let pending = callback.check(&mount_work).expect("pre-cancellation callback admission");
+    cancellation.cancel();
+    let error = pending.await.expect_err("original cancellation denies callback");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut original_cancelled = false;
+    while let Some(cause) = source {
+        if matches!(cause.downcast_ref::<Error>(), Some(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+        })) {
+            original_cancelled = true;
+            break;
+        }
+        source = cause.source();
+    }
+    assert!(original_cancelled, "callback preserves original typed harness cancellation");
+    Ok(())
 }
 async fn process_fixture_with_filesystems<P, A, O>(
     stream: StreamClient<P>,
@@ -964,6 +1209,8 @@ where
         u32::try_from(bindings.len()).map_err(|error| Error::Invalid(error.to_string()))?;
     let options = NativeViewOptions { root, maximum_volumes, work_per_volume: work };
     let borrowed = borrow_preparation_bindings(&bindings);
+    let mut lazy_mount = None;
+    let mut lazy_work = None;
     let view = match original_work {
         Some(work) => {
             let context = task.task_context_with_native_work(task_id, &owner_fence, work).await?;
@@ -980,9 +1227,48 @@ where
                     binding.writable, work,
                 )?.await?);
             }
-            NativeVolumeView::prepare_with_native_work(
-                &owner, &guards.0, &preparation_root, &options, &borrowed, work,
-            )?.await?.into_arc_with_native_work(work)?
+            let view = if mode == "mixed-issued-view" {
+                let volume_work = work.native_volume_work(options.work_per_volume)?;
+                let physical = directory.path().join("lazy-source");
+                std::fs::create_dir(&physical).map_err(|error| Error::Storage(error.to_string()))?;
+                std::fs::write(physical.join("cold.txt"), b"genuine cold project")
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default())
+                    .await.map_err(|error| Error::Storage(error.to_string()))?);
+                let workspace = files.open_volume_with_native_work(&source, work).await?;
+                let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
+                    acyclic_fs::MemoryLazyWorkspaceStore::default()).await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?;
+                let (path, _path_custody) = volume_work.join_path(&options.root, std::path::Path::new("src"))?;
+                volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
+                    std::path::Path::new("src"), true)?;
+                let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
+                    A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1)?;
+                let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
+                    .publication(acyclic_fs::MountPublication::Manual), Some(callback),
+                    &volume_work.native_mount_work(), volume_work.cancellation()).await.map_err(Error::from)?;
+                mount.retain_payload_allocation(&mut allocation).map_err(Error::from)?;
+                let mount = Arc::new(mount);
+                let snapshot = mount.snapshot_with_work(&volume_work.native_mount_work(), volume_work.cancellation())
+                    .await.map_err(Error::from)?;
+                let namespace = NativeVolumeNamespace::LazyMount { snapshot };
+                let mut mixed_borrowed = borrowed;
+                mixed_borrowed[0].namespace = &namespace;
+                let held = crate::filesystem::NativeExistingLazyVolume::capture_with_native_work(
+                    &mount, &owner, &mixed_borrowed[0], &guards.0[0], work, &volume_work,
+                )?.await?;
+                lazy_mount = Some(Arc::clone(&mount));
+                lazy_work = Some(volume_work.clone());
+                NativeVolumeView::prepare_mixed_with_native_work(&owner, &guards.0,
+                    &preparation_root, &options, &mixed_borrowed, &[Some(&held), None, None], work)?.await?
+            } else {
+                NativeVolumeView::prepare_with_native_work(
+                    &owner, &guards.0, &preparation_root, &options, &borrowed, work,
+                )?.await?
+            };
+            view.into_arc_with_native_work(work)?
         },
         None => Arc::new(NativeVolumeView::prepare(
             &owner, preparation_root.clone(), options, borrowed,
@@ -1128,6 +1414,8 @@ where
         command,
         approval,
         plan,
+        lazy_mount,
+        lazy_work,
         _native_root_custody: native_root_custody,
     })
 }
@@ -1463,9 +1751,9 @@ async fn native_builtin_actual_prepared_view_reads_and_writes_original_mounted_s
         Path::new("b-destination/nested/file"), "héllo", true, None, &work).await?;
     let output = view.read_builtin_file(fixture.owner.native_view_owner(), operation,
         Path::new("b-destination/nested/file"), 32, &work).await?;
-    assert_eq!(output.0, "héllo".as_bytes());
-    assert_eq!(output.1.bytes(), output.0.capacity() as u64);
-    assert!(output.1.shares_ledger(&work.retain_owned(0)?));
+    assert_eq!(output.as_slice(), "héllo".as_bytes());
+    assert!(output.retained_capacity().expect("original physical read backing") >= output.len());
+    assert!(output.matches_meter(&work.runtime_meter_owner()));
     assert_eq!(work.receipt().output_bytes, "héllo".len() as u64);
     assert_eq!(work.receipt().source_bytes_read, "héllo".len() as u64);
     drop(output);
@@ -1717,7 +2005,7 @@ async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() 
         StreamClient::new(Arc::new(reopened)), seed.files.clone(), seed.results.volume().clone(),
         &seed.issuer, &seed.scope, seed.owner.input_grants.clone(),
     ).await?;
-    let owner = runtime.task_host().journal_owner(task_id, fence.clone()).await?;
+    let owner = Arc::new(runtime.task_host().journal_owner(task_id, fence.clone()).await?);
     let before = PreparationView::inspect_preparation(
         &owner, &allocation, options.work_per_volume, &acyclic_fs::CancellationToken::new(),
     ).await.map_err(|(error, _)| error)?.value
@@ -2091,6 +2379,8 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
         approval: _,
         plan: _,
         preparation_root: _,
+        lazy_mount: _,
+        lazy_work: _,
         _native_root_custody: _,
     } = fixture;
     let native_output = seed.root.join("dst/output.txt");

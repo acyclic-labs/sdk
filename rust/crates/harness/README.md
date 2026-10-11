@@ -696,6 +696,15 @@ witnessed root, operation directory, target and backup identities. Prepare, insp
 and cleanup reuse the materializer journal and its exact qualified source intent;
 recovery does not adopt a PID or fabricate source authority. Caller grants must still
 be fresh when used. Root replacement is rejected and unrelated user data is preserved.
+Each native preparation action first authenticates its retained `Preparing`
+packet and original full task fence, then prepares the real SDK CAS and recovery
+future before the physical mutation. Its fixed journal template changes only
+existing revision/work scalar slots afterward; completion constructs no new
+byte owner or SDK dispatch frame. The same journal durably advances its known
+work prefix before the next action. A crash between mutation and CAS, or a lost
+CAS acknowledgment, leaves authentic incomplete/uncertain preparation: durable
+work is a known lower bound, not reconstructed exact spend. Live failures retain
+the actual complete observed prefix and original cleanup ownership.
 Authenticated history effect queries use
 `HistoryReader.effect(cursor, effect, HistoryReadLimits)`, with qualified identities
 and finite read limits. Native process receipts expose queryable publication
@@ -716,6 +725,10 @@ construction and threads the caller's original work ledger through authenticated
 history, protected receipt encoding/appends, and the original process/view engine.
 Receipt paths use the original-meter intrinsic `StreamPath` constructor; append
 aliases that guarded path instead of allocating a second String-to-Arc copy.
+Finite receipt codecs admit their concrete cause box before lexing or encoding.
+Failures move the original typed cause and its existing diagnostic custody into
+that slot; its separate outer guard remains until the box is physically deallocated,
+without late allocation, formatting, cancellation checks or ledger substitution.
 Operation-owned verifier and scope data move with
 `NativeProcessAuthority::authority_custody`, which drops after its capabilities.
 Sharing the authority retains that original claim even when a bound effect or
