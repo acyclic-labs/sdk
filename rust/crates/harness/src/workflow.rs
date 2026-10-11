@@ -12,8 +12,6 @@ use std::{
     sync::Arc,
 };
 
-// Closed physical factories share the enclosing quota and original observer.
-// No wire encoding or diagnostic String participates in copying these DTOs.
 fn copy_machine_identity(
     source: &MachineIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<MachineIdentity> {
@@ -117,8 +115,7 @@ workflow_physical_copy!(workflow_copy_record, WorkflowRecord, copy_workflow_reco
 workflow_physical_copy!(workflow_copy_admission, WorkflowAdmission, copy_workflow_admission);
 workflow_physical_copy!(workflow_copy_key, IdempotencyKey, copy_workflow_key);
 
-/// Replay-safe command emitted by a machine. The operation ID is stable and
-/// all variable arguments live in an immutable owner-resolved file version.
+/// Replay-safe command emitted by a machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowCommand {
@@ -286,7 +283,6 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     fn initialize(&self, input: &Value) -> Result<Value>;
 
     /// Builds initial native state after admitting its actual SDK-owned DTOs.
-    /// Custom implementations without this callback fail without ordinary init.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn initialize_with_native_work(
         &self,
@@ -306,9 +302,6 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     }
 
     /// Moves the response into native hosting state after admitting construction.
-    /// The guard covers new SDK-owned allocations, not moved input bytes: callers
-    /// retain and transfer actual input custody across the callback and its result.
-    /// Opaque callback CPU, allocator internals and process RSS are not sandboxed.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn transition_with_native_work(
         &self,
@@ -381,7 +374,6 @@ impl MachineRegistry {
     }
 
     /// Registers through the same engine, retaining its real key metadata.
-    /// The caller keeps this guard until the registry's last consumer/drop.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn register_with_native_work(
         &mut self, machine: Arc<dyn ResumableMachine>, work: &acyclic_fs::NativeMaterializationWork,
@@ -406,8 +398,7 @@ impl MachineRegistry {
         ))
     }
 
-    /// Observes borrowed pinned metadata before lookup, without manufacturing
-    /// owned registry keys or replacing the caller's original work ledger.
+    /// Observes borrowed pinned metadata before lookup, without manufacturing owned registry keys or replacing the caller's original work ledger.
     pub(crate) fn resolve_with_work(
         &self, identity: &MachineIdentity,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -457,7 +448,7 @@ impl MachineRegistry {
         })?;
         #[allow(unused_mut)]
         let mut transition_retained = 0;
-        validate_state_with_io(machine.state_schema(), &checkpoint.state, io)?;
+        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &checkpoint.state, "machine state", io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let transition = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -476,8 +467,8 @@ impl MachineRegistry {
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, input)?;
-        validate_state_with_io(machine.state_schema(), &transition.state, io)?;
-        validate_commands_with_io(&transition.commands, io)?;
+        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &transition.state, "machine state", io)?;
+        validate_commands(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
         let next = MachineCheckpoint {
             machine: workflow_copy_identity(&checkpoint.machine, io)?,
@@ -507,8 +498,7 @@ impl MachineRegistry {
         self.native_machine(identity).map(|_| ())
     }
 
-    /// Initializes fresh native state on the original ledger without cloning
-    /// the lookup key, invoking ordinary initialization, or boxing a future.
+    /// Initializes fresh native state on the original ledger without cloning the lookup key, invoking ordinary initialization, or boxing a future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn initialize_with_native_work(
         &self,
@@ -522,7 +512,7 @@ impl MachineRegistry {
             let (state, custody) = machine.initialize_with_native_work(input, work)?;
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
-            validate_state_with_io(machine.state_schema(), &state, Some(&io))?;
+            crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &state, "machine state", Some(&io))?;
             Ok((state, retained))
         })();
         let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
@@ -531,8 +521,6 @@ impl MachineRegistry {
     }
 
     /// Runs the original step engine with admitted owned-input construction.
-    /// The caller retains the actual input guard until both returned values have
-    /// been consumed; `ResumableTaskSession` performs the owned guard transfer.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn step_with_native_work(
         &self,
@@ -556,7 +544,6 @@ impl MachineRegistry {
     }
 
     /// Validates the original guarded checkpoint without copying its state.
-    /// The caller retains its source custody throughout this synchronous call.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_checkpoint_with_native_work(
         &self, checkpoint: &MachineCheckpoint, work: &acyclic_fs::NativeMaterializationWork,
@@ -583,7 +570,7 @@ impl MachineRegistry {
         let machine = self.resolve(&checkpoint.machine).ok_or_else(|| {
             Error::Unsupported("pinned machine implementation is unavailable".into())
         })?;
-        validate_state_with_io(machine.state_schema(), &checkpoint.state, io)
+        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &checkpoint.state, "machine state", io)
     }
 
     fn replayed_checkpoint_body(
@@ -603,8 +590,6 @@ impl MachineRegistry {
             return Err(workflow_recovery_error(io,
                 "workflow history disagrees with its pinned machine", false));
         }
-        // The proof transition and its input copy die here. Only the genuine
-        // checkpoint copy survives in the restored host.
         drop(transition);
         Ok((next, retained))
     }
@@ -679,7 +664,7 @@ impl WorkflowRecord {
             return Err(workflow_recovery_error(io,
                 "workflow transition envelope is inconsistent", false));
         }
-        validate_commands_with_io(&self.transition.commands, io)?;
+        validate_commands(&self.transition.commands, io)?;
         if self
             .transition
             .commands
@@ -693,45 +678,6 @@ impl WorkflowRecord {
     }
 }
 
-fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
-    validate_commands_with_work(commands, &mut None)
-}
-
-fn validate_commands_with_work(
-    commands: &[WorkflowCommand], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
-        .ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "workflow command set ownership overflow" };
-            }
-            Error::Invalid("workflow command set ownership overflow".into())
-        })? as u64;
-    let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
-    let mut identities = BTreeSet::new();
-    for command in commands {
-        command.validate_with_work(custody.work())?;
-        if let Some(observer) = custody.work().as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-        }
-        if !identities.insert(command.operation_id) {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if custody.work().as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "workflow command identity is duplicated",
-                });
-            }
-            return Err(Error::Conflict(
-                "workflow command identity is duplicated".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Outcome of an atomic workflow journal commit.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowCommitOutcome {
@@ -741,9 +687,7 @@ pub enum WorkflowCommitOutcome {
     Replayed(WorkflowRecord),
 }
 
-/// Immutable identity of one admitted workflow instance. An owner stores this
-/// before the first transition so an empty journal cannot be reopened with a
-/// different input or implementation after a lost acknowledgement.
+/// Immutable identity of one admitted workflow instance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowAdmission {
@@ -836,20 +780,16 @@ pub(crate) fn validate_workflow_next_with_io(
 /// Durable journal boundary; one commit atomically stores checkpoint and commands.
 pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     /// Exact task lease whose coordinator condition fences every publication.
-    /// Unbound workflow providers do not authorize registered task execution.
-    /// Borrows retained custody; observing ownership does not clone a lease.
     fn task_binding(&self) -> Option<(crate::TaskId, &crate::scheduler::LeaseFence)> {
         None
     }
 
     /// Borrows the original admitted identity retained by a bound owner.
-    /// This is metadata only: no authority read, scope inference, or clone.
     fn original_machine_identity(&self) -> Option<&MachineIdentity> {
         None
     }
 
-    /// Atomically retains one exact workflow admission. Providers must return
-    /// the existing admission on retries and reject an identity conflict.
+    /// Atomically retains one exact workflow admission.
     fn admit<'a>(
         &'a self,
         admission: WorkflowAdmission,
@@ -878,8 +818,6 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads at most `maximum` records starting at the zero-based revision.
-    /// Records and payloads are validated individually; the consuming host
-    /// validates the complete chain incrementally. Empty means current tail.
     fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>>;
 
     /// Commits exactly one complete transition with CAS and idempotency.
@@ -920,10 +858,7 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Complete in-process journal for local resumable work and conformance
-/// tests. Admission, checkpoint transitions, and command outboxes are retained
-/// under one lock; production providers can implement the same contract on
-/// durable storage.
+/// Complete in-process journal for local resumable work and conformance tests.
 #[derive(Default)]
 pub struct MemoryWorkflowJournal {
     state: Mutex<MemoryWorkflowState>,
@@ -1096,8 +1031,6 @@ impl DurableWorkflowHost {
     }
 
     /// Restores the original journal and machine engine on the original work.
-    /// Decoded pages and proof transitions retire at page/record last use;
-    /// checkpoint and index guards remain intrinsic to the returned host.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
         registry: MachineRegistry,
@@ -1111,8 +1044,6 @@ impl DurableWorkflowHost {
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = Self::open_untraced(registry, initial, journal, Some(&io)).await;
-        // Replay keys are temporary; persistent index and checkpoint ownership
-        // already lives in the host's separately retained original-ledger guards.
         let (host, _retired) = finish_native_io(result, io, 0)?;
         Ok(host)
     }
@@ -1134,8 +1065,6 @@ impl DurableWorkflowHost {
             ));
         }
         registry.validate_checkpoint_with_io(&initial, io)?;
-        // Native admission is already a genuinely decoded guarded DTO. Move
-        // its checkpoint rather than create an unfunded copy of `initial`.
         let checkpoint = if io.is_some() { admission.initial } else { initial };
         let mut host = Self {
             registry,
@@ -1184,8 +1113,7 @@ impl DurableWorkflowHost {
                 }
                 host.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
             }
-            // The iterator's record DTOs and buffer die before the page guard,
-            // before the next original journal read is invoked.
+            // The iterator's record DTOs and buffer die before the page guard, before the next original journal read is invoked.
         }
         crate::obs::obs_record!("rev" = host.checkpoint.revision);
         Ok(host)
@@ -1271,8 +1199,6 @@ impl DurableWorkflowHost {
     }
 
     /// Validates a transition before its checkpoint and outbox are committed.
-    /// This is used by typed task/tool wrappers to enforce result schemas at
-    /// the durable boundary, including on idempotent replay.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -1348,8 +1274,7 @@ impl DurableWorkflowHost {
             if let (Some(previous), Some(bytes)) =
                 (self.index_custody.last_mut(), original_index_bytes)
             {
-                // Only the unconstructed new slots retire; existing index
-                // ownership is unchanged, with no admission/IO/cancellation.
+                // Only the unconstructed new slots retire; existing index ownership is unchanged, with no admission/IO/cancellation.
                 let _ = previous.substitute(bytes);
             }
         }
@@ -1400,8 +1325,7 @@ impl DurableWorkflowHost {
         if self.reserved_operations.contains(&operation_id) {
             return Err(workflow_recovery_error(io, "workflow step reuses a command identity", false));
         }
-        // The durable v2 envelope retains both input and machine state. Admit
-        // that necessary replay copy before the machine consumes the original.
+        // The durable v2 envelope retains both input and machine state.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (input, native_input) = if io.is_some() {
             (workflow_copy_value(&input, io)?, Some(input))
@@ -1428,8 +1352,7 @@ impl DurableWorkflowHost {
         }) {
             return Err(workflow_recovery_error(io, "workflow command identity was already committed", false));
         }
-        // Ordinary None retains its original digest timing. Native encoding
-        // must finish before publication rather than fail after the SDK effect.
+        // Ordinary None retains its original digest timing.
         let digest = if io.is_some() {
             Some(crate::executor::preparation_digest(&record, io)?)
         } else {
@@ -1501,8 +1424,6 @@ impl DurableWorkflowHost {
         let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
             "native index requires original work",
         ))?;
-        // Keep one actual index guard per original ledger, not one allocation
-        // and reallocation per replayed record on that same ledger.
         let bytes = (commands as u64).checked_add(1)
             .and_then(|count| count.checked_mul(std::mem::size_of::<OperationId>() as u64))
             .and_then(|bytes| bytes.checked_add(
@@ -1547,35 +1468,9 @@ impl DurableWorkflowHost {
                 })?;
             }
         }
-        // Only concrete operation-ID and intent slots are claimed here. Opaque
-        // BTree nodes/allocator bookkeeping are not counted as physical RSS or
-        // one allocator operation per slot.
         self.index_custody.push(incoming);
         Ok(())
     }
-}
-
-fn input_digest(input: &Value) -> Result<[u8; 32]> {
-    input_digest_with_io(input, None)
-}
-
-fn input_digest_with_io(
-    input: &Value, io: Option<&crate::executor::PreparationIo>,
-) -> Result<[u8; 32]> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let _bytes;
-        let bytes = io.encode_json(input, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
-        let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-        io.preflight(work)?;
-        let digest = *blake3::hash(&bytes).as_bytes();
-        io.charge(work)?;
-        return Ok(digest);
-    }
-    crate::contract::canonical_json_digest(input)
 }
 
 pub(crate) fn workflow_owned_bytes(io: Option<&crate::executor::PreparationIo>) -> Result<u64> {
@@ -1618,28 +1513,50 @@ pub(crate) fn finish_native_io<T>(
     }
 }
 
-fn validate_state_with_io(
-    schema: &Value, state: &Value, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, state, "machine state", io)
-}
 
-fn validate_commands_with_io(
+fn validate_commands(
     commands: &[WorkflowCommand], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     #[cfg(feature = "filesystem")]
-    let _workspace = io.map(|io| {
-        crate::executor::reserve_preparation_workspace(&commands, io)
-    }).transpose()?;
+    let _workspace = io.map(|io| crate::executor::reserve_preparation_workspace(&commands, io)).transpose()?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-        return validate_commands_with_work(commands, &mut work);
-    }
+    let mut observer = io.map(crate::executor::PreparationIo::history_io);
+    #[cfg(feature = "filesystem")]
+    let mut original = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
     #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    validate_commands(commands)
+    let mut original = { let _ = io; None };
+    let work: &mut Option<&mut dyn crate::store::history::HistoryIo> = &mut original;
+
+    let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
+        .ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "workflow command set ownership overflow" };
+            }
+            Error::Invalid("workflow command set ownership overflow".into())
+        })? as u64;
+    let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
+    let mut identities = BTreeSet::new();
+    for command in commands {
+        command.validate_with_work(custody.work())?;
+        if let Some(observer) = custody.work().as_deref_mut() {
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        }
+        if !identities.insert(command.operation_id) {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if custody.work().as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "workflow command identity is duplicated",
+                });
+            }
+            return Err(Error::Conflict(
+                "workflow command identity is duplicated".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_workflow_key(
@@ -1870,7 +1787,7 @@ mod tests {
             Ok(WorkflowRecord {
                 operation_id,
                 idempotency_key: key,
-                input_digest: input_digest(&input)?,
+                input_digest: crate::contract::canonical_json_digest(&input)?,
                 prior,
                 input,
                 transition: MachineTransition {
@@ -2002,7 +1919,7 @@ mod tests {
         let mut record = WorkflowRecord {
             operation_id: OperationId::from_bytes(1_000_000_u128.to_be_bytes()),
             idempotency_key: IdempotencyKey::new("large-history")?,
-            input_digest: input_digest(&Value::Null)?,
+            input_digest: crate::contract::canonical_json_digest(&Value::Null)?,
             prior: prior.clone(),
             input: Value::Null,
             transition: MachineTransition {
@@ -2314,7 +2231,7 @@ mod tests {
             validate_commands(&[
                 transition.commands[0].clone(),
                 transition.commands[0].clone(),
-            ])
+            ], None)
             .is_err()
         );
         assert_eq!(host.checkpoint().revision, 1);

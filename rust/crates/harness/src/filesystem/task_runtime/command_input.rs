@@ -36,8 +36,6 @@ impl CommandDispatch {
                 match custody {
                     None => *custody = Some(incoming),
                     Some(primary) if primary.shares_ledger(&incoming) => {
-                        // prepare_custody_transfer checked this exact unchanged
-                        // sum. absorb neither allocates nor checks cancellation.
                         primary.absorb(&mut incoming).map_err(native_error)?;
                     }
                     Some(_) => {
@@ -52,8 +50,6 @@ impl CommandDispatch {
             }
             TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => unreachable!(),
         };
-        // Original result custody has already moved to self. Every fallible
-        // envelope operation therefore drops its value before that custody.
         let mut envelope = Map::new();
         #[cfg(not(target_arch = "wasm32"))]
         let native = match self {
@@ -148,7 +144,6 @@ fn claim(guard: &mut acyclic_fs::NativeAllocation, bytes: u64) -> Result<()> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn claim_slots(guard: &mut acyclic_fs::NativeAllocation, slots: u64) -> Result<()> {
-    // Logical key/value slots only; opaque BTree allocator nodes are excluded.
     claim(guard, slots.checked_mul(std::mem::size_of::<(String, Value)>() as u64).ok_or_else(overflow)?)
 }
 
@@ -178,7 +173,6 @@ fn reserve_native_vec<T>(values: &mut Vec<T>, claimed: &mut u64, guard: &mut acy
         guard.substitute(guard.bytes() - bytes).map_err(native_error)?;
         return Err(native_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)));
     }
-    // The previous allocation is now retired; no release/reclaim live-byte gap.
     guard.substitute(guard.bytes() - *claimed).map_err(native_error)?;
     *claimed = (values.capacity() * std::mem::size_of::<T>()) as u64;
     Ok(())

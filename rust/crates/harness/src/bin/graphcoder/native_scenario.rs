@@ -1,5 +1,4 @@
 //! Credential-free, explicitly trusted local qualification input producer.
-//! Bootstrap executes ordinary fork tasks; it is neither playback nor a PTY test.
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
 
 use super::native::{AuthorityBinding, Config, ForkSourceConfig};
@@ -69,10 +68,7 @@ struct Producer {
     cancellation: acyclic_fs::CancellationToken,
 }
 
-/// Produces actual local provider resources, authenticated source checkpoints,
-/// retained ordinary preparation requests/reports and original owner leases.
-/// The manifest distinguishes genuine bootstrap effects from pending UI work.
-/// No model invocation, native allocation witness or approval is fabricated.
+/// Produces actual local provider resources, authenticated source checkpoints, retained ordinary preparation requests/reports and original owner leases.
 pub async fn prepare(root: &Path, cancellation: &acyclic_fs::CancellationToken) -> Result<PathBuf> {
     if !root.is_absolute() {
         return Err(Error::Invalid("scenario root must be an absolute path".into()));
@@ -144,7 +140,6 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         project_source_root: None,
     };
     // Open the actual diagnostic provider sink before any model invocation.
-    // This records nothing; generate/reconcile alone append observer evidence.
     drop(super::provider::Deterministic::new(
         config.deterministic_delay_ms, &config.model_invocation_ledger,
     )?);
@@ -167,8 +162,6 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
-    // Sign their exact read capabilities before the original task admission;
-    // later child admission never adds an unretained ancestor-private grant.
     let project_writer = ContentGrant::verify(&issuer.verifier(), &owner.scope, &project, VolumeOperation::Write)?;
     let mut planned_commands = BTreeMap::new();
     let mut planned_inputs = BTreeMap::new();
@@ -238,8 +231,6 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         producer.references.insert(format!("{label}_input"), file.clone());
     }
     producer.seed(&mut seed, "bootstrap", 1).await?;
-    // Root is itself genuinely created/admitted, so passive source inspection
-    // has real creator receipts instead of guessed references to seed volumes.
     let mut logical_root = producer.fork(&mut seed, "root", None, true).await?
         .ok_or_else(|| Error::Conflict("bootstrap root was not published".into()))?;
     producer.seed(&mut logical_root, "root", 17).await?;
@@ -252,8 +243,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut grandchild = producer.fork(&mut left, "grandchild", None, true).await?
         .ok_or_else(|| Error::Conflict("grandchild fork was not published".into()))?;
     producer.seed(&mut grandchild, "grandchild", 1).await?;
-    // Authenticated foreign project selection only. Caller history and private
-    // lineage still come from LEFT, never from the selected ROOT task.
+    // Authenticated foreign project selection only.
     producer.fork(&mut left, "cross_source", Some(logical_root.task), false).await?;
     let left_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, left.binding.authority.clone());
     let notice_writer = ContentGrant::verify(&left_issuer.verifier(), &left.binding.scope, &left.private, VolumeOperation::Write)?;
@@ -498,8 +488,7 @@ impl Producer {
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
         child.input = serde_json::to_value(&self.planned_commands[label]).map_err(|error| Error::Invalid(error.to_string()))?;
-        // Parent-owned scratch rights never become generic child rights. Keep
-        // explicit foreign project reads for cross-source selection only.
+        // Parent-owned scratch rights never become generic child rights.
         let mut grants = vec!["operation:declare".to_owned(), "operation:observe".to_owned(),
             "operation:cancel".to_owned(), "operation:wake".to_owned(), "model:generate".to_owned(),
             "fork:publish".to_owned(), "project:merge".to_owned(),

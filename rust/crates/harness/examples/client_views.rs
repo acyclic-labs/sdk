@@ -1,6 +1,4 @@
 //! Pure public message, provisional dequeue/claim and tool-continuation trace.
-//! The existing Harness owns admission/reduction. This adapter consumes only
-//! snapshots captured by this in-process trusted host after those reducers run.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -37,7 +35,6 @@ enum Projection {
         available: bool,
         owner: Option<LeaseFence>,
     },
-    // Pure continuation input references, never a model run or KV commitment.
     Continuation {
         call: Uuid,
         result: Arc<FileRef>,
@@ -60,8 +57,6 @@ enum Assumption {
     Continuation { call: Uuid },
 }
 
-// Private host envelope, not a public `verified: true` flag. It has no network
-// deserializer; a real remote host must authenticate/reduce journal evidence.
 #[derive(Clone)]
 struct TrustedSnapshot {
     key: u128,
@@ -94,8 +89,6 @@ fn snapshot(
 }
 
 struct HarnessViews {
-    // Only snapshots captured after the ordinary host reducer ran may establish
-    // recovered outcomes; checkpoint bytes never populate this receipt.
     recovery: Option<TrustedSnapshot>,
 }
 impl Domain for HarnessViews {
@@ -106,7 +99,6 @@ impl Domain for HarnessViews {
     type Value = Projection;
     type Evidence = TrustedSnapshot;
 
-    // Pin both semantic adapter implementation and revision, separate from source basis.
     fn identity(&self) -> u128 {
         0x4841524e4553530001
     }
@@ -139,7 +131,6 @@ impl Domain for HarnessViews {
         {
             return Err(Error::Unsupported);
         }
-        // Reuse ordinary snapshot validation and its conservative accounting.
         let checked = self.observe(receipt, Some(fact), work)?;
         Ok((checked.fact.ok_or(Error::Missing)?.bytes, checked.work))
     }
@@ -189,7 +180,6 @@ impl Domain for HarnessViews {
                 {
                     return Err(Error::Conflict);
                 }
-                // Canonical call identity/content is part of the exact source basis.
             }
             (
                 _,
@@ -257,8 +247,6 @@ impl Domain for HarnessViews {
         if work < 1 {
             return Err(Error::Budget);
         }
-        // This consumer's contract requires exact ref/linkage equality. Display
-        // text equality is insufficient, and no KV equivalence is claimed.
         Ok((
             if predicted == canonical {
                 Correspondence::Match
@@ -313,9 +301,6 @@ fn op(id: u8) -> OperationId {
 }
 
 /// Execute the same reducer-backed public consumer trace on native and WASM.
-///
-/// # Panics
-/// Panics if a public production transition violates the asserted contract.
 #[allow(
     clippy::too_many_lines,
     reason = "one sequential trace makes canonical and speculative transitions directly comparable"
@@ -392,7 +377,6 @@ pub fn trace() {
             },
         ))
         .unwrap();
-    // Concurrent authoritative message is retained independently of the predicted key.
     let unrelated = message(2, 2, MessageKind::User, b"concurrent", None, None);
     reducer
         .apply(command(
@@ -433,8 +417,6 @@ pub fn trace() {
         client.hypothesis(branch).unwrap().prediction,
         PredictionOutcome::Confirmed
     );
-    // Recover from serialized data using the original operation's actual reducer
-    // receipt. Neither durable bytes nor UI equality authenticate completion.
     let checkpoint = serde_json::to_vec(client.hypothesis(branch).unwrap()).unwrap();
     let decode = || {
         serde_json::from_slice::<ClientHypothesis<HarnessViews>>(&checkpoint).unwrap()
@@ -474,7 +456,6 @@ pub fn trace() {
         Projection::Message(Some(_))
     ));
 
-    // Dequeue is a local view of Scheduler's ready work, not a queue authority.
     let task_authority = Authority {
         kind: AggregateKind::Task,
         id: "task".into(),
@@ -570,7 +551,6 @@ pub fn trace() {
         Projection::Queue { owner: Some(fence), .. } if fence.placement == "worker-b")
     );
 
-    // Tool result uses the existing canonical call/result pair and FileRef.
     let call = message(3, 3, MessageKind::ToolCall, b"{}", None, Some("call-1"));
     reducer
         .apply(command(
@@ -679,7 +659,6 @@ pub fn trace() {
         client.view(&31, &[continuation]).unwrap().provenance,
         Provenance::Authoritative(_)
     ));
-    // No provider invocation, continuation admission, inference/KV reuse or IO occurred.
 }
 
 #[cfg(not(test))]

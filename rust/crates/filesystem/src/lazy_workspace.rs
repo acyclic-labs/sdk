@@ -607,10 +607,7 @@ pub enum PendingLazyRemoveKind {
 }
 
 /// One immutable node in the persistent source-knowledge index.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "boxing the Node payload would change this public enum's pattern-matching API"
-)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlay {
     /// Shared empty index root.
@@ -639,10 +636,7 @@ enum Removal {
 }
 
 /// One fact introduced by a lazy overlay delta.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "boxing the Observe payload would change this public enum's pattern-matching API"
-)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlayChange {
     /// First exact observation of one demanded path.
@@ -1188,7 +1182,7 @@ fn memory_lazy_digest<T: Serialize>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, reason = "one content-addressed engine shares the actual accounting state")]
+#[allow(clippy::too_many_arguments)]
 fn memory_lazy_load_node<K: Ord, V: MemoryLazyNode>(
     table: &[(K, MemoryLazyResident<V>)], key: &K, digest: [u8; 32],
     allocations: &mut crate::kernel::allocation::AllocationLedger,
@@ -1202,7 +1196,7 @@ fn memory_lazy_load_node<K: Ord, V: MemoryLazyNode>(
     Ok(Some(value.clone_owned(allocations, work, budget, cancellation)?))
 }
 
-#[allow(clippy::too_many_arguments, reason = "one content-addressed engine shares the actual accounting and custody")]
+#[allow(clippy::too_many_arguments)]
 fn memory_lazy_put_node<K: Ord, V: MemoryLazyNode>(
     table: &mut Vec<(K, MemoryLazyResident<V>)>,
     entry: &mut Option<(K, MemoryLazyResident<V>)>, digest: [u8; 32],
@@ -1322,7 +1316,7 @@ impl MemoryLazyWorkspaceStore {
             .map_err(|error| error.with_prior_work(work))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the same CAS engine receives its original accounting state")]
+    #[allow(clippy::too_many_arguments)]
     fn cas_engine(
         state: &mut MemoryLazyWorkspaceState,
         workspace_id: WorkspaceId,
@@ -1829,25 +1823,11 @@ enum LazyTreapMeter {
     },
 }
 
-/// The original DATA record stays with its provider's physical custody.
-enum LazyWriteOriginalRecord<A, O> {
-    Standalone((crate::Generation<A, O>, crate::DurableCommit)),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(NativeOwnedCoreState<(crate::Generation<A, O>, crate::DurableCommit)>),
-}
-
-impl<A, O> LazyWriteOriginalRecord<A, O> {
-    fn as_record(&self) -> &(crate::Generation<A, O>, crate::DurableCommit) {
-        match self {
-            Self::Standalone(value) => value,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(value) => value.as_state(),
-        }
-    }
+impl<A, O> LazyReadonlyNode<(crate::Generation<A, O>, crate::DurableCommit)> {
 
     fn into_generation(self) -> crate::Generation<A, O> {
         match self {
-            Self::Standalone((generation, record)) => {
+            Self::Portable((generation, record)) => {
                 drop(record);
                 generation
             }
@@ -1995,7 +1975,7 @@ impl<'a> LazyTreapWork<'a> {
             LazyTreapMeter::Standalone { budget, .. } => {
                 let mut prior = self.spent();
                 prior.peak_allocation_bytes = 0;
-                let mut remaining = remaining_work(prior, *budget)?;
+                let mut remaining = remaining_work(prior, *budget, 0)?;
                 remaining.peak_allocation_bytes = budget.peak_allocation_bytes
                     .checked_sub(self.live_bytes()).ok_or_else(counter_overflow)?;
                 Ok(remaining)
@@ -2816,13 +2796,7 @@ struct ResolvedLazyLookup {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn authored_record_stat(record: FileRecord, metadata: FileMetadata) -> WorkspaceStat {
-    let logical_bytes = match record.payload {
-        FilePayload::InlineRegular(bytes) => Some(crate::foundation::usize_to_u64(bytes.as_bytes().len())),
-        FilePayload::Regular { logical_bytes, .. }
-        | FilePayload::SymbolicLink { target_bytes: logical_bytes, .. }
-        | FilePayload::ReparsePoint { payload_bytes: logical_bytes, .. } => Some(logical_bytes),
-        FilePayload::Directory { .. } | FilePayload::Device { .. } | FilePayload::Empty => None,
-    };
+    let logical_bytes = record_logical_bytes(record);
     WorkspaceStat {
         file_id: record.file_id, kind: record.kind, link_count: record.link_count,
         logical_bytes, metadata: crate::WorkspaceMetadata::from_engine(metadata),
@@ -2975,6 +2949,12 @@ impl<T> LazyReadonlyNode<T> {
 struct PinnedSourceNode {
     source: SourceReference,
     node: SourceNode,
+}
+
+enum FrozenRead {
+    Regular(u64),
+    Range(crate::ByteRange),
+    Link,
 }
 
 enum LazyPromotionMutation<'a> {
@@ -4254,7 +4234,7 @@ where
     }
 
     /// Creates or recovers one original lazy attachment without tree demand.
-    #[allow(clippy::too_many_arguments, reason = "explicit original creation and finite provider bounds")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn attach_with_operation_measured(
         fs: &Fs<A, O>,
         name: impl AsRef<str>,
@@ -4281,7 +4261,7 @@ where
 
     /// Creates the original operation and binds its companion on the same native ledger.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "explicit original creation identity and accounting root")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn attach_with_operation_with_native_work(
         fs: &Fs<A, O>, name: &str, source: Arc<D>, store: S,
         config: VolumeConfig, operation_id: crate::OperationId,
@@ -4697,7 +4677,7 @@ where
         let result = async {
             let state = self.state_measured(budget, cancellation).await?;
             work = state.work;
-            let head = self.workspace.head_measured(remaining_work(work, budget)?, cancellation)
+            let head = self.workspace.head_measured(remaining_work(work, budget, 0)?, cancellation)
                 .await.map_err(measured_workspace_error)?;
             work = account_work(work, head.work, budget)?;
             cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
@@ -5216,7 +5196,7 @@ where
             .store
             .load_lazy_shadow_measured(
                 snapshot.shadows,
-                remaining_work(work, budget)?,
+                remaining_work(work, budget, 0)?,
                 cancellation,
             )
             .await?;
@@ -5230,7 +5210,7 @@ where
             .workspace
             .generation_measured(
                 snapshot.authored_generation,
-                remaining_work(work, budget)?,
+                remaining_work(work, budget, 0)?,
                 cancellation,
             )
             .await.map_err(measured_workspace_error)?;
@@ -5240,7 +5220,7 @@ where
             .fork_measured(
                 destination,
                 ForkOptions::from_generation(generation.value, idempotency_key),
-                remaining_work(work, budget)?,
+                remaining_work(work, budget, 0)?,
                 cancellation,
             )
             .await
@@ -5258,7 +5238,7 @@ where
                 workspace.id(),
                 0,
                 state.clone(),
-                remaining_work(work, budget)?,
+                remaining_work(work, budget, 0)?,
                 cancellation,
             )
             .await?;
@@ -5268,7 +5248,7 @@ where
                 .store
                 .load_lazy_workspace_measured(
                     workspace.id(),
-                    remaining_work(work, budget)?,
+                    remaining_work(work, budget, 0)?,
                     cancellation,
                 )
                 .await?;
@@ -5282,11 +5262,11 @@ where
                 return Err(LazyWorkspaceError::Concurrent);
             }
         }
-        let control_meter = LazyTreapWork::new(remaining_work(work, budget)?, cancellation);
+        let control_meter = LazyTreapWork::new(remaining_work(work, budget, 0)?, cancellation);
         let selected_publication = new_selected_import_control(&control_meter)?;
         work = account_work(work, control_meter.spent(), budget)?;
         let control_bytes = control_meter.live_bytes();
-        let mut remaining = remaining_work(work, budget)?;
+        let mut remaining = remaining_work(work, budget, 0)?;
         remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
             .checked_sub(control_bytes).ok_or_else(counter_overflow)?;
         let exactified = Self {
@@ -5847,7 +5827,7 @@ where
         }
         let phase = match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
-                let receipt = self.state_measured(remaining_work(*work, *budget)?, cancellation).await?;
+                let receipt = self.state_measured(remaining_work(*work, *budget, 0)?, cancellation).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 LazyReadonlyNode::Portable(receipt.value)
             }
@@ -5862,7 +5842,7 @@ where
         let (source, node) = match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let receipt = self.observe_measured(
-                    path, state.clone(), remaining_work(*work, *budget)?, cancellation,
+                    path, state.clone(), remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 receipt.value
@@ -5876,7 +5856,7 @@ where
         let authored = match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let receipt = self.authored_alias_measured(
-                    &node, remaining_work(*work, *budget)?, cancellation,
+                    &node, remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 receipt.value
@@ -5997,7 +5977,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "retains the genuine listed node in the unchanged native inspection basis")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn inspect_listed_with_native_work(
         &self, state: &LazyWorkspaceState, path: &str, node: SourceNode, unobserved: bool,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -6152,7 +6132,7 @@ where
                 LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                     let cancellation = *cancellation;
                     let receipt = self.source_request_measured(
-                        path, remaining_work(*work, *budget)?, cancellation, |path, budget| async move {
+                        path, remaining_work(*work, *budget, 0)?, cancellation, |path, budget| async move {
                             if let Some(source_used) = basis.source_used {
                                 source_used.store(true, std::sync::atomic::Ordering::Release);
                             }
@@ -6239,7 +6219,7 @@ where
         } else {
             loaded_state = match accounting {
                 LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
-                    let receipt = self.state_measured(remaining_work(*work, *budget)?, cancellation).await?;
+                    let receipt = self.state_measured(remaining_work(*work, *budget, 0)?, cancellation).await?;
                     *work = account_work(*work, receipt.work, *budget)?;
                     receipt.value
                 }
@@ -6265,16 +6245,16 @@ where
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let authored = if let Some(generation) = basis.authored_generation {
                     self.authored_stat_at_measured(
-                        generation, path, remaining_work(*work, *budget)?, cancellation,
+                        generation, path, remaining_work(*work, *budget, 0)?, cancellation,
                     ).await?
                 } else {
                     self.workspace.stat_optional_measured(
-                        path, remaining_work(*work, *budget)?, cancellation,
+                        path, remaining_work(*work, *budget, 0)?, cancellation,
                     ).await.map_err(measured_workspace_error)?
                 };
                 *work = account_work(*work, authored.work, *budget)?;
                 let Some(stat) = authored.value else { return Ok(None); };
-                let paths = LazyTreapWork::new(remaining_work(*work, *budget)?, cancellation);
+                let paths = LazyTreapWork::new(remaining_work(*work, *budget, 0)?, cancellation);
                 let path = paths.canonical_path_owned(path, self.workspace.limits())
                     .map_err(|error| error.with_prior_work(paths.spent()))?;
                 *work = account_work(*work, paths.spent(), *budget)?;
@@ -6300,7 +6280,7 @@ where
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let receipt = self.authored_alias_at_measured(
                     node, Some(state), basis.authored_generation,
-                    remaining_work(*work, *budget)?, cancellation,
+                    remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 Ok(receipt.value)
@@ -6480,7 +6460,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<FileId, LazyWorkspaceError> {
         let receipt = self.source_file_id_of_measured(
-            &node.file_identity, remaining_work(*work, budget)?, cancellation,
+            &node.file_identity, remaining_work(*work, budget, 0)?, cancellation,
         ).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))?;
         *work = account_work(*work, receipt.work, budget)?;
         Ok(receipt.value)
@@ -6622,7 +6602,7 @@ where
             LazyLookup::Authored { stat, .. } if stat.kind == FileKind::Directory => {
                 let phase = match accounting {
                     LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
-                        let state = self.state_measured(remaining_work(*work, *budget)?, cancellation).await?;
+                        let state = self.state_measured(remaining_work(*work, *budget, 0)?, cancellation).await?;
                         *work = account_work(*work, state.work, *budget)?;
                         LazyReadonlyNode::Portable(state.value)
                     }
@@ -6684,19 +6664,19 @@ where
             let state = if let Some(state) = pinned_state {
                 state
             } else {
-                let loaded = self.state_measured(remaining_work(work, budget)?, cancellation).await?;
+                let loaded = self.state_measured(remaining_work(work, budget, 0)?, cancellation).await?;
                 work = account_work(work, loaded.work, budget)?;
                 loaded_state = loaded.value;
                 &loaded_state
             };
             let generation = if let Some(id) = authored_generation {
-                let opened = self.workspace.generation_measured(id, remaining_work(work, budget)?, cancellation)
+                let opened = self.workspace.generation_measured(id, remaining_work(work, budget, 0)?, cancellation)
                     .await.map_err(measured_workspace_error)?;
                 work = account_work(work, opened.work, budget)?;
                 Some(opened.value)
             } else {
                 let head = self.workspace.head_with_file_record_measured(
-                    file_id, remaining_work(work, budget)?, cancellation,
+                    file_id, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, head.work, budget)?;
                 let (generation, held) = head.value;
@@ -6704,7 +6684,7 @@ where
             };
             let path = if let Some(generation) = generation {
                 let paths = generation.paths_for_file_id_measured(
-                    file_id, u32::MAX, remaining_work(work, budget)?, cancellation,
+                    file_id, u32::MAX, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, paths.work, budget)?;
                 paths.value.into_iter().next()
@@ -6713,9 +6693,9 @@ where
             };
             if let Some(path) = path {
                 let stat = if let Some(id) = authored_generation {
-                    self.authored_stat_at_measured(id, &path, remaining_work(work, budget)?, cancellation).await?
+                    self.authored_stat_at_measured(id, &path, remaining_work(work, budget, 0)?, cancellation).await?
                 } else {
-                    self.workspace.stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
+                    self.workspace.stat_optional_measured(&path, remaining_work(work, budget, 0)?, cancellation)
                         .await.map_err(measured_workspace_error)?
                 };
                 work = account_work(work, stat.work, budget)?;
@@ -6732,7 +6712,7 @@ where
                 .shadow_record_measured(
                     state.shadows,
                     file_id,
-                    remaining_work(work, budget)?,
+                    remaining_work(work, budget, 0)?,
                     cancellation,
                 )
                 .await?;
@@ -6765,7 +6745,7 @@ where
         let opened = self.workspace.generation_measured(id, budget, cancellation)
             .await.map_err(measured_workspace_error)?;
         let prior = opened.work;
-        match opened.value.stat_measured(path, remaining_work(prior, budget)?, cancellation).await {
+        match opened.value.stat_measured(path, remaining_work(prior, budget, 0)?, cancellation).await {
             Ok(receipt) => Ok(OperationReceipt {
                 value: Some(receipt.value), work: account_work(prior, receipt.work, budget)?,
             }),
@@ -7029,7 +7009,7 @@ where
                     retain_pinned_observation: true,
                     source_used: Some(&source_used),
                     ..InspectBasis::default()
-                }, remaining_work(work, budget)?, cancellation).await?;
+                }, remaining_work(work, budget, 0)?, cancellation).await?;
                 work = account_work(work, resolved.work, budget)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
                 if source_used.load(std::sync::atomic::Ordering::Acquire)
@@ -7165,55 +7145,11 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
-        in_heap_measured(move |budget| async move {
-            let mut work = WorkCounters::UNCHARGED;
-            let result = async {
-                let source_used = std::sync::atomic::AtomicBool::new(false);
-                let state = self.readonly_snapshot_state(snapshot, false, &mut work, budget, cancellation)?;
-                let lookup = self.inspect_with(path, InspectBasis {
-                    state: Some(&state),
-                    authored_generation: Some(snapshot.authored_generation),
-                    retain_pinned_observation: true,
-                    source_used: Some(&source_used),
-                    ..InspectBasis::default()
-                }, remaining_work(work, budget)?, cancellation).await?;
-                work = account_work(work, lookup.work, budget)?;
-                let length = match &lookup.value.lookup {
-                    LazyLookup::Authored { stat, .. } if stat.kind == FileKind::Regular => stat.logical_bytes,
-                    LazyLookup::Shadow { record, .. } if record.kind == FileKind::Regular => record_logical_bytes(*record),
-                    LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => node.logical_bytes,
-                    _ => return Err(LazyWorkspaceError::NotRegularFile),
-                }.ok_or(LazyWorkspaceError::NotRegularFile)?;
-                if length > maximum_bytes { return Err(LazyWorkspaceError::TooLarge); }
-                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-                allocations.claim_bytes(lookup.value.lookup.logical_owned_bytes(), 0, &mut work, budget)
-                    .map_err(lazy_allocation_error)?;
-                let source_required = source_used.load(std::sync::atomic::Ordering::Acquire)
-                    || matches!(&lookup.value.lookup, LazyLookup::Source(_));
-                if source_required && self.source.reference() != snapshot.source {
-                    return Err(LazyWorkspaceError::StaleSource);
-                }
-                let read = self.read_resolved_range_measured(
-                    &lookup.value.lookup, lookup.value.source, Some(snapshot.authored_generation), path, 0, length,
-                    directory_remaining_work(work, &allocations, budget)?, cancellation,
-                ).await.map_err(|failure| nested_lazy_failure(
-                    lazy_operation_failure(failure, std::convert::identity), allocations.live_bytes(),
-                ))?;
-                work = account_nested_with_live_memory(work, read.work, allocations.live_bytes(), budget)?;
-                cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-                if source_required && self.source.reference() != snapshot.source {
-                    return Err(LazyWorkspaceError::StaleSource);
-                }
-                Ok(read.value.bytes)
-            }.await;
-            result.map(|value| OperationReceipt { value, work })
-                .map_err(|error: LazyWorkspaceError| error.into_measured_failure()
-                    .map_with_prior_work(work, std::convert::identity))
-        }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
+        self.read_snapshot(snapshot, path, FrozenRead::Regular(maximum_bytes), budget, cancellation).await
     }
 
     /// Reads one bounded range from the original frozen view without hydrating it.
-    #[allow(clippy::too_many_arguments, reason = "bounded frozen range request")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn read_range_at_snapshot_measured(
         &self,
         snapshot: LazySnapshotRef,
@@ -7223,44 +7159,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
-        in_heap_measured(move |budget| async move {
-            let mut work = WorkCounters::UNCHARGED;
-            let result = async {
-                let source_used = std::sync::atomic::AtomicBool::new(false);
-                let state = self.readonly_snapshot_state(snapshot, false, &mut work, budget, cancellation)?;
-                let lookup = self.inspect_with(path, InspectBasis {
-                    state: Some(&state),
-                    authored_generation: Some(snapshot.authored_generation),
-                    retain_pinned_observation: true,
-                    source_used: Some(&source_used),
-                    ..InspectBasis::default()
-                }, remaining_work(work, budget)?, cancellation).await?;
-                work = account_work(work, lookup.work, budget)?;
-                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-                allocations.claim_bytes(lookup.value.lookup.logical_owned_bytes(), 0, &mut work, budget)
-                    .map_err(lazy_allocation_error)?;
-                let source_required = source_used.load(std::sync::atomic::Ordering::Acquire)
-                    || matches!(&lookup.value.lookup, LazyLookup::Source(_));
-                if source_required && self.source.reference() != snapshot.source {
-                    return Err(LazyWorkspaceError::StaleSource);
-                }
-                let read = self.read_resolved_range_measured(
-                    &lookup.value.lookup, lookup.value.source, Some(snapshot.authored_generation), path, offset, length,
-                    directory_remaining_work(work, &allocations, budget)?, cancellation,
-                ).await.map_err(|failure| nested_lazy_failure(
-                    lazy_operation_failure(failure, std::convert::identity), allocations.live_bytes(),
-                ))?;
-                work = account_nested_with_live_memory(work, read.work, allocations.live_bytes(), budget)?;
-                cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-                if source_required && self.source.reference() != snapshot.source {
-                    return Err(LazyWorkspaceError::StaleSource);
-                }
-                Ok(read.value.bytes)
-            }.await;
-            result.map(|value| OperationReceipt { value, work })
-                .map_err(|error: LazyWorkspaceError| error.into_measured_failure()
-                    .map_with_prior_work(work, std::convert::identity))
-        }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
+        self.read_snapshot(snapshot, path, FrozenRead::Range(crate::ByteRange { offset, length }), budget, cancellation).await
     }
 
     /// Reads an exact frozen symbolic-link target without following or hydrating it.
@@ -7271,6 +7170,13 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
+        self.read_snapshot(snapshot, path, FrozenRead::Link, budget, cancellation).await
+    }
+
+    async fn read_snapshot(
+        &self, snapshot: LazySnapshotRef, path: &str, request: FrozenRead,
+        budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::UNCHARGED;
             let result = async {
@@ -7282,8 +7188,21 @@ where
                     retain_pinned_observation: true,
                     source_used: Some(&source_used),
                     ..InspectBasis::default()
-                }, remaining_work(work, budget)?, cancellation).await?;
+                }, remaining_work(work, budget, 0)?, cancellation).await?;
                 work = account_work(work, lookup.work, budget)?;
+                let request = match request {
+                    FrozenRead::Regular(maximum_bytes) => {
+                        let length = match &lookup.value.lookup {
+                            LazyLookup::Authored { stat, .. } if stat.kind == FileKind::Regular => stat.logical_bytes,
+                            LazyLookup::Shadow { record, .. } if record.kind == FileKind::Regular => record_logical_bytes(*record),
+                            LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => node.logical_bytes,
+                            _ => return Err(LazyWorkspaceError::NotRegularFile),
+                        }.ok_or(LazyWorkspaceError::NotRegularFile)?;
+                        if length > maximum_bytes { return Err(LazyWorkspaceError::TooLarge); }
+                        FrozenRead::Range(crate::ByteRange { offset: 0, length })
+                    }
+                    request => request,
+                };
                 let mut allocations = crate::kernel::allocation::AllocationLedger::default();
                 allocations.claim_bytes(lookup.value.lookup.logical_owned_bytes(), 0, &mut work, budget)
                     .map_err(lazy_allocation_error)?;
@@ -7292,18 +7211,26 @@ where
                 if source_required && self.source.reference() != snapshot.source {
                     return Err(LazyWorkspaceError::StaleSource);
                 }
-                let target = self.read_resolved_link_measured(
-                    &lookup.value.lookup, lookup.value.source, Some(snapshot.authored_generation), path,
-                    directory_remaining_work(work, &allocations, budget)?, cancellation,
-                ).await.map_err(|failure| nested_lazy_failure(
+                let read = match request {
+                    FrozenRead::Range(range) => self.read_resolved_range_measured(
+                        &lookup.value.lookup, lookup.value.source, Some(snapshot.authored_generation),
+                        path, range.offset, range.length,
+                        remaining_work(work, budget, allocations.live_bytes())?, cancellation,
+                    ).await,
+                    FrozenRead::Link => self.read_resolved_link_measured(
+                        &lookup.value.lookup, lookup.value.source, Some(snapshot.authored_generation), path,
+                        remaining_work(work, budget, allocations.live_bytes())?, cancellation,
+                    ).await,
+                    FrozenRead::Regular(_) => unreachable!("complete reads resolve their range before admission"),
+                }.map_err(|failure| nested_lazy_failure(
                     lazy_operation_failure(failure, std::convert::identity), allocations.live_bytes(),
                 ))?;
-                work = account_nested_with_live_memory(work, target.work, allocations.live_bytes(), budget)?;
+                work = account_nested_with_live_memory(work, read.work, allocations.live_bytes(), budget)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
                 if source_required && self.source.reference() != snapshot.source {
                     return Err(LazyWorkspaceError::StaleSource);
                 }
-                Ok(target.value.bytes)
+                Ok(read.value.bytes)
             }.await;
             result.map(|value| OperationReceipt { value, work })
                 .map_err(|error: LazyWorkspaceError| error.into_measured_failure()
@@ -7391,7 +7318,7 @@ where
                 .map_err(lazy_allocation_error)?;
             let receipt = self.read_resolved_range_measured(
                 &lookup.lookup, lookup.source, None, path, offset, length,
-                directory_remaining_work(work, &allocations, budget)?, cancellation,
+                remaining_work(work, budget, allocations.live_bytes())?, cancellation,
             ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity));
             let output = accept_directory_work(receipt, &mut work, &allocations)?;
             work.verify(budget)?;
@@ -7402,7 +7329,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "one resolved original frozen range")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn read_resolved_range_with_work(
         &self, lookup: &LazyLookup, source: Option<SourceReference>,
         reader: Option<&crate::PinnedReader<A, O>>,
@@ -7485,7 +7412,7 @@ where
         ).await
     }
 
-    #[allow(clippy::too_many_arguments, reason = "shares the canonical range engine with frozen readonly reads")]
+    #[allow(clippy::too_many_arguments)]
     async fn read_resolved_range_measured(
         &self,
         lookup: &LazyLookup,
@@ -7510,7 +7437,7 @@ where
                         )?;
                         let receipt = generation.read_range_owned_measured(
                             authored_path, offset, length,
-                            directory_remaining_work(work, &allocations, budget)?, cancellation,
+                            remaining_work(work, budget, allocations.live_bytes())?, cancellation,
                         ).await.map_err(measured_workspace_error);
                         accept_directory_work(receipt, &mut work, &allocations)?
                     } else {
@@ -7532,7 +7459,7 @@ where
                         .map_err(lazy_allocation_error)?;
                     let read = async {
                         let read = file.read_range(crate::ByteRange { offset, length },
-                            directory_remaining_work(work, &allocations, budget)?, cancellation,
+                            remaining_work(work, budget, allocations.live_bytes())?, cancellation,
                         ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into())));
                         accept_directory_work(read, &mut work, &allocations)
                     }.await;
@@ -7603,7 +7530,7 @@ where
                 .map_err(lazy_allocation_error)?;
             let receipt = self.read_resolved_link_measured(
                 &lookup.lookup, lookup.source, None, path,
-                directory_remaining_work(work, &allocations, budget)?, cancellation,
+                remaining_work(work, budget, allocations.live_bytes())?, cancellation,
             ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity));
             let output = accept_directory_work(receipt, &mut work, &allocations)?;
             work.verify(budget)?;
@@ -7614,7 +7541,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "one resolved original frozen opaque link")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn read_resolved_link_with_work(
         &self, lookup: &LazyLookup, source: Option<SourceReference>,
         reader: Option<&crate::PinnedReader<A, O>>,
@@ -7679,7 +7606,7 @@ where
                             &mut work, &allocations,
                         )?;
                         let receipt = generation.read_symbolic_link_owned_measured(
-                            authored_path, directory_remaining_work(work, &allocations, budget)?, cancellation,
+                            authored_path, remaining_work(work, budget, allocations.live_bytes())?, cancellation,
                         ).await.map_err(measured_workspace_error);
                         accept_directory_work(receipt, &mut work, &allocations)?
                     } else {
@@ -7700,7 +7627,7 @@ where
                         .map_err(lazy_allocation_error)?;
                     let target = async {
                         let receipt = file.read_symbolic_link_owned(
-                            directory_remaining_work(work, &allocations, budget)?, cancellation,
+                            remaining_work(work, budget, allocations.live_bytes())?, cancellation,
                         ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into())));
                         accept_directory_work(receipt, &mut work, &allocations)
                     }.await;
@@ -8183,7 +8110,7 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 failure_storage: None,
             };
-            let mut remaining = remaining_work(work, budget)?;
+            let mut remaining = remaining_work(work, budget, 0)?;
             remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                 .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
             let staged = transaction.stage_content_measured(
@@ -8291,7 +8218,7 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one batch owns portable accounting or original native custody")]
+    #[allow(clippy::too_many_arguments)]
     async fn flush_exactify_source_batch_with_accounting(
         &self,
         transaction: &mut crate::Transaction<A, O>,
@@ -8328,7 +8255,7 @@ where
             .ok_or_else(counter_overflow)?;
         *pending_bytes = 0;
         let applied = transaction.apply_authored_bulk_measured(
-            operations, remaining_exactify_work(work, budget, *retained_bytes)?, cancellation,
+            operations, remaining_work(work, budget, *retained_bytes)?, cancellation,
         ).await.map_err(|mut failure| {
             match failure.work.peak_allocation_bytes.checked_add(*retained_bytes) {
                 Some(peak) => {
@@ -8395,10 +8322,7 @@ where
             .map_err(|error: LazyWorkspaceError| error.with_prior_work(spent))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "carries the resolved lookup, byte bound, idempotency key, permit, work, budget, and cancellation of one promotion"
-    )]
+    #[allow(clippy::too_many_arguments)]
     async fn promote_resolved_with_permit_measured(
         &self,
         requested: &str,
@@ -9012,7 +8936,7 @@ where
     }
 
     #[cfg(feature = "native-mount")]
-    #[allow(clippy::too_many_arguments, reason = "forwards the original mounted directory request and meter")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn list_directory_in_checkout_measured(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -9093,7 +9017,7 @@ where
         projection.accept(result).map(|lookup| lookup.record)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the canonical authored page selector retains the original pinned reader")]
+    #[allow(clippy::too_many_arguments)]
     async fn directory_authored_entries(
         &self, path: &str, directory: &NamespacePath, after: Option<&LogicalName>,
         maximum_entries: u32, mounted: Option<&mut crate::Checkout<A, O>>,
@@ -9157,7 +9081,7 @@ where
     }
 
     /// A mounted replacement must not inherit entries from an unrelated source directory at the same path.
-    #[allow(clippy::too_many_arguments, reason = "shares the directory projection's actual live allocation with every nested lookup")]
+    #[allow(clippy::too_many_arguments)]
     async fn mounted_directory_replaces_source(
         &self,
         path: &str,
@@ -9219,10 +9143,7 @@ where
         result
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the page request plus the optional mounted checkout and mask to list_directory_at"
-    )]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn list_directory_measured(
         &self,
         path: &str,
@@ -9251,23 +9172,8 @@ where
         .await
     }
 
-    /// Lists the frozen readonly view against the caller's unchanged original work.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "the caller supplies the original frozen page and work context")]
-    pub async fn list_directory_at_snapshot_with_work(
-        &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(LazyDirectoryPage, crate::NativeAllocation),
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)>
-    {
-        self.list_directory_at_snapshot_with_source_use_with_work(
-            snapshot, path, cursor, maximum_entries, original, cancellation, None,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "shares the frozen producer's actual native source-use marker")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn list_directory_at_snapshot_observed_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32, original: &crate::NativeMaterializationWork,
@@ -9281,7 +9187,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "one canonical frozen list producer with optional source participation")]
+    #[allow(clippy::too_many_arguments)]
     async fn list_directory_at_snapshot_with_source_use_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32, original: &crate::NativeMaterializationWork,
@@ -9343,7 +9249,7 @@ where
     }
 
     /// Lists one bounded page from the exact frozen authored, overlay, and source view.
-    #[allow(clippy::too_many_arguments, reason = "bounded frozen directory request")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_directory_at_snapshot_measured(
         &self,
         snapshot: LazySnapshotRef,
@@ -9358,7 +9264,7 @@ where
         ).await
     }
 
-    #[allow(clippy::too_many_arguments, reason = "shares the frozen producer with actual source-participation observation")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn list_directory_at_snapshot_observed_measured(
         &self,
         snapshot: LazySnapshotRef,
@@ -9374,7 +9280,7 @@ where
         ).await
     }
 
-    #[allow(clippy::too_many_arguments, reason = "canonical frozen page producer with optional actual source-use observation")]
+    #[allow(clippy::too_many_arguments)]
     async fn list_directory_at_snapshot_with_source_use_measured(
         &self,
         snapshot: LazySnapshotRef,
@@ -9392,12 +9298,12 @@ where
                     matches!(&cursor.phase, LazyDirectoryPhase::Source(_)));
                 let state = self.readonly_snapshot_state(snapshot, source_required, &mut work, budget, cancellation)?;
                 let generation = self.workspace.generation_measured(
-                    snapshot.authored_generation, remaining_work(work, budget)?, cancellation,
+                    snapshot.authored_generation, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, generation.work, budget)?;
                 let page = self.list_directory_at(
                     &state, WorkCounters::UNCHARGED, path, cursor, maximum_entries,
-                    remaining_work(work, budget)?, cancellation, None, None, Some(&generation.value), Some(snapshot.id), source_used,
+                    remaining_work(work, budget, 0)?, cancellation, None, None, Some(&generation.value), Some(snapshot.id), source_used,
                 ).await?;
                 work = account_work(work, page.work, budget)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
@@ -9412,7 +9318,7 @@ where
         }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
     }
 
-    #[allow(clippy::too_many_arguments, reason = "portable callers retain the original measured directory contract")]
+    #[allow(clippy::too_many_arguments)]
     async fn list_directory_at(
         &self, state: &LazyWorkspaceState, work: WorkCounters, path: &str,
         cursor: Option<LazyDirectoryCursor>, maximum_entries: u32, budget: WorkBudget,
@@ -9437,7 +9343,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "the original state owner supplies its unchanged native directory context")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn list_directory_in_state_with_native_work(
         &self, state: &LazyWorkspaceState, path: &str, cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32, original: &crate::NativeMaterializationWork,
@@ -9456,8 +9362,7 @@ where
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments,
-        reason = "source and authored phases share one actual projection ledger and publication boundary")]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
         async fn list_directory_with_projection(
             &self, state: &LazyWorkspaceState, projection: DirectoryProjectionWork<'_>, path: &str,
             cursor: Option<LazyDirectoryCursor>, maximum_entries: u32,
@@ -9891,7 +9796,7 @@ where
         let exact = self
             .exactify_selected_with_permit(
                 &root,
-                remaining_work(selected.work, budget)
+                remaining_work(selected.work, budget, 0)
                     .map_err(|error| error.with_prior_work(selected.work))?,
                 cancellation,
                 permit,
@@ -9958,11 +9863,7 @@ where
         result
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "exactifies the selected subtree as one ordered traversal that batches mutations under one permit"
-    )]
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     async fn exactify_selected_with_permit(
         &self,
         root: &str,
@@ -10862,102 +10763,14 @@ where
         };
         let mut guard = BorrowedWriteGuard { callback: &mut callback };
         self.write_with_accounting(
-            None, path, bytes.into(), IdempotencyKey::new(),
+            None, std::iter::once(LazyWriteMutation::PutFile { path, bytes: bytes.into() }), IdempotencyKey::new(),
             crate::PublicationPermit::Unrestricted, &work, &cancellation, &mut guard,
         ).await.map(|(commit, _)| commit)
     }
 
-    /// Ordinary guarded form of the frozen writer, with the same postpublish uncertainty result as [`Self::write_at_snapshot_measured_guarded`].
-    #[allow(clippy::too_many_arguments, reason = "explicit frozen publication authority")]
-    pub async fn write_at_snapshot_guarded<E, F, Fut>(
-        &self, basis: LazySnapshotRef, path: &str, bytes: Bytes,
-        key: IdempotencyKey, permit: crate::PublicationPermit,
-        cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
-    where
-        E: From<LazyWorkspaceError> + Send,
-        F: FnMut() -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
-    {
-        let mut guard = |_| {
-            let future = before_mutation();
-            async move {
-                future.await.map(|()| OperationReceipt { value: (), work: WorkCounters::UNCHARGED })
-                    .map_err(crate::OperationFailure::before_work)
-            }
-        };
-        self.write_at_snapshot_measured_guarded(
-            basis, path, bytes, key, permit, WorkBudget::UNBOUNDED, cancellation, &mut guard,
-        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-    }
-
-    /// Writes only from this authentic frozen authored/source/overlay/shadow basis.
-    #[allow(clippy::too_many_arguments, reason = "explicit frozen basis, original operation, permit and owner")]
-    pub async fn write_at_snapshot_measured_guarded<E, F, Fut>(
-        &self, basis: LazySnapshotRef, path: &str, bytes: Bytes,
-        key: IdempotencyKey, permit: crate::PublicationPermit,
-        budget: WorkBudget, cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> crate::MeasuredResult<OperationReceipt<(
-        TransactionCommit<A, O>, Result<LazySnapshotRef, E>,
-    )>, E>
-    where
-        E: From<LazyWorkspaceError> + Send,
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + Send,
-    {
-        let work = LazyTreapWork::new(budget, cancellation);
-        let mut callback = |allowance| {
-            let future = before_mutation(allowance);
-            async move { future.await }
-        };
-        let mut guard = BorrowedWriteGuard { callback: &mut callback };
-        let result = self.write_with_accounting(
-            Some(basis), path, bytes.into(), key, permit, &work, cancellation, &mut guard,
-        ).await;
-        let spent = work.spent();
-        result.map(|value| OperationReceipt { value, work: spent })
-            .map_err(|error| crate::OperationFailure::new(error, spent))
-    }
-
-    /// Original-native form of the same writer.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "explicit original frozen publication authority")]
-    pub async fn write_at_snapshot_with_native_work_guarded<E, F, Fut>(
-        self: &Arc<Self>, basis: LazySnapshotRef, path: &str, bytes: acyclic_stream::OwnedBytes,
-        key: IdempotencyKey, permit: crate::PublicationPermit,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
-    where
-        E: From<LazyWorkspaceError> + Send + 'static,
-        F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        A: 'static, O: 'static, S: 'static,
-    {
-        original.admit(WorkCounters::UNCHARGED).map_err(LazyWorkspaceError::from)?;
-        if !bytes.matches_meter(&original.runtime_meter_owner()) {
-            return Err(E::from(LazyWorkspaceError::NativeLedgerMismatch));
-        }
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        original.admit(WorkCounters {
-            bytes_copied: std::mem::size_of::<F>() as u64
-                + std::mem::size_of::<Arc<Self>>() as u64
-                + std::mem::size_of::<crate::NativeMaterializationWork>() as u64
-                + std::mem::size_of::<CancellationToken>() as u64,
-            ..WorkCounters::UNCHARGED
-        }).map_err(LazyWorkspaceError::from)?;
-        let mut guard = OwnedNativeWriteGuard {
-            lazy: Arc::clone(self), callback: before_mutation.clone(),
-            original: original.clone(), cancellation: cancellation.clone(),
-        };
-        self.write_with_accounting(
-            Some(basis), path, bytes, key, permit, &work, cancellation, &mut guard,
-        ).await
-    }
-
     /// Publishes every directory, data file, descriptor and upload receipt in one frozen candidate and one actual DATA CAS.
-    #[allow(clippy::too_many_arguments, reason = "explicit whole frozen upload publication authority")]
-    pub async fn write_batch_at_snapshot_guarded<'path, E, F, Fut, I>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_at_snapshot_guarded<'path, E, F, Fut, I>(
         &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         permit: crate::PublicationPermit, cancellation: &CancellationToken, before_mutation: &mut F,
     ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
@@ -10975,14 +10788,14 @@ where
                     .map_err(crate::OperationFailure::before_work)
             }
         };
-        self.write_batch_at_snapshot_measured_guarded(
+        self.write_at_snapshot_measured_guarded(
             basis, mutations, key, permit, WorkBudget::UNBOUNDED, cancellation, &mut guard,
         ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
     /// The same whole candidate with ordinary measured owner callbacks.
-    #[allow(clippy::too_many_arguments, reason = "explicit whole frozen upload bounds and owner")]
-    pub async fn write_batch_at_snapshot_measured_guarded<'path, E, F, Fut, I>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_at_snapshot_measured_guarded<'path, E, F, Fut, I>(
         &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         permit: crate::PublicationPermit, budget: WorkBudget,
         cancellation: &CancellationToken, before_mutation: &mut F,
@@ -10997,12 +10810,8 @@ where
         I::IntoIter: Send,
     {
         let work = LazyTreapWork::new(budget, cancellation);
-        let mut callback = |allowance| {
-            let future = before_mutation(allowance);
-            async move { future.await }
-        };
-        let mut guard = BorrowedWriteGuard { callback: &mut callback };
-        let result = self.write_batch_with_accounting(
+        let mut guard = BorrowedWriteGuard { callback: before_mutation };
+        let result = self.write_with_accounting(
             Some(basis), mutations.into_iter(),
             key, permit, &work, cancellation, &mut guard,
         ).await;
@@ -11013,8 +10822,8 @@ where
 
     /// Original-native whole-candidate publication.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "explicit original whole frozen upload authority")]
-    pub async fn write_batch_at_snapshot_with_native_work_guarded<'path, E, F, Fut, I>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_at_snapshot_with_native_work_guarded<'path, E, F, Fut, I>(
         self: &Arc<Self>, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         permit: crate::PublicationPermit, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken, before_mutation: &mut F,
@@ -11039,14 +10848,14 @@ where
             lazy: Arc::clone(self), callback: before_mutation.clone(),
             original: original.clone(), cancellation: cancellation.clone(),
         };
-        self.write_batch_with_accounting(
+        self.write_with_accounting(
             Some(basis), mutations.into_iter(),
             key, permit, &work, cancellation, &mut guard,
         ).await
     }
 
     /// Resolves only an authentic original write from its immutable DATA publication evidence, even after the companion's latest hint changes.
-    #[allow(clippy::too_many_arguments, reason = "explicit original input and current owner")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn original_write_snapshot_guarded<'path, E, F, Fut, I>(
         &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         cancellation: &CancellationToken, before_mutation: &mut F,
@@ -11071,7 +10880,7 @@ where
     }
 
     /// The same original lookup with exact bounded work, including hash-only full-input verification and any genuine pending companion finalization.
-    #[allow(clippy::too_many_arguments, reason = "explicit original input, bounds and owner")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn original_write_snapshot_measured_guarded<'path, E, F, Fut, I>(
         &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         budget: WorkBudget, cancellation: &CancellationToken, before_mutation: &mut F,
@@ -11086,11 +10895,7 @@ where
         I::IntoIter: Send,
     {
         let work = LazyTreapWork::new(budget, cancellation);
-        let mut callback = |allowance| {
-            let future = before_mutation(allowance);
-            async move { future.await }
-        };
-        let mut guard = BorrowedWriteGuard { callback: &mut callback };
+        let mut guard = BorrowedWriteGuard { callback: before_mutation };
         let result = self.original_write_snapshot_with_accounting(
             basis, mutations.into_iter(), key, &work, cancellation, &mut guard,
         ).await;
@@ -11101,7 +10906,7 @@ where
 
     /// Original-ledger lookup of the same immutable write proof.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "explicit original input, ledger and current owner")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn original_write_snapshot_with_native_work_guarded<'path, E, F, Fut, I>(
         self: &Arc<Self>, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
         original: &crate::NativeMaterializationWork,
@@ -11149,7 +10954,7 @@ where
     async fn write_original_record_with_accounting<E, F>(
         &self, key: IdempotencyKey, work: &LazyTreapWork<'_>,
         cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> Result<Option<LazyWriteOriginalRecord<A, O>>, E>
+    ) -> Result<Option<LazyReadonlyNode<(crate::Generation<A, O>, crate::DurableCommit)>>, E>
     where
         E: From<LazyWorkspaceError> + Send,
         F: LazyWriteGuard<A, O, D, S, Error = E>,
@@ -11161,14 +10966,14 @@ where
                     key, work.remaining()?, cancellation,
                 ).await.map_err(|failure| failure.map_error(|error|
                     E::from(LazyWorkspaceError::WorkspaceCause(error)))),
-            ).map(|value| value.map(LazyWriteOriginalRecord::Standalone)),
+            ).map(|value| value.map(LazyReadonlyNode::Portable)),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let (value, allocation) = self.workspace.operation_generation_record_with_native_work(
                     key.operation_id(), original, cancellation,
                 ).await.map_err(|error| E::from(native_workspace_error_pair(error)))?;
                 Ok(match value {
-                    Some(value) => Some(LazyWriteOriginalRecord::Native(
+                    Some(value) => Some(LazyReadonlyNode::Native(
                         NativeOwnedCoreState::from_parts(value, allocation),
                     )),
                     None => { drop(allocation); None }
@@ -11198,7 +11003,7 @@ where
 
     async fn write_reconcile_original_with_accounting<'path, E, F, I>(
         &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
-        original: LazyWriteOriginalRecord<A, O>, work: &LazyTreapWork<'_>,
+        original: LazyReadonlyNode<(crate::Generation<A, O>, crate::DurableCommit)>, work: &LazyTreapWork<'_>,
         cancellation: &CancellationToken, before_mutation: &mut F,
     ) -> Result<(crate::Generation<A, O>, Result<LazySnapshotRef, E>), E>
     where
@@ -11289,9 +11094,9 @@ where
     }
 
     fn write_authenticate_original_record_with_accounting(
-        &self, original: &LazyWriteOriginalRecord<A, O>, work: &LazyTreapWork<'_>,
+        &self, original: &LazyReadonlyNode<(crate::Generation<A, O>, crate::DurableCommit)>, work: &LazyTreapWork<'_>,
     ) -> Result<AuthenticatedLazyWrite, LazyWorkspaceError> {
-        let (generation, commit) = original.as_record();
+        let (generation, commit) = original.as_state();
         let operation = commit.operation_id;
         let authenticate = |accounting: &mut crate::kernel::allocation::KernelAccounting<'_>| {
             // The protected Workspace producer already imposed its canonical
@@ -11498,22 +11303,7 @@ where
         Ok(())
     }
 
-    async fn write_with_accounting<E, F>(
-        &self, basis: Option<LazySnapshotRef>, path: &str, bytes: acyclic_stream::OwnedBytes,
-        key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
-        cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
-    where
-        E: From<LazyWorkspaceError> + Send,
-        F: LazyWriteGuard<A, O, D, S, Error = E>,
-    {
-        self.write_batch_with_accounting(
-            basis, std::iter::once(LazyWriteMutation::PutFile { path, bytes }),
-            key, permit, work, cancellation, before_mutation,
-        ).await
-    }
-
-    async fn write_batch_with_accounting<'path, E, F, I>(
+    async fn write_with_accounting<'path, E, F, I>(
         &self, basis: Option<LazySnapshotRef>, mutations: I,
         key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
         cancellation: &CancellationToken, before_mutation: &mut F,
@@ -12188,10 +11978,7 @@ where
             .await
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one removal records the overlay tombstone for every source and authored node kind"
-    )]
+    #[allow(clippy::too_many_lines)]
     async fn remove_recording(
         &self,
         path: &str,
@@ -12381,7 +12168,7 @@ where
             if state.source.identity != live.identity || state.source.epoch > live.epoch {
                 return Err(LazyWorkspaceError::StaleSource);
             }
-            let rebound = self.rebind_source_measured(remaining_work(work, budget)?, cancellation)
+            let rebound = self.rebind_source_measured(remaining_work(work, budget, 0)?, cancellation)
                 .await.map_err(|failure| lazy_operation_failure(failure, |error| error))?;
             work = account_work(work, rebound.work, budget)?;
             state = rebound.value;
@@ -12745,7 +12532,7 @@ where
         match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let receipt = self.store.load_lazy_overlay_measured(
-                    root, remaining_work(*work, *budget)?, cancellation,
+                    root, remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 Ok(receipt.value.map(LazyReadonlyNode::Portable))
@@ -12838,7 +12625,7 @@ where
         match accounting {
             LazyReadonlyAccounting::Portable { work, budget, cancellation } => {
                 let receipt = self.store.load_lazy_shadow_measured(
-                    root, remaining_work(*work, *budget)?, cancellation,
+                    root, remaining_work(*work, *budget, 0)?, cancellation,
                 ).await?;
                 *work = account_work(*work, receipt.work, *budget)?;
                 Ok(receipt.value.map(LazyReadonlyNode::Portable))
@@ -13052,7 +12839,7 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "one exact original source range request")]
+    #[allow(clippy::too_many_arguments)]
     async fn read_source_range_with_work(
         &self, path: &str, source: SourceReference, expected: SourceVersion,
         offset: u64, length: u64, original: &crate::materializer::NativeMaterializationWork,
@@ -13970,18 +13757,21 @@ where
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    pub(crate) async fn selected_committed_snapshot_with_work(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
+    pub(crate) fn selected_committed_snapshot_with_work<'a>(
+        &'a self, operation: crate::OperationId, generation: crate::GenerationId,
         destination: LazySnapshotRef, source: LazySnapshotRef,
         source_config: VolumeConfig, input: crate::Digest,
         original: &crate::native_mount::NativeMountMeterWork,
-        cancellation: &CancellationToken,
-    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
-        self.selected_committed_snapshot_with_accounting(
-            operation, generation, destination, source, source_config, input,
-            &accounting, cancellation,
-        ).await
+        cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<LazySnapshotRef, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
+        let original = original.native_materialization_work();
+        async move {
+            let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
+            self.selected_committed_snapshot_with_accounting(
+                operation, generation, destination, source, source_config, input,
+                &accounting, cancellation,
+            ).await
+        }
     }
 
     async fn selected_committed_snapshot_with_accounting(
@@ -14059,11 +13849,11 @@ where
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn selected_import_generation_with_work<'a>(
         &'a self, operation: crate::OperationId,
-        original: &'a crate::native_mount::NativeMountMeterWork,
+        original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &'a CancellationToken,
-    ) -> impl Future<Output = Result<Option<crate::GenerationId>, LazyWorkspaceError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Option<crate::GenerationId>, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
+        let original = original.native_materialization_work();
         async move {
-            let original = original.native_materialization_work();
             let generation = self.workspace.operation_generation_with_native_work(
                 operation, &original, cancellation,
             ).await.map_err(native_workspace_error_pair)?;
@@ -14075,23 +13865,15 @@ where
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    pub(crate) async fn selected_import_snapshot_for_generation_with_work(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
+    pub(crate) fn selected_import_snapshot_for_generation_with_work<'a>(
+        &'a self, operation: crate::OperationId, generation: crate::GenerationId,
         original: &crate::native_mount::NativeMountMeterWork,
-        cancellation: &CancellationToken,
-    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
-        self.selected_import_snapshot_for_generation_with_accounting(
-            operation, generation, &accounting, cancellation,
-        ).await
-    }
-
-    async fn selected_import_snapshot_for_generation_with_accounting(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let result = async {
-            let phase = self.load_state_with_accounting(accounting, cancellation).await?
+        cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<LazySnapshotRef, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
+        let original = original.native_materialization_work();
+        async move {
+            let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
+            let phase = self.load_state_with_accounting(&accounting, cancellation).await?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let state = phase.as_state();
             let saved = state.completed_selected_import
@@ -14104,8 +13886,7 @@ where
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
             Ok(saved.snapshot)
-        }.await;
-        result
+        }
     }
 
     /// Returns only a proven original selected-import snapshot, never the head.
@@ -14424,7 +14205,7 @@ where
                 &mut allocations, &mut work, budget, cancellation,
             ).map_err(directory_namespace_error)?;
             let live_bytes = allocations.live_bytes();
-            let mut remaining = remaining_work(work, budget)?;
+            let mut remaining = remaining_work(work, budget, 0)?;
             remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                 .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
             let (value, additional) = match request(path, remaining).await {
@@ -15006,7 +14787,7 @@ fn lazy_write_decode_original_with_accounting(
     };
     let overlay = LazyOverlayId::from_bytes(
         decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
-    let shadows = LazyShadowId::from_bytes(
+    let shadows = LazyShadowId(
         decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let input = crate::Digest::from_bytes(
         decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
@@ -15154,7 +14935,7 @@ where
         &mut self, budget: WorkBudget,
     ) -> impl Future<Output = LazyWriteGuardResult<Self::Error>> + Send;
 
-    #[allow(clippy::too_many_arguments, reason = "same original write seal and accounting")]
+    #[allow(clippy::too_many_arguments)]
     fn commit(
         &mut self, lazy: &LazyWorkspace<A, O, D, S>, transaction: crate::Transaction<A, O>,
         context: Option<crate::Digest>, operation_evidence: Option<acyclic_stream::OwnedBytes>,
@@ -15731,7 +15512,7 @@ impl ExactifyCollectorWork<'_> {
     fn remaining(&self) -> Result<WorkBudget, LazyWorkspaceError> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
-                remaining_exactify_work(**work, *budget, **retained_bytes),
+                remaining_work(**work, *budget, **retained_bytes),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => Err(LazyWorkspaceError::NativeLedgerMismatch),
         }
@@ -16318,7 +16099,7 @@ impl<'a> DirectoryProjectionWork<'a> {
     fn remaining(&mut self) -> Result<WorkBudget, LazyWorkspaceError> {
         match self {
             Self::Portable { work, allocations, budget, .. } =>
-                directory_remaining_work(*work, allocations, *budget),
+                remaining_work(*work, *budget, allocations.live_bytes()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => original.remaining().map_err(Into::into),
         }
@@ -16433,7 +16214,7 @@ impl<'a> DirectoryProjectionWork<'a> {
             Self::Portable { work, budget, .. } => {
                 work.admit(&cleanup, budget)?;
                 let prior = *budget;
-                *budget = remaining_work(cleanup, prior)?;
+                *budget = remaining_work(cleanup, prior, 0)?;
                 Ok(DirectoryPublicationReservation::Portable(prior))
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -16573,17 +16354,6 @@ fn accept_directory_projection_work<T>(
     result: Result<OperationReceipt<T>, LazyWorkspaceError>, projection: &mut DirectoryProjectionWork<'_>,
 ) -> Result<T, LazyWorkspaceError> {
     projection.accept(result)
-}
-
-fn directory_remaining_work(
-    work: WorkCounters,
-    allocations: &crate::kernel::allocation::AllocationLedger,
-    budget: WorkBudget,
-) -> Result<WorkBudget, LazyWorkspaceError> {
-    let mut remaining = remaining_work(work, budget)?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
-        .checked_sub(allocations.live_bytes()).ok_or_else(counter_overflow)?;
-    Ok(remaining)
 }
 
 fn accept_directory_work<T>(
@@ -16784,17 +16554,6 @@ fn exactify_child_path_in(
     Ok(result)
 }
 
-fn remaining_exactify_work(
-    work: WorkCounters,
-    budget: WorkBudget,
-    live_bytes: u64,
-) -> Result<WorkBudget, LazyWorkspaceError> {
-    let mut remaining = remaining_work(work, budget)?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
-        .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
-    Ok(remaining)
-}
-
 fn exactify_namespace_path(
     path: &str,
     profile: crate::FilesystemProfile,
@@ -16827,6 +16586,15 @@ fn exactify_vec<T>(
     Ok(result)
 }
 
+fn remaining_work(
+    work: WorkCounters, budget: WorkBudget, live_bytes: u64,
+) -> Result<WorkBudget, LazyWorkspaceError> {
+    let mut remaining = work.remaining(budget)?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
+        .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
+    Ok(remaining)
+}
+
 fn nested_lazy_failure(error: LazyWorkspaceError, live_bytes: u64) -> LazyWorkspaceError {
     let mut failure = error.into_measured_failure();
     match failure.work.peak_allocation_bytes.checked_add(live_bytes) {
@@ -16836,15 +16604,6 @@ fn nested_lazy_failure(error: LazyWorkspaceError, live_bytes: u64) -> LazyWorksp
         }
         None => LazyWorkspaceError::from(crate::WorkError::Overflow).with_prior_work(*failure.work),
     }
-}
-
-fn remaining_work(
-    current: WorkCounters,
-    budget: WorkBudget,
-) -> Result<WorkBudget, LazyWorkspaceError> {
-    current
-        .remaining(budget)
-        .map_err(LazyWorkspaceError::from)
 }
 
 fn exactify_error(stage: &str, path: &str, error: LazyWorkspaceError) -> LazyWorkspaceError {
@@ -16973,7 +16732,7 @@ mod tests {
                     epoch: decoder.u64_with_steps(&mut observe)?,
                 },
                 overlay: LazyOverlayId::from_bytes(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
-                shadows: LazyShadowId::from_bytes(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
+                shadows: LazyShadowId(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
             }),
             tag => return Err(crate::kernel::CanonicalDecodeError::UnknownTag {
                 field: "original native publication snapshot", tag,
@@ -19276,7 +19035,7 @@ mod tests {
                     path: "/.system/harness-uploads/receipt", bytes: acyclic_stream::OwnedBytes::from_static(b"receipt"),
                 },
             ];
-            let result = root.write_batch_at_snapshot_guarded(
+            let result = root.write_at_snapshot_guarded(
                 basis, mutations, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
                 &token, &mut owner,
             ).await;
@@ -19337,9 +19096,13 @@ mod tests {
                 async { Ok::<(), LazyWorkspaceError>(()) }
             };
             let (commit, proof) = root.write_at_snapshot_guarded(
-                basis, "/b", Bytes::from_static(b"replacement"), IdempotencyKey::new(),
-                crate::PublicationPermit::Unrestricted, &token, &mut owner,
-            ).await.expect("same guarded compiler");
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/b", bytes: (Bytes::from_static(b"replacement")).into() }),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
+        ).await.expect("same guarded compiler");
             let generation = match commit {
                 TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
                 _ => panic!("exact original candidate must publish"),
@@ -19390,9 +19153,13 @@ mod tests {
                 }
             };
             let (commit, proof) = root.write_at_snapshot_guarded(
-                basis, "/target", Bytes::from_static(b"unpublished"), IdempotencyKey::new(),
-                crate::PublicationPermit::Unrestricted, &token, &mut owner,
-            ).await.expect("semantic stale CAS decision");
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"unpublished")).into() }),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
+        ).await.expect("semantic stale CAS decision");
             assert!(matches!(commit, TransactionCommit::Conflict { .. }));
             assert!(proof.is_err());
             assert_eq!(root.read("/target", 64).await.expect("original target").as_ref(), b"before");
@@ -19416,8 +19183,12 @@ mod tests {
         let token = CancellationToken::new();
         let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
         let (first, proof) = root.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("actual original publication");
         let original_generation = match first {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
@@ -19425,8 +19196,12 @@ mod tests {
         };
         proof.expect("genuine first final snapshot");
         let (recovered, proof) = root.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("same original candidate reconstructs lost ACK");
         assert!(matches!(&recovered, TransactionCommit::AlreadyCommitted(generation)
             if generation.id() == original_generation));
@@ -19436,8 +19211,13 @@ mod tests {
             ("/different-path", Bytes::from_static(b"published")),
         ] {
             let (actual, proof) = root.write_at_snapshot_guarded(
-                basis, path, payload, key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
-            ).await.expect("actual original operation is not absence on mismatched input");
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: path, bytes: (payload).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
+        ).await.expect("actual original operation is not absence on mismatched input");
             assert!(matches!(&actual, TransactionCommit::AlreadyCommitted(generation)
                 if generation.id() == original_generation));
             assert!(matches!(proof.expect_err("full bytes and path bind the original candidate").semantic_error(),
@@ -19464,8 +19244,12 @@ mod tests {
         let other_basis = root.snapshot().await.expect("authentic but different source freeze");
         assert_ne!(other_basis.source, basis.source);
         let (rejected, proof) = root.write_at_snapshot_guarded(
-            other_basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            other_basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("canonical original-operation mismatch decision");
         assert!(matches!(&rejected, TransactionCommit::AlreadyCommitted(generation)
             if generation.id() == original_generation));
@@ -19493,9 +19277,13 @@ mod tests {
                 async { Ok::<(), LazyWorkspaceError>(()) }
             };
             root.write_at_snapshot_guarded(
-                supplied, "/file.txt", Bytes::from_static(b"unpublished"), IdempotencyKey::new(),
-                crate::PublicationPermit::Unrestricted, &token, &mut owner,
-            ).await.err().expect("original snapshot identity is not caller-minted authority");
+            supplied,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/file.txt", bytes: (Bytes::from_static(b"unpublished")).into() }),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
+        ).await.err().expect("original snapshot identity is not caller-minted authority");
             assert_eq!(calls.load(Ordering::Relaxed), 1, "actual owner authorizes protected inspection, never a mutation");
             assert_eq!(root.workspace().head().await.expect("unchanged original authored head").id(),
                 original.authored_generation);
@@ -19521,8 +19309,12 @@ mod tests {
             }
         };
         let failure = root.write_at_snapshot_guarded(
-            basis, "/file.txt", Bytes::from_static(b"not-published"), IdempotencyKey::new(),
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/file.txt", bytes: (Bytes::from_static(b"not-published")).into() }),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.err().expect("actual publication owner denial");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::StaleIdentity));
         assert_eq!(calls.load(Ordering::Relaxed), 7, "original lookup, parents/write/identity, companion and actual DATA CAS");
@@ -19613,8 +19405,12 @@ mod tests {
             async { Ok::<(), LazyWorkspaceError>(()) }
         };
         let (commit, proof) = root.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("published DATA must not be erased by proof failure");
         let generation = match commit {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
@@ -19666,8 +19462,12 @@ mod tests {
             .expect("concurrent DATA remains").as_ref(), b"preserved");
         let head = reopened.workspace().head().await.expect("later head").id();
         let (ack, proof) = reopened.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut recovery_owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut recovery_owner,
         ).await.expect("warm original ACK never restages the stale source");
         assert!(matches!(&ack, TransactionCommit::AlreadyCommitted(actual) if actual.id() == original.id()));
         assert_eq!(proof.expect("exact stored final snapshot"), recovered);
@@ -19757,7 +19557,7 @@ mod tests {
         let first_key = IdempotencyKey::new();
         let second_key = IdempotencyKey::new();
         let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
-        let (first, first_proof) = root.write_batch_at_snapshot_guarded(
+        let (first, first_proof) = root.write_at_snapshot_guarded(
             basis, original_mutations(), first_key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
         ).await.expect("one real six-member DATA publication");
         let first = match first {
@@ -19766,8 +19566,12 @@ mod tests {
         };
         let first_snapshot = first_proof.expect("actual captured first final roots");
         let (second, second_proof) = root.write_at_snapshot_guarded(
-            first_snapshot, "/target", Bytes::from_static(b"second"), second_key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            first_snapshot,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"second")).into() }),
+            second_key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("later real frozen writer");
         let second = match second {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
@@ -19793,7 +19597,7 @@ mod tests {
         assert_eq!(proof.expect("immutable original DATA C survives replacement"), first_snapshot);
         assert_ne!(original.id(), second.id(), "the current generation is not adopted");
         assert_eq!(original.read("/bundle/receipt", 64).await.expect("original receipt").as_ref(), b"receipt");
-        let (replayed, proof) = reopened.write_batch_at_snapshot_guarded(
+        let (replayed, proof) = reopened.write_at_snapshot_guarded(
             basis, original_mutations(), first_key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
         ).await.expect("whole-candidate replay never restages the old basis");
         assert!(matches!(&replayed, TransactionCommit::AlreadyCommitted(generation) if generation.id() == first.id()));
@@ -19848,8 +19652,13 @@ mod tests {
             async { Ok::<(), LazyWorkspaceError>(()) }
         };
         let (first, proof) = root.write_at_snapshot_with_native_work_guarded(
-            basis, "/target", bytes.clone(), first_key, crate::PublicationPermit::Unrestricted,
-            &original, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (bytes.clone()).into() }),
+            first_key,
+            crate::PublicationPermit::Unrestricted,
+            &original,
+            &token,
+            &mut owner,
         ).await.expect("native original DATA");
         let first = match first {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
@@ -19857,8 +19666,13 @@ mod tests {
         };
         let first_snapshot = proof.expect("genuine first snapshot");
         let (_, proof) = root.write_at_snapshot_with_native_work_guarded(
-            first_snapshot, "/next", bytes.clone(), second_key, crate::PublicationPermit::Unrestricted,
-            &original, &token, &mut owner,
+            first_snapshot,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/next", bytes: (bytes.clone()).into() }),
+            second_key,
+            crate::PublicationPermit::Unrestricted,
+            &original,
+            &token,
+            &mut owner,
         ).await.expect("later native frozen DATA");
         proof.expect("later genuine proof");
         let current = store.load_lazy_workspace(root.workspace().id()).await.expect("actual companion").expect("binding");
@@ -19901,8 +19715,12 @@ mod tests {
         ).expect("genuine postappend lost acknowledgement");
         let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
         root.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.err().expect("the real DATA append succeeds but its ACK is lost");
         let original = root.workspace().operation_generation(key).await
             .expect("protected original authority lookup").expect("DATA actually durable");
@@ -19923,8 +19741,12 @@ mod tests {
         let appends = simulation.trace().expect("actual bounded trace").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
         let (commit, proof) = reopened.write_at_snapshot_guarded(
-            basis, "/target", Bytes::from_static(b"published"), key,
-            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (Bytes::from_static(b"published")).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &token,
+            &mut owner,
         ).await.expect("same original candidate reconciles before stale-basis staging");
         assert!(matches!(&commit, TransactionCommit::AlreadyCommitted(generation) if generation.id() == original.id()));
         assert_eq!(proof.expect("real original companion settlement").authored_generation, original.id());
@@ -19966,8 +19788,13 @@ mod tests {
             }
         };
         let (commit, proof) = root.write_at_snapshot_with_native_work_guarded(
-            basis, "/target", bytes.clone(), key, crate::PublicationPermit::Unrestricted,
-            &original, &token, &mut owner,
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (bytes.clone()).into() }),
+            key,
+            crate::PublicationPermit::Unrestricted,
+            &original,
+            &token,
+            &mut owner,
         ).await.expect("known DATA generation survives a genuine postpublication owner denial");
         let generation = match commit {
             TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
@@ -20030,9 +19857,14 @@ mod tests {
                 async { Ok::<(), LazyWorkspaceError>(()) }
             };
             let failure = root.write_at_snapshot_with_native_work_guarded(
-                basis, "/target", bytes, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
-                &view, &token, &mut owner,
-            ).await.err().expect("original native preeffect denial");
+            basis,
+            std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: (bytes).into() }),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            &view,
+            &token,
+            &mut owner,
+        ).await.err().expect("original native preeffect denial");
             if mode == 2 {
                 assert!(matches!(failure.semantic_error(), LazyWorkspaceError::NativeLedgerMismatch));
             }
@@ -20445,7 +20277,7 @@ mod tests {
         invalid.work.verify(budget).expect("retained generation and missing root prefix");
         let missing_shadow = LazySnapshotRef::new(
             snapshot.workspace_id, snapshot.authored_generation, snapshot.source,
-            snapshot.overlay, LazyShadowId::from_bytes([0x74; 32]),
+            snapshot.overlay, LazyShadowId([0x74; 32]),
         );
         let invalid = root.validate_snapshot_measured(missing_shadow, budget, &token)
             .await.expect_err("digest alone cannot authenticate absent shadow root");

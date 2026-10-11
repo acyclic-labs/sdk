@@ -284,9 +284,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 .any(|window| window == b"required")
         );
     }
-    // Original effect transitions remain constant while unrelated canonical
-    // history grows. Each cold reader reconstructs the original typed state
-    // through the shared core reducer, never a new provider dispatch.
     use std::sync::atomic::Ordering;
     let effect_path = format!("harness/v2/effect-transitions/tasks/effect-task/{effect_id}");
     let indexes = stream
@@ -531,7 +528,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .await
             .is_err()
     );
-    // The authenticated cut and node precede the first original transition pair.
     assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 5);
     for fault in 1..=4 {
         provider.history_read_fault.store(fault, Ordering::SeqCst);
@@ -568,8 +564,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     assert!(wrong.effect(&cursor, effect_id, limits).await.is_err());
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
 
-    // terminal_effect_retirement_probe: fixed active work and a growing terminal
-    // archive, including actual Filesystem validation and issuer attestations.
     provider.forbid_writes.store(false, Ordering::SeqCst);
     aggregate = aggregate.with_resident_terminal_effect_limit(2)?;
     let fresh = |ordinal: u128, expected_revision, action| Command {
@@ -875,8 +869,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         }
     }
 
-    // Lost acknowledgements and malformed receipts must not turn a committed
-    // terminal effect into guessed absence or repeat a provider dispatch.
     for fault in 1..=5 {
         let id = EffectId::from_bytes([210 + fault; 16]);
         ordinal += 1;
@@ -967,7 +959,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
         assert_eq!(aggregate.reducer().resident_effect_count(), 5);
     }
-    // Retirement must also fence pure planning before the event cache evicts.
     let short_provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
     let short_stream = StreamClient::new(short_provider.clone());
     let mut short = StreamAggregate::open_with_projection_limits(
@@ -1124,8 +1115,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 0);
     assert_eq!(short_provider.observation_writes.load(Ordering::SeqCst), 0);
 
-    // A fresh archived transition shares the configured read allowance and
-    // cannot hydrate the cache or append when its proof exceeds that allowance.
     let archived_revision = aggregate.reducer().revision();
     aggregate = aggregate.with_effect_history_read_limits(HistoryReadLimits {
         maximum_events: 2,
@@ -1152,8 +1141,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         maximum_bytes: 32 * 1024 * 1024,
     })?;
 
-    // A fresh command targeting known archived state must reach the original
-    // provider authorization and terminal transition check, not cached absence.
     ordinal += 1;
     assert!(matches!(
         aggregate
@@ -1271,8 +1258,6 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .await
             .is_err()
     );
-    // Every differing bit has an admitted terminal effect. The all-ones key
-    // therefore requires all 128 strictly ordered branches at the original cut.
     let worst_id = EffectId::from_bytes(uuid::Uuid::from_u128(u128::MAX).into_bytes());
     let mut worst_completed = None;
     for bit in 0..=128_u32 {

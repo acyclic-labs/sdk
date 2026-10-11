@@ -6500,7 +6500,7 @@ pub mod native {
                         source, directory, directory_version: observed, token: lease.token,
                         #[cfg(not(target_arch = "wasm32"))]
                         native_ownership: NativeCursorOwnership {
-                            custody: None, borrowed: false, allocation: None,
+                            borrowed: false, allocation: None,
                             raw_payload: Some(name_ownership),
                         },
                     })

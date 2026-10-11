@@ -1,9 +1,4 @@
 //! Parent-controlled publication of an inspected project merge.
-//!
-//! Filesystem owns the generation transition. Harness records only its
-//! immutable result and a ref-only conversation notice, in one Stream event.
-//! Receipt companions validate the original fields and copy them through the
-//! caller's shared HistoryIo quota, transferring only physically produced custody.
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -15,8 +10,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 
-/// Stable provider-owned identity of one inspected conflict region. Its bytes
-/// are deliberately opaque to Harness; a provider validates every selection.
+/// Stable provider-owned identity of one inspected conflict region.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectConflict {
     /// Provider that interprets the conflict identity.
@@ -79,9 +73,7 @@ pub enum ProjectJoinOutcome {
     IdempotencyConflict,
 }
 
-/// Opaque inspected plan. Its implementation and conflict interpretation stay
-/// with the workspace provider; a lost acknowledgement must be reconciled by
-/// the stable provider operation, never blindly retried with a new key.
+/// Opaque inspected plan.
 pub trait ProjectJoinPlan: acyclic_stream::ProviderPlatform {
     /// Returns the exact child generation captured during inspection.
     fn source_generation(&self) -> &GenerationRef;
@@ -98,8 +90,7 @@ pub trait ProjectJoinPlan: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<ProjectJoinOutcome>>;
 }
 
-/// Parent-bound project workspace operations. A child cannot obtain this
-/// binding merely by possessing a project or generation reference.
+/// Parent-bound project workspace operations.
 pub trait ProjectWorkspaceProvider: acyclic_stream::ProviderPlatform {
     /// Returns the provider identity that owns workspace generations.
     fn provider(&self) -> &ProviderRef;
@@ -113,8 +104,7 @@ pub trait ProjectWorkspaceProvider: acyclic_stream::ProviderPlatform {
         child: &'a VolumeRef,
         key: &'a IdempotencyKey,
     ) -> BoxFuture<'a, Result<GenerationRef>>;
-    /// Inspects a pinned readable source for import into this binding's writable
-    /// destination. Ancestry grants no authority and source state is never changed.
+    /// Inspects a pinned readable source for import into this binding's writable destination.
     fn prepare_project_import<'a>(
         &'a self,
         scope: &'a Scope,
@@ -126,8 +116,6 @@ pub trait ProjectWorkspaceProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Provider-owned metadata proving one exact immutable merge publication.
-/// The statement is bounded and contains no message or file bodies; its owner
-/// validates its meaning against durable operation state before Stream append.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderJoinProof {
@@ -236,9 +224,7 @@ fn provider_operation_has_nonzero(
     Ok(false)
 }
 
-/// Exact result of a parent-authorized Filesystem join. The publication ID is
-/// distinct from the Filesystem retry identity so a lost Stream acknowledgement
-/// can be reconciled without reapplying the join.
+/// Exact result of a parent-authorized Filesystem join.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectMergeReceipt {
@@ -302,8 +288,7 @@ impl ProjectMergeReceipt {
         Ok(())
     }
 
-    /// Copies canonical fields on the caller's original ledger. The returned
-    /// scalar is custody produced by these physical factories, not a recipe.
+    /// Copies canonical fields on the caller's original ledger.
     pub(crate) fn clone_with_work_and_custody(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
@@ -370,7 +355,6 @@ fn copy_generation(
 }
 
 /// Owning provider's immutable-generation proof, checked before Stream append.
-/// No reducer replay needs access to the live Filesystem head.
 pub trait ProjectMergeVerifier: acyclic_stream::ProviderPlatform {
     /// Verifies the immutable provider join before publication to history.
     fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>>;

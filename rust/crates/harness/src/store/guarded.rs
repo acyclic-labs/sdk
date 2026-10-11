@@ -42,8 +42,7 @@ fn guarded_boundary(
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
-    /// Executes or authenticates the original ROOT Bind command on the ordinary
-    /// conversation engine. A retry never republishes or derives a plugin ID.
+    /// Executes or authenticates the original ROOT Bind command on the ordinary conversation engine.
     pub async fn execute_task_command_measured(
         &mut self, command: Command, owner: &TaskJournalOwner<P>,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -57,7 +56,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Executes the same protected ROOT binding on the original native ledger.
-    /// Reducer and immutable owner proof retain their own native source custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn execute_task_command_with_native_work(
         &mut self, command: Command, owner: &TaskJournalOwner<P>,
@@ -105,7 +103,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         choice.update(&(audience.id.len() as u64).to_le_bytes());
         choice.update(audience.id.as_bytes());
         owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes())?;
-        // Reserve the actual future immutable proof before any guarded IO.
         let (original_task, admission_digest, original_fence) = owner.binding_origin();
         let proof = VerifiedRootBinding {
             original_task, admission_digest,
@@ -141,12 +138,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     Some(observer.take_native_custody(bytes)?)
                 } else { None }
             } else { None };
-            // The proof is physically dropped before its exact source guard
-            // on any early error; successful publication moves both to owner.
             (proof, custody)
         };
-        // An exact immutable replay needs the original admission/scope but
-        // no new publication lease. New publication retains the real fence.
         let result = if let Some(replayed) = self.replay_indexed_with_work(&command, true, work).await? {
             replayed
         } else {
@@ -174,7 +167,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         fork_guard: Option<crate::fork::ObservedForkPublicationGuard>,
     ) -> Result<ApplyResult> {
         let applied = async {
-            let append = match request.commit_once_with_work(&self.client).await {
+            let append = match request.commit_once(&self.client, None).await {
                 Ok(append) => append,
                 Err(error) => {
                     if matches!(request.commit_phase(),
@@ -182,7 +175,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
                             | crate::distributed::CommitPhase::Conflict
                             | crate::distributed::CommitPhase::Failed)
                         && let Some(guard) = fork_guard.as_deref() {
-                        // Cleanup cannot replace the original native denial.
                         let _ = crate::fork::release_fork_guard_with_work(guard, request.work()).await;
                     }
                     return Err(error);
@@ -481,7 +473,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         owned.transfer();
         Ok(Some((ApplyResult::Replayed { event }, original_owned)))
     }
-
 
     pub(super) async fn read_event_at_with_work(
         &self, revision: u64, work: &mut Option<&mut dyn history::HistoryIo>,

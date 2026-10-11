@@ -13,8 +13,7 @@ enum SourceReader<P, A, O> {
     Project(ProjectSourceReader<P, A, O>),
 }
 
-/// A retained source identity and a separately authorized reader. Selecting the
-/// source never adopts its grants, mounts its resources, or acquires a lease.
+/// A retained source identity and a separately authorized reader.
 pub struct TaskSourceInspection<P, A, O> {
     source: TaskAdmissionRecord,
     volumes: Vec<crate::durable_host::TaskVolumeSnapshot>,
@@ -71,7 +70,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Lists only the selected directory at the explicit immutable generation.
-    /// Carry both generation and the last name when continuing a page.
     pub async fn list(
         &self, volume: &VolumeRef, granted_prefix: &str, path: &str,
         generation: &GenerationRef, after: Option<&str>, maximum_entries: u32,
@@ -101,7 +99,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Compares two selected immutable files, authenticating BOTH references.
-    /// This deliberately does not scan directories or resolve mutable heads.
     pub async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
         if let SourceReader::Project(reader) = &self.reader {
             return reader.diff(before, after).await;
@@ -120,9 +117,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
-    /// Authenticates only the original selected Project READ before or after an
-    /// SDK source boundary. `None` is a pre-freeze check, not a snapshot grant;
-    /// actual readonly loans must pass `Some` and authenticate the SDK snapshot.
+    /// Authenticates only the original selected Project READ before or after an SDK source boundary.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn require_native_project_selection_with_native_work(
         &self, source: TaskId, project: &VolumeRef, generation: &GenerationRef,
@@ -144,8 +139,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
-    /// Cumulative measured filesystem/SDK-buffer work for this selected reader,
-    /// including failed boundaries. Coordinator journal authentication is separate.
+    /// Cumulative measured filesystem/SDK-buffer work for this selected reader, including failed boundaries.
     #[must_use]
     pub fn project_work(&self) -> Option<acyclic_fs::WorkCounters> {
         match &self.reader {
@@ -167,8 +161,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.harness.children(parent, expected_revision, after_slot, maximum).await
     }
 
-    /// Resolves retained source metadata while retaining only the caller's read
-    /// authority. Both identities are authenticated by the existing task owner.
+    /// Resolves retained source metadata while retaining only the caller's read authority.
     pub async fn inspect_source(&self, caller: TaskId, source: TaskId) -> Result<TaskSourceInspection<P, A, O>> {
         let caller_admission = self.host.observe_admission(caller).await?;
         let source = self.host.observe_admission(source).await?;
@@ -180,10 +173,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         })
     }
 
-    /// Opens one operation-authorized project selection without changing caller
-    /// grants or granting transcript/private access. The original opaque owner
-    /// must carry its actual invocation cancellation token. A recovered owner
-    /// authenticates the same immutable attestation; an old reader stays fenced.
+    /// Opens one operation-authorized project selection without changing caller grants or granting transcript/private access.
     #[allow(clippy::too_many_arguments, reason = "original owner, exact selection and finite budget are explicit")]
     pub async fn inspect_project_source(
         &self, context: &TaskContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
@@ -211,12 +201,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         })
     }
 
-    /// Opens the same sealed selected-project reader under the original native
-    /// ledger. Returned source metadata stays in that ledger's custody until
-    /// its physical drop; caller authority is neither cloned nor broadened.
-    /// Consumes the authenticated handle together with its original native
-    /// allocation. That guard remains after the reader and metadata fields,
-    /// including on rejected selection or a failed opening boundary.
+    /// Opens the same sealed selected-project reader under the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "original owner, exact selection and native work are explicit")]
     pub async fn inspect_project_source_with_native_work(
@@ -243,8 +228,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             reason: "selected native inspection exceeds its original source allowances",
         })?;
         owner.verify_project_source_handle_with_native_work(context, &handle.0, work).await?;
-        // Keep each payload and its guard together across fallible boundaries.
-        // Tuple field order drops the payload before its allocation custody.
         let admission = self.host.observe_admission_with_native_work(source, work).await?;
         owner.verify_with_native_work(false, work).await?;
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
@@ -261,8 +244,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
 impl<P, A, O> FilesystemTaskExecution<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
-    /// One public stock model step with the same task-owned journal, scope,
-    /// accounting and deadline as `execute`. Async stacks are not checkpoints.
+    /// One public stock model step with the same task-owned journal, scope, accounting and deadline as `execute`.
     pub async fn model_step(
         &self, input: &TurnInput, step: u32, prior_messages: &[crate::model::ModelMessage],
     ) -> Result<Vec<crate::model::ModelEvent>> {
@@ -271,8 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             self.operation_id, self.executor.model_step(&self.journal, input, step, prior_messages)).await
     }
 
-    /// Settles only the tools admitted by a retained model step through the
-    /// ordinary stock resolver. Pending/rejected approval is not completion.
+    /// Settles only the tools admitted by a retained model step through the ordinary stock resolver.
     pub async fn resolve_model_tools(
         &self, input: &TurnInput, step: u32,
     ) -> Result<crate::executor::ModelToolsProgress> {

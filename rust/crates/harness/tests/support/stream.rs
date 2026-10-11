@@ -706,7 +706,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?.take()
             } else { None };
             if let Some(commit) = head_race {
-                // This is the separate adversarial writer, not harness IO.
                 if let Err(error) = self.inner.commit(commit).await {
                     return Ok(Err(native_fixture_failure(error, &original)));
                 }
@@ -820,7 +819,6 @@ struct NativeFaultRecordCursor {
     finished: bool,
 }
 
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_fixture_failure(
     source: StreamError,
@@ -852,8 +850,6 @@ fn native_fixture_value(
     let reservation = acyclic_native_runtime::ReadAllocationReservation::new(meter, bytes as u64)?;
     let allocation = reservation.allocate()?;
     let mut data = Vec::new();
-    // Fresh u8 storage requests this exact capacity on the ordinary Global
-    // allocator. Its original credit precedes the allocator, not late adoption.
     data.try_reserve_exact(bytes).map_err(|error| meter.allocation_failed(error))?;
     meter.record_examination(1, copied)?;
     if let Some(source) = source {
@@ -905,18 +901,12 @@ impl futures::Stream for NativeFaultRecordCursor {
                         Ok(value) => value,
                         Err(error) => return Poll::Ready(Some(Err(error))),
                     };
-                    // Replace only the payload. The genuine SDK output keeps
-                    // its independent metadata custody; byte custody follows
-                    // the canonical carrier through every alias.
                     output.value_mut().value = value;
                 }
                 _ => {}
             }
         }
         if this.fault == 2 {
-            // Record's remaining fields are inline. This saved header occupies
-            // the already-funded cursor slot; its canonical payload clone is a
-            // shared alias, not another byte or metadata allocation.
             this.previous = Some(output.value().clone());
         }
         this.index += 1;
@@ -950,7 +940,6 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 let Some((path, tail)) = path else {
                     return Ok(Err(native_fixture_failure(StreamError::Unavailable, &original)));
                 };
-                // Separate competing writer: it never borrows the harness meter.
                 if let Err(error) = self.inner.append(acyclic_stream::AppendRequest {
                     path, records: vec![OwnedBytes::from_static(b"dispatch won")], if_tail: Some(tail), idempotency_key: None,
                 }).await { return Ok(Err(native_fixture_failure(error, &original))); }
@@ -1000,8 +989,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
     }
 }
 
-/// Ordinary-capable negative control: it deliberately inherits every real
-/// SDK native capability default, rather than simulating unsupported results.
+/// Ordinary-capable negative control: it deliberately inherits every real SDK native capability default, rather than simulating unsupported results.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[derive(Default)]
 pub struct NoNative {

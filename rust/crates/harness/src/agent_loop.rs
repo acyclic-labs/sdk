@@ -5,9 +5,7 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One typed invocation of a custom agent loop. The host stages this live
-/// task's input before any durable admission; canonical conversations remain
-/// separately file-backed and authoritative.
+/// One typed invocation of a custom agent loop.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentInput {
@@ -52,11 +50,9 @@ impl AgentOutput {
     }
 }
 
-/// Replaceable live behavior. Durable loops implement the separate resumable
-/// task machine contract; this future is never claimed to survive host loss.
+/// Replaceable live behavior.
 pub trait AgentLoop: acyclic_stream::ProviderPlatform {
-    /// Runs with the same scoped model, context, tool, task, interaction, and
-    /// file operations that application-authored tasks receive.
+    /// Runs with the same scoped model, context, tool, task, interaction, and file operations that application-authored tasks receive.
     fn run(
         &self,
         context: TaskContext,
