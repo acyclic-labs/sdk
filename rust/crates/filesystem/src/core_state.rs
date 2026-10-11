@@ -1533,14 +1533,11 @@ impl FlatRecordValue {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<u64, LocalCoreStateStoreError> {
         Ok(match self {
-            Self::Context(context) => {
-                work.charge(crate::WorkCounters { items_examined: context.roots.0.len() as u64, ..Default::default() })?;
-                context.owned_bytes()
-            }
-            Self::Children(children) => (children.capacity() * std::mem::size_of::<WorkspaceContextId>()) as u64,
-            Self::Lineage(lineage) => lineage.workspace_name.capacity() as u64
-                + lineage.parent_workspace_name.as_ref().map_or(0, |name| name.capacity() as u64),
-            _ => 0,
+            Self::Context(context) => native_records::native_flat_context_owned_bytes(context, work)?,
+            Self::Children(children) => children.capacity().checked_mul(std::mem::size_of::<WorkspaceContextId>())
+                .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64,
+            Self::Lineage(lineage) => native_records::native_lineage_owned_bytes(lineage, work)?,
+            Self::ChildCount(_) | Self::ChildIndex(_) | Self::LazyWorkspace(_) => 0,
         })
     }
 
@@ -1563,18 +1560,6 @@ impl FlatRecordValue {
             Self::Lineage(value) => RecordValue::Lineage(value),
             Self::LazyWorkspace(value) => RecordValue::LazyWorkspace(value),
         }
-    }
-}
-
-impl FlatWorkspaceContext {
-    fn owned_bytes(&self) -> u64 {
-        let slots = (self.roots.0.capacity()
-            * std::mem::size_of::<(crate::WorkspaceRootId, FlatWorkspaceContextRoot)>()) as u64;
-        self.roots.0.iter().fold(slots, |bytes, (_, root)| {
-            bytes + root.source_path.capacity() as u64
-                + root.workspace_name.capacity() as u64
-                + root.mount_path.as_ref().map_or(0, |path| path.capacity() as u64)
-        })
     }
 }
 
@@ -2237,7 +2222,7 @@ impl CoreLog {
         while position < bytes.len() {
             let end = bytes.len().min(position.saturating_add(64 * 1024));
             let count = crate::native_host::read_builtin_file(&file, &mut bytes[position..end], work)?;
-            if count == 0 { return Err(std::io::ErrorKind::UnexpectedEof.into()); }
+            if count == 0 { return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()); }
             position += count;
         }
         {
@@ -2592,7 +2577,7 @@ impl CoreLog {
                 });
                 let count = result?;
                 recorded?;
-                if count == 0 { return Err(std::io::ErrorKind::WriteZero.into()); }
+                if count == 0 { return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()); }
                 position += count;
             }
             crash_point("frame written", self.flushed);
@@ -4424,7 +4409,7 @@ fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceErr
         LocalCoreStateStoreError::MaterializationInProgress => Lazy::NativeRecordMaterializationInProgress,
         LocalCoreStateStoreError::MaterializationWork(error) => match error {
             crate::materializer::NativeTreeMaterializationError::Cancelled => Lazy::Cancelled,
-            crate::materializer::NativeTreeMaterializationError::Work(error) => Lazy::DemandWork(error),
+            crate::materializer::NativeTreeMaterializationError::Work(error) => Lazy::Demand(crate::DemandError::Work(error)),
             error => Lazy::NativeWork(error),
         },
         LocalCoreStateStoreError::LazyWork(error) => error,
@@ -6179,7 +6164,7 @@ mod tests {
         let restarted = LocalCoreStateStore::new(directory.path());
         let error = restarted.load_lazy_workspace_with_native_work(id, &work).await
             .expect_err("actual decoder stops at original exact source allowance");
-        assert!(matches!(error, crate::LazyWorkspaceError::DemandWork(_)));
+        assert!(matches!(error, crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))));
         assert_eq!(work.receipt().source_bytes_read, 7);
         assert_eq!(work.receipt().bytes_hashed, 5);
         work.receipt().verify(budget).expect("all actual spent prefix");

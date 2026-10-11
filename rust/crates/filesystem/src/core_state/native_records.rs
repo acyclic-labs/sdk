@@ -193,10 +193,27 @@ pub(super) fn clone_native_record_value(value: &RecordValue, work: &Work, cxl: &
 pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Result<u64, Error> {
     Ok(match value {
         RecordValue::Context(context) => native_context_owned_bytes(context, work)?,
-        RecordValue::Children(children) => (children.0.len() * std::mem::size_of::<WorkspaceContextId>()) as u64,
+        RecordValue::Children(children) => children.0.len().checked_mul(std::mem::size_of::<WorkspaceContextId>()).ok_or_else(overflow)? as u64,
         RecordValue::Lineage(lineage) => native_lineage_owned_bytes(lineage, work)?,
-        _ => value.measured_owned_bytes(work)?,
+        RecordValue::FlatContext(context) => native_flat_context_owned_bytes(context, work)?,
+        RecordValue::FlatChildren(children) => children.capacity().checked_mul(std::mem::size_of::<WorkspaceContextId>()).ok_or_else(overflow)? as u64,
+        // These payloads have only fixed identifiers/scalars/Copy metadata.
+        // Their enclosing resident vector, output or source Box funds its
+        // compiled inline storage; they own no additional dynamic backing.
+        RecordValue::ChildCount(_) | RecordValue::ChildIndex(_) | RecordValue::LazyWorkspace(_) => 0,
     })
+}
+
+pub(super) fn native_flat_context_owned_bytes(context: &FlatWorkspaceContext, work: &Work) -> Result<u64, Error> {
+    let mut bytes = context.roots.0.capacity().checked_mul(std::mem::size_of::<(crate::WorkspaceRootId, FlatWorkspaceContextRoot)>()).ok_or_else(overflow)? as u64;
+    for (_, root) in &context.roots.0 {
+        work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
+        bytes = bytes.checked_add(root.source_path.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(root.workspace_name.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(root.mount_path.as_ref().map_or(0, |path| path.capacity() as u64)))
+            .ok_or_else(overflow)?;
+    }
+    Ok(bytes)
 }
 
 fn read<T: DeserializeOwned>(path: &Path, work: &Work, map: impl FnOnce(T) -> RecordValue) -> Result<Option<Owned<RecordValue>>, Error> {
@@ -310,8 +327,20 @@ fn decode_filename(name: &[u8], work: &Work) -> Result<Option<WorkspaceContextId
     let Some(stem) = name.strip_suffix(b".json") else { return Ok(None); };
     if stem.len() != 32 { return Ok(None); }
     let mut bytes = [0; 16];
-    work.charge(crate::WorkCounters { bytes_decoded: 32, ..Default::default() })?;
-    if hex::decode_to_slice(stem, &mut bytes).is_err() { return Ok(None); }
+    // Decode the fixed-width metadata one actual character at a time. There is
+    // no decoded-byte counter, and malformed names must retain only the real
+    // examined prefix rather than charging a guessed opaque codec completion.
+    for (index, byte) in stem.iter().copied().enumerate() {
+        work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
+        let nibble = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return Ok(None),
+        };
+        if index % 2 == 0 { bytes[index / 2] = nibble << 4; }
+        else { bytes[index / 2] |= nibble; }
+    }
     Ok(Some(WorkspaceContextId::from_bytes(bytes)))
 }
 
