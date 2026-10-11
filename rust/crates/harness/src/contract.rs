@@ -669,6 +669,9 @@ pub enum Error {
     /// Durable provider operation failed.
     #[error("storage failure: {0}")]
     Storage(String),
+    /// An actual SDK buffer reservation failure, without allocating a diagnostic.
+    #[error(transparent)]
+    Allocation(#[from] std::collections::TryReserveError),
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
@@ -684,6 +687,88 @@ pub enum Error {
         #[source]
         cause: acyclic_fs::NativeTreeMaterializationError,
         /// Existing custody for any SDK-owned diagnostic payload.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// A fixed native boundary rejection that needs no diagnostic allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{reason}")]
+    NativeBoundary {
+        /// The existing wire classification of the rejection.
+        code: crate::wire::ErrorCode,
+        /// A fixed SDK diagnostic, not a formatted payload.
+        reason: &'static str,
+    },
+    /// An already-owned diagnostic with its original classification and custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{message}")]
+    NativeDiagnostic {
+        /// The classification of the original diagnostic.
+        code: crate::wire::ErrorCode,
+        /// The original message, moved without formatting or copying.
+        message: String,
+        /// Existing custody, released after the diagnostic is dropped.
+        custody: acyclic_fs::NativeAllocation,
+    },
+    /// An actual malformed native record, preserving its decoder cause.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeDecode {
+        /// The original decoder error.
+        #[source]
+        source: serde_json::Error,
+        /// Existing custody for SDK-owned decoder diagnostics.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual Stream failure in a native operation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeStream {
+        /// The original provider error, moved without string conversion.
+        #[source]
+        source: acyclic_stream::StreamError,
+        /// Existing SDK payload custody, not opaque provider allocator metadata.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual native supervisor failure.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeSupervisor {
+        /// The original join error, including its actual panic or cancellation.
+        #[source]
+        source: tokio::task::JoinError,
+        /// Existing SDK payload custody, not opaque Tokio allocator metadata.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual selected lazy-source failure.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeSource {
+        /// The original source error.
+        #[source]
+        source: acyclic_fs::LazyWorkspaceError,
+        /// Existing custody for any SDK-owned diagnostic payload.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// A native view failure, including any retained physical cleanup owner.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[error("{cause}")]
+    NativeView {
+        /// The original lifecycle failure and its actual cleanup ownership.
+        #[source]
+        cause: acyclic_fs::native_mount::MountLifecycleError,
+        /// Existing custody for SDK-owned diagnostic payloads.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// A publication failure with its actionable destination and completed work.
+    ///
+    /// The recursive failure slot is admitted and allocated before publication.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[error("{failure}")]
+    NativePublication {
+        /// The original failure, written into the preallocated slot.
+        #[source]
+        failure: Box<crate::filesystem::NativeViewPublicationError>,
+        /// Custody for the slot, released after its Box is deallocated.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
 }
@@ -709,8 +794,17 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) => ErrorCode::Storage,
+            Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. } => *code,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeDecode { .. }
+            | Self::NativeStream { .. }
+            | Self::NativeSupervisor { .. }
+            | Self::NativeSource { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeView { .. } | Self::NativePublication { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => {
                 use acyclic_fs::NativeTreeMaterializationError as Native;
@@ -746,6 +840,24 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         self.code().as_str_name()
     }
+
+    /// Native failures must propagate before additional provider or deadline work.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn is_native_failure(&self) -> bool {
+        match self {
+            Self::Allocation(_)
+            | Self::NativeWork { .. }
+            | Self::NativeBoundary { .. }
+            | Self::NativeDiagnostic { .. }
+            | Self::NativeDecode { .. }
+            | Self::NativeStream { .. }
+            | Self::NativeSupervisor { .. }
+            | Self::NativeSource { .. } => true,
+            #[cfg(feature = "native-execution")]
+            Self::NativeView { .. } | Self::NativePublication { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 /// Moves a native cause without formatting it or manufacturing allocation custody.
@@ -755,6 +867,25 @@ impl Error {
 impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     fn from(cause: acyclic_fs::NativeTreeMaterializationError) -> Self {
         Self::NativeWork { cause, custody: None }
+    }
+}
+
+/// Moves a lifecycle failure without dropping any retained physical cleanup owner.
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
+    fn from(cause: acyclic_fs::native_mount::MountLifecycleError) -> Self {
+        Self::NativeView { cause, custody: None }
+    }
+}
+
+/// Wraps the actual mount cause in the existing lifecycle error, without allocation.
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::native_mount::NativeMountError> for Error {
+    fn from(cause: acyclic_fs::native_mount::NativeMountError) -> Self {
+        Self::NativeView {
+            cause: acyclic_fs::native_mount::MountLifecycleError::Native(cause),
+            custody: None,
+        }
     }
 }
 
