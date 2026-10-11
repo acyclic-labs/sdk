@@ -346,8 +346,12 @@ interfaces; their receipts do not claim original-native output custody.
 trusted host's configured lazy workspace and exact frozen SDK snapshot. It
 revalidates the original owner and sealed source authorization at SDK boundaries
 and compares the snapshot's canonical proof under that same observer. Its
-`(Bytes, NativeAllocation)` result retains actual output custody; consumers must
-drop the bytes before the guard, including while encoding a response. Native
+`(Bytes, NativeAllocation)` result preserves intrinsic SDK source-data ownership
+through the last `Bytes` clone and separate metadata/body custody in the guard.
+Consumers keep the raw bytes while encoding a response and never charge,
+adopt or grow that source-data ownership a second time. The metadata guard may
+have zero retained bytes after its own physical payloads drop; its byte count is
+not the size or custody proof of intrinsically owned source data. Native
 work/cancellation causes and source failures move into their typed Harness error
 carriers with existing custody, without formatting a new diagnostic after denial.
 

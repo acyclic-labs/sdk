@@ -356,7 +356,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Reads the immutable selected native source under the supplied original
-    /// ledger. The actual returned allocation guard must outlive the bytes.
+    /// ledger. Bytes retain the SDK's intrinsic source-data owner; the returned
+    /// guard retains separate SDK metadata/body custody. Preserve both through
+    /// their actual payload lifetimes without charging the data a second time.
     /// This does not derive a new allowance from a measured receipt.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_native_path_with_native_work<D, S>(
