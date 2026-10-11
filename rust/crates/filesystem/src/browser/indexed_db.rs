@@ -17,6 +17,8 @@ use crate::{
     Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit, WorkspaceForkOutcome,
     authority_commit_digest, object_digest,
 };
+use acyclic_stream::OwnedBytes;
+#[cfg(test)]
 use bytes::Bytes;
 use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
@@ -217,7 +219,7 @@ impl IndexedDbObjectStore {
         expected_length: u64,
         cancellation: &CancellationToken,
         work: WorkCounters,
-    ) -> Result<Bytes, ObjectFailure> {
+    ) -> Result<OwnedBytes, ObjectFailure> {
         let expected_length_u32 = u32::try_from(expected_length)
             .map_err(|_| Self::failure(ObjectStoreError::Corrupt, work))?;
         if (blob.size() - f64::from(expected_length_u32)).abs() > 0.5 {
@@ -233,7 +235,7 @@ impl IndexedDbObjectStore {
         if u64::from(array.length()) != expected_length {
             return Err(Self::failure(ObjectStoreError::Corrupt, work));
         }
-        Ok(Bytes::from(array.to_vec()))
+        Ok(OwnedBytes::from(array.to_vec()))
     }
 
     async fn metadata_length(
@@ -415,10 +417,13 @@ impl IndexedDbObjectStore {
         length: u64,
         budget: WorkBudget,
         work: WorkCounters,
+        retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<(Blob, WorkCounters), ObjectFailure> {
         let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
+        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+            .checked_add(retained_handles)
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_read_operations: 1,
@@ -445,7 +450,7 @@ impl IndexedDbObjectStore {
     /// Verifies that a stored object is exactly the bytes being admitted.
     async fn verify_existing(
         blob: &Blob,
-        bytes: &Bytes,
+        bytes: &OwnedBytes,
         cancellation: &CancellationToken,
         work: WorkCounters,
     ) -> Result<(), ObjectFailure> {
@@ -461,14 +466,17 @@ impl IndexedDbObjectStore {
     async fn put_new(
         transaction: &Transaction<'_>,
         key: &str,
-        bytes: &Bytes,
+        bytes: &OwnedBytes,
         length: u64,
         budget: WorkBudget,
         work: WorkCounters,
+        retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, ObjectFailure> {
         let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
+        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+            .checked_add(retained_handles)
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_write_operations: 2,
@@ -1067,6 +1075,7 @@ impl IndexedDbAuthorityStore {
             &commit.payload,
         );
         let durable = DurableCommit {
+            settled_at_micros: None,
             epoch,
             sequence,
             operation_id: commit.operation_id,
@@ -2263,7 +2272,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -2288,6 +2297,19 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             )));
         }
         let mut work = self.admit_writes(writes, budget)?;
+        let retained_handles = u64::try_from(writes.len())
+            .unwrap_or(u64::MAX)
+            .checked_mul(u64::try_from(size_of::<(Blob, &OwnedBytes)>()).unwrap_or(u64::MAX))
+            .ok_or_else(|| Self::failure(crate::WorkError::Overflow.into(), work))?;
+        work = work.checked_add(WorkCounters {
+            allocation_operations: 1,
+            peak_allocation_bytes: retained_handles,
+            ..WorkCounters::default()
+        }).map_err(|error| Self::failure(error.into(), work))?;
+        work.verify(budget).map_err(|error| Self::failure(error.into(), work))?;
+        let mut existing = Vec::new();
+        existing.try_reserve_exact(writes.len())
+            .map_err(|error| Self::backend(error, work))?;
         let transaction = self
             .database
             .transaction([OBJECTS, OBJECT_METADATA])
@@ -2296,7 +2318,6 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             .build()
             .map_err(|error| Self::backend(error, work))?;
         let mut added = false;
-        let mut existing = Vec::new();
         for write in writes {
             let key = Self::key(write.object_id);
             let length = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
@@ -2312,7 +2333,9 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 }
                 Some(_) => {
                     let (blob, work) =
-                        Self::existing_blob(&transaction, &key, length, budget, work, cancellation)
+                        Self::existing_blob(
+                            &transaction, &key, length, budget, work, retained_handles, cancellation,
+                        )
                             .await?;
                     existing.push((blob, &write.bytes));
                     work
@@ -2326,6 +2349,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                         length,
                         budget,
                         work,
+                        retained_handles,
                         cancellation,
                     )
                     .await?
@@ -2419,6 +2443,9 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             Self::get_blob(&objects, &key, cancellation, work).await?
         }
         .ok_or_else(|| Self::failure(ObjectStoreError::Corrupt, prospective))?;
+        // Blob reads yield outside IndexedDB request callbacks. No transaction
+        // may remain live across this materialization boundary.
+        drop(transaction);
         let bytes = Self::materialize_blob(&stored_blob, length, cancellation, prospective).await?;
         if object_digest(object_id.kind, &bytes) != object_id.digest {
             return Err(Self::failure(ObjectStoreError::Corrupt, prospective));
@@ -2807,7 +2834,12 @@ mod tests {
         let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
             .await
             .map_err(js_error)?;
-        let bytes = Bytes::from_static(b"browser-object-vector");
+        let input = b"browser-object-vector".to_vec();
+        let input_pointer = input.as_ptr();
+        let input_capacity = input.capacity();
+        let bytes = OwnedBytes::from(input);
+        assert_eq!(bytes.as_ptr(), input_pointer);
+        assert_eq!(bytes.retained_capacity(), Some(input_capacity));
         let object_id = ObjectId {
             kind: ObjectKind::BlobChunk,
             digest: object_digest(ObjectKind::BlobChunk, &bytes),
@@ -2835,6 +2867,26 @@ mod tests {
         .map_err(js_error)?;
         assert_eq!(retry.work.object_bytes_written, 0);
         assert_eq!(retry.work.object_bytes_read, bytes.len() as u64);
+        assert_eq!(
+            retry.work.peak_allocation_bytes,
+            OBJECT_KEY_BYTES + 2 * bytes.len() as u64
+                + size_of::<(Blob, &OwnedBytes)>() as u64
+        );
+        let mut below_retry_peak = WorkBudget::UNBOUNDED;
+        below_retry_peak.peak_allocation_bytes = retry.work.peak_allocation_bytes - 1;
+        let denied = AsyncObjectStore::put(
+            &store, object_id, bytes.clone(), below_retry_peak, &cancellation,
+        )
+        .await
+        .err()
+        .ok_or_else(|| js_error("retained existing Blob handle escaped admission"))?;
+        assert!(matches!(
+            denied.error,
+            ObjectStoreError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                ..
+            })
+        ));
 
         let read = AsyncObjectStore::read(
             &store,
@@ -2846,6 +2898,7 @@ mod tests {
         .await
         .map_err(js_error)?;
         assert_eq!(read.value.bytes, bytes);
+        assert_eq!(read.value.bytes.retained_capacity(), Some(bytes.len()));
         assert_eq!(
             read.value.retention,
             ObjectReadRetention::Owned {
@@ -2881,7 +2934,7 @@ mod tests {
         let mismatch_result = AsyncObjectStore::put(
             &store,
             forged,
-            Bytes::from_static(b"forged"),
+            OwnedBytes::from_static(b"forged"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -2894,7 +2947,7 @@ mod tests {
     }
 
     fn blob_write(bytes: &'static [u8]) -> ObjectWrite {
-        let bytes = Bytes::from_static(bytes);
+        let bytes = OwnedBytes::from_static(bytes);
         ObjectWrite {
             object_id: ObjectId {
                 kind: ObjectKind::BlobChunk,
@@ -2967,6 +3020,48 @@ mod tests {
             ]
         );
         assert_eq!(batch.work.backend_read_operations, 6);
+        let mut below_peak = WorkBudget::UNBOUNDED;
+        below_peak.peak_allocation_bytes = batch.work.peak_allocation_bytes - 1;
+        let requests = [first.clone(), second.clone(), third.clone()].map(|write| {
+            crate::ObjectReadRequest {
+                object_id: write.object_id,
+                maximum_bytes: 1_024,
+            }
+        });
+        let rejected = AsyncObjectStore::read_many(
+            &store, &requests, below_peak, &cancellation,
+        )
+        .await
+        .err()
+        .ok_or_else(|| js_error("batch retained peak escaped admission"))?;
+        assert!(matches!(
+            rejected.error,
+            ObjectStoreError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                ..
+            })
+        ));
+        // The second and third blobs must already have been gathered before
+        // the first array_buffer promise yields and closes the transaction.
+        let reopened = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
+            .await
+            .map_err(js_error)?;
+        let persisted = AsyncObjectStore::read_many(
+            &reopened, &requests, WorkBudget::UNBOUNDED, &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(persisted.value, batch.value);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let rejected = AsyncObjectStore::read_many(
+            &reopened, &requests, WorkBudget::UNBOUNDED, &cancelled,
+        )
+        .await
+        .err()
+        .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
+        assert!(matches!(rejected.error, ObjectStoreError::Cancelled));
+        assert_eq!(rejected.work, WorkCounters::default());
 
         // One forged write rejects the whole batch before anything is stored.
         let fourth = blob_write(b"fourth batch object");
