@@ -547,8 +547,10 @@ where
             )? {
                 preparation
             } else if reconciliation_only {
-                return Err(boundary(Some(io), ErrorCode::Unsupported,
-                    "original fork token is not retained by this command binding"));
+                let Some(preparation) = self.runtime.readonly_fork_preparation_with_native_work(
+                    task, shared, &request, work,
+                ).await? else { return Ok(TaskCommandProgress::Indeterminate); };
+                self.retain_native_preparation(task, command.operation_id, preparation, io, work)?
             } else {
                 let request_bytes = (std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
                     .checked_add(request.logical_owned_bytes()?).ok_or_else(|| boundary(
