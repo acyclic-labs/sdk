@@ -762,6 +762,21 @@ where
         })
     }
 
+    #[must_use]
+    pub fn with_recursive_source(
+        mut self,
+        source: Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>,
+    ) -> Self {
+        self.recursive_source = Some(source);
+        self
+    }
+
+    pub(super) fn recursive_source(
+        &self,
+    ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
+        self.recursive_source.as_ref()
+    }
+
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn original_lease_fence_with_io(
         lease: &crate::distributed::WorkLease, io: &super::PreparationIo,

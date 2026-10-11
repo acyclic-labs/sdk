@@ -635,6 +635,20 @@ attempt, including pre-cancellation or quota denial. They do not create a new
 meter or drop the original lease at an outer error boundary. Native first
 causes return before a subsequent owner/deadline check.
 
+`with_model_with_native_work` borrows the original selected configuration,
+funds its actual metadata copies before construction and retains their original
+custody in the command binding. Share that binding across helper tasks, wake
+and reconciliation calls rather than rebuilding the model configuration.
+Fork preparation uses the current recursive source and its exact retained
+request. The command-scoped cache retains genuine original preparation tokens
+and their logical metadata on the same ledger; opaque B-tree backing is not
+reported as a physical heap measurement.
+Native model mailbox steering consumes the original SDK's committed model/receive
+witness and guarded source bytes. Passive receipt lookup uses its exact READ
+target, never the fresh WRITE publisher; missing receipts do not relaunch a
+started model or copy its parcel. Fresh copies use the original issued writer
+before any selected-output projection, and content-part growth is pre-funded.
+
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.
 These counters describe actual SDK calls and exposed source/encoded bytes, not

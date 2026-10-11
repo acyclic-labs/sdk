@@ -6,9 +6,11 @@ use acyclic_fs::WorkCounters;
 
 impl PreparationRecord for MailSendTaskCommand {
     fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
 }
 impl PreparationRecord for MailReceiveTaskCommand {
     fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
 }
 
 fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
@@ -33,8 +35,12 @@ pub(super) fn decode_command<T: PreparationRecord>(payload: Value, io: Option<&P
         return serde_json::from_value(payload)
             .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}")));
     };
+    decode_borrowed_command(&payload, io)
+}
+
+pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io: &PreparationIo) -> Result<T> {
     let encoded_hold;
-    let encoded = io.encode_json(&payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+    let encoded = io.encode_json(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
     let decoded = io.decode_preparation::<T>(&encoded)?.into_retained();
     drop(encoded);
