@@ -61,6 +61,14 @@ custody until their payload or file is dropped, rather than until an observer
 stops awaiting. Capacity reconciliation records completed SDK-owned capacity
 before evaluating a late cancellation or quota refusal.
 
+`ReadAllocationReservation` withholds one known allocation and its logical bytes
+before accepting work that can create it. A pending credit is neither a reported
+allocator attempt nor a retained payload. Consuming it immediately before the
+allocator records the actual attempt and produces original-meter `ReadAllocation`
+custody; dropping an unused token refunds only its withheld credit. Accepted
+completion does not repeat quota or cancellation admission. The original global
+and resource allowance remain unavailable to other allocations while withheld.
+
 `NativeFile::write_bounded_async_with_custody` accepts owned `AsRef<[u8]>` payloads
 without converting or copying their backing. The same positional validation and
 ordered completion driver retain the complete payload before its separate custody

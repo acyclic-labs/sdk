@@ -1915,6 +1915,16 @@ pub trait NativeReadMeter: Send + Sync {
     fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()>;
     /// Admits and records a real allocation with this logical payload.
     fn allocate(&self, bytes: u64) -> io::Result<()>;
+    /// Withholds one future allocation attempt and its known logical payload
+    /// before accepting IO that may produce that allocation. No attempt or
+    /// retained payload is reported until the reservation is consumed.
+    fn reserve_allocation(&self, bytes: u64) -> io::Result<()>;
+    /// Refunds only an unconsumed allocation reservation, even after cancellation.
+    fn cancel_reserved_allocation(&self, bytes: u64);
+    /// Converts the caller's withheld credit into one actual allocation attempt
+    /// and retained logical payload immediately before the allocator boundary.
+    /// Accepted completion does not repeat cancellation or quota admission.
+    fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()>;
     /// Retains the real allocator failure in the original meter's existing
     /// inline fatal-cause slot before returning a nonallocating IO relay.
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error;
@@ -1980,6 +1990,42 @@ pub trait NativeReadMeter: Send + Sync {
     /// invoke the actual cleanup even if recording its admitted attempt fails.
     fn record_cleanup_write(&self, _reservation: u64) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// One inline, original-meter allocation credit prepared before accepted IO.
+///
+/// This reserves quota, not resource access. Consume immediately before the
+/// allocator call. Unused credits retire without fabricating spent work.
+#[must_use]
+pub struct ReadAllocationReservation {
+    meter: Arc<dyn NativeReadMeter>,
+    bytes: u64,
+    pending: bool,
+}
+
+impl ReadAllocationReservation {
+    /// Withholds one known positive allocation without allocating this token.
+    pub fn new(meter: &Arc<dyn NativeReadMeter>, bytes: u64) -> io::Result<Self> {
+        meter.reserve_allocation(bytes)?;
+        Ok(Self { meter: Arc::clone(meter), bytes, pending: true })
+    }
+
+    /// Records the accepted allocation and transfers its exact original custody.
+    /// This allocates nothing and does not readmit already accepted completion.
+    pub fn allocate(mut self) -> io::Result<ReadAllocation> {
+        self.meter.record_reserved_allocation(self.bytes)?;
+        self.pending = false;
+        Ok(ReadAllocation {
+            meter: self.meter.allocation_owner().unwrap_or_else(|| Arc::clone(&self.meter)),
+            bytes: self.bytes,
+        })
+    }
+}
+
+impl Drop for ReadAllocationReservation {
+    fn drop(&mut self) {
+        if self.pending { self.meter.cancel_reserved_allocation(self.bytes); }
     }
 }
 
@@ -4718,6 +4764,8 @@ mod tests {
         read: AtomicU64,
         withheld_bytes: std::sync::Mutex<u64>,
         allocations: AtomicU64,
+        pending_allocations: parking_lot::Mutex<(u64, u64)>,
+        allocation_limit: u64,
         headers: AtomicU64,
         memory: AtomicU64,
         peak: AtomicU64,
@@ -4737,6 +4785,8 @@ mod tests {
                 withheld_operations: std::sync::Mutex::new(0),
                 withheld_bytes: std::sync::Mutex::new(0),
                 allocations: AtomicU64::new(0), headers: AtomicU64::new(0),
+                pending_allocations: parking_lot::Mutex::new((0, 0)),
+                allocation_limit: u64::MAX,
                 memory: AtomicU64::new(0), peak: AtomicU64::new(0),
                 operation_limit, byte_limit, memory_limit: 1024 * 1024,
                 cancelled: AtomicBool::new(false), cancel_after_read: false,
@@ -4766,12 +4816,39 @@ mod tests {
             } else { Ok(()) }
         }
         fn allocate(&self, bytes: u64) -> io::Result<()> {
+            self.reserve_allocation(bytes)?;
+            self.record_reserved_allocation(bytes)
+        }
+        fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
+            let mut pending = self.pending_allocations.lock();
             self.check()?;
-            let previous = self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                |current| current.checked_add(bytes).filter(|next| *next <= self.memory_limit))
-                .map_err(|_| Self::refuse())?;
-            self.peak.fetch_max(previous + bytes, Ordering::AcqRel);
-            if bytes != 0 { self.allocations.fetch_add(1, Ordering::AcqRel); }
+            self.allocations.load(Ordering::Acquire).checked_add(pending.0)
+                .and_then(|total| total.checked_add(1))
+                .filter(|total| *total <= self.allocation_limit).ok_or_else(Self::refuse)?;
+            self.memory.load(Ordering::Acquire).checked_add(pending.1)
+                .and_then(|total| total.checked_add(bytes))
+                .filter(|total| *total <= self.memory_limit).ok_or_else(Self::refuse)?;
+            pending.0 += 1;
+            pending.1 += bytes;
+            Ok(())
+        }
+        fn cancel_reserved_allocation(&self, bytes: u64) {
+            let mut pending = self.pending_allocations.lock();
+            pending.0 = pending.0.checked_sub(1).expect("refund owns an allocation credit");
+            pending.1 = pending.1.checked_sub(bytes).expect("refund owns its retained-byte credit");
+        }
+        fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
+            let mut pending = self.pending_allocations.lock();
+            let next_operations = pending.0.checked_sub(1).ok_or_else(Self::refuse)?;
+            let next_bytes = pending.1.checked_sub(bytes).ok_or_else(Self::refuse)?;
+            let allocations = self.allocations.load(Ordering::Acquire).checked_add(1)
+                .ok_or_else(Self::refuse)?;
+            let memory = self.memory.load(Ordering::Acquire).checked_add(bytes).ok_or_else(Self::refuse)?;
+            pending.0 = next_operations;
+            pending.1 = next_bytes;
+            self.allocations.store(allocations, Ordering::Release);
+            self.memory.store(memory, Ordering::Release);
+            self.peak.fetch_max(memory, Ordering::AcqRel);
             Ok(())
         }
         fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
@@ -4780,20 +4857,22 @@ mod tests {
             io::ErrorKind::OutOfMemory.into()
         }
         fn allocate_refcount_header(&self) -> io::Result<()> {
-            self.check()?;
+            self.allocate(0)?;
             self.headers.fetch_add(1, Ordering::AcqRel);
-            self.allocations.fetch_add(1, Ordering::AcqRel);
             Ok(())
         }
         fn adopt(&self, bytes: u64) -> io::Result<()> {
+            let pending = self.pending_allocations.lock();
             self.check()?;
             let previous = self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                |current| current.checked_add(bytes).filter(|next| *next <= self.memory_limit))
+                |current| current.checked_add(bytes).filter(|next|
+                    next.checked_add(pending.1).is_some_and(|total| total <= self.memory_limit)))
                 .map_err(|_| Self::refuse())?;
             self.peak.fetch_max(previous + bytes, Ordering::AcqRel);
             Ok(())
         }
         fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
+            let pending = self.pending_allocations.lock();
             let previous = match self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
                 |current| current.checked_add(bytes)) {
                 Ok(previous) => previous,
@@ -4801,12 +4880,15 @@ mod tests {
             };
             let actual = previous + bytes;
             self.peak.fetch_max(actual, Ordering::AcqRel);
-            let result = if actual > self.memory_limit {
+            let result = if actual.checked_add(pending.1).is_none_or(|total| total > self.memory_limit) {
                 Err(Self::refuse())
             } else { self.check() };
             (bytes, result)
         }
-        fn release(&self, bytes: u64) { self.memory.fetch_sub(bytes, Ordering::AcqRel); }
+        fn release(&self, bytes: u64) {
+            let _pending = self.pending_allocations.lock();
+            self.memory.fetch_sub(bytes, Ordering::AcqRel);
+        }
         fn examine(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn record_examination(&self, _: u64, _: u64) -> io::Result<()> { Ok(()) }
@@ -5252,6 +5334,60 @@ mod tests {
         assert_eq!(actual, 0);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert_eq!(meter.operations.load(Ordering::Acquire), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn allocation_reservation_withholds_both_limits_without_phantom_work() -> io::Result<()> {
+        let mut policy = ReadBudgetMeter::new(0, 0);
+        policy.allocation_limit = 1;
+        policy.memory_limit = 8;
+        let observed = Arc::new(policy);
+        let meter: Arc<dyn NativeReadMeter> = observed.clone();
+        let reserved = ReadAllocationReservation::new(&meter, 8)?;
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 0);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        assert_eq!(observed.peak.load(Ordering::Acquire), 0);
+        assert!(ReadAllocationReservation::new(&meter, 0).is_err());
+        assert!(ReadAllocation::adopt(&meter, 1).is_err());
+        drop(reserved);
+        assert_eq!(*observed.pending_allocations.lock(), (0, 0));
+        let allocation = ReadAllocationReservation::new(&meter, 8)?.allocate()?;
+        struct FundedBox {
+            payload: Box<[u8; 8]>,
+            _allocation: ReadAllocation,
+        }
+        let owner = FundedBox { payload: Box::new(*b"reserved"), _allocation: allocation };
+        assert_eq!(&*owner.payload, b"reserved");
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 1);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 8);
+        drop(owner);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        assert_eq!(observed.peak.load(Ordering::Acquire), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn allocation_reservation_consumes_accepted_credit_after_cancellation() -> io::Result<()> {
+        let mut policy = ReadBudgetMeter::new(0, 0);
+        policy.allocation_limit = 1;
+        policy.memory_limit = 8;
+        let observed = Arc::new(policy);
+        let meter: Arc<dyn NativeReadMeter> = observed.clone();
+        let reserved = ReadAllocationReservation::new(&meter, 8)?;
+        observed.cancelled.store(true, Ordering::Release);
+        let allocation = reserved.allocate()?;
+        struct FundedBox {
+            payload: Box<[u8; 8]>,
+            _allocation: ReadAllocation,
+        }
+        let owner = FundedBox { payload: Box::new(*b"accepted"), _allocation: allocation };
+        assert_eq!(&*owner.payload, b"accepted");
+        assert_eq!(*observed.pending_allocations.lock(), (0, 0));
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 1);
+        assert!(ReadAllocationReservation::new(&meter, 1).is_err());
+        drop(owner);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
@@ -6132,6 +6268,8 @@ mod tests {
         written: AtomicU64,
         durability: AtomicU64,
         memory: AtomicU64,
+        allocations: AtomicU64,
+        pending_allocations: parking_lot::Mutex<(u64, u64)>,
         operation_limit: u64,
         byte_limit: u64,
         memory_limit: u64,
@@ -6146,6 +6284,8 @@ mod tests {
                 held_operations: parking_lot::Mutex::new(0),
                 held_bytes: parking_lot::Mutex::new(0),
                 durability: AtomicU64::new(0), memory: AtomicU64::new(0),
+                allocations: AtomicU64::new(0),
+                pending_allocations: parking_lot::Mutex::new((0, 0)),
                 operation_limit, byte_limit, memory_limit: u64::MAX,
                 cancel_after_write: false, cancelled: AtomicBool::new(false),
                 allocation_failure: parking_lot::Mutex::new(None),
@@ -6219,19 +6359,56 @@ mod tests {
                 .map(|_| ()).ok_or_else(Self::refuse)
         }
         fn allocate(&self, bytes: u64) -> io::Result<()> {
-            self.check()?;
-            self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(bytes).filter(|total| *total <= self.memory_limit)
-            }).map(|_| ()).map_err(|_| Self::refuse())
+            self.reserve_allocation(bytes)?;
+            self.record_reserved_allocation(bytes)
         }
-        fn adopt(&self, bytes: u64) -> io::Result<()> { self.allocate(bytes) }
+        fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
+            let mut pending = self.pending_allocations.lock();
+            self.check()?;
+            self.allocations.load(Ordering::Acquire).checked_add(pending.0)
+                .and_then(|total| total.checked_add(1)).ok_or_else(Self::refuse)?;
+            self.memory.load(Ordering::Acquire).checked_add(pending.1)
+                .and_then(|total| total.checked_add(bytes))
+                .filter(|total| *total <= self.memory_limit).ok_or_else(Self::refuse)?;
+            pending.0 += 1;
+            pending.1 += bytes;
+            Ok(())
+        }
+        fn cancel_reserved_allocation(&self, bytes: u64) {
+            let mut pending = self.pending_allocations.lock();
+            pending.0 = pending.0.checked_sub(1).expect("refund owns one allocation credit");
+            pending.1 = pending.1.checked_sub(bytes).expect("refund owns its allocation bytes");
+        }
+        fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
+            let mut pending = self.pending_allocations.lock();
+            let next_operations = pending.0.checked_sub(1).ok_or_else(Self::refuse)?;
+            let next_bytes = pending.1.checked_sub(bytes).ok_or_else(Self::refuse)?;
+            let allocations = self.allocations.load(Ordering::Acquire).checked_add(1)
+                .ok_or_else(Self::refuse)?;
+            let memory = self.memory.load(Ordering::Acquire).checked_add(bytes).ok_or_else(Self::refuse)?;
+            pending.0 = next_operations;
+            pending.1 = next_bytes;
+            self.allocations.store(allocations, Ordering::Release);
+            self.memory.store(memory, Ordering::Release);
+            Ok(())
+        }
+        fn adopt(&self, bytes: u64) -> io::Result<()> {
+            let pending = self.pending_allocations.lock();
+            self.check()?;
+            self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current|
+                current.checked_add(bytes).filter(|next|
+                    next.checked_add(pending.1).is_some_and(|total| total <= self.memory_limit)))
+                .map(|_| ()).map_err(|_| Self::refuse())
+        }
         fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
+            let pending = self.pending_allocations.lock();
             let previous = match self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
                 |current| current.checked_add(bytes)) {
                 Ok(previous) => previous,
                 Err(_) => return (0, Err(Self::refuse())),
             };
-            let result = if previous + bytes > self.memory_limit {
+            let result = if (previous + bytes).checked_add(pending.1)
+                .is_none_or(|total| total > self.memory_limit) {
                 Err(Self::refuse())
             } else { self.check() };
             (bytes, result)
@@ -6242,7 +6419,10 @@ mod tests {
             io::ErrorKind::OutOfMemory.into()
         }
         fn allocate_refcount_header(&self) -> io::Result<()> { Err(Self::refuse()) }
-        fn release(&self, bytes: u64) { self.memory.fetch_sub(bytes, Ordering::AcqRel); }
+        fn release(&self, bytes: u64) {
+            let _pending = self.pending_allocations.lock();
+            self.memory.fetch_sub(bytes, Ordering::AcqRel);
+        }
         fn examine(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn record_examination(&self, _: u64, _: u64) -> io::Result<()> { Ok(()) }
