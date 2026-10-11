@@ -224,11 +224,9 @@ impl PiSession {
         Ok(())
     }
 
-    pub(super) async fn drain_native(&mut self, deactivate: bool) -> RootResult<()> {
-        let cleanup = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            pi_root_provider::allocation_budget(), &cleanup,
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    pub(super) async fn drain_native(
+        &mut self, deactivate: bool, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> RootResult<()> {
         let mut failure = None;
         let graph = pi_recovery::observe_pi_session_with_native_work(
             &self.runtime.runtime, &self.state, &work).await;
@@ -303,6 +301,9 @@ impl PiSession {
             self.drain_native_tasks(native, &tasks, mode, &work, &mut failure).await;
         }
         if deactivate && authenticated {
+            if failure.is_none() {
+                self.state.active = false;
+            }
             retain_first_failure(&mut failure,
                 self.slots.save_with_native_work(&self.resources.private_state_root,
                     &self.relative_directory, &self.state, Survives::PowerLoss, &work));

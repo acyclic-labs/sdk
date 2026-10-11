@@ -1,5 +1,9 @@
 //! Recursive Pi admission over the original task and provider journals.
 //! Planned native locators are not creator evidence or execution authority.
+//! Native begin/advance retain the SDK-issued context and the original work:
+//! current parent checkpoint, immutable qualified source, ordinary preparation,
+//! sealed child admission, then guarded publication/binding. Cold observation
+//! verifies the existing publication without obtaining a replacement lease.
 
 use crate::{LocalAuthorityBackend, LocalObjectBackend, LocalLazyWorkspace,
     PiScratchAllocation, PiScratchCreation, PiTaskBinding, ServiceResources,
@@ -13,8 +17,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     distributed::{Worker, WorkPull},
     durable_host::TaskJournalOwner,
     filesystem::{FilesystemHost, ForkPreparationLimits, RecursiveForkConfig,
-        RecursiveSourceSnapshot, FORK_PREPARE_TASK_COMMAND_KIND, fork_preparation_request,
-        recursive_fork_source, restore_recursive_fork_source},
+        RecursiveSourceSnapshot, FORK_PREPARE_TASK_COMMAND_KIND},
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
@@ -50,7 +53,10 @@ pub(crate) fn original_operation_with_native_work(root: TaskId, caller: TaskId, 
         .ok_or(Error::NativeWork { cause: acyclic_fs::WorkError::Overflow.into(), custody: None })?;
     work.admit(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    Ok(original_operation(root, caller, sdk_tool_call_id))
+    let operation = original_operation(root, caller, sdk_tool_call_id);
+    work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(operation)
 }
 
 pub(crate) fn derived(original: OperationId, role: &str) -> OperationId {
@@ -69,7 +75,10 @@ pub(crate) fn derived_with_native_work(original: OperationId, role: &str, work: 
         .ok_or(Error::NativeWork { cause: acyclic_fs::WorkError::Overflow.into(), custody: None })?;
     work.admit(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    Ok(derived(original, role))
+    let operation = derived(original, role);
+    work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(operation)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -94,7 +103,10 @@ impl PiForkOperations {
             .ok_or(Error::NativeWork { cause: acyclic_fs::WorkError::Overflow.into(), custody: None }))?;
         work.admit(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(Self::new(original))
+        let operations = Self::new(original);
+        work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes, ..acyclic_fs::WorkCounters::default() })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(operations)
     }
 }
 
@@ -143,12 +155,13 @@ pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider
         "private_generation", "HistoryReadLimits", "maximum_events", "LazySnapshotRef", "id", "workspace_id",
         "authored_generation", "overlay", "shadows", "SourceReference", "identity", "epoch",
         "ExtensionAdmission", "source", "selected", "configurations", "ExecutionPlacement", "build",
-        "environment", "readiness_revision", "an array of length 16",
+        "environment", "readiness_revision", "LeaseFence", "reservation_id", "placement", "an array of length 16",
     ]);
 
 struct PiForkInputAllocations {
     _references: [Option<acyclic_fs::NativeAllocation>; 4],
     _source_read: Option<acyclic_fs::NativeAllocation>,
+    _preparation: Option<acyclic_fs::NativeAllocation>,
     _container: acyclic_fs::NativeAllocation,
 }
 
@@ -157,9 +170,9 @@ struct PiStagedInput {
     allocation: Option<acyclic_fs::NativeAllocation>,
 }
 
-struct PiDecodedInput<T> {
-    value: T,
-    allocation: Option<acyclic_fs::NativeAllocation>,
+pub(crate) struct PiDecodedInput<T> {
+    pub(crate) value: T,
+    pub(crate) allocation: Option<acyclic_fs::NativeAllocation>,
 }
 
 enum PiInputBytes<T> {
@@ -181,6 +194,7 @@ pub(crate) struct PreparedPiFork {
     pub(crate) frozen_source: LazySnapshotRef,
     pub(crate) native_lazy: LazySnapshotRef,
     pub(crate) workspace: LocalLazyWorkspace,
+    _metadata_custody: [Option<acyclic_fs::NativeAllocation>; 4],
 }
 
 pub(crate) struct PiForkCoordinator {
@@ -425,6 +439,60 @@ impl PiForkCoordinator {
     }
 
 
+    fn native_copy<T: serde::de::DeserializeOwned, S: Serialize>(&self, value: &S,
+        schema: acyclic_harness::JsonValueSchema, work: &NativeMaterializationWork) -> Result<(T, acyclic_fs::NativeAllocation)> {
+        let maximum = self.owner.policy().maximum_payload_bytes;
+        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(value, maximum, work)?;
+        crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum, schema, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work)
+    }
+
+    fn child_content_grants(&self, original: &Capabilities, input_read: &str,
+        work: &NativeMaterializationWork) -> Result<(Capabilities, acyclic_fs::NativeAllocation)> {
+        struct Grants<'a> { original: &'a Capabilities, input_read: &'a str }
+        impl Serialize for Grants<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut values = serializer.serialize_seq(None)?;
+                for grant in self.original.iter() {
+                    if !grant.starts_with("volume:") && !grant.starts_with("directory:") && !grant.starts_with("file:") {
+                        values.serialize_element(grant)?;
+                    }
+                }
+                values.serialize_element(self.input_read)?;
+                values.end()
+            }
+        }
+        self.native_copy(&Grants { original, input_read }, acyclic_harness::JsonValueSchema::None, work)
+    }
+
+    async fn native_generation(&self, context: &acyclic_harness::runtime::TaskContext,
+        owner: &TaskJournalOwner<LocalStream>, volume: &VolumeRef, work: &NativeMaterializationWork)
+        -> Result<(acyclic_harness::resources::GenerationRef, acyclic_fs::NativeAllocation)> {
+        context.verify_original_volume_read_with_native_work(owner, volume, work).await?;
+        let name = volume.storage_name_with_native_work(work)?;
+        let workspace = self.resources.fs.open_workspace_with_native_work(&name.0, work, work.cancellation()).await
+            .map_err(native_workspace_error)?;
+        self.verify_owner(owner).await?;
+        let head = workspace.head_with_native_work(work, work.cancellation()).await.map_err(native_workspace_error)?;
+        self.verify_owner(owner).await?;
+        acyclic_harness::resources::GenerationRef::new_with_native_work(
+            volume.provider(), head.id().digest().as_bytes(), None, work)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "exact caller snapshot descriptors remain borrowed")]
+    fn native_source_snapshot(&self, task: TaskId, project: &VolumeRef,
+        project_generation: &acyclic_harness::resources::GenerationRef, private_volume: &VolumeRef,
+        private_generation: &acyclic_harness::resources::GenerationRef, work: &NativeMaterializationWork)
+        -> Result<(RecursiveSourceSnapshot, acyclic_fs::NativeAllocation)> {
+        #[derive(Serialize)]
+        struct Source<'a> {
+            task: TaskId, project: &'a VolumeRef, project_generation: &'a acyclic_harness::resources::GenerationRef,
+            private_volume: &'a VolumeRef, private_generation: &'a acyclic_harness::resources::GenerationRef,
+        }
+        self.native_copy(&Source { task, project, project_generation, private_volume, private_generation },
+            acyclic_harness::JsonValueSchema::None, work)
+    }
+
     #[allow(clippy::too_many_arguments, reason = "actual original owner, canonical parent, and native cut are independent authorities")]
     pub(crate) async fn begin(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: LeaseFence, parent: StreamAggregate<LocalStream>,
@@ -463,7 +531,6 @@ impl PiForkCoordinator {
         let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
             caller.binding.agent_id, context.scope().grants(), work)?;
         let verifier = authority.0.1.verifier_with_native_work(work)?;
-        let issuer = &authority.0.1;
         let signed = &authority.0.2;
         let caller_id = work.display(&owner.task_id()).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if parent.reducer().authority().kind != AggregateKind::Conversation
@@ -477,132 +544,139 @@ impl PiForkCoordinator {
         let source_input: PiDecodedInput<PiTaskInput> = self.decode_input_value(&source_admission.value.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
         let source_input = &source_input.value;
-        let (root_key, project) = source_input.binding.project_volumes.iter().find(|(_, volume)| {
-            volume.storage_name().is_ok_and(|name| name == source.workspace().name().as_str())
-        }).ok_or_else(|| Error::Unauthorized("Pi source handle is not its original admitted project".into()))?;
-        if commit.source_task != self.owner.policy().root_task {
-            let selected = self.runtime.runtime.inspect_source(owner.task_id(), commit.source_task).await?;
-            if !selected.volumes().iter().any(|snapshot| &snapshot.volume == project) {
-                return Err(Error::Unauthorized("Pi selected child project has no actual creator proof".into()));
-            }
+        let mut selected_project = None;
+        for (key, volume) in &source_input.binding.project_volumes {
+            let name = volume.storage_name_with_native_work(work)?;
+            if name.0 == source.workspace().name().as_str() { selected_project = Some((key, volume)); break; }
         }
-        let generation = acyclic_harness::resources::GenerationRef::new(project.provider().clone(),
-            frozen.authored_generation.digest().into_bytes(), None)?;
+        let (root_key, project) = selected_project.ok_or_else(|| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi source handle is not its originally admitted project" })?;
+        let generation = acyclic_harness::resources::GenerationRef::new_with_native_work(
+            project.provider(), frozen.authored_generation.digest().as_bytes(), None, work)?;
         let scratch = &caller.binding.scratch.volume;
-        let scratch_workspace = self.accept(self.resources.fs.open_workspace_measured(scratch.storage_name()?, self.remaining(budget)?, &cancel).await)?.value;
-        let scratch_generation = self.accept(scratch_workspace.head_measured(self.remaining(budget)?, &cancel).await)?.value;
-        let snapshot = RecursiveSourceSnapshot { task: owner.task_id(), project: project.clone(),
-            project_generation: generation, private_volume: scratch.clone(),
-            private_generation: acyclic_harness::resources::GenerationRef::new(scratch.provider().clone(),
-                scratch_generation.id().digest().into_bytes(), None)? };
-        let caller_project = caller.binding.project_volumes.get(root_key)
-            .or_else(|| caller.binding.project_volumes.values().next())
-            .ok_or_else(|| Error::Unauthorized("Pi caller has no actual parent project binding".into()))?.clone();
-        let mut caller_snapshot = snapshot.clone();
-        if caller_project != snapshot.project {
-            let workspace = self.accept(self.resources.fs.open_workspace_measured(caller_project.storage_name()?, self.remaining(budget)?, &cancel).await)?.value;
-            let generation = self.accept(workspace.head_measured(self.remaining(budget)?, &cancel).await)?.value;
-            caller_snapshot.project_generation = acyclic_harness::resources::GenerationRef::new(
-                caller_project.provider().clone(), generation.id().digest().into_bytes(), None)?;
-            caller_snapshot.project = caller_project.clone();
-        }
-        let mut source_read_custody = None;
+        let private_generation = self.native_generation(context, owner, scratch, work).await?;
+        let mut source_snapshot = self.native_source_snapshot(owner.task_id(), project, &generation.0,
+            scratch, &private_generation.0, work)?;
+        let original_caller_project = caller.binding.project_volumes.get(root_key)
+            .or_else(|| caller.binding.project_volumes.values().next()).ok_or_else(|| Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi caller has no actual project binding" })?;
+        let caller_generation = if original_caller_project == project {
+            acyclic_harness::resources::GenerationRef::new_with_native_work(
+                project.provider(), frozen.authored_generation.digest().as_bytes(), None, work)?
+        } else { self.native_generation(context, owner, original_caller_project, work).await? };
+        let caller_snapshot = self.native_source_snapshot(owner.task_id(), original_caller_project, &caller_generation.0,
+            scratch, &private_generation.0, work)?;
+        let mut caller_project = self.native_copy::<VolumeRef, _>(original_caller_project, acyclic_harness::JsonValueSchema::None, work)?;
         let source_read = if commit.source_task != owner.task_id() {
-            if let Some(work) = &self.work {
-                let (handle, custody) = self.authorize_selected_project_with_native_work(context, owner,
-                    commit.source_task, source.clone(), frozen, operations.fork, limits.work, limits.bytes, work).await?;
-                source_read_custody = Some(custody);
-                Some(handle)
-            } else {
-                let native_snapshot = serde_json::to_value(frozen).map_err(invalid_json)?;
-                let policy = PiProjectSourcePolicy { coordinator: self, source: source.clone(), frozen,
-                    caller: owner.task_id(), caller_context: context, caller_owner: owner,
-                    selected: commit.source_task, operation: operations.fork,
-                    native_snapshot: &native_snapshot, budget, cancel: cancel.clone() };
-                Some(owner.authorize_project_source(context, &self.owner.authority()?.issuer, &policy,
-                    commit.source_task, operations.fork, ProjectSourceSnapshot {
-                        project: snapshot.project.clone(), generation: snapshot.project_generation.clone(),
-                        native_snapshot: Some(native_snapshot.clone()),
-                    }, limits.work, limits.bytes).await?)
-            }
+            Some(self.authorize_selected_project_with_native_work(context, owner, commit.source_task,
+                source.clone(), frozen, operations.fork, limits.work, limits.bytes, work).await?)
         } else { None };
-        if commit.child.project_volumes.len() != 1 {
-            return Err(Error::Invalid("Pi fork must retain exactly its one canonical selected project".into()));
-        }
-        let child_project = commit.child.project_volumes.get(root_key)
-            .ok_or_else(|| Error::Unauthorized("Pi child project changed the original selected root key".into()))?.clone();
+        if commit.child.project_volumes.len() != 1 { return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi fork requires its one actually selected child project" }); }
+        let child_project = commit.child.project_volumes.get(root_key).ok_or_else(|| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi child changed its selected root key" })?;
+        let results = commit.child.results.as_ref().ok_or_else(|| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi child requires its separate unmounted result allocation" })?;
+        if !matches!(results.allocation, PiScratchAllocation::Preparing) { return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi immutable result allocation must remain Preparing" }); }
+        let child_project = self.native_copy::<VolumeRef, _>(child_project, acyclic_harness::JsonValueSchema::None, work)?;
+        let child_private = self.native_copy::<VolumeRef, _>(&commit.child.scratch.volume, acyclic_harness::JsonValueSchema::None, work)?;
+        let child_result = self.native_copy::<VolumeRef, _>(&results.volume, acyclic_harness::JsonValueSchema::None, work)?;
+        let child_id = work.display(&commit.child.task_id).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        #[derive(Serialize)]
+        struct Arguments<'a> { id: AgentId, msg: &'a str, source: Option<TaskId> }
+        let arguments = self.native_copy::<acyclic_harness::filesystem::ForkToolArguments, _>(
+            &Arguments { id: operations.agent, msg: &commit.prompt, source: Some(commit.source_task) },
+            acyclic_harness::JsonValueSchema::None, work)?;
         let history_limits = HistoryReadLimits { maximum_events: limits.work.min(u64::from(u32::MAX)) as u32,
             maximum_bytes: limits.bytes };
-        let arguments = acyclic_harness::filesystem::ForkToolArguments { id: operations.agent,
-            msg: commit.prompt.clone(), source: None };
-        let config = RecursiveForkConfig { child: Authority { kind: AggregateKind::Conversation, id: commit.child.task_id.to_string() },
-            child_project, child_private: commit.child.scratch.volume.clone(),
-            child_result_volume: commit.child.results.as_ref().map(|result| result.volume.clone()), limits: context.scope().limits(),
-            inherited_messages: context.scope().limits().context_messages as u64,
+        let config = RecursiveForkConfig { child: Authority { kind: AggregateKind::Conversation, id: child_id.0 },
+            child_project: child_project.0, child_private: child_private.0, child_result_volume: Some(child_result.0),
+            limits: context.scope().limits(), inherited_messages: context.scope().limits().context_messages as u64,
             inherited_bytes: limits.bytes, inherited_references: limits.resources, history_limits };
-        let source_binding = recursive_fork_source(&self.runtime.runtime, self.filesystem.clone(), &self.stream,
-            &parent, issuer.verifier(), signed, context, caller_snapshot,
-            acyclic_harness::resources::ProviderRef::new("local", "stream", "1")?, operations.fork, &arguments, config).await?;
-        let capture = self.capture(source.clone(), frozen, budget, &cancel).await?;
-        let mut request = source_binding.request;
-        acyclic_harness::filesystem::ForkToolArguments { id: operations.agent, msg: commit.prompt.clone(),
-            source: Some(commit.source_task) }.select_project(owner.task_id(), commit.source_task,
-            snapshot.project.clone(), snapshot.project_generation.clone(), context.scope().limits(), &mut request)?;
-        let results = commit.child.results.as_ref()
-            .ok_or_else(|| Error::Invalid("Pi native child requires its distinct unmounted result allocation intent".into()))?;
-        if !matches!(results.allocation, PiScratchAllocation::Preparing) {
-            return Err(Error::Invalid("Pi result allocation must remain preparing in immutable child input".into()));
-        }
-        request.preparation.child_result_volume = Some(results.volume.clone());
-        request.selections.push(capture.selection());
-        let mut preparer = Arc::try_unwrap(source_binding.preparer)
-            .map_err(|_| Error::Conflict("Pi source preparer escaped its original construction".into()))?
-            .with_capture_provider(capture)?;
-        if let Some(source_read) = source_read {
-            request.authorized_source = Some(source_read.authorization().clone());
-            request = request.with_history_policy(parent.reducer(), acyclic_harness::fork::ForkHistoryPolicy::Fresh)?;
-            preparer = preparer.with_project_source_read_handle(source_read)?;
-        }
-        let checkpoint_bytes = acyclic_harness::contract::canonical_json_bytes(&parent.reducer().snapshot()?)?;
+        let checkpoint_snapshot = parent.reducer().snapshot_native(usize::MAX, work)?;
+        let checkpoint_bytes = crate::pi_root_provider::guarded_pi_bytes(&checkpoint_snapshot,
+            self.owner.policy().maximum_payload_bytes, work)?;
+        let checkpoint_path = work.display(&format_args!("pi-fork/{original}/source-checkpoint.json"))
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut checkpoint = self.stage_input(context, self.derive(original, "source-checkpoint")?,
-            &format!("pi-fork/{original}/source-checkpoint.json"), &checkpoint_bytes, "Pi original caller cut").await?;
-        let input_read = self.owner.policy().journal.directory_read_capability(
-            crate::pi_root_inputs::ROOT_INPUT_DIRECTORY)?;
-        if !context.scope().grants().contains(&input_read) {
-            return Err(Error::Unauthorized("Pi caller lacks its original immutable input-directory read grant".into()));
-        }
-        let mut launch_reference = self.stage_original_input(self.derive(original, "native-input")?, "native-input", &commit.launch, budget, &cancel).await?;
-        let input = PiTaskInput { binding: commit.child.clone(), execution: PiTaskExecution::Child {
-            launch: WorkflowCommand { operation_id: operations.native, kind: NATIVE_LAUNCH_TASK_COMMAND_KIND.into(),
-                payload: launch_reference.reference } } };
-        let mut child = self.runtime.runtime.harness().registered_child_admission(operations.child,
-            "acyclic.pi", "1", serde_json::to_value(input).map_err(invalid_json)?, owner.task_id(), context.scope())?;
-        let mut grants = child.grants.iter().filter(|grant| !grant.starts_with("volume:") && !grant.starts_with("directory:")
-            && !grant.starts_with("file:")).map(str::to_owned).collect::<Vec<_>>();
-        grants.push(input_read);
-        child.grants = Capabilities::new(grants);
-        let bytes = acyclic_harness::contract::canonical_json_bytes(&request)?;
+            &checkpoint_path.0, &checkpoint_bytes.0, "Pi original caller cut").await?;
+        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
+        let source_binding = acyclic_harness::filesystem::recursive_fork_source_with_native_work(self.filesystem.clone(),
+            &self.stream, parent.into_reducer(), &verifier.0, signed, context, &caller_snapshot.0,
+            &stream_provider.0, operations.fork, &arguments.0, &config,
+            source_read.as_ref().map(|pair| &pair.0), resolver, &cancel, work).await?;
+        let capture = self.capture(source.clone(), frozen, budget, &cancel).await?;
+        let mut request = source_binding.0.request;
+        let mut request_custody = source_binding.1;
+        let selection = capture.selection_with_native_work(work)?;
+        request.add_selection_with_native_work(selection.0, &mut request_custody, selection.1, work)?;
+        let preparer = Arc::try_unwrap(source_binding.0.preparer).map_err(|_| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi original native preparer escaped its construction" })?;
+        let preparer = preparer.with_capture_provider_with_native_work(capture, work)?;
+        let source_read_custody = source_read.map(|pair| pair.1);
+        let snapshot = source_snapshot.0;
+        request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        request_custody.absorb(&mut caller_project.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let caller_project = caller_project.0;
+        let input_read = self.owner.policy().journal.directory_read_capability_with_native_work(
+            crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, work)?;
+        if !context.scope().grants().contains(&input_read.0) { return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi caller lacks immutable input-directory READ" }); }
+        let mut launch_reference = self.stage_original_input(self.derive(original, "native-input")?,
+            "native-input", &commit.launch, budget, &cancel).await?;
+        #[derive(Serialize)]
+        struct Command<'a> { operation_id: OperationId, kind: &'a str, payload: &'a FileRef }
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Execution<'a> { Child { launch: Command<'a> } }
+        #[derive(Serialize)]
+        struct Input<'a> { binding: &'a PiTaskBinding, execution: Execution<'a> }
+        let input = crate::pi_root_provider::guarded_pi_value(&Input { binding: &commit.child,
+            execution: Execution::Child { launch: Command { operation_id: operations.native,
+                kind: NATIVE_LAUNCH_TASK_COMMAND_KIND, payload: &launch_reference.reference } } },
+            self.owner.policy().maximum_payload_bytes, work)?;
+        let mut child = self.runtime.runtime.harness().registered_child_admission_with_native_work(operations.child,
+            "acyclic.pi", "1", input, owner.task_id(), context.scope(), work)?;
+        let mut child_grants = self.child_content_grants(&child.0.grants, &input_read.0, work)?;
+        child.0.grants = child_grants.0;
+        child.1.absorb(&mut child_grants.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, self.owner.policy().maximum_payload_bytes, work)?;
+        let fork_path = work.display(&format_args!("pi-fork/{original}/fork-input.json"))
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut fork_input = self.stage_input(context, self.derive(original, "fork-input")?,
-            &format!("pi-fork/{original}/fork-input.json"), &bytes, "Pi original fork input").await?;
-        let command = WorkflowCommand { operation_id: operations.fork, kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),
-            payload: fork_input.reference };
+            &fork_path.0, &bytes.0, "Pi original fork input").await?;
+        let command_kind = work.display(&FORK_PREPARE_TASK_COMMAND_KIND)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let command = WorkflowCommand { operation_id: operations.fork, kind: command_kind.0, payload: fork_input.reference };
         let project_creation = preparer.project_creation_operation(&request)?;
-        let request = fork_preparation_request(&preparer, request, task_id_for_admission(operations.preparation),
-            child, command, limits, Some(checkpoint.reference.clone()))?;
-        let preparation = self.runtime.runtime.harness().registered_child_admission(operations.preparation,
-            "acyclic.fork_preparation", "1", serde_json::to_value(&request).map_err(invalid_json)?, owner.task_id(), context.scope())?;
+        let mut checkpoint_copy = self.native_copy::<FileRef, _>(&checkpoint.reference, acyclic_harness::JsonValueSchema::None, work)?;
+        let mut prepared_request = acyclic_harness::filesystem::fork_preparation_request_with_native_work(&preparer,
+            &request, task_id_for_admission(operations.preparation), child.0, command, limits,
+            Some(checkpoint_copy.0), Vec::new(), work)?;
+        let input = crate::pi_root_provider::guarded_pi_value(&prepared_request.0,
+            self.owner.policy().maximum_payload_bytes, work)?;
+        let mut prepared_admission = self.runtime.runtime.harness().registered_child_admission_with_native_work(
+            operations.preparation, "acyclic.fork_preparation", "1", input, owner.task_id(), context.scope(), work)?;
+        request_custody.absorb(&mut prepared_request.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        request_custody.absorb(&mut prepared_admission.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        request_custody.absorb(&mut child.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        request_custody.absorb(&mut checkpoint_copy.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let request = prepared_request.0;
+        let preparation = prepared_admission.0;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         self.verify_owner(owner).await?;
-        let input_allocations = if let Some(work) = &self.work {
-            let container = work.claim((std::mem::size_of::<PiForkInputAllocations>()
-                + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let checkpoint_allocation = checkpoint.allocation.take()
-                .ok_or_else(|| Error::Conflict("Pi checkpoint lost its original input custody".into()))?;
-            let fork_allocation = fork_input.allocation.take()
-                .ok_or_else(|| Error::Conflict("Pi fork input lost its original custody".into()))?;
-            Some(Arc::new(PiForkInputAllocations { _references: [Some(checkpoint_allocation), Some(fork_allocation),
-                launch_reference.allocation.take(), None], _source_read: source_read_custody, _container: container }))
-        } else { None };
+        let container = work.claim((std::mem::size_of::<PiForkInputAllocations>()
+            + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let checkpoint_allocation = checkpoint.allocation.take().ok_or(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi checkpoint lost original input custody" })?;
+        let fork_allocation = fork_input.allocation.take().ok_or(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi fork input lost original input custody" })?;
+        let input_allocations = Some(Arc::new(PiForkInputAllocations {
+            _references: [Some(checkpoint_allocation), Some(fork_allocation), launch_reference.allocation.take(), None],
+            _source_read: source_read_custody, _preparation: Some(request_custody), _container: container }));
         let mut plan = PiForkPlan { original, commit, preparation, request, source_checkpoint: checkpoint.reference,
             source: snapshot, caller_project, frozen, history_limits, project_creation, _input_allocations: input_allocations };
         // This is an immutable original piInputs argument, not a retry or
@@ -639,7 +713,7 @@ impl PiForkCoordinator {
                 + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             decoded.value._input_allocations = Some(Arc::new(PiForkInputAllocations {
                 _references: [reference.allocation.take(), decoded.allocation.take(), None, None],
-                _source_read: None, _container: container }));
+                _source_read: None, _preparation: None, _container: container }));
         }
         Ok(Some(decoded.value))
     }
@@ -694,6 +768,51 @@ impl PiForkCoordinator {
         }
     }
 
+    async fn observe_outcome(&self, task: TaskId) -> Result<PiDecodedInput<Option<Outcome<serde_json::Value>>>> {
+        match &self.work {
+            Some(work) => {
+                let (value, allocation) = self.runtime.runtime.task_host().outcome_with_native_work(task, work)?.await?;
+                Ok(PiDecodedInput { value, allocation: Some(allocation) })
+            }
+            None => Ok(PiDecodedInput { value: self.runtime.runtime.task_host().outcome(task).await?, allocation: None }),
+        }
+    }
+
+    fn same_payload<T: Serialize>(&self, expected: &serde_json::Value, actual: &T) -> Result<bool> {
+        match &self.work {
+            Some(work) => {
+                let actual = crate::pi_root_provider::guarded_pi_value(actual, self.owner.policy().maximum_payload_bytes, work)?;
+                Ok(expected == &actual.0)
+            }
+            None => Ok(expected == &serde_json::to_value(actual).map_err(invalid_json)?),
+        }
+    }
+
+    fn same_original<T: Serialize>(&self, left: &T, right: &T) -> Result<bool> {
+        match &self.work {
+            Some(work) => {
+                let maximum = self.owner.policy().maximum_payload_bytes;
+                let left = crate::pi_root_provider::guarded_pi_bytes(left, maximum, work)?;
+                let right = crate::pi_root_provider::guarded_pi_bytes(right, maximum, work)?;
+                Ok(left.0 == right.0)
+            }
+            None => Ok(serde_json::to_value(left).map_err(invalid_json)? == serde_json::to_value(right).map_err(invalid_json)?),
+        }
+    }
+
+    async fn admit_original(&self, request: &TaskAdmissionRecord, fence: &LeaseFence) -> Result<()> {
+        match &self.work {
+            Some(work) => {
+                let request = self.native_copy(request, acyclic_harness::JsonValueSchema::TaskAdmissionRecord, work)?;
+                let fence = self.native_copy(fence, acyclic_harness::JsonValueSchema::None, work)?;
+                let admitted = self.runtime.runtime.task_host().admit_owned_with_native_work(request, fence, work)?.await?;
+                drop(admitted);
+                Ok(())
+            }
+            None => self.runtime.runtime.task_host().admit_owned(request.clone(), fence.clone()).await.map(|_| ()),
+        }
+    }
+
     async fn stage_input(&self, context: &acyclic_harness::runtime::TaskContext, operation: OperationId,
         path: &str, bytes: &[u8], display: &str) -> Result<PiStagedInput> {
         match &self.work {
@@ -734,8 +853,60 @@ impl PiForkCoordinator {
         budget: WorkBudget, cancel: CancellationToken) -> Result<Option<PreparedPiFork>> {
         let original = self.load_original_plan(plan.original, self.remaining(budget)?, &cancel).await?
             .ok_or_else(|| Error::Unauthorized("Pi prepared observation lost its original immutable plan".into()))?;
-        if serde_json::to_value(&original).map_err(invalid_json)? != serde_json::to_value(plan).map_err(invalid_json)? {
+        if !self.same_original(&original, plan)? {
             return Err(Error::Unauthorized("Pi prepared observation substituted its original plan".into()));
+        }
+        if let Some(work) = &self.work {
+            let preparation = match self.observe_admission(plan.preparation.task_id()).await {
+                Ok(value) => value, Err(Error::NotFound(_)) => return Ok(None), Err(error) => return Err(error),
+            };
+            if preparation.value != plan.preparation { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi original preparation admission changed" }); }
+            let outcome = self.observe_outcome(plan.preparation.task_id()).await?;
+            let report: PiDecodedInput<ForkReport> = match &outcome.value {
+                Some(Outcome::Succeeded(value)) => self.decode_input_value(value,
+                    acyclic_harness::JsonValueSchema::ForkReport, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES)?,
+                _ => return Ok(None),
+            };
+            report.value.validate()?;
+            if !self.same_payload(&plan.request.payload, &report.value.request)? { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi actual creator report changed its original request" }); }
+            let admission = match self.observe_admission(plan.request.child.task_id()).await {
+                Ok(value) => value, Err(Error::NotFound(_)) => return Ok(None), Err(error) => return Err(error),
+            };
+            if admission.value != plan.request.child { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi original child admission changed" }); }
+            let reference = self.observe_original_input(self.derive(plan.original, "native-input")?,
+                "native-input", budget, &cancel).await?.ok_or(Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi original native input disappeared" })?;
+            let child: PiDecodedInput<PiTaskInput> = self.decode_input_value(&admission.value.input,
+                acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
+            let PiTaskExecution::Child { launch } = &child.value.execution else { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi admitted child substituted Root execution" }); };
+            let bytes = self.read_original_input(&reference.reference, self.remaining(budget)?, &cancel).await?;
+            let intent: PiDecodedInput<PiNativeLaunchIntent> = self.decode_original_input(bytes.as_ref(),
+                acyclic_harness::JsonValueSchema::None, crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, budget, &cancel)?;
+            if launch.payload != reference.reference || intent.value != plan.commit.launch { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi admitted child changed its sealed native intent" }); }
+            let parent_admission = self.observe_admission(plan.commit.caller).await?;
+            let parent_input: PiDecodedInput<PiTaskInput> = self.decode_input_value(&parent_admission.value.input,
+                acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
+            let parent_authority = self.owner.conversation_authority_with_native_work(plan.commit.caller,
+                parent_input.value.binding.agent_id, &parent_admission.value.grants, work)?;
+            let parent_verifier = parent_authority.0.1.verifier_with_native_work(work)?;
+            let child_authority = self.owner.conversation_authority_with_native_work(plan.request.child.task_id(),
+                plan.commit.child.agent_id, &admission.value.grants, work)?;
+            let child_verifier = child_authority.0.1.verifier_with_native_work(work)?;
+            let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
+                &self.stream, &parent_authority.0.0, &parent_verifier.0, work)?;
+            let child = acyclic_harness::store::HistoryReader::new_with_native_work(
+                &self.stream, &child_authority.0.0, &child_verifier.0, work)?;
+            let seed = report.value.clone_with_native_work(work)?;
+            let seed_value = seed.0.into_seed()?;
+            child.0.verify_published_child_with_native_work(&parent.0, &seed_value, plan.history_limits, work).await?;
+            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            return Ok(Some(self.created_fork(plan, report.value, admission.value, source, self.remaining(budget)?,
+                &cancel, report.allocation, admission.allocation).await?));
         }
         let host = self.runtime.runtime.task_host();
         let preparation = match host.observe_admission(plan.preparation.task_id()).await {
@@ -776,16 +947,74 @@ impl PiForkCoordinator {
         let child = acyclic_harness::store::HistoryReader::new(&self.stream, &child_authority, child_issuer.verifier())?;
         self.accept(child.verify_published_child_measured(&parent, &report.clone().into_seed()?, self.remaining(budget)?, &cancel).await)?;
         PiLazyCapture::new(source.clone(), plan.frozen, self.remaining(budget)?, cancel.clone(), self.work.clone()).await?;
-        Ok(Some(self.created_fork(plan, report, admission, source, self.remaining(budget)?, &cancel).await?))
+        Ok(Some(self.created_fork(plan, report, admission, source, self.remaining(budget)?, &cancel, None, None).await?))
     }
 
     async fn prepare_native_source(&self, owner: &TaskJournalOwner<LocalStream>, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: &CancellationToken,
     ) -> Result<()> {
         self.verify_owner(owner).await?;
+        if let Some(work) = &self.work {
+            let request: PiDecodedInput<ForkRequest> = self.decode_input_value(&plan.request.payload,
+                acyclic_harness::JsonValueSchema::ForkRequest, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES)?;
+            let name = request.value.preparation.child_project_volume.storage_name_with_native_work(work)?;
+            let prepared = source.prepare_fork_snapshot_with_native_work(&name.0, plan.frozen,
+                plan.project_creation, work, cancel).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            if prepared != plan.frozen { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "native preparation changed its immutable source cut" }); }
+            self.verify_owner(owner).await?;
+            return Ok(());
+        }
         let request: ForkRequest = serde_json::from_value(plan.request.payload.clone()).map_err(invalid_json)?;
-        self.accept(source.prepare_fork_snapshot_measured(request.preparation.child_project_volume.storage_name()?, plan.frozen, plan.project_creation, self.remaining(budget)?, cancel).await)?;
+        self.accept(source.prepare_fork_snapshot_measured(request.preparation.child_project_volume.storage_name()?,
+            plan.frozen, plan.project_creation, self.remaining(budget)?, cancel).await)?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "original native owner, source cut, and invocation work stay distinct")]
+    async fn native_preparer(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
+        owner: &Arc<TaskJournalOwner<LocalStream>>, plan: &PiForkPlan, source: Arc<LocalLazyWorkspace>,
+        budget: WorkBudget, cancel: &CancellationToken, work: &NativeMaterializationWork)
+        -> Result<Arc<acyclic_harness::filesystem::FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>>> {
+        let context = shared.context();
+        let admission = self.observe_admission(owner.task_id()).await?;
+        let caller: PiDecodedInput<PiTaskInput> = self.decode_input_value(&admission.value.input,
+            acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
+        let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
+            caller.value.binding.agent_id, context.scope().grants(), work)?;
+        let request: (ForkRequest, acyclic_fs::NativeAllocation) = self.native_copy(&plan.request.payload,
+            acyclic_harness::JsonValueSchema::ForkRequest, work)?;
+        let checkpoint = context.read_file_with_native_work(&plan.source_checkpoint, work).await?;
+        self.verify_owner(owner).await?;
+        let snapshot = Snapshot::decode_with_native_work(&checkpoint.0, plan.request.maximum_bytes, work)?;
+        if snapshot.authority != request.0.parent || snapshot.revision != request.0.parent_revision {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi original checkpoint differs from its canonical parent revision" });
+        }
+        let verifier = authority.0.1.verifier_with_native_work(work)?;
+        let reducer = Reducer::restore_native(snapshot, verifier.0, SchemaRegistry::new(), work)?;
+        let source_read = match &request.0.authorized_source {
+            Some(authorization) => Some(owner.restore_project_source_authorization_with_native_work(
+                context, authorization, work)?.await?),
+            None => None,
+        };
+        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let verifier = authority.0.1.verifier_with_native_work(work)?;
+        let provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
+        let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
+            self.filesystem.clone(), &self.stream, reducer, &verifier.0, &authority.0.2,
+            &plan.caller_project, &provider.0, request, plan.history_limits,
+            source_read.as_ref().map(|pair| &pair.0), resolver, cancel, work).await?;
+        let capture = self.capture(source, plan.frozen, budget, cancel).await?;
+        let preparer = Arc::try_unwrap(restored.0.preparer).map_err(|_| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi restored preparer escaped its original native ownership" })?;
+        let preparer = preparer.with_capture_provider_with_native_work(capture, work)?;
+        if preparer.project_creation_operation(&restored.0.request)? != plan.project_creation {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi native companion changed its original filesystem operation" });
+        }
+        self.verify_owner(owner).await?;
+        preparer.into_native_shared(work)
     }
 
     /// The service persists its existing Preparing route after this ordinary
@@ -795,7 +1024,7 @@ impl PiForkCoordinator {
     ) -> Result<()> {
         self.authenticate(context, owner, &fence).await?;
         self.validate_plan(plan, owner.task_id())?;
-        self.runtime.runtime.task_host().admit_owned(plan.preparation.clone(), fence).await?;
+        self.admit_original(&plan.preparation, &fence).await?;
         Ok(())
     }
 
@@ -804,90 +1033,67 @@ impl PiForkCoordinator {
     #[allow(clippy::too_many_arguments, reason = "exact parent lease and immutable source selection")]
     /// Advances only the ordinary registered preparation task. Child grants
     /// remain unsealed and no child task is admitted by this method.
-    pub(crate) async fn prepare(&self, context: &acyclic_harness::runtime::TaskContext,
+    pub(crate) async fn prepare(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken,
-    ) -> Result<Option<ForkReport>> {
+    ) -> Result<Option<PiDecodedInput<ForkReport>>> {
+        let context = shared.context();
+        let work = self.work.as_ref().ok_or(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unsupported, reason: "Pi preparation requires its original native invocation work" })?;
         self.authenticate(context, owner, &fence).await?;
         self.validate_plan(plan, owner.task_id())?;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         self.authenticate_launch(context, plan, self.remaining(budget)?, &cancel).await?;
-        let caller: PiTaskInput = serde_json::from_value(self.runtime.runtime.task_host()
-            .observe_admission(owner.task_id()).await?.input).map_err(invalid_json)?;
-        let (_, issuer, signed) = self.owner.conversation_authority(owner.task_id(),
-            caller.binding.agent_id, context.scope().grants().clone())?;
-        let checkpoint_grant = acyclic_harness::conversation::ContentGrant::verify_read(
-            &issuer.verifier(), &signed, &plan.source_checkpoint)?;
-        let checkpoint_bytes = self.accept(self.filesystem.read_content_measured(&plan.source_checkpoint,
-            &checkpoint_grant, plan.request.maximum_bytes, self.remaining(budget)?, &cancel).await)?.value;
-        let snapshot: Snapshot = self.accept_root(crate::pi_root_provider::decode_pi_value(checkpoint_bytes.as_ref(),
-            plan.request.maximum_bytes, plan.request.maximum_bytes, self.remaining(budget)?, &cancel))?.value;
-        let reducer = Reducer::restore(snapshot, issuer.verifier(), SchemaRegistry::new())?;
-        let request: ForkRequest = serde_json::from_value(plan.request.payload.clone()).map_err(invalid_json)?;
-        let restored = restore_recursive_fork_source(self.filesystem.clone(), &self.stream, &reducer,
-            issuer.verifier(), signed, plan.caller_project.clone(),
-            acyclic_harness::resources::ProviderRef::new("local", "stream", "1")?,
-            request.clone(), plan.history_limits).await?;
-        let capture = self.capture(source.clone(), plan.frozen, budget, &cancel).await?;
-        let mut preparer = Arc::try_unwrap(restored.preparer)
-            .map_err(|_| Error::Conflict("restored Pi preparer escaped its original owner".into()))?
-            .with_capture_provider(capture)?;
-        if let Some(source_read) = owner.restore_project_source(context, &plan.request).await? {
-            preparer = preparer.with_project_source_read_handle(source_read)?;
-        }
-        let preparer = Arc::new(preparer);
-        if preparer.project_creation_operation(&request)? != plan.project_creation {
-            return Err(Error::Unauthorized("Pi native companion changed its original canonical FS operation".into()));
-        }
-        let restored_request = fork_preparation_request(preparer.as_ref(), request,
-            plan.preparation.task_id(), plan.request.child.clone(),
-            plan.request.command.clone().ok_or_else(|| Error::Invalid("Pi preparation command missing".into()))?,
-            ForkPreparationLimits { resources: plan.request.maximum_resources,
-                work: plan.request.maximum_work, bytes: plan.request.maximum_bytes },
-            Some(plan.source_checkpoint.clone()))?;
-        if restored_request != plan.request {
-            return Err(Error::Unauthorized("Pi restored preparation changed its original source or child admission".into()));
-        }
+        let preparer = self.native_preparer(shared, owner, plan, source, budget, &cancel, work).await?;
         let host = self.runtime.runtime.task_host();
         self.verify_owner(owner).await?;
-        host.admit_owned(plan.preparation.clone(), fence.clone()).await?;
-        if host.observe_admission(plan.preparation.task_id()).await? != plan.preparation {
-            return Err(Error::Unauthorized("Pi preparation belongs to another original operation".into()));
+        self.admit_original(&plan.preparation, &fence).await?;
+        if self.observe_admission(plan.preparation.task_id()).await?.value != plan.preparation {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi preparation belongs to another original operation" });
         }
-        if host.outcome(plan.preparation.task_id()).await?.is_none() {
-            let commands = self.runtime.runtime.commands().with_fork_preparer(preparer.clone());
-            match host.recover_work(plan.preparation.task_id()).await? {
+        if self.observe_outcome(plan.preparation.task_id()).await?.value.is_none() {
+            let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
+            let recovered = host.recover_work_with_native_work(plan.preparation.task_id(), work)?.await?;
+            match recovered.0 {
                 WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
-                    self.runtime.runtime.resume_task(lease, &commands, 8).await;
+                    let result = self.runtime.runtime.resume_task_with_native_work(lease, recovered.1, &commands, 8, work).await?;
+                    drop(result);
                 }
                 WorkPull::Idle => {
-                    self.runtime.runtime.run_operation(&Worker {
-                        id: format!("pi-fork:{}", self.resources.instance_id),
-                        available: ResourceSnapshot::default(), labels: BTreeMap::new(),
-                    }, plan.preparation.task_id(), &commands, 8).await?;
+                    let worker_id = work.display(&format_args!("pi-fork:{}", self.resources.instance_id))
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    let worker = Worker { id: worker_id.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+                    let result = self.runtime.runtime.run_operation_with_native_work(&worker,
+                        plan.preparation.task_id(), &commands, 8, work).await?;
+                    drop(result);
                 }
             }
         }
-        let report = match host.outcome(plan.preparation.task_id()).await? {
-            Some(Outcome::Succeeded(value)) => serde_json::from_value::<ForkReport>(value).map_err(invalid_json)?,
-            Some(Outcome::Failed { message }) => return Err(Error::Conflict(message)),
-            Some(Outcome::Cancelled) => return Err(Error::Conflict("Pi preparation cancelled; no child was admitted".into())),
+        let outcome = self.observe_outcome(plan.preparation.task_id()).await?;
+        let report: PiDecodedInput<ForkReport> = match &outcome.value {
+            Some(Outcome::Succeeded(value)) => self.decode_input_value(value,
+                acyclic_harness::JsonValueSchema::ForkReport, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES)?,
+            Some(Outcome::Failed { .. }) => return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi original preparation failed" }),
+            Some(Outcome::Cancelled) => return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi preparation cancelled without admitting a child" }),
             None | Some(Outcome::Indeterminate { .. }) => return Ok(None),
         };
-        report.validate()?;
-        if serde_json::to_value(&report.request).map_err(invalid_json)? != plan.request.payload {
-            return Err(Error::Unauthorized("Pi preparation report changed the retained original request".into()));
-        }
+        report.value.validate()?;
+        if !self.same_payload(&plan.request.payload, &report.value.request)? { return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi report changed the retained original request" }); }
         self.verify_owner(owner).await?;
         Ok(Some(report))
     }
 
     #[allow(clippy::too_many_arguments, reason = "exact parent lease and immutable source selection")]
-    pub(crate) async fn advance(&self, context: &acyclic_harness::runtime::TaskContext,
+    pub(crate) async fn advance(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken,
     ) -> Result<Option<PreparedPiFork>> {
-        let Some(report) = self.prepare(context, owner, fence.clone(), plan, source.clone(), self.remaining(budget)?, cancel.clone()).await? else {
+        let context = shared.context();
+        let Some(report) = self.prepare(shared, owner, fence.clone(), plan, source.clone(), self.remaining(budget)?, cancel.clone()).await? else {
             return Ok(None);
         };
         let host = self.runtime.runtime.task_host();
@@ -895,14 +1101,15 @@ impl PiForkCoordinator {
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         // The existing host seals actual creator receipts under this same
         // original parent lease before any child adapter may dispatch.
-        host.admit_owned(plan.request.child.clone(), fence).await?;
-        let admission = host.observe_admission(plan.request.child.task_id()).await?;
-        if admission != plan.request.child {
+        self.admit_original(&plan.request.child, &fence).await?;
+        let admission = self.observe_admission(plan.request.child.task_id()).await?;
+        if admission.value != plan.request.child {
             return Err(Error::Unauthorized("Pi child admission differs from its actual creator request".into()));
         }
         self.verify_owner(owner).await?;
-        self.publish(context, owner, plan, &report, source.clone(), self.remaining(budget)?, &cancel).await?;
-        let prepared = self.created_fork(plan, report, admission, source, self.remaining(budget)?, &cancel).await?;
+        self.publish(context, owner, plan, &report.value, source.clone(), self.remaining(budget)?, &cancel).await?;
+        let prepared = self.created_fork(plan, report.value, admission.value, source, self.remaining(budget)?, &cancel,
+            report.allocation, admission.allocation).await?;
         self.verify_owner(owner).await?;
         Ok(Some(prepared))
     }
@@ -924,8 +1131,58 @@ impl PiForkCoordinator {
         Ok(prepared)
     }
 
+    #[allow(clippy::too_many_arguments, reason = "actual report and admission ownership precede their original guards")]
     async fn created_fork(&self, plan: &PiForkPlan, report: ForkReport, admission: TaskAdmissionRecord,
-        source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: &CancellationToken) -> Result<PreparedPiFork> {
+        source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: &CancellationToken,
+        report_allocation: Option<acyclic_fs::NativeAllocation>, admission_allocation: Option<acyclic_fs::NativeAllocation>) -> Result<PreparedPiFork> {
+        if let Some(work) = &self.work {
+            let project_name = report.request.preparation.child_project_volume.storage_name_with_native_work(work)?;
+            let project = self.resources.fs.open_workspace_with_native_work(&project_name.0, work, cancel)
+                .await.map_err(native_workspace_error)?;
+            let generation = report.captures.iter().find_map(|capture| match capture {
+                acyclic_harness::fork::Capture::Captured(resource) => match &resource.revision {
+                    acyclic_harness::fork::ResourceRevision::Project { volume, generation }
+                        if volume == &report.request.preparation.child_project_volume => Some(generation),
+                    _ => None,
+                },
+                _ => None,
+            }).ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi creator report lost its exact child project generation" })?;
+            let generation: [u8; 32] = generation.as_resource().key().try_into().map_err(|_| Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi created project generation has a different identity shape" })?;
+            let (workspace, native_lazy) = source.bind_prepared_fork_with_native_work(plan.frozen, project,
+                GenerationId::new(Digest::from_bytes(generation)), plan.project_creation, work, cancel)
+                .await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            let scratch_name = report.child_private_volume.storage_name_with_native_work(work)?;
+            let scratch = self.resources.fs.open_workspace_with_native_work(&scratch_name.0, work, cancel)
+                .await.map_err(native_workspace_error)?;
+            let mut binding = self.native_copy::<PiTaskBinding, _>(&plan.commit.child, acyclic_harness::JsonValueSchema::None, work)?;
+            let mut scratch_generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
+                &report.child_private_generation, acyclic_harness::JsonValueSchema::None, work)?;
+            binding.0.scratch.allocation = PiScratchAllocation::Created(PiScratchCreation {
+                workspace_id: scratch.id().into_bytes(), generation: scratch_generation.0 });
+            binding.1.absorb(&mut scratch_generation.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let result_binding = binding.0.results.as_mut().ok_or(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi actual child lost its unmounted result intent" })?;
+            if report.child_result_volume.as_ref() != Some(&result_binding.volume) { return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi creator report changed its exact child result volume" }); }
+            let generation = report.child_result_generation.as_ref().ok_or(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi creator report lost its actual result generation" })?;
+            let result_name = result_binding.volume.storage_name_with_native_work(work)?;
+            let results = self.resources.fs.open_workspace_with_native_work(&result_name.0, work, cancel)
+                .await.map_err(native_workspace_error)?;
+            let mut generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
+                generation, acyclic_harness::JsonValueSchema::None, work)?;
+            result_binding.allocation = PiScratchAllocation::Created(PiScratchCreation {
+                workspace_id: results.id().into_bytes(), generation: generation.0 });
+            binding.1.absorb(&mut generation.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            binding.0.validate(None, binding.0.project_volumes.keys().map(String::as_str), false)?;
+            let original_source = self.native_copy::<RecursiveSourceSnapshot, _>(&plan.source,
+                acyclic_harness::JsonValueSchema::None, work)?;
+            return Ok(PreparedPiFork { binding: binding.0, report, admission, source: original_source.0,
+                frozen_source: plan.frozen, native_lazy, workspace,
+                _metadata_custody: [report_allocation, admission_allocation, Some(binding.1), Some(original_source.1)] });
+        }
         let project = self.accept(self.resources.fs.open_workspace_measured(report.request.preparation.child_project_volume.storage_name()?, self.remaining(budget)?, &cancel).await)?.value;
         let captured_generation = report.captures.iter().find_map(|capture| match capture {
             acyclic_harness::fork::Capture::Captured(resource) => match &resource.revision {
@@ -955,7 +1212,8 @@ impl PiForkCoordinator {
         });
         binding.validate(None, binding.project_volumes.keys().map(String::as_str), false)?;
         Ok(PreparedPiFork { binding, report, admission, source: plan.source.clone(),
-            frozen_source: plan.frozen, native_lazy, workspace })
+            frozen_source: plan.frozen, native_lazy, workspace,
+            _metadata_custody: [report_allocation, admission_allocation, None, None] })
     }
 
     async fn publish(&self, context: &acyclic_harness::runtime::TaskContext,
@@ -1245,3 +1503,8 @@ fn measured<E: std::fmt::Display>(failure: acyclic_fs::OperationFailure<E>) -> E
 #[cfg(test)]
 #[path = "pi_fork_tests.rs"]
 pub(crate) mod tests;
+
+fn native_workspace_error((source, custody): (acyclic_fs::WorkspaceError, Option<acyclic_fs::NativeAllocation>)) -> Error {
+    crate::pi_lazy_capture::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspaceCause(
+        acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody }))
+}

@@ -408,7 +408,7 @@ impl<'a> PiForkHost<'a> {
             self.push_pending(reservation, work)?;
             return Ok(TaskCommandProgress::Pending);
         }
-        let Some(prepared) = coordinator.advance(&context, &owner, fence, &plan, source, remaining(&work)?, cancel).await? else {
+        let Some(prepared) = coordinator.advance(shared, &owner, fence, &plan, source, remaining(&work)?, cancel).await? else {
             return Ok(TaskCommandProgress::Pending);
         };
         let task = prepared.binding.task_id;

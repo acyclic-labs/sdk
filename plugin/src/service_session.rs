@@ -121,17 +121,30 @@ impl SessionController {
                     return Ok(owned.0);
                 }
             }
-            Self::HostManaged(_) => return Err(RootError::Invalid(
-                "Pi startup custody requires its original Pi actor".to_owned(),
-            )),
+            Self::HostManaged(control) => {
+                match control.retain_original_input(owned.1) {
+                    Ok(()) => return Ok(owned.0),
+                    Err((cause, custody)) => {
+                        drop(owned.0);
+                        return Err(RootError::NativeWork { cause, custody: Some(custody) });
+                    }
+                }
+            }
         }
         Ok(owned.0)
     }
 
-    pub(crate) async fn close(self, deactivate: bool) -> acyclic_harness::Result<StateSlots> {
+    pub(crate) async fn close(self, deactivate: bool, work: Option<&acyclic_fs::NativeMaterializationWork>)
+        -> acyclic_harness::Result<StateSlots> {
         match self {
             Self::HostManaged(control) => control.close(deactivate).await.map_err(RootError::Storage),
-            Self::Pi(session) => session.close(deactivate).await,
+            Self::Pi(session) => {
+                let work = work.ok_or(RootError::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Invalid,
+                    reason: "Pi close requires its original native query span",
+                })?;
+                session.close(deactivate, work).await
+            }
         }
     }
 }
@@ -1051,8 +1064,9 @@ impl PiSession {
         Ok((encoded.0, Some(encoded.1)))
     }
 
-    async fn close(mut self, deactivate: bool) -> acyclic_harness::Result<StateSlots> {
-        self.drain_native(deactivate).await?;
+    async fn close(mut self, deactivate: bool, work: &acyclic_fs::NativeMaterializationWork)
+        -> acyclic_harness::Result<StateSlots> {
+        self.drain_native(deactivate, work).await?;
         Ok(self.slots)
     }
 }
