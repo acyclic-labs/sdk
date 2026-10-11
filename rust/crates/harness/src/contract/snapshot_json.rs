@@ -40,12 +40,20 @@ const SNAPSHOT_DIAGNOSTICS: &str = concat!(
     "file or volume label is invalid checkpoint snapshot is invalid ",
 );
 
-fn multiply(value: u64, factor: u64) -> Result<u64> {
-    value.checked_mul(factor).ok_or_else(|| Error::Invalid("snapshot JSON admission overflow".into()))
+fn ownership_overflow(native_code: Option<crate::wire::ErrorCode>) -> Error {
+    match native_code {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(code) => Error::NativeBoundary { code, reason: "snapshot JSON admission overflow" },
+        _ => Error::Invalid("snapshot JSON admission overflow".into()),
+    }
 }
-fn sum(values: &[u64]) -> Result<u64> {
+
+fn multiply_with_code(value: u64, factor: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+    value.checked_mul(factor).ok_or_else(|| ownership_overflow(native_code))
+}
+fn sum_with_code(values: &[u64], native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
     values.iter().try_fold(0u64, |total, value| total.checked_add(*value)
-        .ok_or_else(|| Error::Invalid("snapshot JSON admission overflow".into())))
+        .ok_or_else(|| ownership_overflow(native_code)))
 }
 
 /// Same-pass lexical and selected Raw-Value admission, then ONE ownership quota.
@@ -70,7 +78,7 @@ pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + 
     let value_shape = super::json::admit_json_value_shape(
         bytes, bounds, super::json::JsonValueSchema::Snapshot, &mut |event| charge(event),
     )?;
-    let admission = snapshot_json_ownership(value_shape, bounds.maximum_depth)?;
+    let admission = snapshot_json_ownership(value_shape, bounds.maximum_depth, None)?;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes: admission.maximum_owned_bytes, value_shape })?;
     Ok(admission)
 }
@@ -78,12 +86,16 @@ pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + 
 /// The same concrete Snapshot ownership policy for a sealed original-pass
 /// shape. A closed containing DTO may use its aggregate shape conservatively
 /// before its original decoder; no second scan or reservation is issued here.
+/// `native_code` explicitly selects the inline native overflow carrier; ordinary
+/// callers pass None and retain their original Invalid String even in FS builds.
 pub(crate) fn snapshot_json_ownership(
-    value_shape: super::json::JsonValueShape, maximum_depth: u32,
+    value_shape: super::json::JsonValueShape, maximum_depth: u32, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<SnapshotJsonAdmission> {
+    let multiply = |value, factor| multiply_with_code(value, factor, native_code);
+    let sum = |values: &[u64]| sum_with_code(values, native_code);
     let input_bytes = value_shape.input_bytes();
     let lexical_items = value_shape.lexical_items();
-    let event = super::event_json::event_payload_ownership(value_shape, maximum_depth)?;
+    let event = super::event_json::event_payload_ownership(value_shape, maximum_depth, native_code)?;
     let slots = multiply(lexical_items, 2 + 8)?;
     // Reuse core/snapshot.rs's actual reachable ABI inventory. Projection's
     // largest map entry has three components: e.g. String/(EventReference,
@@ -154,6 +166,8 @@ mod tests {
         FileRef, MessageKind, ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef}};
     use std::collections::BTreeMap;
     use std::cell::Cell;
+
+    fn sum(values: &[u64]) -> Result<u64> { sum_with_code(values, None) }
 
     fn fixture(reason: String) -> Result<(Snapshot, AuthorityIssuer)> {
         let authority = Authority { kind: AggregateKind::Agent, id: "snapshot-codec-agent".into() };
@@ -239,10 +253,23 @@ mod tests {
                 Ok(())
             })?;
             let shape = shape.unwrap();
-            let factored = snapshot_json_ownership(shape, bounds(&bytes).maximum_depth)?;
+            let factored = snapshot_json_ownership(shape, bounds(&bytes).maximum_depth, None)?;
             assert_eq!(factored.maximum_owned_bytes, admission.maximum_owned_bytes);
             assert_eq!(factored.conversation_cache_bytes, admission.conversation_cache_bytes);
             assert_eq!(factored.conversation_canonical_scratch_bytes, admission.conversation_canonical_scratch_bytes);
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                let native = snapshot_json_ownership(shape, bounds(&bytes).maximum_depth,
+                    Some(crate::wire::ErrorCode::Storage))?;
+                assert_eq!(native.maximum_owned_bytes, factored.maximum_owned_bytes,
+                    "carrier mode must not change the concrete producer's ownership policy");
+                assert!(matches!(multiply_with_code(u64::MAX, 2, None),
+                    Err(Error::Invalid(message)) if message == "snapshot JSON admission overflow"));
+                assert!(matches!(multiply_with_code(u64::MAX, 2, Some(crate::wire::ErrorCode::Storage)),
+                    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. })));
+                assert!(matches!(super::super::event_json::event_payload_ownership(shape, 256,
+                    Some(crate::wire::ErrorCode::Storage)), Ok(_)));
+            }
             assert_eq!(shape.virtual_items(), 0);
             assert_eq!(inspected, 0);
             assert_eq!(super::super::json::json_value_virtual_owned_bytes(shape)?, 0);
@@ -250,7 +277,7 @@ mod tests {
             let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
             assert_eq!(admission.value_overlap_bytes, slots * value_slot);
             assert_eq!(admission.typed_collection_bytes, slots * Snapshot::LOGICAL_SCHEMA_SLOT_BYTES * 3);
-            let event = super::super::event_json::event_payload_ownership(shape, 256)?;
+            let event = super::super::event_json::event_payload_ownership(shape, 256, None)?;
             assert_eq!(admission.serde_content_bytes, event.serde_content_bytes);
             assert_eq!(admission.boxed_payload_bytes, admission.lexical_items * event.boxed_payload_bytes);
             assert_eq!(admission.string_payload_bytes, event.string_payload_bytes);

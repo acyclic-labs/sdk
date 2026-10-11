@@ -157,17 +157,31 @@ const COMMON_DIAGNOSTIC_TEXT: &str = concat!(
 /// labels, their list punctuation, and custom static diagnostics. Arbitrary
 /// custom Deserialize/Display code cannot use this as a heap guarantee.
 pub(crate) fn audited_serde_diagnostic_bytes(input_bytes: u64, schema_label_bytes: u64) -> Result<u64> {
+    diagnostic_bytes(input_bytes, schema_label_bytes, None)
+}
+
+fn diagnostic_bytes(input_bytes: u64, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+    let sum = |values: &[u64]| sum_with_code(values, native_code);
+    let multiply = |value, factor| multiply_with_code(value, factor, native_code);
     let static_bytes = sum(&[schema_label_bytes, COMMON_DIAGNOSTIC_TEXT.len() as u64,
         2 * u64::from(usize::BITS)])?;
     sum(&[multiply(input_bytes, 6 * 2)?, multiply(static_bytes, 2)?])
 }
 
-fn multiply(value: u64, factor: u64) -> Result<u64> {
-    value.checked_mul(factor).ok_or_else(|| Error::Invalid("event JSON admission overflow".into()))
+fn ownership_overflow(native_code: Option<crate::wire::ErrorCode>) -> Error {
+    match native_code {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(code) => Error::NativeBoundary { code, reason: "event JSON admission overflow" },
+        _ => Error::Invalid("event JSON admission overflow".into()),
+    }
 }
-fn sum(values: &[u64]) -> Result<u64> {
+
+fn multiply_with_code(value: u64, factor: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+    value.checked_mul(factor).ok_or_else(|| ownership_overflow(native_code))
+}
+fn sum_with_code(values: &[u64], native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
     values.iter().try_fold(0u64, |total, value| total.checked_add(*value)
-        .ok_or_else(|| Error::Invalid("event JSON admission overflow".into())))
+        .ok_or_else(|| ownership_overflow(native_code)))
 }
 
 /// Admits lexical structure and reserves the original concrete EventPayload
@@ -187,7 +201,7 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
     let value_shape = super::json::admit_json_value_shape(
         bytes, bounds, JsonValueSchema::EventPayload, &mut |event| charge(event),
     )?;
-    let admission = event_payload_ownership(value_shape, bounds.maximum_depth)?;
+    let admission = event_payload_ownership(value_shape, bounds.maximum_depth, None)?;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes: admission.maximum_owned_bytes, value_shape })?;
     Ok(admission)
 }
@@ -196,8 +210,10 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
 // times. Reuse their audited tagged buffers/Value/string/error overlap without
 // rerunning the lexer or issuing a second quota reservation.
 pub(super) fn event_payload_ownership(
-    shape: JsonValueShape, maximum_depth: u32,
+    shape: JsonValueShape, maximum_depth: u32, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<EventPayloadJsonAdmission> {
+    let multiply = |value, factor| multiply_with_code(value, factor, native_code);
+    let sum = |values: &[u64]| sum_with_code(values, native_code);
     let input_bytes = shape.input_bytes();
     let lexical_items = shape.lexical_items();
     // Across each concrete collection pass, total element count <= tokens and
@@ -216,7 +232,11 @@ pub(super) fn event_payload_ownership(
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
     let value_overlap_bytes = sum(&[
         multiply(slots, value_slot)?,
-        super::json::json_value_virtual_owned_bytes(shape)?,
+        super::json::json_value_virtual_owned_bytes(shape).map_err(|error| match (native_code, error) {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            (Some(code), Error::NativeBoundary { reason, .. }) => Error::NativeBoundary { code, reason },
+            (_, error) => error,
+        })?,
     ])?;
     let boxed_payload_bytes = BOXED_PAYLOAD_BYTES as u64;
     // Each Content pass, the Value pass, and typed output can own at most the
@@ -228,7 +248,7 @@ pub(super) fn event_payload_ownership(
     // bytes. At most two diagnostic buffers overlap across custom from_value /
     // D::Error::custom / outer storage-error conversion. Include static schema
     // labels, punctuation, and line/column digits before interpolation happens.
-    let diagnostic_bytes = audited_serde_diagnostic_bytes(input_bytes, DIAGNOSTIC_LABEL_BYTES)?;
+    let diagnostic_bytes = diagnostic_bytes(input_bytes, DIAGNOSTIC_LABEL_BYTES, native_code)?;
     let maximum_owned_bytes = sum(&[serde_content_bytes, typed_collection_bytes, value_overlap_bytes,
         boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes])?;
     Ok(EventPayloadJsonAdmission { input_bytes, lexical_items, maximum_depth,
@@ -241,6 +261,9 @@ mod tests {
     use super::*;
     use crate::core::{EventPayload, LifecycleState};
     use crate::interaction::{InteractionOutcome, InteractionResolution};
+
+    fn multiply(value: u64, factor: u64) -> Result<u64> { multiply_with_code(value, factor, None) }
+    fn sum(values: &[u64]) -> Result<u64> { sum_with_code(values, None) }
 
     fn bounds(bytes: &[u8]) -> JsonBounds {
         JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 }
