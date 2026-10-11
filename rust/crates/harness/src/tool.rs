@@ -45,7 +45,29 @@ pub(crate) fn clone_value_with_native_work(
     value: &Value,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    clone_value_with_native_bound(value, None, work)
+}
+
+/// Checks the same resident Value's wire-size bound before any owned copy.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn clone_value_with_native_work_bounded(
+    value: &Value,
+    maximum_bytes: u64,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    clone_value_with_native_bound(value, Some(maximum_bytes), work)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn clone_value_with_native_bound(
+    value: &Value,
+    maximum_bytes: Option<u64>,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    if let Some(maximum_bytes) = maximum_bytes {
+        io.check_json_byte_bound(value, maximum_bytes)?;
+    }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::model_value_clone_with_io(value, Some(&io))?;
     let retained = value_owned_bytes(&copied)?;

@@ -484,6 +484,9 @@ impl DurableToolRunner {
     }
 
     /// Runs the canonical dispatch/reconciliation engine on the original work.
+    /// Borrows the issued context and its effective scope for grants, digest and
+    /// limits before replay. Owned argument copies preserve the actual Value
+    /// graph; typed result conversion uses the same borrowed serde visitor.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn run_with_native_context<'a>(
         &'a self,

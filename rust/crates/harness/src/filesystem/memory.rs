@@ -295,7 +295,7 @@ fn list_files_page_wire<'a>(
 #[cfg(not(target_arch = "wasm32"))]
 impl super::UploadRecord for ListFilesInput {
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let mut bytes = std::mem::size_of::<Self>() as u64;
+        let mut bytes = 0_u64;
         for size in [
             self.path.capacity() as u64,
             self.after.as_ref().map_or(0, |after| after.capacity() as u64),
@@ -355,14 +355,18 @@ impl LocalListFilesTool {
 
     fn native_result_copy(
         result: &ToolResult,
+        maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeListFilesResult> {
-        let (value, custody) = crate::tool::clone_value_with_native_work(&result.value, work)?;
+        let (value, custody) = crate::tool::clone_value_with_native_work_bounded(
+            &result.value, maximum_bytes, work,
+        )?;
         Ok(NativeListFilesResult { result: ToolResult { value }, custody })
     }
 
     async fn native_observe(
         &self,
+        context: &crate::runtime::ToolContext,
         invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<NativeListFilesResult>> {
@@ -370,7 +374,9 @@ impl LocalListFilesTool {
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
             Some(original) if original.admission_digest == digest =>
-                Self::native_result_copy(&original.result, work).map(Some),
+                Self::native_result_copy(&original.result,
+                    self.maximum_bytes.min(context.effective_scope().limits().render_bytes),
+                    work).map(Some),
             Some(_) => Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "list_files operation identity changed",
@@ -386,12 +392,14 @@ impl LocalListFilesTool {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeListFilesResult> {
         let digest = Self::native_admission_digest(invocation, work)?;
+        let limits = context.effective_scope().limits();
+        let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
         // Hold the operation lock through the actual provider read and cache
         // admission so competing retries never mix directory generations.
         let mut observed = self.observed.lock().await;
         if let Some(original) = observed.get(&invocation.operation_id) {
             return if original.admission_digest == digest {
-                Self::native_result_copy(&original.result, work)
+                Self::native_result_copy(&original.result, maximum_bytes, work)
             } else {
                 Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
@@ -418,10 +426,10 @@ impl LocalListFilesTool {
         let page = NativeListFilesPage { generation, page, _custody: custody };
         let wire = list_files_page_wire(&page.generation, &page.page)?;
         let (value, custody) = crate::tool::value_with_native_work_bounded(
-            &wire, self.maximum_bytes, work,
+            &wire, maximum_bytes, work,
         )?;
         let output = NativeListFilesResult { result: ToolResult { value }, custody };
-        let mut cached = Self::native_result_copy(&output.result, work)?;
+        let mut cached = Self::native_result_copy(&output.result, maximum_bytes, work)?;
         // Logical key/value tuple only; opaque BTree allocator nodes excluded.
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
@@ -561,8 +569,19 @@ impl ToolExecutor for LocalListFilesTool {
                 reason: "list_files tool context identity mismatch",
             });
         }
+        let maximum_path_bytes = context.effective_scope().limits().path_bytes;
+        for key in ["path", "after"] {
+            if invocation.arguments.get(key).and_then(Value::as_str)
+                .is_some_and(|path| path.len() > maximum_path_bytes)
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "list_files path exceeds the effective scope path allowance",
+                });
+            }
+        }
         let io = super::PreparationIo::from_native_work(work)?;
-        if !io.contains_capability(context.task().scope().grants(), &self.volume, "volume:read:")? {
+        if !io.contains_capability(context.effective_scope().grants(), &self.volume, "volume:read:")? {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks the original volume read capability",
@@ -594,7 +613,7 @@ impl ToolExecutor for LocalListFilesTool {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
         self.authorize_with_native_context(context, invocation, work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            match self.native_observe(invocation, work).await? {
+            match self.native_observe(context, invocation, work).await? {
                 Some(mut output) => {
                     let retained = output.custody.bytes().checked_add(
                         (std::mem::size_of::<Option<ToolResult>>()

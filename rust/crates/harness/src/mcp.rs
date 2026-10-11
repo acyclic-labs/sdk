@@ -736,7 +736,7 @@ impl ToolExecutor for RemoteTool {
             });
         }
         // Compare borrowed canonical grant spelling without building a string.
-        for grant in context.task().scope().grants().iter() {
+        for grant in context.effective_scope().grants().iter() {
             let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
                 .ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
