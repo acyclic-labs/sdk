@@ -165,7 +165,7 @@ pub async fn restore_native_directory_capture(state_root: String, operation_id: 
         .map(|inner| NativeDirectoryCapture { inner }).map_err(napi_error)
 }
 /// Actual capture receipt and immutable compressed archive, with separate lifetimes.
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct NativeDirectoryArchiveCapture {
     /// Original retained physical/logical receipt.
     pub capture: NativeDirectoryCapture,
