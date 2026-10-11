@@ -148,7 +148,7 @@ pub(super) fn protocol_error(work: NativeWork<'_>, unsupported: bool, message: &
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::NativeBoundary {
-            code: if unsupported { crate::wire::ErrorCode::Unsupported } else { crate::wire::ErrorCode::Storage },
+            code: if unsupported { crate::wire::ErrorCode::Unsupported } else { crate::wire::ErrorCode::Invalid },
             reason: message,
         };
     }
@@ -321,7 +321,7 @@ mod tests {
         let operation = OperationId::from_bytes([2; 16]);
         assert!(matches!(rpc_result_with_native_work(json!({
             "jsonrpc":"2.0","id":OperationId::from_bytes([3; 16]).to_string(),"result":{}
-        }), operation, Some(&work)), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. })));
+        }), operation, Some(&work)), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
         assert!(matches!(notification_with_native_work(&json!({
             "jsonrpc":"2.0","method":"roots/list","id":"server"
         }), Some(&work)), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
