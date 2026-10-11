@@ -90,7 +90,18 @@ pub enum IndexedDbOpenError {
     InvalidOptions,
     /// `IndexedDB` was unavailable, blocked, or rejected the schema upgrade.
     #[error("IndexedDB open failed: {0}")]
-    Open(String),
+    Open(#[source] indexed_db_futures::error::OpenDbError),
+}
+
+impl From<IndexedDbOpenError> for JsValue {
+    fn from(error: IndexedDbOpenError) -> Self {
+        match error {
+            IndexedDbOpenError::Open(indexed_db_futures::error::OpenDbError::Base(
+                indexed_db_futures::error::Error::DomException(exception),
+            )) => exception.into(),
+            other => js_sys::Error::new(&other.to_string()).into(),
+        }
+    }
 }
 
 /// Transactional `IndexedDB` immutable-object backend.
@@ -1602,7 +1613,7 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
             Ok(())
         })
         .await
-        .map_err(|error| IndexedDbOpenError::Open(error.to_string()))
+        .map_err(IndexedDbOpenError::Open)
 }
 
 impl AsyncAuthorityStore for IndexedDbAuthorityStore {
@@ -2710,6 +2721,81 @@ mod tests {
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    async fn obsolete_database_version_is_rejected_without_deletion() -> Result<(), JsValue> {
+        const NAME: &str = "acyclic-fs-obsolete-schema-rejection";
+        const SENTINELS: &str = "legacy-sentinel-records";
+        const KEY: &str = "original-record";
+        const VALUE: &[u8] = b"obsolete-version-4-persisted-record";
+        Database::delete_by_name(NAME)
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        let obsolete_version = DATABASE_VERSION + 3;
+        let old = Database::open(NAME)
+            .with_version(obsolete_version)
+            .with_on_upgrade_needed(|_, database| {
+                database.create_object_store(SENTINELS).build()?;
+                Ok(())
+            })
+            .await
+            .map_err(js_error)?;
+        let write = old.transaction(SENTINELS)
+            .with_mode(TransactionMode::Readwrite)
+            .build()
+            .map_err(js_error)?;
+        write.object_store(SENTINELS)
+            .map_err(js_error)?
+            .put(JsValue::from(Uint8Array::from(VALUE)))
+            .with_key(KEY)
+            .primitive()
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        write.commit().await.map_err(js_error)?;
+        old.close();
+        let object_failure = IndexedDbObjectStore::open(NAME, 1_024).await.err()
+            .ok_or_else(|| js_error("obsolete object database was accepted"))?;
+        let authority_failure = IndexedDbAuthorityStore::open(NAME, 1_024).await.err()
+            .ok_or_else(|| js_error("obsolete authority database was accepted"))?;
+        for failure in [object_failure, authority_failure] {
+            let exception = JsValue::from(failure)
+                .dyn_into::<web_sys::DomException>()
+                .map_err(|_| js_error("version rejection lost its original DOM exception"))?;
+            assert_eq!(exception.name(), "VersionError");
+        }
+        // The rejected version-4 database must remain intact.
+        let retained = Database::open(NAME)
+            .with_version(obsolete_version)
+            .with_on_upgrade_needed(|_, _| {
+                Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
+                    "rejected database must not be recreated",
+                )))
+            })
+            .await
+            .map_err(js_error)?;
+        assert_eq!(retained.version(), f64::from(obsolete_version));
+        let read = retained.transaction(SENTINELS)
+            .build()
+            .map_err(js_error)?;
+        let unchanged = read.object_store(SENTINELS)
+            .map_err(js_error)?
+            .get::<JsValue, _, _>(KEY)
+            .primitive()
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        let unchanged = unchanged.ok_or_else(|| js_error("obsolete sentinel was deleted"))?;
+        assert_eq!(Uint8Array::new(&unchanged).to_vec().as_slice(), VALUE);
+        drop(read);
+        retained.close();
+        Database::delete_by_name(NAME)
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        Ok(())
+    }
 
     #[wasm_bindgen_test]
     async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result<(), JsValue> {
