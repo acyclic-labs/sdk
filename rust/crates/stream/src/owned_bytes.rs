@@ -114,8 +114,8 @@ impl OwnedBytes {
     #[must_use]
     pub fn is_empty(&self) -> bool { self.start == self.end }
 
-    /// Returns the observed original owned vector capacity for a guarded carrier.
-    /// Ordinary opaque Bytes backing returns `None`, never a guessed capacity.
+    /// Returns the observed original owned vector or boxed-slice capacity.
+    /// Opaque Bytes backing returns `None`, never a guessed capacity.
     #[must_use]
     pub const fn retained_capacity(&self) -> Option<usize> { self.retained_capacity }
 
@@ -139,7 +139,7 @@ impl OwnedBytes {
     /// Panics for an invalid or out-of-range slice, like the underlying bytes API.
     #[must_use]
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Self {
-        if self.guard.is_none() { return self.bytes.slice(range).into(); }
+        if self.guard.is_none() && self.retained_capacity.is_none() { return self.bytes.slice(range).into(); }
         let begin = match range.start_bound() {
             Bound::Included(&begin) => begin,
             Bound::Excluded(&begin) => begin.checked_add(1).expect("slice start overflow"),
@@ -166,7 +166,7 @@ impl OwnedBytes {
     /// Panics unless `subset` is a subslice of this carrier's visible bytes.
     #[must_use]
     pub fn slice_ref(&self, subset: &[u8]) -> Self {
-        if self.guard.is_none() { return self.bytes.slice_ref(subset).into(); }
+        if self.guard.is_none() && self.retained_capacity.is_none() { return self.bytes.slice_ref(subset).into(); }
         if subset.is_empty() { return self.slice(0..0); }
         let begin = (subset.as_ptr() as usize).checked_sub(self.as_slice().as_ptr() as usize)
             .expect("subset precedes visible bytes");
@@ -180,7 +180,7 @@ impl OwnedBytes {
     /// Panics if `at` exceeds the visible length.
     #[must_use]
     pub fn split_off(&mut self, at: usize) -> Self {
-        if self.guard.is_none() {
+        if self.guard.is_none() && self.retained_capacity.is_none() {
             let suffix = self.bytes.split_off(at).into();
             self.end = self.bytes.len();
             return suffix;
@@ -196,7 +196,7 @@ impl OwnedBytes {
     /// Panics if `at` exceeds the visible length.
     #[must_use]
     pub fn split_to(&mut self, at: usize) -> Self {
-        if self.guard.is_none() {
+        if self.guard.is_none() && self.retained_capacity.is_none() {
             let prefix = self.bytes.split_to(at).into();
             self.end = self.bytes.len();
             return prefix;
@@ -209,7 +209,7 @@ impl OwnedBytes {
     /// Shortens the visible range with the underlying ordinary bytes semantics.
     /// Original custody remains retained until this carrier is destroyed.
     pub fn truncate(&mut self, len: usize) {
-        if self.guard.is_none() {
+        if self.guard.is_none() && self.retained_capacity.is_none() {
             self.bytes.truncate(len);
             self.end = self.bytes.len();
         } else if len < self.len() {
@@ -226,7 +226,7 @@ impl OwnedBytes {
     /// Panics if `count` exceeds the visible length.
     pub fn advance(&mut self, count: usize) {
         assert!(count <= self.len(), "advance exceeds visible bytes");
-        if self.guard.is_none() {
+        if self.guard.is_none() && self.retained_capacity.is_none() {
             self.bytes.advance(count);
             self.end = self.bytes.len();
         } else {
@@ -239,9 +239,20 @@ impl Default for OwnedBytes { fn default() -> Self { Self::new() } }
 impl From<Bytes> for OwnedBytes {
     fn from(bytes: Bytes) -> Self { let end = bytes.len(); Self { bytes, start: 0, end, retained_capacity: None, guard: None } }
 }
-impl From<Vec<u8>> for OwnedBytes { fn from(bytes: Vec<u8>) -> Self { Bytes::from(bytes).into() } }
-impl From<Box<[u8]>> for OwnedBytes { fn from(bytes: Box<[u8]>) -> Self { Bytes::from(bytes).into() } }
-impl From<String> for OwnedBytes { fn from(bytes: String) -> Self { Bytes::from(bytes).into() } }
+impl From<Vec<u8>> for OwnedBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        let retained_capacity = Some(bytes.capacity());
+        let end = bytes.len();
+        Self { bytes: Bytes::from(bytes), start: 0, end, retained_capacity, guard: None }
+    }
+}
+impl From<Box<[u8]>> for OwnedBytes {
+    fn from(bytes: Box<[u8]>) -> Self {
+        let end = bytes.len();
+        Self { bytes: Bytes::from(bytes), start: 0, end, retained_capacity: Some(end), guard: None }
+    }
+}
+impl From<String> for OwnedBytes { fn from(bytes: String) -> Self { bytes.into_bytes().into() } }
 impl From<&[u8]> for OwnedBytes { fn from(bytes: &[u8]) -> Self { Self::copy_from_slice(bytes) } }
 impl From<&str> for OwnedBytes { fn from(bytes: &str) -> Self { Self::copy_from_slice(bytes.as_bytes()) } }
 impl FromIterator<u8> for OwnedBytes {
@@ -684,6 +695,27 @@ mod tests {
         assert_eq!(bytes.as_slice(), b"n");
         bytes.clear();
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn known_ordinary_capacity_survives_shared_ranges() {
+        let mut data = Vec::with_capacity(31);
+        data.extend_from_slice(b"capacity");
+        let capacity = data.capacity();
+        let mut bytes = OwnedBytes::from(data);
+        assert_eq!(bytes.retained_capacity(), Some(capacity));
+        let empty = bytes.slice(0..0);
+        let prefix = bytes.split_to(3);
+        let suffix = bytes.split_off(2);
+        bytes.clear();
+        for alias in [&empty, &prefix, &suffix, &bytes] {
+            assert_eq!(alias.retained_capacity(), Some(capacity));
+        }
+        assert_eq!(prefix.as_slice(), b"cap");
+        assert_eq!(suffix.as_slice(), b"ity");
+        assert_eq!(OwnedBytes::from(String::from("string")).retained_capacity(), Some(6));
+        assert_eq!(OwnedBytes::from(vec![1, 2].into_boxed_slice()).retained_capacity(), Some(2));
+        assert_eq!(OwnedBytes::from(Bytes::from_static(b"opaque")).retained_capacity(), None);
     }
 
     #[test]
