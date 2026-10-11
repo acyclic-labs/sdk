@@ -23,6 +23,148 @@ fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T> {
     T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+/// Decodes an audited SDK DTO while its original native allocation is retained.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn decode_with_native_work<T: crate::filesystem::UploadRecord>(
+    value: &Value,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    decode_serialized_with_native_work(value, work)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn decode_serialized_with_native_work<
+    T: crate::filesystem::UploadRecord, S: Serialize,
+>(
+    value: &S,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    let encoded_hold;
+    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+    let value: T = io.decode_json(&encoded)?;
+    let retained = value.logical_owned_bytes()?;
+    drop(encoded);
+    drop(encoded_hold);
+    let custody = io.into_native_custody(retained)?;
+    Ok((value, custody))
+}
+
+/// Builds the canonical result tree through the existing bounded SDK codec.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn value_with_native_work<T: Serialize>(
+    value: &T,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    value_with_native_work_bounded(value, work.remaining()?.bytes_encoded, work)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn value_with_native_work_bounded<T: Serialize>(
+    value: &T,
+    maximum_bytes: u64,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    let encoded_hold;
+    let encoded = io.encode_json(value, maximum_bytes, false)?;
+    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+    let value = io.decode_preparation::<Value>(&encoded)?.into_retained();
+    let retained = value_owned_bytes(&value)?;
+    drop(encoded);
+    drop(encoded_hold);
+    let custody = io.into_native_custody(retained)?;
+    Ok((value, custody))
+}
+
+/// Logical SDK-owned Value slots and actual deep buffer capacities, not serde
+/// allocator nodes, provider metadata, or resident process memory.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
+    fn add(left: u64, right: u64) -> Result<u64> {
+        left.checked_add(right).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "tool JSON ownership overflow",
+        })
+    }
+    fn deep(value: &Value) -> Result<u64> {
+        match value {
+            Value::String(text) => Ok(text.capacity() as u64),
+            Value::Array(values) => {
+                let slots = (values.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<Value>() as u64)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "tool JSON array ownership overflow",
+                    })?;
+                values.iter().try_fold(slots, |bytes, value| add(bytes, deep(value)?))
+            }
+            Value::Object(values) => values.iter().try_fold(0, |bytes, (key, value)| {
+                add(add(add(bytes, std::mem::size_of::<(String, Value)>() as u64)?,
+                    key.capacity() as u64)?, deep(value)?)
+            }),
+            Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
+        }
+    }
+    add(std::mem::size_of::<Value>() as u64, deep(value)?)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for ToolDefinition {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        let mut bytes = std::mem::size_of::<Self>() as u64;
+        for text in [&self.name, &self.revision, &self.description] {
+            bytes = bytes.checked_add(text.capacity() as u64).ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool definition ownership overflow",
+            })?;
+        }
+        for value in [&self.input_schema, &self.output_schema, &self.projection_schema] {
+            bytes = bytes.checked_add(value_owned_bytes(value)? - std::mem::size_of::<Value>() as u64)
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool definition schema ownership overflow",
+                })?;
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for ToolInvocation {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        let deep = value_owned_bytes(&self.arguments)? - std::mem::size_of::<Value>() as u64;
+        (std::mem::size_of::<Self>() as u64)
+            .checked_add(self.call_id.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(self.name.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(deep))
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool invocation ownership overflow",
+            })
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for ToolResult {
+    fn logical_owned_bytes(&self) -> Result<u64> { value_owned_bytes(&self.value) }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::PreparationRecord for ToolInvocation {
+    fn maximum_slot_bytes() -> u64 {
+        std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::PreparationRecord for ToolResult {
+    fn maximum_slot_bytes() -> u64 {
+        std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
+    }
+}
+
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -177,6 +319,33 @@ impl ToolInvocation {
         }
         Ok(())
     }
+
+    /// Validates the original model-owned identity without creating a tool name
+    /// or an ordinary formatted diagnostic.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_call_id_with_native_work(
+        call_id: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: call_id.len() as u64,
+            ..Default::default()
+        })?;
+        if call_id.is_empty()
+            || call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
+            || call_id.chars().any(char::is_control)
+            || call_id.contains('/')
+            || call_id.contains('\\')
+            || call_id == "."
+            || call_id == ".."
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool call identity is invalid",
+            });
+        }
+        Ok(())
+    }
 }
 
 fn validate_tool_name(name: &str) -> Result<()> {
@@ -249,6 +418,63 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         self.reconcile(invocation)
     }
+
+    /// Rejects an unaudited implementation before the caller constructs native
+    /// invocation metadata or a future. This conveys no resource authority.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(
+        &self,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool executor has no native producer",
+        })
+    }
+
+    /// Checks the same original context before native replay or dispatch.
+    /// A custom executor without an audited native gate rejects synchronously,
+    /// before any ordinary authorization callback or future allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn authorize_with_native_context(
+        &self,
+        _context: &crate::runtime::ToolContext,
+        _invocation: &ToolInvocation,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool executor has no native authorization producer",
+        })
+    }
+
+    /// Executes the exact borrowed invocation on its original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn execute_with_native_context<'a>(
+        &'a self,
+        _context: &'a crate::runtime::ToolContext,
+        _invocation: &'a ToolInvocation,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool executor has no native execution producer",
+        })
+    }
+
+    /// Observes the already-dispatched effect; never calls ordinary execution.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reconcile_with_native_context<'a>(
+        &'a self,
+        _context: &'a crate::runtime::ToolContext,
+        _invocation: &'a ToolInvocation,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool executor has no native reconciliation producer",
+        })
+    }
 }
 
 /// Replaceable mapping from tool results into model-visible context.
@@ -256,6 +482,33 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
     /// Produces the complete serialized `ToolResultContent` envelope without effects.
     /// The independently pinned projection schema validates this full envelope.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
+
+    /// Rejects an unaudited projector before dispatch, not after its effects.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(
+        &self,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool projection has no native producer",
+        })
+    }
+
+    /// Produces a paid SDK projection without invoking an ordinary allocating
+    /// projector. Custom projectors must explicitly supply their audited body.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self,
+        _invocation: &ToolInvocation,
+        _result: &ToolResult,
+        _work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool projection has no native producer",
+        })
+    }
 }
 
 /// Trusted journal check for a resolved approval bound to one exact tool definition.
@@ -446,7 +699,104 @@ impl ToolRegistry {
     /// Resolves a pinned revision independently of the model-visible choice.
     #[must_use]
     pub fn get_version(&self, name: &str, revision: &str) -> Option<&Tool> {
-        self.versions.get(&(name.to_owned(), revision.to_owned()))
+        // Tuple-key lookup otherwise allocates both borrowed labels on every
+        // execution/replay. Registration remains the only owner of these keys.
+        self.versions.iter().find_map(|((logical, pinned), tool)| {
+            (logical == name && pinned == revision).then_some(tool)
+        })
+    }
+
+    /// Copies only SDK-owned registry metadata on the original ledger. Executor
+    /// and projector Arcs remain the exact registered provider objects.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut copied = Self::default();
+        for ((name, revision), tool) in &self.versions {
+            let (definition, mut definition_hold) =
+                decode_serialized_with_native_work::<ToolDefinition, _>(&tool.definition, work)?;
+            let (name, mut name_hold) = work.display(name)?;
+            let (revision, mut revision_hold) = work.display(revision)?;
+            custody.absorb(&mut definition_hold)?;
+            custody.absorb(&mut name_hold)?;
+            custody.absorb(&mut revision_hold)?;
+            let slots = std::mem::size_of::<(String, String)>() as u64
+                + std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64
+                + std::mem::size_of::<Arc<dyn ToolProjection>>() as u64;
+            custody.resize_retained(custody.bytes().checked_add(slots).ok_or(
+                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool registry ownership overflow" })?)?;
+            copied.versions.insert((name, revision), Tool {
+                definition, executor: tool.executor.clone(), projection: tool.projection.clone(),
+            });
+        }
+        for (name, selection) in &self.selected {
+            let (name, mut name_hold) = work.display(name)?;
+            custody.absorb(&mut name_hold)?;
+            let selection = match selection {
+                ModelSelection::Revision(revision) => {
+                    let (revision, mut hold) = work.display(revision)?;
+                    custody.absorb(&mut hold)?;
+                    ModelSelection::Revision(revision)
+                }
+                ModelSelection::Ambiguous => ModelSelection::Ambiguous,
+                ModelSelection::Hidden => ModelSelection::Hidden,
+            };
+            custody.resize_retained(custody.bytes().checked_add(
+                std::mem::size_of::<(String, ModelSelection)>() as u64).ok_or(
+                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool selection ownership overflow" })?)?;
+            copied.selected.insert(name, selection);
+        }
+        for (name, revision) in &self.catalog_revisions {
+            let (name, mut hold) = work.display(name)?;
+            custody.absorb(&mut hold)?;
+            custody.resize_retained(custody.bytes().checked_add(
+                std::mem::size_of::<(String, [u8; 32])>() as u64).ok_or(
+                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool catalog ownership overflow" })?)?;
+            copied.catalog_revisions.insert(name, *revision);
+        }
+        Ok((copied, custody))
+    }
+
+    /// Returns the same canonical model selection with funded DTO copies.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn definitions_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Vec<ToolDefinition>, acyclic_fs::NativeAllocation)> {
+        let bytes = self.selected.len().checked_mul(std::mem::size_of::<ToolDefinition>())
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native tool definitions capacity overflow" })? as u64;
+        let mut custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        let mut definitions = Vec::with_capacity(self.selected.len());
+        custody.reconcile_capacity((definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64)?;
+        for (name, selection) in &self.selected {
+            let revision = match selection {
+                ModelSelection::Revision(revision) => revision,
+                ModelSelection::Hidden => continue,
+                ModelSelection::Ambiguous => return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "tool requires an explicit model revision",
+                }),
+            };
+            let tool = self.get_version(name, revision).ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "selected tool revision is not registered",
+            })?;
+            let (definition, mut hold) =
+                decode_serialized_with_native_work::<ToolDefinition, _>(&tool.definition, work)?;
+            hold.substitute(hold.bytes() - std::mem::size_of::<ToolDefinition>() as u64)?;
+            custody.absorb(&mut hold)?;
+            definitions.push(definition);
+        }
+        let mut metadata = work.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
+        custody.absorb(&mut metadata)?;
+        Ok((definitions, custody))
     }
 
     /// Returns the unambiguous model-visible selection in canonical order.
