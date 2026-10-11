@@ -1630,7 +1630,7 @@ where
                 matches!(outcome, Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled))
         };
         if terminal { return Ok(None); }
-        let pulled = deadline::run_observed(
+        let pulled = deadline::run(
             &self.host, task, None, admission.run_limits.deadline_epoch_ms,
             admission.operation_id,
             async {
@@ -1973,7 +1973,7 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        deadline::run_observed(
+        deadline::run(
             &self.host, task, Some(&fence), admission.run_limits.deadline_epoch_ms,
             operation_id, self.run_task_owned(lease, &fence, commands, maximum_transitions, io), io, |_| false,
         ).await
@@ -2542,8 +2542,7 @@ where
             Some(&self.fence),
             self.run_limits.deadline_epoch_ms,
             self.operation_id,
-            self.executor.execute_progress(input, &self.journal),
-        )
+            self.executor.execute_progress(input, &self.journal), None, |_| false)
         .await
     }
 

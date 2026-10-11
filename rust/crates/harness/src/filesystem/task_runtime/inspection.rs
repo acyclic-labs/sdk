@@ -253,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<Vec<crate::model::ModelEvent>> {
         self.validate_input(input)?;
         deadline::run(&self.host, self.task, Some(&self.fence), self.run_limits.deadline_epoch_ms,
-            self.operation_id, self.executor.model_step(&self.journal, input, step, prior_messages)).await
+            self.operation_id, self.executor.model_step(&self.journal, input, step, prior_messages), None, |_| false).await
     }
 
     /// Settles only the tools admitted by a retained model step through the ordinary stock resolver.
@@ -262,6 +262,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<crate::executor::ModelToolsProgress> {
         self.validate_input(input)?;
         deadline::run(&self.host, self.task, Some(&self.fence), self.run_limits.deadline_epoch_ms,
-            self.operation_id, self.executor.resolve_model_tools(&self.journal, input, step)).await
+            self.operation_id, self.executor.resolve_model_tools(&self.journal, input, step), None, |_| false).await
     }
 }

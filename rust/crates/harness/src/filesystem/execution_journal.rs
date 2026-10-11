@@ -462,13 +462,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("matched original native work");
-                    crate::NativeFutureBundle::new(work, || self.replay_verified(
-                        operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io)))?.await?
+                    crate::NativeFutureBundle::new(work, || self.replay_page(
+                        operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, Some(io)))?.await?
                 }
-                Some(io) => Box::pin(self.replay_verified(
-                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, Some(io))).await?,
-                None => self.replay_verified(
-                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, None).await?,
+                Some(io) => Box::pin(self.replay_page(
+                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, Some(io))).await?,
+                None => self.replay_page(
+                    operation, summary.tail, EXECUTION_REPLAY_PAGE_RECORDS, true, None).await?,
             };
             page_hold = match (io, before) {
                 (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -855,7 +855,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             if self.execution.is_some() {
                 let association_hold;
                 let association_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let records = self.replay_verified(envelope.operation_id, 0, 1, io).await?;
+                let records = self.replay_page(envelope.operation_id, 0, 1, true, io).await?;
                 association_hold = io.map(|io| io.guard_owned(
                     io.owned_bytes()?.checked_sub(association_before)
                         .ok_or_else(|| io.invalid("checkpoint association custody underflows"))?,
@@ -1078,14 +1078,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
             Err(Error::Indeterminate(_)) => {
-                let records = self.replay_verified(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
                 } else { Err(Error::Indeterminate(operation_id)) }
             }
             Err(error @ Error::Conflict(_)) => {
-                let records = self.replay_verified(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1094,7 +1094,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             Err(error @ Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })
             | Err(error @ Error::NativeStream { source: StreamError::IdempotencyMismatch, .. }) => {
-                let records = self.replay_verified(operation_id, tail, 1, io).await?;
+                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)|
                     record.idempotency_key == retry_digest && &record.event == event) {
                     Ok(true)
@@ -1684,15 +1684,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     }
 
 
-    async fn replay_verified(
-        &self, operation_id: OperationId, after: u64, maximum: u32, io: Option<&PreparationIo>,
-    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        self.replay_page_with_io(operation_id, after, maximum, true, io).await
-    }
-
-    async fn replay_page_with_io(
+    async fn replay_page(
         &self, operation_id: OperationId, after: u64, maximum: u32,
         retain_models: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
@@ -2145,7 +2137,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let _page_slots;
-            let page = self.replay_page_with_io(operation_id, after, maximum, false, Some(&io)).await?;
+            let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
             let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
                 .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
             _page_slots = io.guard_owned(page_bytes)?;
@@ -2273,7 +2265,7 @@ where
             items = crate::obs::Empty
         );
         traced(span, async move {
-            let page = self.replay_verified(operation_id, after, maximum, None).await?;
+            let page = self.replay_page(operation_id, after, maximum, true, None).await?;
             crate::obs::obs_record!("items" = page.len());
             Ok(page.into_iter().map(|(record, _)| record).collect())
         })
@@ -2291,7 +2283,7 @@ where
                 .map_err(|cause| acyclic_fs::OperationFailure::new(cause, Default::default()))?;
             let result = async {
                 let _page_slots;
-                let page = self.replay_page_with_io(operation_id, after, maximum, false, Some(&io)).await?;
+                let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
                 let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
                     .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
                 _page_slots = io.guard_owned(page_bytes)?;
@@ -2531,7 +2523,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         {
             let association_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let records = self.replay_verified(operation_id, 0, 1, io).await?;
+            let records = self.replay_page(operation_id, 0, 1, true, io).await?;
             association_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "selected association custody underflows"))?)).transpose()?;

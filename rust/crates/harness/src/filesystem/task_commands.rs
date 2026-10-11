@@ -846,7 +846,7 @@ where
             TASK_OBSERVE_COMMAND_KIND => {
                 if let Some(io) = io {
                     let input: TaskObserveCommand = mail::decode_command(payload, Some(io))?;
-                    let child = TaskId::from_bytes(child_operation_with_io(
+                    let child = TaskId::from_bytes(child_operation(
                         task, input.admission_operation, Some(io),
                     )?.into_bytes());
                     if self.runtime.admission_observed(child, Some(io)).await?.parent != Some(task) {
@@ -859,7 +859,7 @@ where
                 let input: TaskObserveCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let child = TaskId::from_bytes(
-                    child_operation(task, input.admission_operation).into_bytes(),
+                    child_operation(task, input.admission_operation, None)?.into_bytes(),
                 );
                 if self
                     .runtime
@@ -937,7 +937,7 @@ where
             } else {
                 serde_json::from_value(payload).map_err(|error| Error::Invalid(format!("invalid child command: {error}")))?
             };
-            let operation = child_operation_with_io(task, command.operation_id, io)?;
+            let operation = child_operation(task, command.operation_id, io)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -994,7 +994,7 @@ where
             } else {
                 serde_json::from_value(payload).map_err(|error| Error::Invalid(format!("invalid child observation: {error}")))?
             };
-            let child = TaskId::from_bytes(child_operation_with_io(task, input.admission_operation, io)?.into_bytes());
+            let child = TaskId::from_bytes(child_operation(task, input.admission_operation, io)?.into_bytes());
             if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
                 return Err(boundary(io, ErrorCode::Unauthorized, "observed task is not this command's direct child"));
             }
@@ -1448,17 +1448,7 @@ fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
         .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
 }
 
-fn child_operation(task: TaskId, command: OperationId) -> OperationId {
-    let mut digest = blake3::Hasher::new();
-    digest.update(b"harness/v2/task-child\0");
-    digest.update(&task.into_bytes());
-    digest.update(&command.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
-}
-
-fn child_operation_with_io(
+fn child_operation(
     task: TaskId, command: OperationId, io: Option<&super::PreparationIo>,
 ) -> Result<OperationId> {
     if let Some(io) = io {
@@ -1469,7 +1459,13 @@ fn child_operation_with_io(
         io.preflight(hashed)?;
         io.charge(hashed)?;
     }
-    Ok(child_operation(task, command))
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"harness/v2/task-child\0");
+    digest.update(&task.into_bytes());
+    digest.update(&command.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+    Ok(OperationId::from_bytes(bytes))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
