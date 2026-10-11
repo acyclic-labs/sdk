@@ -928,6 +928,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if self.verify_original_read_witness()? {
+            return Err(Self::grant_denied(work, "historical READ custody cannot prepare a journal write"));
+        }
         if !matches!(write, crate::distributed::JournalWrite::Settlement)
             && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
         {
@@ -1646,6 +1649,31 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
+        self.append_conversation_with_work_engine(publication, key, write, work, None).await
+    }
+
+    pub(crate) async fn append_conversation_with_work_and_phase(
+        &self,
+        publication: &crate::store::operations::IndexedPublication,
+        key: &StreamKey,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        phase: &mut crate::distributed::CommitPhase,
+    ) -> Result<bool> {
+        self.append_conversation_with_work_engine(publication, key, write, work, Some(phase)).await
+    }
+
+    async fn append_conversation_with_work_engine(
+        &self,
+        publication: &crate::store::operations::IndexedPublication,
+        key: &StreamKey,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        mut phase: Option<&mut crate::distributed::CommitPhase>,
+    ) -> Result<bool> {
+        if let Some(phase) = phase.as_deref_mut() {
+            *phase = crate::distributed::CommitPhase::NotCalled;
+        }
         let fresh = !matches!(write, crate::distributed::JournalWrite::Settlement);
         let mut request = self
             .prepare_append_with_work(
@@ -1661,8 +1689,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        match crate::distributed::commit_prepared_with_work(
-            &self.stream, request, publication.operation_id,
+        match crate::distributed::commit_prepared_with_work_and_phase(
+            &self.stream, request, publication.operation_id, phase,
         ).await? {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
