@@ -10,7 +10,7 @@ use thiserror::Error;
 
 const JOURNAL_VERSION: u32 = 2;
 
-/// Native preparation installs carrying this prefix must start at an absent
+/// Native preparation installs with this prefix require an absent live binding.
 #[cfg(not(target_arch = "wasm32"))]
 pub const NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX: &[u8] = b"acyclic.native.prepare-absent/v1\0";
 
@@ -61,7 +61,6 @@ impl NativeInvocationView {
     }
 }
 
-/// An accepted source job pins the existing source gate, not its detached
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) struct NativeSourceExecutionView {
     work: NativeMaterializationWork,
@@ -90,7 +89,7 @@ impl NativeSourceExecutionView {
     }
 }
 
-/// A resource allowance is a view of the original engine, never another
+/// A resource allowance backed by the original engine.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub(crate) struct NativeResourceAllowance {
@@ -141,13 +140,6 @@ impl NativeResourceCredit {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeResourceState {
-    fn effective_budget(&self) -> Result<crate::WorkBudget, crate::DemandError> {
-        self.pending.remaining(self.budget).map_err(crate::DemandError::from)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl NativeResourceAllowance {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, NativeResourceState>, crate::DemandError> {
         let state = self.state.lock().map_err(|_| crate::DemandError::OriginalWorkPoisoned)?;
@@ -169,7 +161,7 @@ impl NativeResourceAllowance {
 
     fn own_reserve_work<T>(&self, maximum: crate::WorkCounters, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut state = self.lock()?;
-        state.work.admit(&maximum, &state.effective_budget()?)?;
+        state.work.admit(&maximum, &state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         let pending = state.pending.checked_add(maximum)?;
         let value = operation()?;
         state.pending = pending;
@@ -204,7 +196,7 @@ impl NativeResourceAllowance {
         let completed = if state.poisoned {
             Err(crate::DemandError::OriginalWorkPoisoned)
         } else {
-            state.work.verify(state.effective_budget()?).map_err(crate::DemandError::from)
+            state.work.verify(state.pending.remaining(state.budget).map_err(crate::DemandError::from)?).map_err(crate::DemandError::from)
         };
         parent.and(completed)
     }
@@ -255,7 +247,7 @@ impl NativeResourceAllowance {
     pub(crate) fn admit(&self, delta: crate::WorkCounters, bytes: u64) -> Result<(), crate::DemandError> {
         if let Some(parent) = &self.parent { parent.admit(delta, bytes)?; }
         let state = self.lock()?;
-        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         Ok(())
     }
 
@@ -274,7 +266,7 @@ impl NativeResourceAllowance {
     fn own_admission<T>(&self, delta: crate::WorkCounters, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut state = self.lock()?;
         let local = Self::local_delta(&state, delta, bytes)?;
-        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         let value = operation()?;
         state.work.try_add_assign(&local)?;
         state.live += bytes;
@@ -297,7 +289,7 @@ impl NativeResourceAllowance {
         let result = if state.poisoned {
             Err(crate::DemandError::OriginalWorkPoisoned)
         } else {
-            state.work.verify(state.effective_budget()?).map_err(crate::DemandError::from)
+            state.work.verify(state.pending.remaining(state.budget).map_err(crate::DemandError::from)?).map_err(crate::DemandError::from)
         };
         parent.and(result)
     }
@@ -322,7 +314,7 @@ impl NativeResourceAllowance {
 
     pub(crate) fn remaining(&self) -> Result<crate::WorkBudget, crate::DemandError> {
         let state = self.lock()?;
-        let mut remaining = state.work.remaining(state.effective_budget()?)?;
+        let mut remaining = state.work.remaining(state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
             .checked_sub(state.live).and_then(|bytes| bytes.checked_sub(state.reserved_allocation_bytes)).ok_or(crate::WorkError::Overflow)?;
         drop(state);
@@ -345,7 +337,7 @@ impl NativeResourceAllowance {
     fn own_reserve_allocation<T>(&self, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut state = self.lock()?;
         let delta = NativeResourceCredit::AllocationOperations.delta(1);
-        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         let pending = state.pending.checked_add(delta)?;
         let reserved = state.reserved_allocation_bytes.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
         let value = operation()?;
@@ -419,7 +411,7 @@ impl NativeResourceAllowance {
 
     fn own_reserve_credit<T>(&self, kind: NativeResourceCredit, count: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut state = self.lock()?;
-        state.work.admit(&kind.delta(count), &state.effective_budget()?)?;
+        state.work.admit(&kind.delta(count), &state.pending.remaining(state.budget).map_err(crate::DemandError::from)?)?;
         let pending = (*kind.counter(&mut state.pending)).checked_add(count).ok_or(crate::WorkError::Overflow)?;
         let value = operation()?;
         *kind.counter(&mut state.pending) = pending;
@@ -493,7 +485,7 @@ impl NativeResourceAllowance {
         let completed = if state.poisoned {
             Err(crate::DemandError::OriginalWorkPoisoned)
         } else {
-            state.work.verify(state.effective_budget()?).map_err(crate::DemandError::from)
+            state.work.verify(state.pending.remaining(state.budget).map_err(crate::DemandError::from)?).map_err(crate::DemandError::from)
         };
         parent.and(completed)
     }
@@ -657,7 +649,7 @@ impl_original_native_read_meter!(NativeInvocationView);
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 impl_original_native_read_meter!(NativeSourceExecutionView, |owner: &NativeSourceExecutionView| Some(std::sync::Arc::clone(&owner.base)));
 
-/// Physical primitive retirement carries the actual allocation's resource
+/// Retains an allocation's resource ownership through physical retirement.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeResourceRetirement {
     resource: Option<std::sync::Arc<NativeResourceAllowance>>,
@@ -753,7 +745,7 @@ impl NativeMaterializationWork {
         })
     }
 
-    /// Borrows this view's linked cancellation; cancelling an invocation-local
+    /// Borrows this invocation's linked cancellation token.
     pub fn cancellation(&self) -> &crate::CancellationToken {
         self.invocation.as_ref().map_or(&self.cancellation, |view| view.cancellation())
     }
@@ -802,7 +794,7 @@ impl NativeMaterializationWork {
         }
     }
 
-    /// Keeps the complete original invocation available after native queue
+    /// Retains the original invocation for native queue completion.
     pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
         crate::demand::OriginalDemandWork::from_native_materialization_work(self)
     }
@@ -869,7 +861,7 @@ impl NativeMaterializationWork {
         work
     }
 
-    /// Pins one already admitted source job without pinning it through detached
+    /// Pins an admitted source job for this execution view.
     #[cfg(feature = "native-mount")]
     pub fn with_source_io_lease(
         &self, lease: crate::native_mount::NativeSourceIoLease,
@@ -911,7 +903,7 @@ impl NativeMaterializationWork {
         Ok(work)
     }
 
-    /// Associates only an authenticated capture's scratch admissions. The
+    /// Associates an authenticated capture with its scratch admissions.
     pub(crate) fn with_capture_custody(
         &self, custody: &std::sync::Arc<crate::demand::CaptureTransientCustody>,
     ) -> Result<Self, NativeTreeMaterializationError> {
@@ -937,7 +929,7 @@ impl NativeMaterializationWork {
         }
     }
 
-    /// Limits this resource's own work and tagged live storage while preserving
+    /// Limits resource work and live storage on the original ledger.
     pub fn native_volume_work(&self, budget: crate::WorkBudget) -> Result<Self, NativeTreeMaterializationError> {
         let metadata = self.claim_root_metadata(std::mem::size_of::<NativeResourceAllowance>() as u64)?;
         let resource = std::sync::Arc::new_cyclic(|self_ref| NativeResourceAllowance {
@@ -1003,7 +995,7 @@ impl NativeMaterializationWork {
         crate::native_capture::capture_runtime_meter_owner(self, custody)
     }
 
-    /// Recovers this original runtime's inline typed first failure; otherwise
+    /// Recovers the first original runtime failure, or the supplied IO error.
     pub fn runtime_error(&self, error: std::io::Error) -> NativeTreeMaterializationError {
         match self.state().take_native_io_failure() {
             Some(cause) => native_materialization_work_error(cause),
@@ -1011,7 +1003,7 @@ impl NativeMaterializationWork {
         }
     }
 
-    /// Copies a borrowed payload through the canonical native byte-buffer
+    /// Copies a borrowed payload into an admitted native buffer.
     pub fn copy_bytes(&self, bytes: &[u8]) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
         let mut writer = NativeImageWriter::new(self, false)?;
         let copied = writer.append(bytes)?;
@@ -1117,7 +1109,7 @@ impl NativeMaterializationWork {
         self.state().owns_native_checkout_token(token)
     }
 
-    /// Obtains immutable registered producer membership without an SDK loan,
+    /// Obtains registered producer membership without an SDK loan.
     pub(crate) fn checkout_control_sink(&self, producer: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
         self.state.checkout_control_witness(producer).ok_or(NativeTreeMaterializationError::InvalidLayout)
     }
@@ -1130,7 +1122,7 @@ impl NativeMaterializationWork {
         self.state.register_native_checkout_control(self, producer, header_guard)
     }
 
-    /// Constructs original-ledger private controls through the existing custody
+    /// Constructs private controls through registered original custody.
     pub(crate) fn with_native_checkout_controls<T, E: From<NativeTreeMaterializationError>>(
         &self,
         operation: impl FnOnce(
@@ -1236,7 +1228,7 @@ impl NativeMaterializationWork {
         Ok(NativeCopyReservation { meter: self.allocation_work(), reserved: Some(maximum) })
     }
 
-    /// Withholds future visits on the original ledger and every actual
+    /// Reserves visits on the original ledger and its resource allowances.
     pub(crate) fn reserve_items(
         &self, count: u64,
     ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
@@ -1310,7 +1302,7 @@ impl NativeMaterializationWork {
         root.reserve_copy(bytes)
     }
 
-    /// Transfers this registered capture's exclusive already-paid scratch
+    /// Transfers a registered capture's paid scratch custody.
     pub(crate) fn transfer_capture_allocation(
         &self, bytes: u64, custody: &std::sync::Arc<crate::demand::CaptureTransientCustody>,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
@@ -1319,7 +1311,7 @@ impl NativeMaterializationWork {
         Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture: None })
     }
 
-    /// Atomically funds the known allocation and the copy/items which run
+    /// Funds an allocation and its immediate copy and item work.
     pub(crate) fn claim_allocation_with_work(
         &self, bytes: u64, operations: u64, delta: crate::WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
@@ -1353,12 +1345,12 @@ impl NativeMaterializationWork {
         (NativeAllocation { meter: self.allocation_work(), bytes: owned, capture }, result.and(resource).map_err(native_materialization_work_error))
     }
 
-    /// Takes custody of an already measured owned buffer without charging a
+    /// Takes custody of an already measured buffer.
     pub fn retain_owned(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         self.claim_allocation(bytes, 0)
     }
 
-    /// Returns the actual owned journal control-buffer capacity without root
+    /// Returns the owned capacity of a journal control buffer.
     pub fn journal_control_bytes(journal: &MaterializationJournal) -> Result<u64, NativeTreeMaterializationError> {
         journal_owned_bytes(journal)
     }
@@ -1691,7 +1683,7 @@ impl NativeMaterializationWork {
         })
     }
 
-    /// Creates or opens a service-owned relative directory through the actual
+    /// Creates or opens a service directory through its witnessed root.
     pub fn create_owned_directory(&self, root: &std::path::Path, expected: crate::NativeRootIdentity, relative: &std::path::Path, require_new: bool) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
         for component in relative.components() {
             self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
@@ -1714,7 +1706,7 @@ impl NativeMaterializationWork {
         crate::native_host::directory_identity_materialization_measured(&directory, self)
     }
 
-    /// Observes a working-directory binding. This does not authorize a later
+    /// Observes a working-directory binding without granting mutation authority.
     pub fn validate_working_directory(&self, root: &std::path::Path, expected: crate::NativeRootIdentity, relative: &std::path::Path) -> Result<(), NativeTreeMaterializationError> {
         self.open_working_directory(root, expected, relative).map(drop)
     }
@@ -1824,7 +1816,7 @@ impl NativeWorkReservation {
         NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait: None }
     }
 
-    /// Loans only this token's already-withheld visits to the existing item
+    /// Loans reserved visits to the existing item reservation.
     pub(crate) fn partition_items(
         &mut self, count: u64,
     ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
@@ -1838,7 +1830,7 @@ impl NativeWorkReservation {
         Ok(NativeItemReservation { meter: self.meter.clone(), remaining: count })
     }
 
-    /// Transfers custody within the same aggregate escrow. The child must
+    /// Transfers reserved work within the same aggregate allowance.
     pub(crate) fn partition_work(
         &mut self, maximum: crate::WorkCounters,
     ) -> Result<Self, NativeTreeMaterializationError> {
@@ -1892,7 +1884,7 @@ impl NativeWorkReservation {
         Ok(())
     }
 
-    /// Records a mandatory owned SDK disposal immediately before its actual
+    /// Records mandatory disposal work immediately before execution.
     pub(crate) fn started_drop_io(&mut self, actual: crate::WorkCounters) {
         let Err(error) = self.try_started_io(actual) else { return; };
         let starts = crate::WorkCounters {
@@ -1927,7 +1919,7 @@ impl NativeWorkReservation {
         }
     }
 
-    /// Records an actual read-only SDK receive before rejecting an overlarge
+    /// Records a completed SDK receive before rejecting an overlarge prefix.
     pub fn record_received_prefix(
         &mut self, actual: crate::WorkCounters,
     ) -> Result<(), NativeTreeMaterializationError> {
@@ -2439,7 +2431,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeOwnedCleanupCredit {
     }
 }
 
-/// Existing host helpers borrow the accepted owner directly. Their namespace
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCredit> {
     type Error = NativeTreeMaterializationError;
@@ -2493,7 +2484,7 @@ pub(crate) struct NativeItemReservation {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeItemReservation {
-    /// Records visits already physically performed under this reservation,
+    /// Records visits completed under this reservation.
     pub(crate) fn consume(&mut self, count: u64) -> Result<(), NativeTreeMaterializationError> {
         self.consume_original(count).map_err(native_materialization_work_error)
     }
@@ -2584,7 +2575,7 @@ impl std::fmt::Debug for NativeCleanupWrite {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeCleanupWrite {
-    /// Attributes this already accepted cleanup to the current volume without
+    /// Attributes accepted cleanup to the current volume.
     pub(crate) fn bind_current_work(&mut self, current: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
         if !self.reserved || !self.meter.shares_ledger(current) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
@@ -2594,7 +2585,7 @@ impl NativeCleanupWrite {
             return Ok(());
         }
         if self.additional_resource.is_some() { return Err(NativeTreeMaterializationError::InvalidLayout); }
-        let mut state = self.meter.state();
+        let state = self.meter.state();
         state.check().map_err(native_materialization_work_error)?;
         resource.reserve_credit_excluding(NativeResourceCredit::WriteOperations, 1, self.meter.resource.as_deref())
             .map_err(native_materialization_work_error)?;
@@ -2688,7 +2679,7 @@ impl NativeAllocation {
             && self.meter.resource.is_none() && self.capture.is_none()
     }
 
-    /// Moves this actual root bookkeeping claim into its original scalar
+    /// Transfers a root bookkeeping claim to its original registry.
     pub(crate) fn transfer_checkout_metadata(
         &mut self, original: &std::sync::Arc<crate::demand::NativeDemandReadMeter>,
         expected: u64,
@@ -2747,7 +2738,7 @@ impl NativeAllocation {
         self.transfer_checkout_control(owner, &membership)
     }
 
-    /// Transfers only the selected concrete buffer from this exclusive paid
+    /// Transfers selected paid buffer custody to registered checkout data.
     pub(crate) fn transfer_checkout_data_bytes(
         &mut self, bytes: u64,
         owner: &std::sync::Arc<crate::kernel::ProofDataCustody>,
@@ -2765,7 +2756,7 @@ impl NativeAllocation {
         std::sync::Arc::ptr_eq(&self.meter.state, &other.meter.state)
     }
 
-    /// Tests membership of this actual claim in the original and resource
+    /// Tests membership in the original ledger and resource allowance.
     #[must_use]
     pub fn matches_work(&self, work: &NativeMaterializationWork) -> bool {
         self.meter.shares_ledger(work) && self.meter.shares_resource_allowance(work)
@@ -2813,7 +2804,7 @@ impl NativeAllocation {
         original.and(resource)
     }
 
-    /// Physical cleanup cannot return an error. Keep the actual typed failure
+    /// Retains typed accounting failures from infallible physical cleanup.
     pub(crate) fn release_deferred(&mut self, bytes: u64) {
         if let Err(error) = self.release_original(bytes) {
             let mut state = self.meter.state();
@@ -2822,13 +2813,13 @@ impl NativeAllocation {
         }
     }
 
-    /// Substitutes actual retained bytes for an already admitted opaque quota
+    /// Replaces an admitted quota with actual retained capacity.
     pub fn substitute(&mut self, retained: u64) -> Result<(), NativeTreeMaterializationError> {
         let released = self.bytes.checked_sub(retained).ok_or(crate::WorkError::Overflow)?;
         self.release(released)
     }
 
-    /// Reconciles this buffer's completed physical capacity, recording excess
+    /// Reconciles completed buffer capacity, including actual excess.
     pub fn reconcile_capacity(&mut self, actual: u64) -> Result<(), NativeTreeMaterializationError> {
         if actual < self.bytes { self.release(self.bytes - actual)?; }
         let (mut completed, result) = self.meter.record_completed_allocation(actual - self.bytes, self.capture.clone());
@@ -2911,7 +2902,7 @@ pub struct MaterializationPlan {
     pub operation_id: OperationId,
     /// Exact transition or qualified native preparation intent.
     pub intent: MaterializationIntent,
-    /// Ordered path edits. Destructive edits do not overlap; metadata edits may
+    /// Ordered edits with nonoverlapping destructive paths.
     pub edits: Vec<MaterializationEdit>,
 }
 
@@ -2929,7 +2920,7 @@ pub enum MaterializationIntent {
     NativePreparation {
         /// Ordered actual provider, volume, and generation inputs.
         selection: Vec<MaterializationPreparationSelection>,
-        /// Canonical complete original request, including authority/fence
+        /// Canonical original request, including authority and fence provenance.
         original: Vec<u8>,
     },
 }
@@ -3106,17 +3097,14 @@ impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertaint
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<E> NativeStageUncertainty<E> {
-    fn new(work: &NativeMaterializationWork) -> Result<Self, NativeTreeMaterializationError> {
+    fn new(work: &NativeMaterializationWork) -> Result<(Box<Option<E>>, NativeAllocation), NativeTreeMaterializationError> {
         let custody = work.claim(std::mem::size_of::<Option<E>>() as u64)?;
-        let primary = Box::new(None);
-        Ok(Self { primary, _custody: custody, last_durable_work: crate::WorkCounters::UNCHARGED, observed_work: crate::WorkCounters::UNCHARGED })
+        Ok((Box::new(None), custody))
     }
 
-    fn finish(mut self, cause: E, last_durable_work: crate::WorkCounters, observed_work: crate::WorkCounters) -> Self {
-        *self.primary = Some(cause);
-        self.last_durable_work = last_durable_work;
-        self.observed_work = observed_work;
-        self
+    fn finish((mut primary, custody): (Box<Option<E>>, NativeAllocation), cause: E, last_durable_work: crate::WorkCounters, observed_work: crate::WorkCounters) -> Self {
+        *primary = Some(cause);
+        Self { primary, _custody: custody, last_durable_work, observed_work }
     }
 }
 
@@ -3146,7 +3134,7 @@ pub trait MaterializationJournalStore: Send + Sync {
     type ActionCompletion<'a>: MaterializationActionCompletion<Error = Self::Error>
     where Self: 'a;
 
-    /// Pre-admits the original journal's metadata completion while the current
+    /// Admits journal completion before its authorized physical action.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_action<'a>(&'a self, journal: OwnedMaterializationJournal)
         -> impl Future<Output = Result<Self::ActionCompletion<'a>, Self::Error>> + Send;
@@ -3196,7 +3184,7 @@ pub trait MaterializationBackend: Send + Sync {
     /// Whether an observation error terminates instead of becoming Unavailable.
     fn observation_interrupted(&self, _error: &Self::Error) -> bool { false }
 
-    /// Produces an actionable diagnostic together with its original allocation
+    /// Returns an observation diagnostic with its allocation ownership.
     #[cfg(not(target_arch = "wasm32"))]
     fn describe_observation_error(&self, error: Self::Error) -> Result<(String, Option<NativeAllocation>), Self::Error> { Err(error) }
 
@@ -3744,7 +3732,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         self.persist(journal).await.map_err(Into::into)
     }
 
-    /// Reads authenticated original intent and durable progress without applying
+    /// Reads original intent and durable progress without mutation.
     pub async fn load(
         &self,
         operation_id: OperationId,
@@ -4379,10 +4367,10 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
             (Err(cause), Some(NativeStageJournal::Accepted { completion, last_durable_work })) => {
                 // An unpolled accepted frame is retired, never new cleanup IO.
                 drop(completion);
-                Err(E::from(failure_slot.finish(cause, last_durable_work, original.receipt())))
+                Err(E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt())))
             }
             (Err(cause), Some(NativeStageJournal::Completing { last_durable_work })) =>
-                Err(E::from(failure_slot.finish(cause, last_durable_work, original.receipt()))),
+                Err(E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt()))),
             (Err(cause), _) => Err(cause),
             _ => Err(E::from(MaterializationError::Backend(NativeTreeMaterializationError::InvalidLayout))),
         }
@@ -4411,17 +4399,17 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
             Err(error) => {
                 drop(completion);
                 let cause = E::from(MaterializationError::Backend(error));
-                return Err(E::from(failure_slot.finish(cause, last_durable_work, original.receipt())));
+                return Err(E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt())));
             }
         };
         let journal = completion.complete().await.map_err(|error| {
             let cause = E::from(MaterializationError::Store(error));
-            E::from(failure_slot.finish(cause, last_durable_work, original.receipt()))
+            E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt()))
         })?;
         Ok((journal, identity))
     }
 
-    /// Transfers an already admitted immutable plan into the same durable
+    /// Transfers an admitted plan into its durable preparing journal.
     pub async fn prepare_owned(&self, plan: MaterializationPlan, custody: NativeAllocation) -> Result<OwnedMaterializationJournal, MaterializationError<S::Error, NativeTreeMaterializationError>> {
         let custody = custody;
         let plan = plan;
@@ -4452,7 +4440,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         Ok(())
     }
 
-    /// Recovers the same original owned journal with fresh authorization at
+    /// Recovers the owned journal with authorization before each action.
     pub async fn recover_owned_guarded<E, F, Fut>(&self, operation_id: OperationId, recovery: MaterializationRecovery, before_effect: &mut F) -> Result<Option<OwnedMaterializationJournal>, E>
     where
         E: From<MaterializationError<S::Error, NativeTreeMaterializationError>>,
@@ -4463,7 +4451,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         self.recover_journal_with_guard(journal, recovery, before_effect).await.map(Some)
     }
 
-    /// Inspects original operation/root/cleanup identity with live output
+    /// Inspects journal and allocation identity with owned output buffers.
     pub async fn inspect_owned(&self, operation_id: OperationId) -> Result<Option<(MaterializationInspection, Option<NativeAllocation>)>, MaterializationError<S::Error, NativeTreeMaterializationError>> {
         let mut custody: Option<NativeAllocation> = None;
         let Some(mut packet) = self.inspect(operation_id).await? else { return Ok(None); };
@@ -4494,7 +4482,7 @@ pub struct NativeTreeMaterializationBackend {
     held_target: std::sync::Arc<crate::native_host::HostRoot>,
     held_backup: std::sync::Arc<crate::native_host::HostRoot>,
     operation_directory: std::sync::Arc<PathBuf>,
-    allocation: std::sync::Arc<NativeAllocation>,
+    _allocation: std::sync::Arc<NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4682,7 +4670,7 @@ impl NativeTreeMaterializationBackend {
             target: native_owned_arc(target, &work, &mut custody)?,
             backup: native_owned_arc(backup, &work, &mut custody)?,
             operation_directory: native_owned_arc(operation_directory, &work, &mut custody)?,
-            allocation: {
+            _allocation: {
                 let mut header = work.claim(std::mem::size_of::<NativeAllocation>() as u64)?;
                 custody.absorb(&mut header)?;
                 std::sync::Arc::new(custody)
@@ -4705,7 +4693,7 @@ impl NativeTreeMaterializationBackend {
     /// Borrows the original operation-directory path.
     pub fn operation_directory_path(&self) -> &Path { self.operation_directory.as_path() }
 
-    /// Opens a mapping through the original held root, rejecting symlink
+    /// Opens a mapping through the held root without following symlinks.
     pub fn mapping_root_identity(&self, path: &str) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
         if !path.is_empty() && !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }))? {
             return Err(native_diagnostic(&self.work, path, NativeTreeMaterializationError::InvalidPath)?);
@@ -4718,7 +4706,7 @@ impl NativeTreeMaterializationBackend {
         crate::native_host::directory_identity_materialization_measured(&directory, &self.work)
     }
 
-    /// Allocates a lexical staging path with actual capacity custody. The
+    /// Allocates a lexical staging path with retained capacity ownership.
     pub fn staging_path(&self, path: &str) -> Result<(PathBuf, NativeAllocation), NativeTreeMaterializationError> {
         if !path.is_empty() && !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }))? {
             return Err(native_diagnostic(&self.work, path, NativeTreeMaterializationError::InvalidPath)?);
@@ -4742,7 +4730,7 @@ impl NativeTreeMaterializationBackend {
         Ok(())
     }
 
-    /// Checks root entries against original install paths and explicitly held,
+    /// Checks root entries against install paths and preserved names.
     pub fn require_selected_root(&self, edits: &[MaterializationEdit], preserved: &[&str]) -> Result<(), NativeTreeMaterializationError> {
         for path in preserved {
             if !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters {
@@ -4783,7 +4771,7 @@ impl NativeTreeMaterializationBackend {
         Ok(())
     }
 
-    /// Clears an operation-owned staged directory while retaining the witnessed
+    /// Clears a staged directory while retaining its allocation witness.
     pub async fn reset_target_directory(&self, path: &str) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
         if !path.is_empty() && !crate::path::is_canonical_relative_with_step(path, || self.work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() }))? {
             return Err(native_diagnostic(&self.work, path, NativeTreeMaterializationError::InvalidPath)?);
@@ -4960,7 +4948,7 @@ fn native_owned_arc<T>(value: T, work: &NativeMaterializationWork, custody: &mut
     Ok(std::sync::Arc::new(value))
 }
 
-/// Checks a prospective preparation layout using actual held directory
+/// Checks preparation layout through held directory identities.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn validate_native_preparation_location(
     root: &Path,
@@ -5381,7 +5369,6 @@ struct NativeRemoveFrame {
     reader: crate::native_host::HostStatReader,
     cursor: NativeAllocation,
     name: Option<(NativeWalkName, NativeAllocation)>,
-    identity: crate::NativeRootIdentity,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5392,7 +5379,7 @@ fn native_remove_frame(parent: &cap_std::fs::Dir, name: &NativeWalkNameRef, meta
         return Err(NativeTreeMaterializationError::AllocationChanged { expected: native_stat_identity(metadata), actual });
     }
     let (reader, cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
-    Ok(NativeRemoveFrame { directory, reader, cursor, name: None, identity: native_stat_identity(metadata) })
+    Ok(NativeRemoveFrame { directory, reader, cursor, name: None })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5415,7 +5402,7 @@ fn remove_native_walk(parent: &cap_std::fs::Dir, name: &NativeWalkNameRef, work:
 
 #[cfg(not(target_arch = "wasm32"))]
 enum NativeRemoveStep {
-    Leaf { name: NativeWalkName, allocation: NativeAllocation, identity: crate::NativeRootIdentity },
+    Leaf { name: NativeWalkName, allocation: NativeAllocation },
     Directory(NativeRemoveFrame),
 }
 
@@ -5448,7 +5435,7 @@ impl NativeRemoveWalker {
                     }
                     self.frames.push(next);
                 } else {
-                    return Ok(Some(NativeRemoveStep::Leaf { name: child, allocation, identity: native_stat_identity(&metadata) }));
+                    return Ok(Some(NativeRemoveStep::Leaf { name: child, allocation }));
                 }
             } else {
                 return Ok(self.frames.pop().map(NativeRemoveStep::Directory));
@@ -6417,7 +6404,7 @@ impl NativeTreeMaterializationError {
         }
     }
 
-    /// Recovers original runtime-meter quota/cancellation causes without
+    /// Recovers the original runtime meter failure.
     #[must_use]
     pub fn from_runtime_error(error: std::io::Error) -> Self {
         if error.get_ref().and_then(|cause| cause.downcast_ref::<crate::DemandError>())
@@ -6460,7 +6447,7 @@ fn native_check_plan(plan: &MaterializationPlan, work: &NativeMaterializationWor
     }
 }
 
-/// Materializes and publishes one authenticated workspace generation to a
+/// A bounded publication request for an authenticated workspace generation.
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -6469,7 +6456,7 @@ fn native_check_plan(plan: &MaterializationPlan, work: &NativeMaterializationWor
 pub struct NativeWorkspacePublication<'a> {
     /// Physical checkout root.
     pub root: &'a Path,
-    /// Actual ORIGINAL checkout allocation captured by the owner, not a path
+    /// Checkout allocation identity captured by the owner.
     pub source_root_identity: crate::NativeRootIdentity,
     /// Service-owned staging and recovery directory.
     pub operation_directory: &'a Path,
@@ -6489,7 +6476,7 @@ pub struct NativeWorkspacePublication<'a> {
     pub cancellation: &'a crate::CancellationToken,
 }
 
-/// Stages and captures the original journal before approval, without applying
+/// Stages and captures a journal before applying checkout edits.
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
 pub async fn prepare_native_generation_transition<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     from_generation: &crate::Generation<A, O>,
@@ -6507,7 +6494,7 @@ pub async fn prepare_native_generation_transition<A: crate::AsyncAuthorityStore,
     }
 }
 
-/// Loads the original operation through bounded local journal IO without
+/// Loads a journal through bounded IO without touching the checkout.
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
 pub async fn load_native_materialization_journal(
     state: &crate::LocalCoreStateStore,
@@ -6532,7 +6519,7 @@ pub async fn load_native_materialization_journal(
     }
 }
 
-/// Uses the original publication engine and meter, reauthorizing each physical
+/// Publishes a generation transition with authorization before each action.
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
 pub async fn publish_native_generation_transition<A, O, F, Fut>(
     from_generation: &crate::Generation<A, O>,
@@ -7152,7 +7139,7 @@ pub enum NativeWorkspacePublicationError {
     /// Publication planning or materialization exceeded its cumulative budget.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
-    /// The real original typed cause in the existing pre-funded stage carrier,
+    /// Original typed failure retained in the funded stage slot.
     #[error(transparent)]
     NativeStageUncertain(#[from] NativeStageUncertainty<NativeWorkspacePublicationError>),
 }
@@ -7434,7 +7421,7 @@ mod tests {
         }
     }
 
-    /// Flat path model whose writes, like every journal CAS, are durable
+    /// Flat path model with durable writes and journal CAS steps.
     #[derive(Default)]
     struct Crashing {
         tree: Mutex<BTreeMap<String, u8>>,
@@ -7595,7 +7582,7 @@ mod tests {
         }
     }
 
-    /// Applies `plan` to `original`, crashing after durable step `crash_at`
+    /// Applies a plan and crashes after the selected durable step.
     fn crashing_apply(
         plan: &MaterializationPlan,
         original: &BTreeMap<String, u8>,
@@ -7616,7 +7603,7 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
-        /// A crash after any durable step, followed by either recovery,
+        /// Recovery after any durable step yields the original or planned tree.
         #[test]
         fn recovery_after_a_crash_at_any_durable_step_is_all_or_nothing(
             original in btree_map("[a-e]", any::<u8>(), 0..5),
@@ -8438,6 +8425,14 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn captured_fixture_journal(journal: MaterializationJournal, preimage: OwnedMaterializationPreimage, backend: &NativeTreeMaterializationBackend) -> OwnedMaterializationJournal {
+        let custody = Some(backend.work.retain_owned(journal_owned_bytes(&journal).expect("actual fixture capacity")).expect("actual fixture journal admission"));
+        let mut owned = OwnedMaterializationJournal { journal, custody };
+        backend.append_preimage(&mut owned, preimage).expect("original captured witness transfer");
+        owned
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn unbounded_native_work() -> NativeMaterializationWork {
         NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("native work")
     }
@@ -8571,6 +8566,7 @@ mod tests {
         let root = temporary.path().join("root");
         let operation = temporary.path().join("operation");
         std::fs::create_dir(&root).expect("root fixture");
+        std::fs::create_dir_all(operation.join("target")).expect("target fixture");
         let file = root.join("file");
         std::fs::write(&file, b"owned").expect("file fixture");
         let budget = finite_native_budget();
