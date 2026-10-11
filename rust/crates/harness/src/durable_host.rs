@@ -3650,7 +3650,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         code: crate::wire::ErrorCode, reason: &'static str,
     ) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().and_then(|io| io.original_native_work()).is_some() {
             return Error::NativeBoundary { code, reason };
         }

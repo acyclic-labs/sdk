@@ -281,7 +281,6 @@ impl AuthorityIssuer {
     #[cfg(feature = "filesystem")]
     pub(crate) const fn audience(&self) -> &Authority { &self.audience }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn verifier_with_work(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
