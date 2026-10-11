@@ -10756,7 +10756,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation: &'a Mutation,
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + Send + 'a + use<'a, 'accounting, A, O> {
+    ) -> impl std::future::Future<Output = Result<(Option<FileRecord>, Option<FileRecord>), FsError>> + StorageFuture + 'a + use<'a, 'accounting, A, O> {
         let cancellation = cancellation.clone();
         async move {
             let (first_id, second_id) = match operation {
@@ -11549,7 +11549,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         allowed: &'a [FileId],
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(), FsError>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<(), FsError>> + StorageFuture + 'a {
         async move {
             let parent_pending = match path.split_last() {
                 Some((parent, _)) => pending_binding_path(parent, pending,
@@ -13133,7 +13133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + StorageFuture + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
@@ -13199,7 +13199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send + '_>> = future;
+            let mut future: crate::async_storage::BoxStorageFuture<'_, _> = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody = frame_custody.ok_or(FsError::PendingMutationAllocationFailed)?;
@@ -14800,7 +14800,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         expected_file_id: Option<FileId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<Output = FsResult<()>> + Send + 'a + use<'a, A, O> {
+    ) -> impl std::future::Future<Output = FsResult<()>> + StorageFuture + 'a + use<'a, A, O> {
         let cancellation = cancellation.clone();
         async move {
             self.mutate(
