@@ -3,6 +3,8 @@
 //! Request parsing, `SigV4` verification, XML, and HTTP framing are delegated to
 //! `s3s`. This module contains no namespace or storage implementation: every
 //! accepted operation resolves one scoped workspace and invokes [`crate::S3Workspace`].
+//! Ordinary HTTP response framing retains the canonical byte carrier as its
+//! wire owner. This unbounded transport control is not a native admission.
 
 use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
 use crate::model::FilesystemProfile;
@@ -1728,7 +1730,10 @@ where
                     ));
                 }
                 Ok(Some((
-                    bytes,
+                    // This ordinary HTTP wire control owns the whole canonical
+                    // carrier, including its original allocation custody.
+                    // No raw backing alias or data copy escapes the carrier.
+                    Bytes::from_owner(bytes),
                     (
                         view,
                         generation,
@@ -2696,6 +2701,35 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
+        let baseline = work.live_allocation_bytes();
+        let data = b"canonical HTTP chunk".to_vec();
+        let allocation = work.claim(data.capacity() as u64)?;
+        let carrier = acyclic_stream::OwnedBytes::from_vec_with_guard(
+            data, allocation, work.runtime_meter_owner())
+            .unwrap_or_else(|failure| panic!("ordinary test carrier: {:?}", failure.into_error()));
+        let pointer = carrier.as_slice().as_ptr();
+        let retained = work.live_allocation_bytes();
+        let mut response = body(Bytes::from_owner(carrier));
+        assert_eq!(work.live_allocation_bytes(), retained);
+        let chunk = response.next().await.ok_or("missing wire chunk")??;
+        assert_eq!(chunk.as_ptr(), pointer);
+        assert_eq!(chunk.as_ref(), b"canonical HTTP chunk");
+        let alias = chunk.slice(1..);
+        drop(chunk);
+        drop(response);
+        assert_eq!(work.live_allocation_bytes(), retained);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
+    }
     const SIGNATURE_DATE_HEADER: &str = "x-amz-date";
     const SIGNATURE_ALGORITHM: &str = "AWS4-HMAC-SHA256";
     const AUTHORIZATION_HEADER: &str = "authorization";

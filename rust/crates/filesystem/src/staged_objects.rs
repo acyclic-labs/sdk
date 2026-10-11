@@ -441,7 +441,7 @@ impl<S> StagedObjects<S> {
                     .map_err(|error| ObjectFailure::before_work(error.into()))?;
             } else {
                 self.spill.write_all_batch_async(vec![OwnedWrite {
-                    offset, bytes: OwnedBytes::from(buffer),
+                    offset, bytes: bytes::Bytes::from(buffer),
                 }]).await.map_err(|error| ObjectFailure::new(error.into(), work))?;
             }
             Ok(())
@@ -1794,7 +1794,10 @@ mod tests {
         let (id, bytes) = blob(OwnedBytes::from_static(b"real spill bytes"));
         store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, token).await?;
         let _spill_file = store.spill_io.write().await;
-        store.spill.write_all_batch_async(vec![OwnedWrite { offset: 0, bytes: bytes.clone() }]).await?;
+        let spill_bytes = bytes.clone();
+        store.spill.control_async(move |file| {
+            acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice())
+        }).await?;
         let mut index = store.index_mut();
         if let Some(Staged::Resident { order, .. }) = index.objects.get(&id) {
             let order = *order;
@@ -1861,7 +1864,7 @@ mod tests {
         assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
 
         store.spill.write_all_batch_async(vec![OwnedWrite {
-            offset: 0, bytes: OwnedBytes::from_static(b"bad! spill bytes"),
+            offset: 0, bytes: bytes::Bytes::from_static(b"bad! spill bytes"),
         }]).await?;
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
         assert!(matches!(store.read_with_native_work(id, bytes.len() as u64, &work, &token).await,
@@ -1923,9 +1926,10 @@ mod tests {
         {
             let _spill_file = store.spill_io.write().await;
             let offset = store.index().spill_end;
-            store.spill.write_all_batch_async(vec![OwnedWrite {
-                offset, bytes: second_bytes.clone(),
-            }]).await?;
+            let spill_bytes = second_bytes.clone();
+            store.spill.control_async(move |file| {
+                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice())
+            }).await?;
             let mut index = store.index_mut();
             if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {
                 let order = *order;

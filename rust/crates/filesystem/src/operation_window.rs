@@ -380,7 +380,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             conditions.push(acyclic_stream::CommitCondition::Absent { path: path.clone() });
             mutations.push(acyclic_stream::CommitMutation::Append {
                 path,
-                records: vec![bytes::Bytes::from_static(b"active")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"active")],
             });
         }
         for (lease_id, lease) in &before {
@@ -394,7 +394,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
             });
             mutations.push(acyclic_stream::CommitMutation::Append {
                 path,
-                records: vec![bytes::Bytes::from_static(b"fenced")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"fenced")],
             });
         }
         let mut hasher = blake3::Hasher::new();
@@ -1462,12 +1462,12 @@ mod tests {
             Some(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream"),
-            Bytes::from_static(b"upstream")
+            child.read("/parent", 16).await.expect("upstream").as_slice(),
+            b"upstream"
         );
         assert_eq!(
-            child.read("/child", 16).await.expect("local"),
-            Bytes::from_static(b"local")
+            child.read("/child", 16).await.expect("local").as_slice(),
+            b"local"
         );
         assert!(matches!(
             coordinator.inspect(child.id()).await.expect("window").phase,

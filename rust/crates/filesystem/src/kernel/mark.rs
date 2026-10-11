@@ -4,6 +4,8 @@
 //! only has to find every reachable object, once. Generations share most of
 //! their pages, so a page already marked is not read again, and content
 //! chunks are marked by identity without being read.
+//! Read buffers remain in the canonical carrier while marking decodes them,
+//! preserving provider allocation custody through the last borrowed view.
 
 use std::collections::HashSet;
 
@@ -96,7 +98,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
     }
 
     /// Reads `object` unless it is already marked, marking it.
-    async fn visit(&mut self, object: ObjectId) -> Result<Option<bytes::Bytes>, MarkError> {
+    async fn visit(&mut self, object: ObjectId) -> Result<Option<acyclic_stream::OwnedBytes>, MarkError> {
         if !self.marked.insert(object) {
             return Ok(None);
         }
