@@ -243,7 +243,7 @@ export class BrowserCustomerCredential {
     try {
       const previous = await readActive(database, scope, operation);
       const [pair, wrappingKey] = await awaitWithCancellation(Promise.all([
-        crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]),
+        crypto.subtle.generateKey("Ed25519", false, ["sign", "verify"]),
         crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]),
       ]), operation);
       const publicKey = await encodeAccountPublicKey(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
