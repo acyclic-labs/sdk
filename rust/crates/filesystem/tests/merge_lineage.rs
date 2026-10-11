@@ -18,7 +18,7 @@ use acyclic_fs::{
     WorkspaceLineageStore, resolve_merge_plan,
 };
 use acyclic_stream::MemoryStream;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -480,7 +480,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::Applied(_)
     ));
-    assert_eq!(target.read("/source-before-plan", 16).await?, b"one"[..]);
+    assert_eq!(target.read("/source-before-plan", 16).await?.as_ref(), &b"one"[..]);
     assert!(target.read("/source-after-plan", 16).await.is_err());
 
     let stale_plan = source.join_into(&target).plan().await?;
@@ -509,7 +509,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         current_plan.apply(options).await?,
         JoinOutcome::AlreadyApplied(_)
     ));
-    assert_eq!(target.read("/source-after-plan", 16).await?, b"two"[..]);
+    assert_eq!(target.read("/source-after-plan", 16).await?.as_ref(), &b"two"[..]);
     Ok(())
 }
 
@@ -570,7 +570,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
         .await,
         Err(DrivenJoinError::StaleCandidate)
     ));
-    assert_eq!(target.read("/shared", 16).await?, b"target"[..]);
+    assert_eq!(target.read("/shared", 16).await?.as_ref(), &b"target"[..]);
     Ok(())
 }
 
@@ -591,7 +591,7 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
     let proposal = |operation, fingerprint, payload| ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
-        payload: Bytes::from_static(payload),
+        payload: bytes::Bytes::from_static(payload),
     };
     let left = proposal(1, 1, b"left");
     let right = proposal(2, 2, b"right");

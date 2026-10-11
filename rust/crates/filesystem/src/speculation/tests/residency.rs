@@ -3,7 +3,7 @@ use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{ObjectId, ObjectKind, ObjectStore, object_digest};
 use crate::{CachedObjectStore, EmbeddedCapabilities, Fs, ObjectCacheOptions, WorkCounters};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 
 fn generation(byte: u8) -> GenerationId {
@@ -11,7 +11,7 @@ fn generation(byte: u8) -> GenerationId {
 }
 
 fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let bytes = Bytes::from(vec![byte; 64]);
+    let bytes = OwnedBytes::from(vec![byte; 64]);
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),

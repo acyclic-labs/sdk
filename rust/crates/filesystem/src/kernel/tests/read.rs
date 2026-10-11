@@ -3,7 +3,7 @@ use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
@@ -26,7 +26,7 @@ fn put_page(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_tree_page(page, 16)?),
+        OwnedBytes::from(encode_tree_page(page, 16)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

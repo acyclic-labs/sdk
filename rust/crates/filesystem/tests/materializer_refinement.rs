@@ -11,8 +11,9 @@
 
 use acyclic_fs::{Digest, GenerationId, JournaledMaterializer, MaterializationBackend,
     MaterializationEdit, MaterializationError, MaterializationJournal, MaterializationJournalStore,
-    MaterializationObservation, MaterializationPhase, MaterializationPlan, MaterializationPreimage,
+    MaterializationIntent, MaterializationPhase, MaterializationPlan, MaterializationPreimage,
     MaterializationRecovery, OperationId};
+use acyclic_fs::materializer::{MaterializationActionCompletion, MaterializationObservation, OwnedMaterializationJournal, OwnedMaterializationPreimage};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -24,7 +25,7 @@ const EXTERNAL: &[u8] = b"external-writer:59";
 fn generation(n: u8) -> GenerationId { GenerationId::new(Digest::from_bytes([n; 32])) }
 fn plan() -> MaterializationPlan {
     MaterializationPlan { operation_id: OperationId::from_bytes([31; 16]),
-        from: generation(1), to: generation(2), edits: vec![
+        intent: MaterializationIntent::GenerationTransition { from: generation(1), to: generation(2) }, edits: vec![
             MaterializationEdit::Rename { from: "from".into(), to: "to".into() },
             MaterializationEdit::Remove { path: "remove".into() },
         ] }
@@ -61,19 +62,26 @@ impl Gate {
 }
 #[derive(Clone, Default)]
 struct Store { journal: Arc<Mutex<Option<MaterializationJournal>>>, gate: Gate }
+impl MaterializationActionCompletion for Interrupted {
+    type Error = Self;
+    async fn complete(self) -> Result<OwnedMaterializationJournal, Self> { Err(self) }
+}
 impl MaterializationJournalStore for Store {
     type Error = Interrupted;
-    async fn load(&self, _: OperationId) -> Result<Option<MaterializationJournal>, Interrupted> {
-        Ok(self.journal.lock().clone())
+    type ActionCompletion<'a> = Interrupted;
+    async fn prepare_action(&self, _journal: OwnedMaterializationJournal) -> Result<Interrupted, Interrupted> { Err(Interrupted) }
+    async fn load(&self, _: OperationId) -> Result<Option<OwnedMaterializationJournal>, Interrupted> {
+        Ok(self.journal.lock().clone().map(OwnedMaterializationJournal::ordinary))
     }
-    async fn compare_and_swap(&self, _: OperationId, revision: u64, next: MaterializationJournal)
-        -> Result<bool, Interrupted> {
+    async fn compare_and_swap(&self, _: OperationId, revision: u64, next: OwnedMaterializationJournal)
+        -> Result<(bool, OwnedMaterializationJournal), Interrupted> {
+        if next.custody.is_some() { return Err(Interrupted); }
         let mut current = self.journal.lock();
-        if current.as_ref().map_or(0, |j| j.revision) != revision { return Ok(false); }
+        if current.as_ref().map_or(0, |j| j.revision) != revision { return Ok((false, next)); }
         self.gate.hit(Event::Record, false)?;
-        *current = Some(next);
+        *current = Some(next.journal.clone());
         self.gate.hit(Event::Record, true)?;
-        Ok(true)
+        Ok((true, next))
     }
 }
 type Image = [Option<Vec<u8>>; 2];
@@ -116,8 +124,14 @@ impl Backend {
 }
 impl MaterializationBackend for Backend {
     type Error = Interrupted;
-    async fn capture(&self, edit: &MaterializationEdit) -> Result<MaterializationPreimage, Interrupted> {
-        Ok(encode(&self.image(edit)))
+    fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Interrupted> {
+        if preimage.custody.is_some() { return Err(Interrupted); }
+        journal.preimages.push(preimage.preimage);
+        Ok(())
+    }
+
+    async fn capture(&self, edit: &MaterializationEdit) -> Result<OwnedMaterializationPreimage, Interrupted> {
+        Ok(OwnedMaterializationPreimage::ordinary(encode(&self.image(edit))))
     }
     async fn observe(&self, edit: &MaterializationEdit, pre: &MaterializationPreimage)
         -> Result<MaterializationObservation, Interrupted> {
@@ -285,7 +299,7 @@ async fn replay(trace: &[Action]) -> Result<(usize, usize), String> {
         let result = match action {
             Action::Reopen => { engine = JournaledMaterializer::new(store.clone(), backend.clone()); Ok(None) },
             Action::Diverge(i) => { diverge_tree(&mut backend.tree.lock(), i); Ok(None) },
-            Action::Conflict => { let mut p = plan(); p.to = generation(9); engine.apply(p).await.map(Some) },
+            Action::Conflict => { let mut p = plan(); p.intent = MaterializationIntent::GenerationTransition { from: generation(1), to: generation(9) }; engine.apply(p).await.map(Some) },
             Action::Forward(_) => {
                 if store.journal.lock().as_ref().is_some_and(|j| j.phase == MaterializationPhase::RollingBack) {
                     engine.recover(plan().operation_id, MaterializationRecovery::Complete).await
@@ -307,7 +321,8 @@ async fn replay(trace: &[Action]) -> Result<(usize, usize), String> {
         }
         let actual = store.journal.lock().clone();
         let expected = model.journal.as_ref().map(|j| MaterializationJournal {
-            version: 1, revision: j.revision, plan: plan(), phase: phase(j.phase),
+            version: 2, revision: j.revision, plan: plan(), phase: phase(j.phase),
+            root_identity: None, preparation_identity: None, preparation_progress: None, work: Default::default(),
             applied: u32::from(j.applied), restored: u32::from(j.restored), preimages: vec![
                 encode(&[Some(OLD_FROM.to_vec()), Some(OLD_TO.to_vec())]),
                 encode(&[Some(OLD_REMOVE.to_vec()), None]),
@@ -389,7 +404,13 @@ mod physical {
     }
     impl MaterializationBackend for Files {
         type Error = Interrupted;
-        async fn capture(&self, e: &MaterializationEdit) -> Result<MaterializationPreimage, Interrupted> { Ok(encode(&self.image(e)?)) }
+    fn append_preimage(&self, journal: &mut OwnedMaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Interrupted> {
+        if preimage.custody.is_some() { return Err(Interrupted); }
+        journal.preimages.push(preimage.preimage);
+        Ok(())
+    }
+
+        async fn capture(&self, e: &MaterializationEdit) -> Result<OwnedMaterializationPreimage, Interrupted> { Ok(OwnedMaterializationPreimage::ordinary(encode(&self.image(e)?))) }
         async fn observe(&self, e: &MaterializationEdit, p: &MaterializationPreimage) -> Result<MaterializationObservation, Interrupted> {
             let pre = decode(p); Ok(classify(self.image(e)?, pre.clone(), desired(e, &pre)))
         }

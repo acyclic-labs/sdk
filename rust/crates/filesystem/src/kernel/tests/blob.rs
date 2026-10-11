@@ -73,7 +73,7 @@ impl AsyncObjectStore for PeakRecordingStore {
 }
 
 struct ScriptedSource {
-    bytes: Bytes,
+    bytes: OwnedBytes,
     position: usize,
     maximum_per_read: usize,
     fail_after: Option<usize>,
@@ -578,7 +578,7 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
     let chunk = put(
         &store.inner,
         ObjectKind::BlobChunk,
-        Bytes::from_static(b"x"),
+        OwnedBytes::from_static(b"x"),
     )?;
     let page = BlobPage {
         first_offset: 0,
@@ -592,7 +592,7 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8)?),
     )?;
     store
         .reject_decoded_admission
@@ -623,7 +623,7 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
 fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let chunk_bytes = Bytes::from_static(b"abcdefgh");
+    let chunk_bytes = OwnedBytes::from_static(b"abcdefgh");
     let chunk = put(&backend, ObjectKind::BlobChunk, chunk_bytes.clone())?;
     let leaf_page = BlobPage {
         first_offset: 0,
@@ -637,7 +637,7 @@ fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
     let leaf = put(
         &backend,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&leaf_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&leaf_page, 8)?),
     )?;
     let root_page = BlobPage {
         first_offset: 0,
@@ -651,7 +651,7 @@ fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
     let root = put(
         &backend,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&root_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&root_page, 8)?),
     )?;
     let store = CachedObjectStore::new(
         backend,
@@ -701,8 +701,8 @@ fn repeated_blob_reads_reuse_decoded_indexes_without_backend_reads()
 fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"abcd"))?;
-    let second = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"efgh"))?;
+    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
+    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh"))?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -722,7 +722,7 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
     let root = put(
         &store,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8)?),
     )?;
     let read = read_blob_range(
         &store,
@@ -769,7 +769,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let missing_root = put(
         &store,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&missing_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&missing_page, 8)?),
     )?;
     let missing = read_blob_range(
         &store,
@@ -789,7 +789,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     ));
     assert_eq!(missing.work.page_reads, 1);
 
-    let short_chunk = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"ab"))?;
+    let short_chunk = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"ab"))?;
     let short_page = BlobPage {
         first_offset: 0,
         end_offset: 4,
@@ -802,7 +802,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let short_root = put(
         &store,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&short_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&short_page, 8)?),
     )?;
     let short = read_blob_range(
         &store,
@@ -891,8 +891,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"abcd"))?;
-    let second = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"efgh"))?;
+    let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
+    let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh"))?;
     let page = BlobPage {
         first_offset: 0,
         end_offset: 8,
@@ -912,7 +912,7 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
     let root = put(
         &store,
         ObjectKind::Blob,
-        Bytes::from(encode_blob_page(&page, 2)?),
+        OwnedBytes::from(encode_blob_page(&page, 2)?),
     )?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
@@ -954,7 +954,7 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
 #[test]
 fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let chunk = put(&store, ObjectKind::BlobChunk, Bytes::from_static(b"abcd"))?;
+    let chunk = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
     let leaf = BlobPage {
         first_offset: 0,
         end_offset: 4,
@@ -965,7 +965,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
         }]),
     };
     let leaf_bytes = encode_blob_page(&leaf, 8)?;
-    let leaf_id = put(&store, ObjectKind::Blob, Bytes::from(leaf_bytes))?;
+    let leaf_id = put(&store, ObjectKind::Blob, OwnedBytes::from(leaf_bytes))?;
     let root = BlobPage {
         first_offset: 1,
         end_offset: 4,
@@ -976,7 +976,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
         }]),
     };
     let root_bytes = encode_blob_page(&root, 8)?;
-    let root_id = put(&store, ObjectKind::Blob, Bytes::from(root_bytes))?;
+    let root_id = put(&store, ObjectKind::Blob, OwnedBytes::from(root_bytes))?;
     assert!(matches!(
         read_blob_range(
             &store,
@@ -1254,7 +1254,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
     };
     let store = MemoryObjectStore::default();
     let mut partial = ScriptedSource {
-        bytes: Bytes::from_static(b"abcdef"),
+        bytes: OwnedBytes::from_static(b"abcdef"),
         position: 0,
         maximum_per_read: 1,
         fail_after: None,
@@ -1282,11 +1282,11 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
             WorkBudget::UNBOUNDED,
         )?
         .bytes,
-        Bytes::from_static(b"abcdef")
+        OwnedBytes::from_static(b"abcdef")
     );
 
     let mut failing = ScriptedSource {
-        bytes: Bytes::from_static(b"abcdef"),
+        bytes: OwnedBytes::from_static(b"abcdef"),
         position: 0,
         maximum_per_read: 1,
         fail_after: Some(1),
@@ -1308,7 +1308,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 
     let cancellation = CancellationToken::new();
     let mut cancelling = ScriptedSource {
-        bytes: Bytes::from_static(b"abcdef"),
+        bytes: OwnedBytes::from_static(b"abcdef"),
         position: 0,
         maximum_per_read: 1,
         fail_after: None,
@@ -1330,7 +1330,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 
     let cancellation = CancellationToken::new();
     let mut queued = ScriptedSource {
-        bytes: Bytes::from_static(b"abcdef"),
+        bytes: OwnedBytes::from_static(b"abcdef"),
         position: 0,
         maximum_per_read: 1,
         fail_after: None,
@@ -1352,7 +1352,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 
     let mut tight_budget = WorkBudget::UNBOUNDED;
     tight_budget.peak_allocation_bytes = cancelled.work.peak_allocation_bytes.saturating_sub(1);
-    let mut bounded = std::io::Cursor::new(Bytes::from_static(b"abcdef"));
+    let mut bounded = std::io::Cursor::new(OwnedBytes::from_static(b"abcdef"));
     let rejected = crate::async_storage::poll_ready(build_blob_async(
         &MemoryObjectStore::default(),
         &mut bounded,
@@ -1372,7 +1372,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 #[test]
 fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let mut source = std::io::Cursor::new(Bytes::new());
+    let mut source = std::io::Cursor::new(OwnedBytes::new());
     let built = build_blob(
         &store,
         &mut source,
@@ -1495,7 +1495,7 @@ fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn 
         },
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(read.bytes, Bytes::from_static(&[3, 3, 3]));
+    assert_eq!(read.bytes, OwnedBytes::from_static(&[3, 3, 3]));
     Ok(())
 }
 
@@ -1802,7 +1802,7 @@ fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut source = ScriptedSource {
-        bytes: Bytes::from_static(b"abcdef"), position: 0, maximum_per_read: 1,
+        bytes: OwnedBytes::from_static(b"abcdef"), position: 0, maximum_per_read: 1,
         fail_after: None, cancel_at: None,
     };
     let error = crate::async_storage::poll_ready(build_blob_with_accounting(
