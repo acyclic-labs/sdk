@@ -392,6 +392,20 @@ uncertainty propagates without staging, appending or repairing anything.
 Native staging instead requires the original WRITE grant and current dispatch
 owner; a historical READ owner cannot stage even with a retained RW scope.
 
+Received-mail reconciliation uses an SDK-issued, opaque
+`ReceivedCopyReadWitness`, not the general writable publication observer.
+Both `ContentPublisher` and `ContentResidencyVerifier` expose
+`observe_received_copy_with_native_work`. The reader borrows the original
+sealed selected volume; it does not reconstruct a writer. Both routes check
+the original ledger, target volume and current-or-readonly owner before
+namespace I/O, then share the same immutable upload receipt and generation.
+The exact copy path, source descriptor and display name must match the
+committed receive; the owner is checked again after I/O. Only proven absence
+returns `None`. Backend failures do not trigger another staging operation.
+Custom providers without this capability reject before constructing a future
+or performing I/O. The native byte carrier remains intrinsic; the returned
+allocation covers only independently owned receipt metadata.
+
 Root publication-lease verification borrows the publisher's original
 `PreparationIo`. Its ordinary verification future is admitted before boxing;
 the boxed future physically drops before that frame claim is released on

@@ -596,6 +596,25 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn observe_received_copy_with_native_work<'a>(
+        &'a self, volume: &'a VolumeRef,
+        proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            ContentGrant::verify_original_volume_with_io(
+                &self.verifier, &self.scope, volume, VolumeOperation::Read, &io)?;
+            let file = self.host.received_copy_record_with_io(
+                volume, proof, self.maximum_bytes, &io,
+            ).await?;
+            let retained = file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0);
+            let custody = io.into_native_custody(retained)?;
+            Ok((file, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn verify_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -3864,6 +3883,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_with_io(volume, VolumeOperation::Write, io)?;
         self.content_for_operation_record_io(
             volume, key, expected_path, maximum_bytes, None, io).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn received_copy_record_with_io(
+        &self, volume: &VolumeRef, proof: &crate::runtime::ReceivedCopyReadWitness<'_>,
+        maximum_bytes: u64, io: &PreparationIo,
+    ) -> Result<Option<FileRef>> {
+        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "received-copy observation requires the original native ledger",
+        })?;
+        if !proof.matches_original_work(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "received-copy witness belongs to another native ledger" });
+        }
+        proof.verify_volume(volume)?;
+        proof.verify_read_access(work)?.await?;
+        let retry = content_publisher::once_key(proof.copy_operation(), Some(io))?;
+        let retry_hold = io.guard_owned(retry.as_str().len() as u64)?;
+        let file = self.content_for_operation_record_io(
+            volume, &retry, Some(proof.path()), maximum_bytes, None, Some(io),
+        ).await?;
+        drop(retry);
+        drop(retry_hold);
+        if let Some(file) = &file {
+            let source = proof.source_file();
+            fork_preparer_io::item(Some(io),
+                source.descriptor().media_type().len() as u64
+                    + source.display_name().len() as u64)?;
+            if file.descriptor() != source.descriptor()
+                || file.display_name() != source.display_name() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "original received-copy metadata differs from its committed source" });
+            }
+        }
+        proof.verify_read_access(work)?.await?;
+        Ok(file)
     }
 
     pub(super) async fn original_internal_content_for_operation_with_io(

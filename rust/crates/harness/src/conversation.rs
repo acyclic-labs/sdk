@@ -1660,6 +1660,17 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger content resolution is unavailable" })
     }
 
+    /// Observes only the copy selected by an authenticated committed receive.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_received_copy_with_native_work<'a>(
+        &'a self, _volume: &'a VolumeRef,
+        _proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "committed received-copy observation is unavailable" })
+    }
+
     /// Availability only; it conveys no read authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
@@ -1970,6 +1981,17 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             reason: "original native-ledger publication observation is unavailable" })
     }
 
+    /// Reads only the original copy selected by an authenticated committed receive.
+    /// It grants no general read observation of arbitrary publication operations.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_received_copy_with_native_work<'a>(
+        &'a self, _proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "committed received-copy observation is unavailable" })
+    }
+
     /// Resolves the original operation, metadata and generation without head.
     #[cfg(feature = "filesystem")]
     fn observe_staged_once_measured<'a>(
@@ -2151,6 +2173,17 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let reader = self.finite_bound_reader(reference.volume(), &io)?;
         reader.read_with_native_work(reference, maximum_bytes, work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_received_copy_with_native_work<'a>(
+        &'a self, volume: &'a VolumeRef,
+        proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = self.finite_bound_reader(volume, &io)?;
+        reader.observe_received_copy_with_native_work(volume, proof, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
