@@ -1492,9 +1492,7 @@ impl NativePreparationRoot {
         custody.absorb(&mut operation_custody).map_err(native_root_error)?;
         let meter = work.clone();
         acyclic_native_runtime::run_blocking_io_measured(move || {
-            let backend = acyclic_fs::NativeTreeMaterializationBackend::open_owned_with_work(
-                root, operation_directory, custody, meter.clone(),
-            ).map_err(native_root_error)?;
+            let backend = acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter.clone()).map_err(native_root_error)?;
             backend.require_initial_empty().map_err(native_root_error)?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
                 backend.allocation_identity().ok_or(Error::NativeBoundary {
@@ -3144,7 +3142,7 @@ async fn native_backend(
     custody.absorb(&mut operation_custody).map_err(native_root_error)?;
     let meter = work.clone();
     let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
-        acyclic_fs::NativeTreeMaterializationBackend::open_owned_with_work(root, operation_directory, custody, meter)
+        acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter)
     }, work.runtime_meter_owner())
         .map_err(|error| native_root_error(work.runtime_error(error)))?
         .await.map_err(|error| native_root_error(work.runtime_error(error)))?
