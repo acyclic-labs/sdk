@@ -21,6 +21,11 @@ struct RetainedRootSource {
     snapshot: LazySnapshotRef,
 }
 
+// Only these closed DTOs are retained here; neither contains a serde_json::Value.
+trait SpawnRetainedInput: DeserializeOwned {}
+impl SpawnRetainedInput for RetainedRootSource {}
+impl SpawnRetainedInput for pi_native::PiNativeLaunchIntent {}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnRootSourceAcknowledgement {
@@ -396,7 +401,7 @@ impl PiSession {
         Ok((pi_fork::RetainedSpawnCommit { sdk_operation, alias, prompt, caller, source_task, child, launch }, invocation_custody))
     }
 
-    async fn spawn_input<T: DeserializeOwned>(
+    async fn spawn_input<T: SpawnRetainedInput>(
         &self, owner: &pi_owner::PiOwnerConfig, operation: acyclic_harness::OperationId, label: &str,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<Option<(T, NativeAllocation)>> {
@@ -412,7 +417,8 @@ impl PiSession {
         let (bytes, bytes_custody) = reader.read_with_native_work(&reference, maximum, work).await?;
         let bytes = bytes;
         let owned = (bytes.len() as u64).checked_mul(4).ok_or_else(|| acyclic_harness::Error::Invalid("Pi retained input ownership bound overflow".to_owned()))?;
-        let (value, custody) = pi_root_provider::guarded_pi_decode(&bytes, maximum, owned, work)?;
+        let (value, custody) = pi_root_provider::guarded_pi_decode(
+            &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None, work)?;
         drop(bytes);
         drop(bytes_custody);
         drop(reference);

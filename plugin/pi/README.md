@@ -201,10 +201,11 @@ authority there, not the protected owner's private journal writer.
 Signed operator scopes instead use root-only `pi-operator-inputs` under the same
 original publisher. Recursive children inherit no read grant for that directory;
 ordinary control inputs carry its immutable file reference, never the bearer.
-Root stock command outputs bind to that original created scratch only after
-canonical successful-creation and original binding-ACK verification under the
-current task owner. The output signer retains the context's narrowed grants;
-it never exposes the bootstrap journal writer.
+Root stock command outputs bind to the original unmounted root result scratch
+after canonical successful-creation and original binding-ACK verification. The
+SDK verifies the admitted task's exact write grant and original FS operation,
+then installs its opaque output source in the original context's fixed slot.
+No new scope, context clone or bootstrap-journal writer is exposed.
 The finite Root driver recovers the original reservation before discovery and
 keeps its lease/attempt custody through the worker result. Checked native command
 futures retain the original shared context instead of cloning or retrofitting
@@ -222,10 +223,10 @@ Opaque original scratch-allocation evidence is separate from native disposal
 authority. Releasing SDK-owned scratch additionally requires its original owned
 preparation, current fenced write grant and drained effects; never project or
 user-source roots.
-Selected root-source authentication consumes the caller's remaining budget and
-the same original successful effect, uploads, FS creation and native identity;
-it does not grant authority or exactify the lazy tree. Approval digests use the
-existing canonical BLAKE3 identity through the shared bounded codec, including
+Selected root-source authentication consumes the caller's original native work
+and sealed read context plus the same successful effect, uploads, FS creation and
+native identity; it neither grants authority nor exactifies the lazy tree.
+Approval digests use the existing canonical BLAKE3 identity through the shared bounded codec, including
 actual hash bytes and owned-buffer custody.
 Native command metadata uses the shared encoder's actual guarded JSON Value on
 the original native work/cancellation ledger, retaining logical payload and
@@ -238,11 +239,19 @@ the same protected publisher key as their measured counterparts, not an alternat
 once-file namespace. Closed typed decoders reserve their audited logical DTO
 ownership plus parser scratch before parsing; raw input remains guarded through
 decode, and decoded ownership remains guarded through the DTO's final consumer.
+Mailbox decoding is restricted to its audited value-free envelope and stock
+command types. Fixed mailbox denials retain static wire codes without allocating
+diagnostic strings after cancellation or quota exhaustion.
 Malformed persisted DTOs retain the SDK's original typed serde diagnostic and
 its admitted parser quota until the native error consumer drops it; empty
 codec-error guards are not manufactured. Native canonical-byte and digest
 helpers use that same original ledger and the existing SDK canonical/BLAKE3
 identity, rather than rebuilding a remaining-budget meter.
+The Root provider's dispatch and reconciliation enter through funded SDK futures
+on that same request ledger. A cancelled original creator can observe and publish
+complete original resource evidence, but cannot capture or create missing resources.
+Closed Root artifact decoders use concrete envelope sizes plus SDK-issued source
+shapes rather than application bytes-to-heap multipliers.
 Root allocation schemas serialize borrowed, fixed wire descriptors through this
 same bounded encoder; the native path does not first build an unguarded JSON
 schema. Binding validation compares retained full volume identities and borrowed
@@ -589,6 +598,10 @@ binding and request construction use borrowed DTOs and the original bounded
 native codec before owned copies. A partial startup retains the actual native
 session, including its source watcher and destination guard, until bounded stop
 and `cleanup_state().cleanup_complete` establish physical drainage.
+Native cut decoding declares its exact Value schema; closed DTOs declare no Value
+fields. Their audited fixed metadata accompanies the canonical SDK's actual
+source-shape admission, rather than an input-byte multiplier. Process result
+controls use the SDK's own closed-record decoder and retained-capacity receipt.
 Runner construction borrows the staged plan; the original SDK provider owns its
 funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.

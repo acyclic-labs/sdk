@@ -24,6 +24,7 @@ use acyclic_harness::{
     runtime::{TaskContext, NativeTaskContext, NativeVolumeCallbackGuard},
     workflow::WorkflowCommand,
 };
+use acyclic_harness::JsonValueSchema;
 #[cfg(test)]
 use acyclic_harness::runtime::DurableTaskHost;
 #[cfg(test)]
@@ -202,7 +203,8 @@ impl PiNativeSourceCut {
         if self.sha256.as_bytes() != digest {
             return Err(invalid("Pi native session differs from its original source digest"));
         }
-        let selected = native_cut_decode::<Vec<Value>>(self.entries_json.as_bytes(), maximum_bytes, work)?;
+        let selected = native_cut_decode::<Vec<Value>>(self.entries_json.as_bytes(), maximum_bytes,
+            std::mem::size_of::<Vec<Value>>() as u64, JsonValueSchema::Root, work)?;
         if selected.value.len() as u64 > u64::from(maximum_entries) {
             return Err(invalid("Pi native source cut exceeds its entry allowance"));
         }
@@ -252,7 +254,8 @@ impl PiNativeSourceCut {
         }
         let mut lines = text[..text.len() - 1].split('\n');
         let header = native_cut_decode::<NativeHeader>(
-            lines.next().ok_or_else(|| invalid("Pi child header is absent"))?.as_bytes(), maximum_bytes, work)?;
+            lines.next().ok_or_else(|| invalid("Pi child header is absent"))?.as_bytes(), maximum_bytes,
+            std::mem::size_of::<NativeHeader>() as u64, JsonValueSchema::None, work)?;
         if header.value.kind != "session" || header.value.version != 3 || header.value.id != child
             || header.value.timestamp != self.captured_at || Path::new(&header.value.cwd) != cwd
         {
@@ -260,7 +263,8 @@ impl PiNativeSourceCut {
         }
         for entry in &selected.value {
             let actual = native_cut_decode::<Value>(
-                lines.next().ok_or_else(|| invalid("Pi child lost a source entry"))?.as_bytes(), maximum_bytes, work)?;
+                lines.next().ok_or_else(|| invalid("Pi child lost a source entry"))?.as_bytes(), maximum_bytes,
+                std::mem::size_of::<Value>() as u64, JsonValueSchema::Root, work)?;
             if &actual.value != entry {
                 return Err(invalid("Pi child entry differs from its original native source"));
             }
@@ -274,17 +278,13 @@ impl PiNativeSourceCut {
 
 struct NativeCutDecoded<T> { value: T, _custody: Option<acyclic_fs::NativeAllocation> }
 
-fn native_owned_bound<T>(bytes: usize) -> Result<u64> {
-    (bytes as u64).checked_mul(8).and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
-        .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))
-}
 
 fn native_cut_decode<T: serde::de::DeserializeOwned>(
-    bytes: &[u8], maximum: u64, work: Option<&NativeMaterializationWork>,
+    bytes: &[u8], maximum: u64, audited_fixed_bytes: u64, schema: JsonValueSchema, work: Option<&NativeMaterializationWork>,
 ) -> Result<NativeCutDecoded<T>> {
     match work {
         Some(work) => {
-            let decoded = super::pi_root_provider::guarded_pi_decode(bytes, maximum, native_owned_bound::<T>(bytes.len())?, work)?;
+            let decoded = super::pi_root_provider::guarded_pi_decode(bytes, maximum, audited_fixed_bytes, schema, work)?;
             Ok(NativeCutDecoded { value: decoded.0, _custody: Some(decoded.1) })
         }
         None => Ok(NativeCutDecoded { value: serde_json::from_slice(bytes).map_err(decode_error)?, _custody: None }),
@@ -402,7 +402,7 @@ impl PiNativeHostRuntime {
             maximum_result_bytes: capture.maximum_result_bytes };
         let bytes = super::pi_root_provider::guarded_pi_bytes(&projection, super::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         super::pi_root_provider::guarded_pi_decode(&bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
-            native_owned_bound::<PiNativeInvocation>(bytes.0.len())?, work)
+            std::mem::size_of::<PiNativeInvocation>() as u64, JsonValueSchema::None, work)
     }
 
 
@@ -433,7 +433,7 @@ impl PiNativeHostRuntime {
             maximum_result_bytes: persisted.maximum_result_bytes };
         let bytes = super::pi_root_provider::guarded_pi_bytes(&projection, super::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         super::pi_root_provider::guarded_pi_decode(&bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
-            native_owned_bound::<PiNativeInvocation>(bytes.0.len())?, work)
+            std::mem::size_of::<PiNativeInvocation>() as u64, JsonValueSchema::None, work)
     }
 }
 
@@ -538,7 +538,7 @@ impl PiNativeInvocation {
         };
         let encoded = super::pi_root_provider::guarded_pi_bytes(&projection, super::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         let request = super::pi_root_provider::guarded_pi_decode::<NativeProcessRequest>(
-            &encoded.0, super::MAXIMUM_ADAPTER_STATE_BYTES, native_owned_bound::<NativeProcessRequest>(encoded.0.len())?, work)?;
+            &encoded.0, super::MAXIMUM_ADAPTER_STATE_BYTES, std::mem::size_of::<NativeProcessRequest>() as u64, JsonValueSchema::None, work)?;
         if !request.0.has_valid_capture_allowances() || request.0.argv.iter().any(|value| value.contains('\0')) {
             return Err(invalid("Pi native capture allowances or argv are invalid"));
         }
@@ -638,7 +638,7 @@ impl PiNativeLaunchIntent {
         let bytes = context.read_file_with_native_work(reference, work).await?;
         let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
         let intent = super::pi_root_provider::guarded_pi_decode::<Self>(
-            &bytes.0, maximum, native_owned_bound::<Self>(bytes.0.len())?, work)?;
+            &bytes.0, maximum, std::mem::size_of::<Self>() as u64, JsonValueSchema::None, work)?;
         intent.0.validate_with_work(work)?;
         Ok(intent)
     }
@@ -904,7 +904,7 @@ fn required_optional<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 
 fn process_cleanup_completed(bytes: &[u8], maximum_bytes: u64, work: &NativeMaterializationWork) -> Result<bool> {
     let decoded = super::pi_root_provider::guarded_pi_decode::<PiNativeCleanupResult>(
-        bytes, maximum_bytes, std::mem::size_of::<PiNativeCleanupResult>() as u64, work,
+        bytes, maximum_bytes, std::mem::size_of::<PiNativeCleanupResult>() as u64, JsonValueSchema::None, work,
     )?;
     Ok(decoded.0.stop.is_none_or(|stop| stop.cleanup_completed))
 }
@@ -1102,7 +1102,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
         &["interaction:resolve", respond.as_str()], 1024, work)?;
     let grants = super::pi_root_provider::guarded_pi_decode::<Capabilities>(
-        &encoded_grants.0, 1024, native_owned_bound::<Capabilities>(encoded_grants.0.len())?, work)?;
+        &encoded_grants.0, 1024, std::mem::size_of::<Capabilities>() as u64, JsonValueSchema::None, work)?;
     let responder = protected.conversation_authority_with_native_work(owner.task_id(), binding.agent_id, &grants.0, work)?;
     journal.resolve_interaction_with_native_work(approval,
         &InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2, work)?.await?;

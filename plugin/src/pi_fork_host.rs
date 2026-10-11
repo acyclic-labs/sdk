@@ -293,7 +293,7 @@ impl<'a> PiForkHost<'a> {
             let bytes = self.coordinator(&work)?.read_original_input(&reference.0, remaining(&work)?, &cancel).await?;
             let decoded: (ObservedSource, _) = crate::pi_root_provider::guarded_pi_decode(bytes.as_ref(),
                 self.protected.policy().maximum_payload_bytes, self.protected.policy().maximum_payload_bytes,
-                &work)?;
+                acyclic_harness::JsonValueSchema::None, &work)?;
             let observed = &decoded.0;
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));

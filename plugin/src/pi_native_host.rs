@@ -17,7 +17,7 @@ use crate::{LocalAuthorityBackend, LocalCoreStateStore, LocalLazySource, LocalOb
 use acyclic_fs::{CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult, NativeMaterializationWork,
     OperationReceipt, PublicationPermit, WorkBudget, WorkCounters};
 use acyclic_fs::native_mount::NativeMountSession;
-use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
+use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, TaskId,
     conversation::VolumeOperation,
     core::{EffectStatus, SchemaRegistry}, distributed::{WorkPull, Worker},
     durable_host::{TaskJournalOwner, task_interaction_id},
@@ -416,7 +416,7 @@ impl PiNativeCommandHost {
         let maximum = self.protected.policy().maximum_payload_bytes.min(prepared.admission.limits.file_bytes);
         let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&prepared.binding, maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<PiTaskBinding>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None, work,
         )
     }
 
@@ -1000,7 +1000,7 @@ impl PiNativeCommandHost {
             &admission.0.input, maximum, work,
         )?;
         let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None, work,
         )?;
         if task == self.protected.policy().root_task || admission.0.parent.is_none()
             || admission.0.task != *self.runtime.definition.identity() || input.0.binding.task_id != task
@@ -1067,7 +1067,7 @@ impl PiNativeCommandHost {
         let maximum = self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes);
         let supplied_bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&payload, maximum, work)?;
         let supplied = crate::pi_root_provider::guarded_pi_decode::<PiNativeLaunchIntent>(
-            &supplied_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+            &supplied_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None, work,
         )?;
         if original.0 != supplied.0 {
             return Err(unauthorized("Pi resolved native input differs from its immutable original file"));
@@ -1154,7 +1154,7 @@ impl PiNativeCommandHost {
         let maximum = self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes);
         let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&borrowed, maximum, work)?;
         let plan = crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None, work,
         )?;
         if plan.0.provider != pi_native::PI_NATIVE_PROVIDER {
             return Err(unauthorized("Pi original native command retained another effect provider"));
@@ -1228,7 +1228,7 @@ impl PiNativeCommandHost {
             &root_admission.0.input, maximum, work,
         )?;
         let root = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &root_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, work,
+            &root_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None, work,
         )?;
         let root_session = &root.0.binding.native_session_id;
         let caller_environment = pi_caller::issued_environment_with_work(

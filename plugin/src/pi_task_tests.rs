@@ -1843,7 +1843,9 @@ async fn pi_operator_control_kind_does_not_authorize_invalid_original_command_fi
             project_files: false, file_evidence: None,
         }, &work,
     ).unwrap();
-    let mut request: PiOperatorRequest = serde_json::from_value(control.arguments).unwrap();
+    let (mut request, request_custody) = PiOperatorRequest::from_value_with_native_work(
+        &control.arguments, &work,
+    ).unwrap();
     crate::pi_operator::verify_request(&fixture.owner, session, &request, &work).unwrap();
     // The machine accepts only the installed command envelope; authorization
     // remains with the production operator verifier under the original owner.
@@ -1868,6 +1870,8 @@ async fn pi_operator_control_kind_does_not_authorize_invalid_original_command_fi
     ).unwrap();
     assert!(crate::pi_operator::verify_request(&fixture.owner, session, &request, &work).is_err());
     drop(request);
+    drop(request_custody);
+    drop(control);
     drop(control_custody);
 }
 
