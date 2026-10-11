@@ -210,9 +210,16 @@ impl<I, O> TaskDefinition<I, O> {
             return Err(task_workflow_error(Some(work), crate::wire::ErrorCode::Unsupported,
                 "workflow journal has no native callbacks"));
         }
-        if !context.native_metadata_matches(work) {
+        let task = context.context().durable_task.ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native workflow requires an original durable task context",
+        })?;
+        if !context.native_metadata_matches(work)
+            || !context.context().original_task_binding_matches(task, fence)
+            || journal.task_binding() != Some((task, fence))
+        {
             return Err(task_workflow_error(Some(work), crate::wire::ErrorCode::Unauthorized,
-                "task context belongs to another native ledger"));
+                "task context or journal differs from its original native owner"));
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
@@ -5250,7 +5257,7 @@ impl AgentHarness {
     ) -> Result<ResumableTaskSession> {
         if !context.native_metadata_matches(work)
             || !Arc::ptr_eq(&context.context().harness, self)
-            || context.context().durable_task != Some(task_id)
+            || !context.context().original_task_binding_matches(task_id, fence)
             || journal.task_binding() != Some((task_id, fence))
         {
             return Err(Error::NativeBoundary {
