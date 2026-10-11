@@ -4770,14 +4770,15 @@ where
         }
         // Replace the surviving hard-linked identity directly, never by a
         // source path that could re-read stale bytes.
-        for (file_id, record, _, _) in dirty {
+        for index in 0..dirty.len() {
+            let (file_id, record, _, _) = dirty[index];
             work.items(1)?;
             let result = if let Some(original) = work.meter.original_native_work() {
-                candidate.read_file_record_by_id_with_native_work(*file_id, &original, cancellation)
+                candidate.read_file_record_by_id_with_native_work(file_id, &original, cancellation)
                     .await.map_err(mount_engine_error)
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = candidate.read_file_record_by_id(*file_id, budget, cancellation).await;
+                let result = candidate.read_file_record_by_id(file_id, budget, cancellation).await;
                 work.accept_sdk(result, prior_live, mount_engine_error)
             };
             let live = match result {
@@ -4790,7 +4791,7 @@ where
                 if live.kind != record.kind { return Err(MountSourceError::Stale); }
                 let mut replacements = work.owned_vec(1)?;
                 replacements.value.push(Mutation::File {
-                    file_id: *file_id, mutation: FileMutation::ReplaceRecord { record: *record },
+                    file_id: file_id, mutation: FileMutation::ReplaceRecord { record: record },
                 });
                 if let Some(original) = work.meter.original_native_work() {
                     let (operations, allocation) = replacements.take_native_parts()?;

@@ -3903,7 +3903,8 @@ impl<A, O> SharedCheckout<A, O> {
     pub(super) fn lock_settled_with_native_work<'a>(
         &'a self, original: &super::NativeMountMeterWork,
         cancellation: &CancellationToken, lifetime: Option<&CancellationToken>,
-    ) -> impl Future<Output = Result<SharedCheckoutGuard<'a, A, O>, MountSourceError>> + Send + 'a + use<'a, A, O> {
+    ) -> impl Future<Output = Result<SharedCheckoutGuard<'a, A, O>, MountSourceError>> + Send + 'a + use<'a, A, O>
+    where A: Send + Sync, O: Send + Sync {
         let original = original.clone();
         let cancellation = cancellation.clone();
         let lifetime = lifetime.cloned();
