@@ -27,7 +27,7 @@ try {
   const admission = await client.machines.create(request);
   for await (const state of client.machines.watchOperation({
     protocol: { major: 1, minor: 1 }, operation: admission.operation,
-  })) console.log(state);
+  }, { timeoutMs: 0 })) console.log(state);
 } finally {
   client.close();
 }
