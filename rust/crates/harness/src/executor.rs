@@ -17,13 +17,13 @@ use crate::{
         DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
         tool_approval_request, validate_policy_identity,
     },
-    tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 mod native_stock;
 use native_stock::*;
@@ -398,7 +398,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite model content verification is unavailable".into()))) })
     }
 
-    /// Confirms the selected model context is the exact projection of the owning conversation's previously committed selection for this turn.
+    /// Verifies the selected context against the committed conversation.
     fn verify_selected_context<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -1640,7 +1640,7 @@ impl StockExecution<'_> {
         Ok(existing == &self.request_digest(input)?)
     }
 
-    /// Replays the durable journal for one turn, verifying it is gapless and bound to the exact same request, and journals the initial `Started` marker on a fresh turn.
+    /// Replays the bound turn journal and starts it when empty.
     async fn ensure_started(
         &self,
         journal: &dyn ExecutionJournal,
@@ -2314,7 +2314,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    /// Resolves one model step's events, replaying an already completed or started attempt from the durable journal exactly once instead of re-invoking the provider.
+    /// Replays or resolves one model step.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-generate operation for a single model step \
@@ -2675,7 +2675,7 @@ impl StockExecution<'_> {
         traced(span, call).await
     }
 
-    /// Resolves one tool invocation against the durable journal, replaying an already completed or started attempt exactly once, and appends the resulting message.
+    /// Replays or resolves one tool invocation and appends its message.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-execute operation for a single tool call \
@@ -3453,14 +3453,6 @@ async fn verify_model_contents_scoped_with_io<'a>(
     Ok(())
 }
 
-fn validate_model_content_scope(
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    validate_model_content_scope_with_io(content, limits, scope, None)
-}
-
 fn validate_model_content_scope_with_io(
     content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
@@ -4140,14 +4132,6 @@ fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: O
     Ok(())
 }
 
-async fn load_model_request(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-) -> Result<crate::model::PreparedModelRequest> {
-    load_model_request_with_io(journal, reference, limits, None).await
-}
-
 #[cfg(feature = "filesystem")]
 async fn load_preparation_bytes_with_io(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: &PreparationIo,
@@ -4412,10 +4396,6 @@ impl ModelEventAdmission {
             calls: self.calls.iter().cloned().collect(),
             completed: self.completed,
         }
-    }
-
-    pub(crate) fn validate_next(&self, event: &ModelEvent, limits: Limits) -> Result<()> {
-        self.validate_next_with_io(event, limits, None)
     }
 
     pub(crate) fn validate_next_with_io(

@@ -149,45 +149,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
 
-    pub(super) async fn release_replayed_fork_fence_with_work(
-        &self, seed: &crate::fork::ForkSeed,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        self.fork_verifier.as_ref().ok_or_else(||
-            guarded_boundary(work, GuardedBoundary::Unsupported, "fork seed verifier is not bound"))?
-            .release_private_fence_with_work(seed, work).await
-    }
-
-    pub(super) async fn reconcile_inner_with_work(
-        &mut self, command: &Command,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<Option<ApplyResult>> {
-        if let Some(result) = self.replay_indexed_with_work(command, false, work).await? {
-            return Ok(Some(result));
-        }
-        let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, work)?;
-        let observation = crate::distributed::inspect_idempotency_with_work(&self.client, key, work).await?;
-        let Some((observation, quota)) = observation else { return Ok(None); };
-        let mut retained = crate::wire_codec::CodecQuota::from_retained(work, quota);
-        let observation = observation;
-        let result = match &observation.outcome {
-            IdempotencyOutcome::Commit(CommitOutcome::Conflict(_)) => {
-                if let Action::PublishFork { seed } = &command.action {
-                    self.release_replayed_fork_fence_with_work(seed, retained.work()).await?;
-                }
-                Err(guarded_boundary(retained.work(), GuardedBoundary::Conflict, "aggregate publication was rejected"))
-            },
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(_)) =>
-                Err(guarded_boundary(retained.work(), GuardedBoundary::Storage,
-                    "committed aggregate publication has no atomic operation location")),
-            _ => Err(guarded_boundary(retained.work(), GuardedBoundary::Conflict,
-                "retry identity is bound to another operation contract")),
-        };
-        drop(observation);
-        drop(retained);
-        result
-    }
-
     pub(crate) async fn execute_guarded_publication_with_work(
         &mut self, command: Command, owner: &TaskJournalOwner<P>,
         write: crate::distributed::JournalWrite,

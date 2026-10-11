@@ -42,7 +42,7 @@ pub struct NativeTaskContext {
 }
 
 impl TaskContext {
-    /// Called only after the SDK context producer has completed every observed metadata allocation and retained the corresponding original guards.
+    /// Records custody after the SDK producer completes metadata allocation.
     pub(super) fn mark_native_metadata_source(
         &mut self,
         work: &NativeMaterializationWork,
@@ -356,7 +356,7 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Canonical Stock/DurableToolRunner-only: called after actual protected ToolStarted acceptance (or an authenticated exact replay).
+    /// Records protected ToolStarted acceptance.
     pub(crate) fn record_native_tool_acceptance(
         &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
         producer_limits: Limits, request_digest: [u8; 32], work: &NativeMaterializationWork,
@@ -494,7 +494,7 @@ impl ToolContext {
         Ok(view)
     }
 
-    /// Rechecks an accepted action's exact path and effective permission without exposing a namespace handle or creating a transferable authorization.
+    /// Checks the accepted action's path and effective permission.
     #[cfg(feature = "native-execution")]
     pub async fn authorize_working_file_with_native_work(
         &self, relative: &std::path::Path,
@@ -505,7 +505,7 @@ impl ToolContext {
         Ok(())
     }
 
-    /// Reads the exact held mount selection under this accepted invocation's effective READ scope; no broader namespace resource escapes the check.
+    /// Reads the held selection under this invocation's effective scope.
     #[cfg(feature = "native-execution")]
     pub async fn read_working_file_with_native_work(
         &self, relative: &std::path::Path, maximum: usize,
@@ -565,7 +565,7 @@ impl ToolContext {
         })
     }
 
-    /// Checks stock restrictions against this tool's current effective scope without cloning the original task or allocating a candidate scope.
+    /// Checks stock restrictions against the effective scope.
     pub(crate) fn validate_stock_scope_with_native_work(
         &self, requested: &RuntimeScope, limits: Limits,
         work: &NativeMaterializationWork,
@@ -578,14 +578,14 @@ impl ToolContext {
         validate_scope_attenuation(self.effective_scope(), requested, limits, work)
     }
 
-    /// Narrows only tool-local authority, preserving the same issued task and its original metadata, owner bindings and dispatch/read purpose.
+    /// Narrows tool authority while preserving its issued task.
     pub fn with_native_scope(
         self, requested: &RuntimeScope, work: &NativeMaterializationWork,
     ) -> Result<Self> {
         self.with_native_effective_scope(requested, requested.limits, work)
     }
 
-    /// Applies stock grants/run restrictions with its separately configured execution limits, matching the ordinary stock context's scoped engine.
+    /// Applies stock grants and run restrictions.
     pub fn with_native_stock_scope(
         self, requested: &RuntimeScope, execution_limits: Limits,
         work: &NativeMaterializationWork,
@@ -606,7 +606,7 @@ impl ToolContext {
         Ok(self)
     }
 
-    /// Retains an already SDK-issued native interaction router for this tool without cloning or changing its original task, scope or policy.
+    /// Retains the issued interaction router.
     pub(crate) fn with_native_interactions(
         mut self, router: Arc<dyn InteractionRouter>, work: &NativeMaterializationWork,
     ) -> Result<Self> {
