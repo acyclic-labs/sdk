@@ -196,6 +196,17 @@ original allocation guard. Native scope verification and capability formatting
 precede controlled volume/prefix copies; keep the guard until after the grant
 drops. Directory grants remain segment-bounded READ grants and never imply WRITE.
 
+Native content and archive reads return the SDK's `OwnedBytes`; every slice,
+clone, and empty alias keeps the original backing allocation's guard until its
+last alias drops. History readers do not extract a `Vec`, rebind cached bytes to
+a new query ledger, or absorb that byte guard into an unrelated metadata owner.
+Their private content callback separately carries the exact ordinary observer
+claim, observed from the original measured buffer before conversion. Native
+bytes have no additional external claim. Consumers drop the carrier before
+releasing that scalar; callback frames and decoded metadata retain their own
+distinct custody. These counters describe admitted logical SDK work, not opaque
+provider heap allocations, physical OS I/O, or total process RSS.
+
 A replacement executor can coexist with the same pinned tool registry used by typed tasks. Only stock-loop model, provider, and context-stage bindings are exclusive with that replacement; tool registration is not silently discarded.
 
 Durable task admission has an operation-only reconciliation path: `HarnessBundle::reconcile_admission` observes a committed task ID and pinned implementation without resending the input. A confirmed absence returns `None`; missing content for a committed admission is an error, not an absent operation. `HarnessBuilder::state` and `spawner` may bind retained observation and admission independently; `durable_host` supplies both as a combined local convenience. An independent spawner requires the state provider to attest the entire owner-retained `TaskAdmissionRecord` before the runtime exposes an accepted handle; an operation ID need not equal its task ID. Unobserved batch members stay individually indeterminate. The typed `attach` call checks the registered definition before exposing the task result.

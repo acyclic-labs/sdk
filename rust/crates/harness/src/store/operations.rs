@@ -1,4 +1,9 @@
 //! Derived exact-operation locations, committed with their canonical event.
+//!
+//! Native publication buffers transfer their existing encoder custody into the
+//! SDK's intrinsic byte carrier before any request, index, or receipt alias.
+//! SDK record metadata stays with its output container, independently of cached
+//! byte aliases and the allocation ledger of a later reader.
 
 use crate::{
     Error, OperationId, Result,
@@ -6,9 +11,8 @@ use crate::{
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitRequest, CommittedEnvelope, CommittedMutation,
-    IdempotencyKey, Record, StreamClient, StreamPath, StreamProvider,
+    IdempotencyKey, OwnedBytes, Record, StreamClient, StreamPath, StreamProvider,
 };
-use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
@@ -480,19 +484,53 @@ pub(super) fn canonical_publication_path_with_work(
     release_owned_after_drop(result, capacity, work)
 }
 
+/// Freezes a producer-retained vector without replacing its original claim.
+/// The returned scalar describes only an ordinary observer's external custody.
+pub(crate) fn owned_bytes_from_retained_vec(
+    bytes: Vec<u8>,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(OwnedBytes, u64)> {
+    let capacity = bytes.capacity() as u64;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = work.as_deref().and_then(|observer|
+        observer.original_native_work()).cloned()
+    {
+        let custody = match work.as_deref_mut().expect("original native observer")
+            .take_native_custody(capacity)
+        {
+            Ok(custody) => custody,
+            Err(error) => {
+                drop(bytes);
+                return release_owned_after_drop(Err(error), capacity, work);
+            },
+        };
+        return OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
+            .map(|bytes| (bytes, 0))
+            .map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(source) => Error::NativeWork {
+                    cause: original.runtime_error(source), custody: None,
+                },
+                _ => Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
+                },
+            });
+    }
+    Ok((OwnedBytes::from(bytes), if work.is_some() { capacity } else { 0 }))
+}
+
 /// The existing event and a ref-only location, without another admission lifecycle.
 pub(crate) struct IndexedPublication {
     pub(crate) operation_id: OperationId,
     pub(crate) path: StreamPath,
     pub(crate) expected_tail: u64,
-    pub(crate) bytes: Bytes,
-    indexes: Vec<(StreamPath, u64, Bytes)>,
+    pub(crate) bytes: OwnedBytes,
+    indexes: Vec<(StreamPath, u64, OwnedBytes)>,
     retained_payload_bytes: u64,
     operation_index_capacity: u64,
 }
 
 fn reserve_indexes(
-    indexes: &mut Vec<(StreamPath, u64, Bytes)>,
+    indexes: &mut Vec<(StreamPath, u64, OwnedBytes)>,
     additional: usize,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<()> {
@@ -500,7 +538,7 @@ fn reserve_indexes(
     let needed = indexes.len().checked_add(additional)
         .ok_or_else(|| Error::Invalid("publication index count overflows".into()))?;
     if needed <= indexes.capacity() { return Ok(()); }
-    let element_bytes = std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64;
+    let element_bytes = std::mem::size_of::<(StreamPath, u64, OwnedBytes)>() as u64;
     let old_capacity = indexes.capacity();
     observer.admit_allocation((needed - old_capacity) as u64 * element_bytes)?;
     indexes.try_reserve_exact(additional)
@@ -537,13 +575,20 @@ impl IndexedPublication {
                 return release_owned_after_drop(Err(error), byte_capacity, work);
             }
         };
+        let (bytes, byte_owned) = match owned_bytes_from_retained_vec(bytes, work) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(path);
+                return release_owned_after_drop(Err(error), path_owned, work);
+            },
+        };
         let mut publication = Self {
             operation_id: event.operation_id,
-            retained_payload_bytes: byte_capacity + path_owned,
+            retained_payload_bytes: byte_owned + path_owned,
             operation_index_capacity: 0,
             path,
             expected_tail,
-            bytes: Bytes::from(bytes),
+            bytes,
             indexes: Vec::new(),
         };
         let result = (|| {
@@ -574,9 +619,6 @@ impl IndexedPublication {
                 };
                 let encoded = super::history::canonical_bytes_with_work(
                     &location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
-                if let Ok(encoded) = &encoded {
-                    publication.operation_index_capacity = encoded.capacity() as u64;
-                }
                 publication.add_derived_index_with_work(path, 0, encoded, work)?;
                 if matches!(event.payload, crate::core::EventPayload::ConversationBound { .. }) {
                     if authority.kind != crate::core::AggregateKind::Conversation {
@@ -669,10 +711,10 @@ impl IndexedPublication {
     /// Exact source capacities, not encoded lengths or opaque SDK/provider heap.
     pub(crate) fn retained_owned(&self) -> u64 {
         self.retained_payload_bytes
-            + self.indexes.capacity() as u64 * std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64
+            + self.indexes.capacity() as u64 * std::mem::size_of::<(StreamPath, u64, OwnedBytes)>() as u64
     }
 
-    /// The caller must first drop request/ACK clones sharing these Bytes/paths.
+    /// Ordinary callers must first drop request/ACK clones sharing bytes/paths.
     /// This physically drops publication storage before returning its release size.
     pub(crate) fn into_retained_owned(self) -> u64 {
         let owned = self.retained_owned();
@@ -699,8 +741,8 @@ impl IndexedPublication {
             &location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
         drop(location);
         let encoded = release_owned_after_drop(encoded, location_capacity, work)?;
-        let capacity = encoded.capacity() as u64;
-        let old = std::mem::replace(bytes, Bytes::from(encoded));
+        let (encoded, capacity) = owned_bytes_from_retained_vec(encoded, work)?;
+        let old = std::mem::replace(bytes, encoded);
         drop(old);
         let old_capacity = std::mem::replace(&mut self.operation_index_capacity, capacity);
         self.retained_payload_bytes = self.retained_payload_bytes - old_capacity + capacity;
@@ -723,15 +765,25 @@ impl IndexedPublication {
                 return release_owned_after_drop(Err(error), retained, work);
             }
         };
-        let capacity = bytes.capacity() as u64;
-        self.push_index_with_work(path, tail, Bytes::from(bytes), capacity, work)
+        let (bytes, capacity) = match owned_bytes_from_retained_vec(bytes, work) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let (path, retained) = path;
+                drop(path);
+                return release_owned_after_drop(Err(error), retained, work);
+            },
+        };
+        if self.indexes.is_empty() {
+            self.operation_index_capacity = capacity;
+        }
+        self.push_index_with_work(path, tail, bytes, capacity, work)
     }
 
     fn push_index_with_work(
         &mut self,
         path: (StreamPath, u64),
         tail: u64,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         capacity: u64,
         work: &mut Option<&mut dyn super::history::HistoryIo>,
     ) -> Result<()> {
@@ -806,7 +858,8 @@ impl IndexedPublication {
         // This key was produced and retained by the original stream-key
         // encoder. Its existing claim enters the owned request before any
         // cancellation, bounds await or vector allocation can fail.
-        let key_owned = if work.is_some() { 32 } else { 0 };
+        let key_owned = if work.as_deref().is_some_and(|observer|
+            !original_native_decode_mode(observer)) { 32 } else { 0 };
         let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
             key, key_owned, work);
         let target = self.target_condition_with_work(client, request.work()).await?;
@@ -956,7 +1009,7 @@ pub(crate) fn stream_text_with_work<P: StreamProvider>(
     })
 }
 
-/// SDK native records keep physical storage in their immutable Bytes owner.
+/// Native payload custody is intrinsic to the SDK's `OwnedBytes`.
 pub(crate) fn sdk_record_retained_bytes(
     record: &Record,
     work: &Option<&mut dyn super::history::HistoryIo>,
@@ -972,23 +1025,51 @@ pub(crate) enum ObservedRecords {
     Native(acyclic_stream::NativeStreamOutput<acyclic_stream::NativeRecordStream>),
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeRecordBytes {
-    bytes: Bytes,
-    _producer_custody: acyclic_stream::NativeStreamOutput<()>,
-    _owner_custody: acyclic_fs::NativeAllocation,
+/// Retains the actual record's SDK metadata, never a second byte owner.
+pub(crate) enum ObservedRecord {
+    Ordinary(Record),
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Native(acyclic_stream::NativeStreamOutput<Record>),
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl AsRef<[u8]> for NativeRecordBytes {
-    fn as_ref(&self) -> &[u8] { &self.bytes }
+impl std::ops::Deref for ObservedRecord {
+    type Target = Record;
+    fn deref(&self) -> &Record {
+        match self {
+            Self::Ordinary(record) => record,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(output) => output.value(),
+        }
+    }
 }
+
+impl std::fmt::Debug for ObservedRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, formatter)
+    }
+}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn original_sdk_metadata_output<T>(
+    original: &acyclic_fs::NativeMaterializationWork,
+    output: acyclic_stream::NativeStreamOutput<T>,
+) -> Result<acyclic_stream::NativeStreamOutput<T>> {
+    let (value, allocation) = output.into_parts();
+    let same_meter = std::sync::Arc::ptr_eq(allocation.meter(), &original.runtime_meter_owner());
+    let output = acyclic_stream::NativeStreamOutput::new(value, allocation);
+    if !same_meter {
+        return Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
+        });
+    }
+    Ok(output)
+}
+
 
 impl ObservedRecords {
     pub(crate) async fn next(
         &mut self,
         work: &mut Option<&mut dyn super::history::HistoryIo>,
-    ) -> Result<Option<Record>> {
+    ) -> Result<Option<ObservedRecord>> {
         match self {
             Self::Ordinary(records) => {
                 let record = records.try_next().await
@@ -998,48 +1079,22 @@ impl ObservedRecords {
                 {
                     observer.receive_record(record.value.len() as u64)?;
                 }
-                Ok(record)
+                Ok(record.map(ObservedRecord::Ordinary))
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(records) => {
                 let original = work.as_deref().and_then(|observer| observer.original_native_work())
-                    .expect("native cursor has its original observer");
+                    .expect("native cursor has its original observer").clone();
                 let Some(record) = records.value_mut().try_next().await
                     .map_err(|error| Error::NativeWork { cause: original.runtime_error(error), custody: None })?
                 else { return Ok(None); };
-                let record = super::history::native_sdk_result(original, Ok(record))?;
+                let record = super::history::native_sdk_result(&original, Ok(record))?;
                 work.as_deref_mut().expect("native cursor observer")
                     .receive_native_record(record.value().value.len() as u64)?;
-                let (record, allocation) = record.into_parts();
-                // Rejoin the producer's owners before any fallible admission.
-                let has_custody = allocation.bytes() != 0;
-                let same_meter = std::sync::Arc::ptr_eq(
-                    allocation.meter(),
-                    &work.as_deref().and_then(|observer| observer.original_native_work())
-                        .expect("native cursor original").runtime_meter_owner(),
-                );
-                let output = acyclic_stream::NativeStreamOutput::new(record, allocation);
-                if !same_meter {
-                    return Err(Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
-                    });
-                }
-                if !has_custody {
-                    return Ok(Some(output.into_parts().0));
-                }
-                let original = work.as_deref().and_then(|observer| observer.original_native_work())
-                    .expect("native cursor has its original observer");
-                let owner_custody = original.retain_owned(std::mem::size_of::<NativeRecordBytes>() as u64)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                original.runtime_meter_owner().allocate_refcount_header()
-                    .map_err(|error| Error::NativeWork { cause: original.runtime_error(error), custody: None })?;
-                let (mut record, allocation) = output.into_parts();
-                record.value = Bytes::from_owner(NativeRecordBytes {
-                    bytes: record.value,
-                    _producer_custody: acyclic_stream::NativeStreamOutput::new((), allocation),
-                    _owner_custody: owner_custody,
-                });
-                Ok(Some(record))
+                // Byte aliases may be cached from another invocation. Only the
+                // freshly returned output metadata must use this SDK call's ledger.
+                Ok(Some(ObservedRecord::Native(
+                    original_sdk_metadata_output(&original, record)?)))
             }
         }
     }
@@ -1070,8 +1125,11 @@ async fn native_records_with_work<P: StreamProvider>(
     let result = client.native_read(acyclic_stream::ReadRequest {
         path: path.clone(), from, limit: count,
     }, original.runtime_meter_owner()).await;
-    crate::distributed::native_call_result(original, result)
-        .map(|result| result.map(ObservedRecords::Native))
+    match crate::distributed::native_call_result(original, result)? {
+        Ok(output) => Ok(Ok(ObservedRecords::Native(
+            original_sdk_metadata_output(original, output)?))),
+        Err(error) => Ok(Err(error)),
+    }
 }
 
 async fn read_path_records_with_work<P: StreamProvider>(
@@ -1151,7 +1209,12 @@ pub(super) async fn one_record<P: StreamProvider>(
     path: &StreamPath,
     from: u64,
 ) -> Result<Option<Record>> {
-    one_record_with_work(client, path, from, &mut None).await
+    match one_record_with_work(client, path, from, &mut None).await? {
+        None => Ok(None),
+        Some(ObservedRecord::Ordinary(record)) => Ok(Some(record)),
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(ObservedRecord::Native(_)) => unreachable!("ordinary lookup cannot produce native metadata"),
+    }
 }
 
 /// The original one-record lookup with receipts at each visible SDK boundary.
@@ -1160,7 +1223,7 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
     path: &StreamPath,
     from: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
-) -> Result<Option<Record>> {
+) -> Result<Option<ObservedRecord>> {
     let mut records = match read_path_records_with_work(client, path, from, 1, work).await? {
         Ok(records) => records,
         Err(error) if *error.source() == acyclic_stream::StreamError::NotFound => {
@@ -1821,9 +1884,9 @@ mod native_publication_custody_tests {
         let outcome = client.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
-                path, records: vec![Bytes::from_static(b"{{")],
+                path, records: vec![OwnedBytes::from_static(b"{{")],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-corrupt-message"))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-corrupt-message"))?,
         }).await?;
         assert!(matches!(outcome, acyclic_stream::CommitOutcome::Committed(_)));
         drop(outcome);
@@ -1875,9 +1938,9 @@ mod native_publication_custody_tests {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path,
-                records: vec![Bytes::from(crate::contract::canonical_json_bytes(&location)?)],
+                records: vec![OwnedBytes::from(crate::contract::canonical_json_bytes(&location)?)],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-missing-canonical"))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-missing-canonical"))?,
         }).await?;
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original missing canonical ledger");
@@ -1890,6 +1953,118 @@ mod native_publication_custody_tests {
         }));
         drop(error);
         assert_eq!(io.into_custody().bytes(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let path = StreamPath::new("harness/v3/foreign-record-metadata")?;
+        client.stream(path.as_str())?.append_at(OwnedBytes::from_static(b"record"), 0).await?;
+        let cancellation = CancellationToken::new();
+        let producer = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("genuine native record producer");
+        let receiver = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("different receiver ledger");
+        let mut records = native_records_with_work(&client, &path, 0, 1, &producer)
+            .await?.map_err(|error| error.into_error(&None))?;
+        let mut io = native_work_io(&receiver).expect("receiver custody");
+        let error = records.next(&mut Some(&mut io)).await
+            .expect_err("foreign SDK output metadata is not this call's custody");
+        assert!(matches!(error, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
+        }));
+        assert_eq!(receiver.receipt().authority_records_read, 1,
+            "receiver prefix is recorded before rejection or decode");
+        drop(records);
+        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(producer.live_allocation_bytes(), 0);
+        assert_eq!(receiver.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ordinary_vector_capacity_remains_external_through_request_and_ack_drop() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let allowance = budget();
+        let mut io = super::super::history::HistoryWork::new(allowance, &cancellation);
+        let mut data = Vec::new();
+        io.reserve_bytes(&mut data, 128)?;
+        data.extend_from_slice(b"ordinary-carrier");
+        let capacity = data.capacity() as u64;
+        let pointer = data.as_ptr();
+        let (bytes, external) = owned_bytes_from_retained_vec(data, &mut Some(&mut io))?;
+        assert_eq!(external, capacity);
+        assert_eq!(bytes.as_ptr(), pointer);
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let path = StreamPath::new("harness/v3/ordinary-record-custody")?;
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append { path, records: vec![bytes.clone()] }],
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"ordinary-custody"))?,
+        };
+        drop(bytes);
+        assert_eq!(io.remaining()?.peak_allocation_bytes, allowance.peak_allocation_bytes - capacity);
+        let acyclic_stream::CommitOutcome::Committed(ack) = client.commit(request).await? else {
+            panic!("ordinary source publication");
+        };
+        let CommittedMutation::Append(append) = &ack.mutations[0] else {
+            panic!("actual SDK append receipt");
+        };
+        assert_eq!(append.records[0].value.as_ptr(), pointer);
+        assert_eq!(io.remaining()?.peak_allocation_bytes, allowance.peak_allocation_bytes - capacity);
+        drop(ack);
+        io.release_owned(external)?;
+        assert_eq!(io.remaining()?.peak_allocation_bytes, allowance.peak_allocation_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn original_vector_custody_survives_empty_alias_until_last_drop() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite vector ledger");
+        let mut io = native_work_io(&native).expect("original vector custody");
+        let mut data = Vec::new();
+        io.reserve_bytes(&mut data, 128)?;
+        data.extend_from_slice(b"original-carrier");
+        let capacity = data.capacity() as u64;
+        let pointer = data.as_ptr();
+        let (bytes, external) = owned_bytes_from_retained_vec(data, &mut Some(&mut io))?;
+        assert_eq!(external, 0);
+        assert_eq!(bytes.as_ptr(), pointer, "original allocation is never copied");
+        let alias = bytes.clone();
+        let empty = bytes.slice(0..0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(bytes);
+        assert!(native.live_allocation_bytes() >= capacity);
+        drop(alias);
+        assert!(native.live_allocation_bytes() >= capacity);
+        assert!(empty.is_empty());
+        assert_eq!(empty.retained_capacity(), Some(capacity as usize));
+        drop(empty);
+        assert_eq!(native.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn original_vector_factory_failure_drops_payload_and_existing_claim() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite vector ledger");
+        let mut io = native_work_io(&native).expect("original vector custody");
+        let mut data = Vec::new();
+        io.reserve_bytes(&mut data, 128)?;
+        data.extend_from_slice(b"original-carrier");
+        assert!(native.live_allocation_bytes() >= data.capacity() as u64);
+        cancellation.cancel();
+        let error = owned_bytes_from_retained_vec(data, &mut Some(&mut io))
+            .expect_err("original metadata allocation observes cancellation");
+        assert!(matches!(error, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+        }));
+        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(native.live_allocation_bytes(), 0);
         Ok(())
     }
 
@@ -1920,15 +2095,42 @@ mod native_publication_custody_tests {
         let original_capacity = encoded.capacity() as u64;
         let mut publication = IndexedPublication::new_with_work(
             &authority, &event, encoded, &mut work)?;
-        assert!(publication.retained_owned() >= original_capacity);
+        assert_eq!(publication.bytes.retained_capacity(), Some(original_capacity as usize));
+        assert!(publication.bytes.matches_meter(&native.runtime_meter_owner()));
+        assert!(publication.indexes.iter().all(|(_, _, bytes)|
+            bytes.matches_meter(&native.runtime_meter_owner())));
+        let old_snapshot = publication.indexes[0].2.clone();
+        let old_snapshot_capacity = old_snapshot.retained_capacity().expect("guarded original index");
         publication.set_effect_position_with_work(3, &mut work)?;
         let retained = publication.retained_owned();
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let request = publication.request(&client,
-            IdempotencyKey::new(Bytes::from_static(b"publication-custody"))?).await?;
+            IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
         let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.commit(request).await? else {
             panic!("original absent/Tail atomic publication");
         };
+        let retry = publication.request(&client,
+            IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
+        let acyclic_stream::CommitOutcome::Committed(retried) = client.commit(retry).await? else {
+            panic!("same original request is an idempotent publication");
+        };
+        assert_eq!(retried.commit_id, envelope.commit_id);
+        publication.verify(&retried)?;
+        drop(retried);
+
+        let query_cancellation = CancellationToken::new();
+        let query = NativeMaterializationWork::new(budget(), &query_cancellation)
+            .expect("distinct native cache reader");
+        let mut query_io = native_work_io(&query).expect("query metadata custody");
+        let cached = one_record_with_work(&client, &publication.path, 0,
+            &mut Some(&mut query_io)).await?.expect("real provider cached event");
+        assert_eq!(cached.value, publication.bytes);
+        assert!(cached.value.matches_meter(&native.runtime_meter_owner()));
+        assert!(!cached.value.matches_meter(&query.runtime_meter_owner()));
+        assert_eq!(query.receipt().authority_records_read, 1);
+        drop(cached);
+        assert_eq!(query_io.into_custody().bytes(), 0);
+        assert_eq!(query.live_allocation_bytes(), 0);
         publication.verify(&envelope)?;
         publication.verify_with_work(&envelope, &mut work)?;
         let mut replay_io = native_work_io(&native).expect("same original replay decoder");
@@ -1974,6 +2176,13 @@ mod native_publication_custody_tests {
         assert_eq!(publication.into_retained_owned(), retained);
         custody.release(retained).expect("physically dropped source publication");
         assert_eq!(custody.bytes(), 0);
+        // Provider cache and old immutable locator aliases retain their original
+        // guards even after the publication's external scalar custody retires.
+        assert!(native.live_allocation_bytes() >= original_capacity);
+        drop(client);
+        assert!(native.live_allocation_bytes() >= old_snapshot_capacity as u64);
+        drop(old_snapshot);
+        assert_eq!(native.live_allocation_bytes(), 0);
         Ok(())
     }
 
@@ -2100,16 +2309,16 @@ mod native_only_provider_tests {
         let event_bytes = encoded.len() as u64;
         let publication = IndexedPublication::new(&authority, &event, encoded)?;
         let request = publication.request(&ordinary,
-            IdempotencyKey::new(Bytes::from_static(b"native-only-reader"))?).await?;
+            IdempotencyKey::new(OwnedBytes::from_static(b"native-only-reader"))?).await?;
         assert!(matches!(ordinary.commit(request).await?, CommitOutcome::Committed(_)));
         let corrupt_message = uuid::Uuid::from_bytes([37; 16]);
         let corrupt_path = message_path(&authority, corrupt_message)?;
         assert!(matches!(ordinary.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: corrupt_path.clone() }],
             mutations: vec![CommitMutation::Append {
-                path: corrupt_path, records: vec![Bytes::from_static(b"{{")],
+                path: corrupt_path, records: vec![OwnedBytes::from_static(b"{{")],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-only-corrupt"))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-only-corrupt"))?,
         }).await?, CommitOutcome::Committed(_)));
         let client = StreamClient::new(Arc::new(NativeOnly(provider)));
         let reader = HistoryReader::new(&client, &authority, issuer.verifier())?;
@@ -2156,7 +2365,7 @@ mod native_only_provider_tests {
         let mut io = native_work_io(&native).expect("original checkpoint observer");
         super::super::checkpoints::stage_immutable_record_with_work(
             &client, StreamPath::new("harness/v3/native-only-checkpoint")?,
-            Bytes::from_static(b"native-checkpoint"), &mut Some(&mut io),
+            OwnedBytes::from_static(b"native-checkpoint"), &mut Some(&mut io),
         ).await?;
         assert_eq!(native.receipt().authority_records_appended, 1);
         assert_eq!(io.into_custody().bytes(), 0);

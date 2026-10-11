@@ -51,7 +51,7 @@ async fn immutable_stage_cancelled_before_commit_leaves_no_record() -> Result<()
     cancellation.cancel();
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
     assert!(checkpoints::stage_immutable_record_with_work(
-        &client, path.clone(), Bytes::from_static(b"immutable"), &mut Some(&mut work),
+        &client, path.clone(), acyclic_stream::OwnedBytes::from_static(b"immutable"), &mut Some(&mut work),
     ).await.is_err());
     assert!(matches!(client.bounds(path.as_str()).await, Err(acyclic_stream::StreamError::NotFound)));
     Ok(())
@@ -61,13 +61,13 @@ async fn immutable_stage_cancelled_before_commit_leaves_no_record() -> Result<()
 async fn immutable_stage_reopen_preserves_exact_identity() -> Result<()> {
     let client = StreamClient::new(Arc::new(MemoryStream::default()));
     let path = StreamPath::new("harness/v3/test-fork-stage/reopen")?;
-    let bytes = Bytes::from_static(b"immutable");
+    let bytes = acyclic_stream::OwnedBytes::from_static(b"immutable");
     checkpoints::stage_immutable_record(&client, path.clone(), bytes.clone()).await?;
     let reopened = client.clone();
     checkpoints::stage_immutable_record(&reopened, path.clone(), bytes).await?;
     assert_eq!(reopened.bounds(path.as_str()).await?.tail, 1);
     assert!(checkpoints::stage_immutable_record(
-        &reopened, path, Bytes::from_static(b"hostile"),
+        &reopened, path, acyclic_stream::OwnedBytes::from_static(b"hostile"),
     ).await.is_err());
     Ok(())
 }
@@ -79,7 +79,7 @@ async fn immutable_stage_zero_allowance_cannot_append() -> Result<()> {
     let cancellation = CancellationToken::new();
     let mut work = history::HistoryWork::new(WorkBudget::default(), &cancellation);
     assert!(checkpoints::stage_immutable_record_with_work(
-        &client, path.clone(), Bytes::from_static(b"immutable"), &mut Some(&mut work),
+        &client, path.clone(), acyclic_stream::OwnedBytes::from_static(b"immutable"), &mut Some(&mut work),
     ).await.is_err());
     assert!(matches!(client.bounds(path.as_str()).await, Err(acyclic_stream::StreamError::NotFound)));
     Ok(())

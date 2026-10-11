@@ -745,7 +745,7 @@ mod tests {
         fn read<'a>(
             &'a self,
             reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>> {
             Box::pin(async move {
                 let bytes = if reference.descriptor().media_type() == "application/schema+json" {
                     serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
@@ -754,7 +754,7 @@ mod tests {
                     br#"{"receipt":"ok"}"#.to_vec()
                 };
                 reference.descriptor().verify(&bytes)?;
-                Ok(bytes)
+                Ok(bytes.into())
             })
         }
     }

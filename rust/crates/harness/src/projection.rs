@@ -80,7 +80,7 @@ pub trait AttachmentListResolver: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Vec<Attachment>>>;
 
     /// Reads one bounded, exact structured artifact for tool-context projection.
-    fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "tool artifact resolution is unavailable".into(),
@@ -111,7 +111,7 @@ pub trait AttachmentListResolver: acyclic_stream::ProviderPlatform {
         _file: &'a FileRef,
         _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         _work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -129,7 +129,7 @@ impl<T: ContentResidencyVerifier + ?Sized> AttachmentListResolver for T {
         Box::pin(async move { self.load_manifest(manifest, item_count).await })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         ContentResidencyVerifier::read(self, file)
     }
 
@@ -149,7 +149,7 @@ impl<T: ContentResidencyVerifier + ?Sized> AttachmentListResolver for T {
         file: &'a FileRef,
         maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         ContentResidencyVerifier::read_with_native_work(self, file, maximum_bytes, work)
     }
 }
@@ -1635,8 +1635,8 @@ mod tests {
             })
         }
 
-        fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
-            Box::pin(async { Ok(self.bytes.clone()) })
+        fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+            Box::pin(async { Ok(acyclic_stream::OwnedBytes::from(self.bytes.clone())) })
         }
     }
 
@@ -2127,14 +2127,14 @@ mod tests {
             ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
                 Box::pin(async { Err(Error::Invalid("unused manifest resolver".into())) })
             }
-            fn read<'a>(&'a self, _: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            fn read<'a>(&'a self, _: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
                 self.ordinary.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async { Err(Error::Invalid("ordinary read must not run".into())) })
             }
             fn read_with_native_work<'a>(
                 &'a self, _: &'a FileRef, _: u64,
                 work: &'a acyclic_fs::NativeMaterializationWork,
-            ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+            ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
                 crate::NativeFutureBundle::new(work, || async move {
                     self.native.fetch_add(1, Ordering::SeqCst);
                     let copied = acyclic_fs::WorkCounters {
@@ -2148,7 +2148,22 @@ mod tests {
                         return Err(Error::NativeWork { cause, custody: Some(custody) });
                     }
                     work.charge(copied).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok((bytes, custody))
+                    acyclic_stream::OwnedBytes::from_vec_with_guard(
+                        bytes, custody, work.runtime_meter_owner(),
+                    ).map_err(|failure| match failure.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(source) =>
+                            Error::NativeWork { cause: work.runtime_error(source), custody: None },
+                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized =>
+                            Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Storage,
+                                reason: "native artifact bytes are not fully initialized",
+                            },
+                        acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                            Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Storage,
+                                reason: "native artifact bytes are not uniquely owned",
+                            },
+                    })
                 })
             }
         }

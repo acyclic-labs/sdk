@@ -269,7 +269,7 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     }
     /// Reads a complete, pinned attachment manifest from this provider. The
     /// composite admission barrier checks membership across provider borders.
-    fn read_manifest<'a>(&'a self, _manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read_manifest<'a>(&'a self, _manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fork attachment manifest reader is not bound".into(),
@@ -280,17 +280,18 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     fn read_manifest_with_native_work<'a>(
         &'a self, _seed: &'a ForkSeed, _manifest: &'a FileRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         unsupported_native_fork(work, "native fork attachment manifest reader is unavailable")
     }
-    /// Reads the original pinned manifest with its actual SDK receipt.
+    /// Reads the original pinned manifest with its receipt and exact separate
+    /// observer claim, observed by the producer before converting its storage.
     #[cfg(feature = "filesystem")]
     fn read_manifest_measured<'a>(
         &'a self,
         _manifest: &'a FileRef,
         _budget: acyclic_fs::WorkBudget,
         _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<(acyclic_stream::OwnedBytes, u64)>, Error>> {
         unsupported_fork_measurement("fork attachment manifest reader is not measured")
     }
     /// Proves one immutable member is resident at its owning provider.
@@ -540,22 +541,26 @@ async fn read_fork_manifest_with_work(
     seed: &ForkSeed,
     manifest: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Vec<u8>> {
+) -> Result<(acyclic_stream::OwnedBytes, u64)> {
     let Some(observer) = work.as_deref_mut() else {
-        return verifier.read_manifest(manifest).await;
+        return verifier.read_manifest(manifest).await.map(|bytes| (bytes, 0));
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = observer.original_native_work() {
-        let (bytes, custody) = verifier.read_manifest_with_native_work(seed, manifest, native)?.await?;
-        observer.absorb_native_custody(custody)?;
-        return Ok(bytes);
+        let bytes = verifier.read_manifest_with_native_work(seed, manifest, native)?.await?;
+        // Native bytes retain their original guard, including cached aliases.
+        // There is no new observer byte claim to absorb or adopt.
+        return Ok((bytes, 0));
     }
     #[cfg(feature = "filesystem")]
     {
         let receipt = verifier.read_manifest_measured(
             manifest, observer.remaining()?, observer.cancellation(),
         ).await;
-        receive_fork_work(receipt, observer)
+        let (bytes, retained) = receive_fork_work(receipt, observer)?;
+        observer.admit_owned(retained)?;
+        observer.retain_owned(retained)?;
+        Ok((bytes, retained))
     }
     #[cfg(not(feature = "filesystem"))]
     {
@@ -847,16 +852,19 @@ impl CompositeForkVerifier {
                 drop(manifest_capability);
                 owned.release(capacity)?;
             }
-            let bytes = read_fork_manifest_with_work(verifier.as_ref(), seed, manifest, owned.work()).await?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if owned.work().as_ref().and_then(|observer| observer.original_native_work()).is_some() {
-                owned.adopt(bytes.capacity() as u64)?;
-            } else {
-                owned.retain(bytes.capacity() as u64)?;
+            let (bytes, retained) = read_fork_manifest_with_work(
+                verifier.as_ref(), seed, manifest, owned.work()).await?;
+            if let Err(error) = owned.adopt(retained) {
+                drop(bytes);
+                if let Some(observer) = owned.work().as_deref_mut() {
+                    let _ = observer.release_owned(retained);
+                }
+                return Err(error);
             }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            owned.retain(bytes.capacity() as u64)?;
-            let items = decode_fork_manifest_with_work(manifest, &bytes, owned)?;
+            let items = decode_fork_manifest_with_work(manifest, bytes.as_ref(), owned);
+            drop(bytes);
+            owned.release(retained)?;
+            let items = items?;
             manifest_members = manifest_members
                 .checked_add(items.len())
                 .ok_or_else(|| Error::Invalid("fork manifest membership count overflow".into()))?;
@@ -887,9 +895,6 @@ impl CompositeForkVerifier {
                     owned.release(capacity)?;
                 }
             }
-            let capacity = bytes.capacity() as u64;
-            drop(bytes);
-            owned.release(capacity)?;
         }
         Ok(())
     }
@@ -1334,7 +1339,7 @@ impl ContentForkVerifier {
         &self,
         manifest: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
         if manifest.volume().provider() != &self.provider {
             return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "fork manifest belongs to another provider"));
@@ -1342,7 +1347,7 @@ impl ContentForkVerifier {
         match work.as_deref_mut() {
             Some(observer) => crate::store::history::read_content_with_work(
                 observer, self.content.as_ref(), manifest).await,
-            None => self.content.read(manifest).await,
+            None => self.content.read(manifest).await.map(|bytes| (bytes, 0)),
         }
     }
 
@@ -1387,12 +1392,13 @@ impl ForkSeedVerifier for ContentForkVerifier {
     fn read_manifest_with_native_work<'a>(
         &'a self, _seed: &'a ForkSeed, manifest: &'a FileRef,
         native: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(native, || async move {
             let mut io = crate::store::history::native_work_io(native)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let bytes = self.read_manifest_with_work(manifest, &mut Some(&mut io)).await?;
-            Ok((bytes, io.into_custody()))
+            let (bytes, _retained) = self.read_manifest_with_work(manifest, &mut Some(&mut io)).await?;
+            // The native carrier itself retains original byte custody.
+            Ok(bytes)
         })
     }
 
@@ -1425,8 +1431,10 @@ impl ForkSeedVerifier for ContentForkVerifier {
         })
     }
 
-    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move { self.read_manifest_with_work(manifest, &mut None).await })
+    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+        Box::pin(async move {
+            self.read_manifest_with_work(manifest, &mut None).await.map(|(bytes, _)| bytes)
+        })
     }
 
     #[cfg(feature = "filesystem")]
@@ -1435,11 +1443,15 @@ impl ForkSeedVerifier for ContentForkVerifier {
         manifest: &'a FileRef,
         budget: acyclic_fs::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<(acyclic_stream::OwnedBytes, u64)>, Error>> {
         Box::pin(async move {
             let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
             let result = async {
                 work.preflight()?;
+                // The source receipt records cumulative work and its observed
+                // peak, not a physical storage lease. Its logical observer ends
+                // with this operation; the receiver retains this exact claim
+                // once, after receiving the receipt.
                 self.read_manifest_with_work(manifest, &mut Some(&mut work)).await
             }.await;
             work.finish(result)
@@ -2669,6 +2681,18 @@ impl ForkReport {
         self.validate_with_work(&mut None)
     }
 
+    /// Applies the complete report policy using the caller's original native
+    /// ledger. Validation scratch retires before the observer's custody guard.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self,
+        native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(&mut Some(&mut io))
+    }
+
     pub(crate) fn validate_with_work(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -3754,7 +3778,8 @@ mod tests {
 
     struct ManifestVerifier {
         provider: ProviderRef,
-        bytes: Vec<u8>,
+        bytes: acyclic_stream::OwnedBytes,
+        reads: std::sync::Arc<AtomicUsize>,
     }
 
     impl ForkSeedVerifier for ManifestVerifier {
@@ -3775,11 +3800,12 @@ mod tests {
             })
         }
 
-        fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             Box::pin(async move {
                 if manifest.volume().provider() != &self.provider {
                     return Err(Error::Unauthorized("wrong manifest provider".into()));
                 }
+                self.reads.fetch_add(1, Ordering::Relaxed);
                 Ok(self.bytes.clone())
             })
         }
@@ -4619,6 +4645,11 @@ mod tests {
         first_grant.file = member.clone();
         attached_manifest_only.validate()?;
         let verified_members = std::sync::Arc::new(AtomicUsize::new(0));
+        // Use a cached canonical carrier rather than allocating a new vector
+        // for every provider read; admission must decode this original backing.
+        let cached_manifest: acyclic_stream::OwnedBytes = bytes.into();
+        let cached_pointer = cached_manifest.as_ptr();
+        let manifest_reads = std::sync::Arc::new(AtomicUsize::new(0));
         let verifier = CompositeForkVerifier::new(vec![
             std::sync::Arc::new(CountingFileVerifier {
                 provider: filesystem.clone(),
@@ -4627,10 +4658,13 @@ mod tests {
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
             std::sync::Arc::new(ManifestVerifier {
                 provider: objects,
-                bytes,
+                bytes: cached_manifest.clone(),
+                reads: manifest_reads.clone(),
             }),
         ])?;
         futures::executor::block_on(verifier.verify(&attached_manifest_only))?;
+        assert_eq!(manifest_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(cached_manifest.as_ptr(), cached_pointer);
         let missing_manifest = CompositeForkVerifier::new(vec![
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
@@ -4651,6 +4685,10 @@ mod tests {
         first_grant.file = member;
         futures::executor::block_on(verifier.verify(&manifest_seed))?;
         assert_eq!(verified_members.load(Ordering::Relaxed), 3);
+        // The forged membership failure and its corrected admission each read
+        // exactly one canonical manifest, without invalidating the cache alias.
+        assert_eq!(manifest_reads.load(Ordering::Relaxed), 3);
+        assert_eq!(cached_manifest.as_ptr(), cached_pointer);
         let optional = ResourceRevision::SharedVolume(VolumeRef::new(
             filesystem,
             "shared",

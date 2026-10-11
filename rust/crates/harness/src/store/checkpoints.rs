@@ -7,9 +7,8 @@ use crate::{
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation,
-    IdempotencyKey, StreamClient, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, OwnedBytes, StreamClient, StreamError, StreamPath, StreamProvider,
 };
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 /// Default checkpoint interval and cold decoded-event allowance, including its anchor.
@@ -254,14 +253,14 @@ fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPa
 pub(super) async fn stage_immutable_record<P: StreamProvider>(
     client: &StreamClient<P>,
     path: StreamPath,
-    bytes: Bytes,
+    bytes: OwnedBytes,
 ) -> Result<()> {
     stage_immutable_record_with_work(client, path, bytes, &mut None).await
 }
 
-/// Consumes an already-accounted original encoder buffer. No capacity is
-/// inferred from Bytes after the conversion, and no request/receipt clone
-/// remains locally alive when this source reservation is released.
+/// Consumes the original encoder buffer and transfers native allocation custody
+/// into the SDK carrier before any request alias or authority write. Ordinary
+/// observers retain the exact capacity measured before the vector moves.
 pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: (StreamPath, u64),
@@ -276,17 +275,23 @@ pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
             return operations::release_owned_after_drop(Err(error), retained, work);
         }
     };
-    let capacity = bytes.capacity() as u64;
     let (path, retained) = path;
+    let (bytes, external_owned) = match operations::owned_bytes_from_retained_vec(bytes, work) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(path);
+            return operations::release_owned_after_drop(Err(error), retained, work);
+        }
+    };
     let staged = stage_owned_immutable_record_with_work(
-        client, path, Bytes::from(bytes), retained, work).await;
-    operations::release_owned_after_drop(staged, capacity, work)
+        client, path, bytes, retained, work).await;
+    operations::release_owned_after_drop(staged, external_owned, work)
 }
 
 pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: StreamPath,
-    bytes: Bytes,
+    bytes: OwnedBytes,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     stage_owned_immutable_record_with_work(client, path, bytes, 0, work).await
@@ -295,7 +300,7 @@ pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
 async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     path: StreamPath,
-    bytes: Bytes,
+    bytes: OwnedBytes,
     path_retained: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
@@ -315,12 +320,18 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let key = if let Some(observer) = work.as_deref_mut() {
             let mut key = Vec::new();
             observer.reserve_bytes(&mut key, 32)?;
-            retained += key.capacity() as u64;
-            observer.copy_bytes(32)?;
+            let copied = observer.copy_bytes(32);
+            if let Err(error) = copied {
+                let capacity = key.capacity() as u64;
+                drop(key);
+                return operations::release_owned_after_drop(Err(error), capacity, work);
+            }
             key.extend_from_slice(&digest);
-            IdempotencyKey::new(Bytes::from(key))?
+            let (key, external_owned) = operations::owned_bytes_from_retained_vec(key, work)?;
+            retained += external_owned;
+            IdempotencyKey::new(key)?
         } else {
-            IdempotencyKey::new(Bytes::copy_from_slice(&digest))?
+            IdempotencyKey::new(OwnedBytes::copy_from_slice(&digest))?
         };
         let native = work.as_deref().is_some_and(operations::original_native_decode_mode);
         let (outcome, native_received) = if native {
@@ -340,7 +351,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             conditions.push(CommitCondition::Absent { path: path.clone() });
             let mut records = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut records, 1, work)?;
-            retained += records.capacity() as u64 * std::mem::size_of::<Bytes>() as u64;
+            retained += records.capacity() as u64 * std::mem::size_of::<OwnedBytes>() as u64;
             records.push(bytes.clone());
             let mut mutations = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut mutations, 1, work)?;
@@ -948,6 +959,58 @@ mod native_staging_custody_tests {
     }
 
     #[tokio::test]
+    async fn native_byte_control_denial_precedes_authority_io_and_releases_source() -> Result<()> {
+        let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+        let client = StreamClient::new(provider.clone());
+        let cancellation = CancellationToken::new();
+        let mut allowance = budget();
+        allowance.allocation_operations = 1;
+        let native = NativeMaterializationWork::new(allowance, &cancellation)
+            .expect("original finite encoder ledger");
+        let mut io = native_work_io(&native).expect("original source custody");
+        let mut source = Vec::new();
+        io.reserve_bytes(&mut source, 4096)?;
+        io.copy_bytes(9)?;
+        source.extend_from_slice(b"immutable");
+        let error = stage_immutable_vec_with_work(
+            &client, (StreamPath::new("harness/v3/native-stage-custody/control-denied")?, 0),
+            Ok(source), &mut Some(&mut io)).await
+            .expect_err("SDK guard metadata uses the original exhausted allocation allowance");
+        assert!(matches!(error, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                counter: "allocation_operations", ..
+            }), custody: None,
+        }));
+        assert_eq!(provider.io_snapshot().writes, 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(native.remaining().expect("failed controls retire the actual source").peak_allocation_bytes,
+            allowance.peak_allocation_bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ordinary_staged_vec_preserves_content_and_observed_capacity_accounting() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let path = StreamPath::new("harness/v3/stage-custody/ordinary")?;
+        let cancellation = CancellationToken::new();
+        let mut io = super::super::history::HistoryWork::new(budget(), &cancellation);
+        let mut source = Vec::new();
+        io.reserve_bytes(&mut source, 4096)?;
+        io.copy_bytes(9)?;
+        source.extend_from_slice(b"immutable");
+        assert!(source.capacity() > source.len());
+        stage_immutable_vec_with_work(
+            &client, (path.clone(), 0), Ok(source), &mut Some(&mut io)).await?;
+        let receipt = io.finish(Ok(())).map_err(|failure| failure.error)?;
+        assert_eq!(receipt.work.backend_write_operations, 1);
+        let record = operations::one_record(&client, &path, 0).await?
+            .expect("ordinary immutable content persisted");
+        assert_eq!(record.value.as_ref(), b"immutable");
+        assert_eq!(record.value.retained_capacity(), None);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -> Result<()> {
         for mode in 0..5 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
@@ -964,13 +1027,15 @@ mod native_staging_custody_tests {
             io.copy_bytes(9)?;
             source.extend_from_slice(b"immutable");
             assert!(source.capacity() > source.len());
+            let source_capacity = source.capacity();
+            let source_pointer = source.as_ptr();
             if mode == 1 { provider.forbid_writes.store(true, Ordering::SeqCst); }
             if mode == 2 { provider.commit_lose_ack.store(true, Ordering::SeqCst); }
             if mode == 3 { cancellation.cancel(); }
             let staged = stage_immutable_vec_with_work(
                 &client, (StreamPath::new(path.as_str())?, 0), Ok(source), &mut Some(&mut io)).await;
             if mode == 0 { staged?; } else { assert!(staged.is_err()); }
-            assert_eq!(io.into_custody().bytes(), 0, "source capacity survives no completed stage");
+            assert_eq!(io.into_custody().bytes(), 0, "source custody moved into SDK aliases");
             if matches!(mode, 3 | 4) { assert_eq!(provider.io_snapshot().writes, 0); }
             if mode == 2 {
                 assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
@@ -984,6 +1049,39 @@ mod native_staging_custody_tests {
                 assert_eq!(io.into_custody().bytes(), 0);
                 assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
             }
+            if matches!(mode, 0 | 2) {
+                let record = operations::one_record(&client, &path, 0).await?
+                    .expect("original immutable publication persisted");
+                assert_eq!(record.value.as_ref(), b"immutable");
+                let capacity = record.value.retained_capacity()
+                    .expect("original native encoder capacity stays intrinsic");
+                assert_eq!(capacity, source_capacity);
+                assert_eq!(record.value.as_ref().as_ptr(), source_pointer);
+                let alias = record.value.clone();
+                let empty = alias.slice(0..0);
+                drop(record);
+                drop(alias);
+                assert!(native.remaining().expect("original remaining ledger").peak_allocation_bytes
+                    <= budget().peak_allocation_bytes - capacity as u64);
+                drop(client);
+                drop(provider);
+                assert_eq!(empty.retained_capacity(), Some(capacity));
+                assert!(native.remaining().expect("last alias retains original claim").peak_allocation_bytes
+                    <= budget().peak_allocation_bytes - capacity as u64);
+                let remaining = native.remaining().expect("original finite quota").peak_allocation_bytes;
+                assert!(matches!(native.claim(remaining + 1),
+                    Err(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes", ..
+                    }))));
+                drop(empty);
+                assert_eq!(native.remaining().expect("last alias retires original claim").peak_allocation_bytes,
+                    budget().peak_allocation_bytes);
+            } else if mode != 3 {
+                drop(client);
+                drop(provider);
+                assert_eq!(native.remaining().expect("failed write releases original claim").peak_allocation_bytes,
+                    budget().peak_allocation_bytes);
+            }
         }
         Ok(())
     }
@@ -993,7 +1091,7 @@ mod native_staging_custody_tests {
         for identical in [true, false] {
             let client = StreamClient::new(Arc::new(MemoryStream::default()));
             let path = StreamPath::new("harness/v3/native-stage-custody/competing")?;
-            client.stream(path.as_str())?.append_at(Bytes::from_static(b"immutable"), 0).await?;
+            client.stream(path.as_str())?.append_at(OwnedBytes::from_static(b"immutable"), 0).await?;
             let cancellation = CancellationToken::new();
             let native = NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("original finite competitor-read ledger");
@@ -1008,6 +1106,9 @@ mod native_staging_custody_tests {
             assert_eq!(staged.is_ok(), identical);
             assert_eq!(io.into_custody().bytes(), 0);
             assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+            drop(client);
+            assert_eq!(native.remaining().expect("competitor recovery retires all original aliases").peak_allocation_bytes,
+                budget().peak_allocation_bytes);
         }
         Ok(())
     }
@@ -1084,6 +1185,12 @@ mod native_malformed_receipt_tests {
             }
             assert_eq!(provider.io_snapshot().writes, 1);
             assert_eq!(io.into_custody().bytes(), 0);
+            drop(client);
+            drop(provider);
+            if !deny_received_bytes {
+                assert_eq!(native.remaining().expect("corrupt receipt aliases retire with the provider").peak_allocation_bytes,
+                    budget().peak_allocation_bytes);
+            }
         }
         Ok(())
     }

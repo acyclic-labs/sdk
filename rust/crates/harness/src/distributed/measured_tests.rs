@@ -41,7 +41,7 @@ async fn append_source<P: StreamProvider>(
         *blake3::hash(&canonical).as_bytes(), canonical, time)?;
     let length = bytes.len() as u64;
     client.stream(COORDINATOR_PATH)?.append_batch(
-        vec![Bytes::from(bytes)], Some(revision - 1), None,
+        vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
 }
@@ -197,12 +197,12 @@ async fn commit_fixture_with_work(
     let mut prepared = PreparedCommitRequest::new_with_digest(*hash.finalize().as_bytes(), work)?;
     prepared.push_condition(if tail == 0 { CommitCondition::Absent { path: path.clone() } }
         else { CommitCondition::Tail { path: path.clone(), expected: tail } })?;
-    prepared.append(path, Bytes::from_static(b"first"))?;
+    prepared.append(path, OwnedBytes::from_static(b"first"))?;
     let CommitMutation::Append { records, .. } = &mut prepared.request.mutations[0] else {
         unreachable!("the exact original append fixture");
     };
     reserve_prepared_vector(records, 2, &mut prepared.custody, &mut prepared.vectors)?;
-    records.push(Bytes::from_static(b"second"));
+    records.push(OwnedBytes::from_static(b"second"));
     commit_prepared_with_work(client, prepared, operation).await
 }
 
@@ -1047,7 +1047,7 @@ async fn prepared_append_partial_growth_releases_actual_vectors_and_prevents_rec
     for _ in 0..2 {
         let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
         let mut prepared = PreparedCommitRequest::new(key.clone(), &mut observer)?;
-        assert!(matches!(prepared.append(path.clone(), Bytes::from_static(b"source-owned")),
+        assert!(matches!(prepared.append(path.clone(), OwnedBytes::from_static(b"source-owned")),
             Err(Error::Invalid(_))));
         assert!(prepared.request.mutations.is_empty());
         assert_eq!(prepared.vectors,
@@ -1072,7 +1072,7 @@ async fn prepared_commit_cancellation_uses_the_original_ledger_before_sdk_public
         let mut observer = Some(&mut work as &mut dyn crate::store::history::HistoryIo);
         let mut prepared = PreparedCommitRequest::new_with_digest([23; 32], &mut observer)?;
         prepared.push_condition(CommitCondition::Absent { path: path.clone() })?;
-        prepared.append(path, Bytes::from_static(b"source-owned"))?;
+        prepared.append(path, OwnedBytes::from_static(b"source-owned"))?;
         assert_eq!(prepared.custody.retained(), prepared.vectors + 32);
         cancellation.cancel();
         commit_prepared_with_work(&client, prepared, OperationId::from_bytes([127; 16])).await

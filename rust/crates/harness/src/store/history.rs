@@ -75,21 +75,27 @@ pub(crate) async fn verify_content_with_work(
     }
 }
 
+/// Returns the original carrier and only its separately retained observer claim.
+/// Native bytes retain their own SDK guard through the last alias, so their
+/// external claim is zero. Callers drop bytes before releasing the scalar.
 pub(crate) async fn read_content_with_work(
     observer: &mut dyn HistoryIo,
     verifier: &dyn crate::conversation::ContentResidencyVerifier,
     reference: &crate::conversation::FileRef,
-) -> Result<Vec<u8>> {
+) -> Result<(acyclic_stream::OwnedBytes, u64)> {
     let future = observer.read_content(verifier, reference)?;
     let frame_bytes = future.ordinary_frame_bytes();
     let result = future.await;
     let released = if frame_bytes == 0 { Ok(()) } else { observer.release_owned(frame_bytes) };
     match result {
         Err(error) => Err(error),
-        Ok(bytes) => match released {
-            Ok(()) => Ok(bytes),
+        Ok((bytes, retained_bytes)) => match released {
+            Ok(()) => Ok((bytes, retained_bytes)),
             Err(error) => {
                 drop(bytes);
+                if retained_bytes != 0 {
+                    let _ = observer.release_owned(retained_bytes);
+                }
                 Err(error)
             }
         },
@@ -131,7 +137,7 @@ pub(crate) trait HistoryIo: Send {
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
     fn clone_text(&mut self, value: &str) -> Result<String>;
     fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()>;
-    fn reserve_records(&mut self, records: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()>;
+    fn reserve_records(&mut self, records: &mut Vec<super::operations::ObservedRecord>, maximum: usize) -> Result<()>;
     fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()>;
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()>;
     fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()>;
@@ -148,6 +154,10 @@ pub(crate) trait HistoryIo: Send {
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> { None }
+    /// Identity alone cannot dispatch another native call for an accepted
+    /// completion; its caller must supply the sealed pre-action SDK token.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn requires_prepared_native_dispatch(&self) -> bool { false }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
         Err(Error::NativeWork {
@@ -176,7 +186,7 @@ pub(crate) trait HistoryIo: Send {
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<HistoryContentFuture<'a, Vec<u8>>>;
+    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>;
     #[cfg(feature = "filesystem")]
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
     #[cfg(feature = "filesystem")]
@@ -221,7 +231,7 @@ pub struct HistoryPage {
 
 pub(super) struct CountedHistoryPage {
     pub(super) page: HistoryPage,
-    pub(super) records: Vec<acyclic_stream::Record>,
+    pub(super) records: Vec<super::operations::ObservedRecord>,
     pub(super) bytes: u64,
     /// Original decoded-event claims, excluding all page/header/vector backing.
     pub(super) events_retained_bytes: u64,

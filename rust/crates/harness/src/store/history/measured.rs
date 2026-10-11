@@ -470,7 +470,7 @@ impl HistoryIo for HistoryWork<'_> {
         Ok(copy)
     }
     fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()> { self.reserve_item(events, maximum) }
-    fn reserve_records(&mut self, records: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()> { self.reserve_item(records, maximum) }
+    fn reserve_records(&mut self, records: &mut Vec<super::super::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve_item(records, maximum) }
     fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve_item(messages, maximum) }
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve_item(values, maximum) }
     fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()> { HistoryWork::reserve_bytes(self, bytes, capacity) }
@@ -561,12 +561,17 @@ impl HistoryIo for HistoryWork<'_> {
     fn read_content<'a>(
         &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<super::HistoryContentFuture<'a, Vec<u8>>> {
+    ) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let build = |work: &'a mut Self| async move {
             let receipt = verifier.read_measured(reference, reference.descriptor().byte_length(),
                 work.remaining()?, work.cancellation).await;
             match receipt {
-                Ok(receipt) => { work.receive_work(receipt.work)?; work.retain(receipt.value.capacity() as u64)?; Ok(receipt.value) }
+                Ok(receipt) => {
+                    let retained_bytes = receipt.value.capacity() as u64;
+                    work.receive_work(receipt.work)?;
+                    work.retain(retained_bytes)?;
+                    Ok((acyclic_stream::OwnedBytes::from(receipt.value), retained_bytes))
+                }
                 Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
             }
         };

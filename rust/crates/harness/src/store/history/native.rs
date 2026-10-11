@@ -204,7 +204,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
         Ok(copy)
     }
     fn reserve_events(&mut self, values: &mut Vec<Event>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
-    fn reserve_records(&mut self, values: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_records(&mut self, values: &mut Vec<super::super::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
@@ -338,7 +338,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
         Ok(super::HistoryContentFuture::Native(future))
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, Vec<u8>>> {
+        reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let work = self.work;
         let future = crate::NativeFutureBundle::new(work, || async move {
             if !verifier.supports_native_read(reference.volume(), work)? {
@@ -347,11 +347,10 @@ impl HistoryIo for NativeHistoryIo<'_> {
                     reason: "content verifier does not expose the original native work boundary",
                 });
             }
-            let (bytes, guard) = verifier.read_with_native_work(
+            let bytes = verifier.read_with_native_work(
                 reference, reference.descriptor().byte_length(), work,
             )?.await?;
-            self.absorb_native_custody(guard)?;
-            Ok(bytes)
+            Ok((bytes, 0))
         })?;
         Ok(super::HistoryContentFuture::Native(future))
     }
@@ -364,6 +363,7 @@ pub(crate) struct AcceptedCompletionIo {
     original: NativeMaterializationWork,
     reservation: NativeWorkReservation,
     retained: u64,
+    original_pool_bytes: u64,
     staged_bytes: u64,
     staged_items: u64,
     // Retired last: virtual releases never retire the real preheld claim.
@@ -388,7 +388,8 @@ impl AcceptedCompletionIo {
             });
         }
         Ok(Self {
-            original: original.clone(), reservation, retained: 0, staged_bytes: 0, staged_items: 0, custody,
+            original: original.clone(), reservation, retained: 0, original_pool_bytes: custody.bytes(),
+            staged_bytes: 0, staged_items: 0, custody,
         })
     }
 
@@ -429,6 +430,12 @@ impl AcceptedCompletionIo {
             .map_err(|cause| Self::native_error(NativeTreeMaterializationError::Work(cause)))
     }
 
+    fn available_pool_bytes(&self) -> u64 {
+        // A genuine SDK transfer adds physical custody, never another virtual
+        // completion allowance. A split can also reduce the remaining claim.
+        self.original_pool_bytes.min(self.custody.bytes()) - self.retained
+    }
+
     fn retain(&mut self, bytes: u64) -> Result<()> {
         self.admit_owned(bytes)?;
         self.retained += bytes;
@@ -448,12 +455,31 @@ impl AcceptedCompletionIo {
 
 impl HistoryIo for AcceptedCompletionIo {
     fn original_native_work(&self) -> Option<&NativeMaterializationWork> { Some(&self.original) }
-    fn absorb_native_custody(&mut self, incoming: NativeAllocation) -> Result<()> {
-        // This pool is closed before acceptance; even a same-ledger incoming
-        // claim cannot turn this observer into another allocation admission.
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(incoming),
-        })
+    fn requires_prepared_native_dispatch(&self) -> bool { true }
+    fn absorb_native_custody(&mut self, mut incoming: NativeAllocation) -> Result<()> {
+        // Only the closed prepared SDK ingress transfers this already-funded
+        // guard. The original identity grants no permission for another call.
+        if !incoming.matches_work(&self.original) {
+            return Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(incoming),
+            });
+        }
+        let bytes = incoming.bytes();
+        let maximum = self.available_pool_bytes();
+        if bytes > maximum {
+            return Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes", observed: bytes, maximum,
+                }),
+                custody: Some(incoming),
+            });
+        }
+        let retained = self.retained + bytes;
+        self.custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(incoming),
+        })?;
+        self.retained = retained;
+        Ok(())
     }
     fn take_native_custody(&mut self, bytes: u64) -> Result<NativeAllocation> {
         let retained = self.retained.checked_sub(bytes)
@@ -490,7 +516,7 @@ impl HistoryIo for AcceptedCompletionIo {
     fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
-        if bytes <= self.custody.bytes() - self.retained { Ok(()) }
+        if bytes <= self.available_pool_bytes() { Ok(()) }
         else { Err(Self::boundary("accepted completion exceeds its preheld allocation pool")) }
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
@@ -499,7 +525,7 @@ impl HistoryIo for AcceptedCompletionIo {
     fn reserve_events(&mut self, values: &mut Vec<Event>, _: usize) -> Result<()> {
         self.reserved_slot(values, values.capacity())
     }
-    fn reserve_records(&mut self, values: &mut Vec<acyclic_stream::Record>, _: usize) -> Result<()> {
+    fn reserve_records(&mut self, values: &mut Vec<super::super::operations::ObservedRecord>, _: usize) -> Result<()> {
         self.reserved_slot(values, values.capacity())
     }
     fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, _: usize) -> Result<()> {
@@ -575,7 +601,7 @@ impl HistoryIo for AcceptedCompletionIo {
     }
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget> {
         let mut remaining = self.remaining_work();
-        remaining.peak_allocation_bytes = self.custody.bytes() - self.retained;
+        remaining.peak_allocation_bytes = self.available_pool_bytes();
         Ok(remaining)
     }
     fn cancellation(&self) -> &acyclic_fs::CancellationToken { self.original.cancellation() }
@@ -591,7 +617,7 @@ impl HistoryIo for AcceptedCompletionIo {
     fn read_content<'a>(
         &'a mut self, _: &'a dyn crate::conversation::ContentResidencyVerifier,
         _: &'a crate::conversation::FileRef,
-    ) -> Result<super::HistoryContentFuture<'a, Vec<u8>>> { Err(Self::unsupported()) }
+    ) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> { Err(Self::unsupported()) }
 }
 
 #[cfg(test)]
@@ -1042,6 +1068,96 @@ mod tests {
         assert!(guard.matches_work(&foreign));
         assert_eq!(io.custody.bytes(), 16);
         drop(guard);
+    }
+
+    #[test]
+    fn accepted_preheld_sdk_guard_transfers_without_new_admission_or_counter_aliases() {
+        let cancellation = CancellationToken::new();
+        let maximum = WorkCounters {
+            authority_records_read: 1, authority_bytes_read: 4, ..WorkCounters::default()
+        };
+        let mut budget = completion_budget(maximum, 48);
+        budget.allocation_operations += 1;
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
+        let token = work.reserve_work(maximum).expect("pre-action authority receive credit");
+        let pool = work.retain_owned(32).expect("closed completion prefix pool");
+        let mut preparation = native_work_io(&work).expect("pre-action original SDK buffer allocator");
+        assert!(!preparation.requires_prepared_native_dispatch(), "ordinary dispatch is unchanged");
+        let mut sdk_bytes = Vec::new();
+        preparation.reserve_bytes(&mut sdk_bytes, 16).expect("actual prepaid SDK buffer");
+        let sdk_guard = preparation.into_custody();
+        let prefix = work.receipt();
+        let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
+        assert!(io.requires_prepared_native_dispatch(), "identity alone cannot dispatch accepted work");
+        io.adopt_preheld(8).expect("original prepared request scalar");
+        cancellation.cancel();
+        io.absorb_native_custody(sdk_guard).expect("transfer actual preheld SDK output guard");
+        assert_eq!(work.receipt(), prefix, "guard transfer is not another allocation or charge");
+        assert_eq!(io.custody.bytes(), 48);
+        assert_eq!(io.retained, 24, "SDK buffer scalar is adopted once");
+        assert_eq!(io.remaining().expect("owned remaining pool").peak_allocation_bytes, 8);
+        assert!(matches!(io.admit_owned(9), Err(Error::NativeBoundary { .. })),
+            "merged physical custody cannot widen the original completion prefix allowance");
+        io.receive_native_record(4).expect("authority receive under its owned token");
+        assert_eq!(work.receipt(), prefix.checked_add(maximum).expect("authority-only prefix"));
+        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(work.receipt().items_examined, 0);
+        assert_eq!(io.retained, 24, "SDK custody cannot be retained again as raw authority bytes");
+        let sdk_guard = io.take_native_custody(16).expect("transfer genuine SDK DTO custody");
+        assert!(sdk_guard.matches_work(&work));
+        assert_eq!(sdk_guard.bytes(), sdk_bytes.capacity() as u64);
+        assert_eq!(io.custody.bytes(), 32);
+        io.release_owned(8).expect("virtual request retirement");
+        drop(sdk_bytes);
+        drop(sdk_guard);
+        let pool = io.into_custody();
+        assert_eq!(pool.bytes(), 32);
+        assert!(pool.matches_work(&work));
+        drop(pool);
+    }
+
+    #[test]
+    fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool() {
+        let cancellation = CancellationToken::new();
+        let mut budget = completion_budget(WorkCounters::default(), 32);
+        budget.allocation_operations += 2;
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
+        let token = work.reserve_work(WorkCounters::default()).expect("pre-action zero token");
+        let pool = work.retain_owned(8).expect("closed eight-byte completion pool");
+        let mut oversized_preparation = native_work_io(&work).expect("first original SDK allocator");
+        let mut oversized = Vec::new();
+        oversized_preparation.reserve_bytes(&mut oversized, 16).expect("real oversized SDK backing");
+        let oversized_guard = oversized_preparation.into_custody();
+        let mut bounded_preparation = native_work_io(&work).expect("second original SDK allocator");
+        let mut bounded = Vec::new();
+        bounded_preparation.reserve_bytes(&mut bounded, 8).expect("real bounded SDK backing");
+        let bounded_guard = bounded_preparation.into_custody();
+        let prefix = work.receipt();
+        let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
+        cancellation.cancel();
+        let rejection = io.absorb_native_custody(oversized_guard).expect_err("closed prefix rejects oversized SDK result");
+        assert_eq!(io.retained, 0);
+        assert_eq!(io.custody.bytes(), 8);
+        assert_eq!(work.receipt(), prefix, "rejected transfer cannot claim or release original bytes");
+        drop(oversized);
+        let Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes", observed: 16, maximum: 8,
+            }), custody: Some(guard),
+        } = rejection else { panic!("oversized DTO retains its real source guard and static typed bound"); };
+        assert!(guard.matches_work(&work));
+        assert_eq!(guard.bytes(), 16);
+        drop(guard);
+        io.absorb_native_custody(bounded_guard).expect("already-held bounded SDK transfer");
+        assert_eq!(io.retained, 8);
+        assert_eq!(io.custody.bytes(), 16);
+        assert!(matches!(io.admit_owned(1), Err(Error::NativeBoundary { .. })));
+        drop(bounded);
+        io.release_owned(8).expect("retire virtual SDK DTO after backing drops");
+        assert_eq!(io.remaining().expect("closed pool after release").peak_allocation_bytes, 8);
+        assert!(matches!(io.retain_owned(9), Err(Error::NativeBoundary { .. })),
+            "retiring a merged SDK result must not enlarge later recovery allowance");
+        assert_eq!(work.receipt(), prefix);
     }
 
     #[test]
