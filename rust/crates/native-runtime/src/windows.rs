@@ -34,7 +34,7 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx, ReOpenFile,
-    ReadFile, SetFileAttributesW, WriteFile,
+    ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
 use windows_sys::Win32::System::IO::{
@@ -78,10 +78,6 @@ type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send + 'static>;
 
 thread_local! {
     /// The event this thread waits on for its in-place overlapped requests.
-    /// Its first use creates one OS control handle on the actual calling
-    /// thread. Global service initialization does not prewarm every future
-    /// caller's TLS. This fixed OS resource is neither SDK-owned payload nor
-    /// a namespace/backend read; opaque OS resources/RSS are not byte quotas.
     static IN_PLACE_EVENT: Result<OwnedEvent, i32> = OwnedEvent::create();
 }
 
@@ -105,69 +101,15 @@ impl Drop for OwnedEvent {
     }
 }
 
-/// Issues one positional request on a handle opened with
-/// `FILE_FLAG_OVERLAPPED` and waits for it on the calling thread. The
-/// request's event carries the low-order bit that keeps its completion off
-/// any port the handle is attached to, so it never reaches the driver. An
-/// overlapped handle has no cursor, so none moves. `Ok(0)` is end of file.
+/// Issues one positional request on a handle opened with `FILE_FLAG_OVERLAPPED` and waits for it on the calling thread.
 fn transfer_in_place(
     file: &impl AsRawHandle,
     offset: u64,
     issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
-) -> io::Result<usize> {
-    transfer_in_place_observed(file, offset, issue, None)
-}
-
-#[derive(Clone, Copy)]
-struct NativeTransferMeter<'a> {
-    meter: &'a dyn crate::NativeReadMeter,
-    maximum: usize,
-    kind: crate::NativeOperationKind,
-    transfer_bytes: bool,
-}
-
-impl<'a> NativeTransferMeter<'a> {
-    fn read(meter: &'a dyn crate::NativeReadMeter, maximum: usize) -> Self {
-        Self {
-            meter, maximum,
-            kind: crate::NativeOperationKind::Read,
-            transfer_bytes: true,
-        }
-    }
-
-    fn write(meter: &'a dyn crate::NativeReadMeter, maximum: usize) -> Self {
-        Self {
-            meter, maximum,
-            kind: crate::NativeOperationKind::Write,
-            transfer_bytes: true,
-        }
-    }
-
-    fn metadata_read(meter: &'a dyn crate::NativeReadMeter) -> Self {
-        Self {
-            meter, maximum: 0,
-            kind: crate::NativeOperationKind::Read,
-            transfer_bytes: false,
-        }
-    }
-
-    fn mutation_control(meter: &'a dyn crate::NativeReadMeter) -> Self {
-        Self {
-            meter, maximum: 0,
-            kind: crate::NativeOperationKind::Write,
-            transfer_bytes: false,
-        }
-    }
-}
-
-fn transfer_in_place_observed(
-    file: &impl AsRawHandle,
-    offset: u64,
-    issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
-    meter: Option<NativeTransferMeter<'_>>,
+    meter: Option<(&dyn crate::NativeReadMeter, crate::NativeOperationKind, Option<usize>)>,
 ) -> io::Result<usize> {
     let mut reservation = match meter {
-        Some(observer) => Some(crate::NativeOperationReservation::new(observer.meter, observer.kind, 2)?),
+        Some((meter, kind, _)) => Some(crate::NativeOperationReservation::new(meter, kind, 2)?),
         None => None,
     };
     IN_PLACE_EVENT.with(|event| {
@@ -183,13 +125,13 @@ fn transfer_in_place_observed(
         overlapped.hEvent = event.0.map_addr(|address| address | 1);
         let mut transferred = 0_u32;
         let mut byte_reservation = match meter {
-            Some(observer) if observer.transfer_bytes => Some(crate::NativeByteReservation::new(
-                observer.meter, observer.kind, observer.maximum,
+            Some((meter, kind, Some(maximum))) => Some(crate::NativeByteReservation::new(
+                meter, kind, maximum,
             )?),
-            Some(observer) => {
-                match observer.kind {
-                    crate::NativeOperationKind::Read => observer.meter.admit_bytes(0)?,
-                    crate::NativeOperationKind::Write => observer.meter.admit_write_bytes(0)?,
+            Some((meter, kind, None)) => {
+                match kind {
+                    crate::NativeOperationKind::Read => meter.admit_bytes(0)?,
+                    crate::NativeOperationKind::Write => meter.admit_write_bytes(0)?,
                     // Durability owns only the already reserved operation
                     // credits; it carries no transferred byte allowance.
                     crate::NativeOperationKind::Durability => {}
@@ -239,51 +181,18 @@ fn transfer_in_place_observed(
     })
 }
 
-/// Issues one device control request on the calling thread and waits for
-/// it, on a synchronous or an overlapped handle alike, exactly as in-place
-/// reads and writes do. Returns the output byte count.
+/// Issues one device control request on the calling thread and waits for it, on a synchronous or an overlapped handle alike, exactly as in-place reads and writes do.
 pub(super) fn control_in_place(
     file: &impl AsRawHandle,
     code: u32,
     input: &[u8],
     output: &mut [u8],
-) -> io::Result<usize> {
-    control_in_place_observed(file, code, input, output, None)
-}
-
-pub(super) fn control_in_place_measured(
-    file: &impl AsRawHandle,
-    code: u32,
-    input: &[u8],
-    output: &mut [u8],
-    meter: &dyn crate::NativeReadMeter,
-) -> io::Result<usize> {
-    control_in_place_observed(file, code, input, output,
-        Some(NativeTransferMeter::metadata_read(meter)))
-}
-
-pub(super) fn control_in_place_measured_mutation(
-    file: &impl AsRawHandle,
-    code: u32,
-    input: &[u8],
-    output: &mut [u8],
-    meter: &dyn crate::NativeReadMeter,
-) -> io::Result<usize> {
-    control_in_place_observed(file, code, input, output,
-        Some(NativeTransferMeter::mutation_control(meter)))
-}
-
-fn control_in_place_observed(
-    file: &impl AsRawHandle,
-    code: u32,
-    input: &[u8],
-    output: &mut [u8],
-    meter: Option<NativeTransferMeter<'_>>,
+    meter: Option<(&dyn crate::NativeReadMeter, crate::NativeOperationKind)>,
 ) -> io::Result<usize> {
     let too_large = || io::Error::new(io::ErrorKind::InvalidInput, "control buffer too large");
     let input_length = u32::try_from(input.len()).map_err(|_| too_large())?;
     let output_length = u32::try_from(output.len()).map_err(|_| too_large())?;
-    transfer_in_place_observed(file, 0, |handle, overlapped| {
+    transfer_in_place(file, 0, |handle, overlapped| {
         // SAFETY: both buffers stay borrowed for the whole request, which
         // completes before return.
         unsafe {
@@ -298,11 +207,10 @@ fn control_in_place_observed(
                 overlapped,
             )
         }
-    }, meter)
+    }, meter.map(|(meter, kind)| (meter, kind, None)))
 }
 
-/// Reads each range with one positional request on the calling thread,
-/// exactly as the driver would: a range ending past end of file is short.
+/// Reads each range with one positional request on the calling thread, exactly as the driver would: a range ending past end of file is short.
 pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
     let mut results = Vec::new();
     results.try_reserve_exact(reads.len())?;
@@ -326,7 +234,7 @@ pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Resul
                         overlapped,
                     )
                 }
-            })?
+            }, None)?
         };
         if count > read.length {
             return Err(io::Error::other("read completion exceeded buffer"));
@@ -338,8 +246,7 @@ pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Resul
     Ok(results)
 }
 
-/// Writes every byte of each range on the calling thread, continuing
-/// after a short write exactly as the driver does.
+/// Writes every byte of each range on the calling thread, continuing after a short write exactly as the driver does.
 pub(super) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
     writes
         .iter()
@@ -361,7 +268,7 @@ fn write_all_in_place(file: &File, mut offset: u64, mut bytes: &[u8]) -> io::Res
                     overlapped,
                 )
             }
-        })?;
+        }, None)?;
         if count == 0 {
             return Err(io::Error::from(io::ErrorKind::WriteZero));
         }
@@ -385,9 +292,7 @@ fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
     }
 }
 
-/// Whether `file` was opened with `FILE_FLAG_OVERLAPPED`. Such a handle
-/// has no cursor, so positional requests can be issued on it directly. A
-/// failed query answers `false`, which keeps the reopen path.
+/// Whether `file` was opened with `FILE_FLAG_OVERLAPPED`.
 fn is_overlapped(file: &File) -> bool {
     let mut status = IO_STATUS_BLOCK::default();
     let mut mode = FILE_MODE_INFORMATION::default();
@@ -407,31 +312,8 @@ fn is_overlapped(file: &File) -> bool {
     result >= 0 && mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0
 }
 
-/// Runs `transfer` on `file` itself when it is overlapped, otherwise on a
-/// private overlapped reopen with `access`: either way the caller's cursor
-/// never moves.
-fn with_overlapped<T>(
-    file: &File,
-    access: u32,
-    transfer: impl FnOnce(&File) -> io::Result<T>,
-) -> io::Result<T> {
-    with_overlapped_observed(file, access, false, None, transfer)
-}
-
-/// Prepares the same positional handle used by the ordinary transfer engine.
-/// A known-overlapped capability needs no mode query or reopen; otherwise each
-/// actual preparation call is admitted before it touches the native handle.
-pub(super) fn with_overlapped_measured<T>(
-    file: &File,
-    access: u32,
-    known_overlapped: bool,
-    meter: &dyn crate::NativeReadMeter,
-    transfer: impl FnOnce(&File) -> io::Result<T>,
-) -> io::Result<T> {
-    with_overlapped_observed(file, access, known_overlapped, Some(meter), transfer)
-}
-
-fn with_overlapped_observed<T>(
+/// Uses the held overlapped handle or admits its mode probe and private reopen.
+pub(super) fn with_overlapped<T>(
     file: &File,
     access: u32,
     known_overlapped: bool,
@@ -450,15 +332,13 @@ fn with_overlapped_observed<T>(
     }
 }
 
-/// Reads once on the calling thread through [`with_overlapped`]: the
-/// request needs neither the driver thread nor a completion-port
-/// association.
+/// Reads once on the calling thread through [`with_overlapped`]: the request needs neither the driver thread nor a completion-port association.
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     let length = overlapped_range(offset, destination.len())?;
     if length == 0 {
         return Ok(0);
     }
-    let count = with_overlapped(file, FILE_GENERIC_READ, |file| {
+    let count = with_overlapped(file, FILE_GENERIC_READ, false, None, |file| {
         transfer_in_place(file, offset, |handle, overlapped| {
             // SAFETY: `destination` holds `length` writable bytes for the whole
             // request, which completes before return.
@@ -471,7 +351,7 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
                     overlapped,
                 )
             }
-        })
+        }, None)
     })?;
     if count > destination.len() {
         return Err(io::Error::other("read completion exceeded buffer"));
@@ -479,9 +359,7 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
     Ok(count)
 }
 
-/// Reads a handle already admitted as overlapped, without probing its mode or
-/// reopening it. The existing in-place completion machinery owns the request
-/// until it settles; failed completion reports any transferred prefix.
+/// Reads a handle already admitted as overlapped, without probing its mode or reopening it.
 pub(super) fn read_at_known_overlapped(
     file: &File,
     offset: u64,
@@ -493,26 +371,25 @@ pub(super) fn read_at_known_overlapped(
         return Ok(0);
     }
     meter.admit_bytes(destination.len())?;
-    transfer_in_place_observed(file, offset, |handle, overlapped| {
+    transfer_in_place(file, offset, |handle, overlapped| {
         // SAFETY: the writable destination and stack OVERLAPPED remain live
         // until the common completion routine has settled the request.
         unsafe {
             ReadFile(handle, destination.as_mut_ptr(), length, std::ptr::null_mut(), overlapped)
         }
-    }, Some(NativeTransferMeter::read(meter, length as usize)))
+    }, Some((meter, crate::NativeOperationKind::Read, Some(length as usize))))
 }
 
 /// Writes one admitted request through the same in-place OVERLAPPED machinery.
-/// A completion's physically transferred prefix is recorded even on failure.
 pub(super) fn write_at_known_overlapped(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
 ) -> io::Result<usize> {
     let length = overlapped_range(offset, bytes.len())?;
     if length == 0 { return Ok(0); }
-    transfer_in_place_observed(file, offset, |handle, overlapped| {
+    transfer_in_place(file, offset, |handle, overlapped| {
         // SAFETY: payload and stack OVERLAPPED remain live until completion settles.
         unsafe { WriteFile(handle, bytes.as_ptr(), length, std::ptr::null_mut(), overlapped) }
-    }, Some(NativeTransferMeter::write(meter, bytes.len())))
+    }, Some((meter, crate::NativeOperationKind::Write, Some(bytes.len()))))
 }
 
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
@@ -520,7 +397,7 @@ pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
         FILE_END_OF_FILE_INFO, FileEndOfFileInfo, SetFileInformationByHandle,
     };
     let size = i64::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let info = FILE_END_OF_FILE_INFO { EndOfFile: size };
     // SAFETY: the held handle and initialized fixed-size buffer live through the syscall.
     if unsafe { SetFileInformationByHandle(
@@ -539,7 +416,7 @@ pub(super) fn sync_once(file: &File) -> io::Result<()> {
 /// Writes every byte on the calling thread, exactly as [`read_at`] reads.
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     overlapped_range(offset, bytes.len())?;
-    with_overlapped(file, FILE_GENERIC_WRITE, |file| {
+    with_overlapped(file, FILE_GENERIC_WRITE, false, None, |file| {
         write_all_in_place(file, offset, bytes)
     })
 }
@@ -636,9 +513,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     })
 }
 
-/// Starts `executable __service --signal-ready` detached, with the write end
-/// of a fresh pipe as its standard output and the only handle it inherits,
-/// and returns the read end.
+/// Starts `executable __service --signal-ready` detached, with the write end of a fresh pipe as its standard output and the only handle it inherits, and returns the read end.
 pub(super) fn spawn_service_process(executable: &Path) -> io::Result<File> {
     let executable_argument = executable.as_os_str().encode_wide().collect::<Vec<_>>();
     if executable_argument.contains(&0) {
@@ -777,8 +652,7 @@ impl Drop for HandleListAttribute {
     }
 }
 
-/// Takes the process's standard output handle, leaving no standard output,
-/// which the standard library then treats as a sink.
+/// Takes the process's standard output handle, leaving no standard output, which the standard library then treats as a sink.
 pub(super) fn take_standard_output() -> io::Result<Option<File>> {
     // SAFETY: querying a standard handle has no preconditions.
     let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
@@ -792,23 +666,6 @@ pub(super) fn take_standard_output() -> io::Result<Option<File>> {
     }
     // SAFETY: the handle is live and no longer reachable as standard output.
     Ok(Some(unsafe { File::from_raw_handle(handle) }))
-}
-
-pub(super) fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
-    let mut encoded: Vec<_> = path.as_os_str().encode_wide().collect();
-    if encoded.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "attribute path contains NUL",
-        ));
-    }
-    encoded.push(0);
-    // SAFETY: `encoded` is a live NUL-terminated UTF-16 path for this call.
-    if unsafe { SetFileAttributesW(encoded.as_ptr(), attributes) } == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 enum Job {
@@ -1147,12 +1004,6 @@ impl DriverState {
                 Some(attached) if Arc::ptr_eq(&attached, file) => {}
                 Some(_) => fail_stop("overlapped file identity collision"),
                 None => {
-                    // This mode is available only through the caller's unsafe
-                    // constructor, which proves the original handle was opened
-                    // with FILE_FLAG_OVERLAPPED and has not been attached yet.
-                    // Compio may associate a handle before an attach error is
-                    // returned, so reusing that original handle after failure
-                    // would be indeterminate; fail stop instead.
                     self.proactor
                         .attach(file.as_raw_handle().cast())
                         .unwrap_or_else(|error| {
@@ -1419,29 +1270,14 @@ fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NativeReadMeter;
     use std::fs::OpenOptions;
-    use std::io::{Seek as _, SeekFrom, Write as _};
+    use std::io::{Seek as _, Write as _};
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
     use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE};
-
-    fn intrinsic_file(file: File, overlapped: bool) -> io::Result<Arc<NativeFilePayload>> {
-        crate::initialize_native_io_services()?;
-        let meter: Arc<dyn NativeReadMeter> =
-            Arc::new(crate::tests::ReadBudgetMeter::new(128, 1024));
-        let native = if overlapped {
-            // SAFETY: the fixture transfers its freshly opened, sole-owned
-            // overlapped handle before any completion-port attachment.
-            unsafe { crate::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter) }
-        } else {
-            crate::NativeFile::from_file_measured_owned(file, meter)
-        }.map_err(|(error, file)| { drop(file); error })?;
-        Ok(native.file)
-    }
 
     #[test]
     fn empty_nonblocking_poll_is_not_a_driver_failure() -> io::Result<()> {
@@ -1529,75 +1365,6 @@ mod tests {
     }
 
     #[test]
-    fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(directory.path().join("positional"))?;
-        file.write_all(b"abcdefghijklmnop")?;
-        file.seek(SeekFrom::Start(13))?;
-        let file = intrinsic_file(file, false)?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            false,
-            vec![OwnedWrite {
-                offset: 4,
-                bytes: Bytes::from_static(b"WXYZ"),
-            }],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        let requests = vec![
-            OwnedRead {
-                offset: 2,
-                length: 2,
-            },
-            OwnedRead {
-                offset: 4,
-                length: 0,
-            },
-            OwnedRead {
-                offset: 4,
-                length: 6,
-            },
-            OwnedRead {
-                offset: 14,
-                length: 8,
-            },
-        ];
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_read(
-            Arc::clone(&file),
-            false,
-            requests,
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let result = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        assert_eq!(
-            result,
-            [
-                Bytes::from_static(b"cd"),
-                Bytes::new(),
-                Bytes::from_static(b"WXYZij"),
-                Bytes::from_static(b"op"),
-            ]
-        );
-        assert_eq!((&**file).stream_position()?, 13);
-        Ok(())
-    }
-
-    #[test]
     fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         let open = |name, flags| {
@@ -1623,169 +1390,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn sdk_owned_overlapped_handle_attaches_once_and_reuses_original() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let file = intrinsic_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .custom_flags(FILE_FLAG_OVERLAPPED)
-                .open(directory.path().join("overlapped"))?,
-            true,
-        )?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            true,
-            vec![OwnedWrite {
-                offset: 7,
-                bytes: Bytes::from_static(b"owned"),
-            }],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        file.set_len(20)?;
-        file.sync_all()?;
-        for _ in 0..2 {
-            let (sender, receiver) = mpsc::sync_channel(1);
-            submit_read(
-                Arc::clone(&file),
-                true,
-                vec![OwnedRead {
-                    offset: 7,
-                    length: 5,
-                }],
-                Box::new(move |result| {
-                    let _ = sender.send(result);
-                }),
-            )?;
-            assert_eq!(
-                receiver
-                    .recv_timeout(Duration::from_secs(5))
-                    .map_err(io::Error::other)??,
-                [Bytes::from_static(b"owned")],
-            );
-        }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            true,
-            vec![OwnedRead {
-                offset: 0,
-                length: 20,
-            }],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let whole = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        assert_eq!(
-            whole,
-            [Bytes::from_static(b"\0\0\0\0\0\0\0owned\0\0\0\0\0\0\0\0")]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn invalid_batch_rejects_without_partial_write() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let file = intrinsic_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(directory.path().join("invalid"))?,
-            false,
-        )?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            false,
-            vec![
-                OwnedWrite {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"must-not-write"),
-                },
-                OwnedWrite {
-                    offset: u64::MAX,
-                    bytes: Bytes::from_static(b"invalid"),
-                },
-            ],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let error = match receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)?
-        {
-            Ok(()) => return Err(io::Error::other("invalid batch was accepted")),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(file.metadata()?.len(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn detached_observer_does_not_cancel_accepted_write() -> io::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let file = intrinsic_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(directory.path().join("detached"))?,
-            false,
-        )?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let completed = Arc::new(AtomicBool::new(false));
-        let signal = Arc::clone(&completed);
-        submit_write(
-            Arc::clone(&file),
-            false,
-            vec![OwnedWrite {
-                offset: 0,
-                bytes: Bytes::from_static(b"persist"),
-            }],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-                signal.store(true, Ordering::Release);
-            }),
-        )?;
-        drop(receiver);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !completed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(
-            completed.load(Ordering::Acquire),
-            "accepted write did not finish"
-        );
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            false,
-            vec![OwnedRead {
-                offset: 0,
-                length: 7,
-            }],
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let read = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        assert_eq!(read, [Bytes::from_static(b"persist")]);
-        Ok(())
-    }
 }

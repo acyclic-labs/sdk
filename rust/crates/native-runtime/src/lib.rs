@@ -15,8 +15,7 @@ use std::task::{Context, Poll, Waker};
 
 type FileSequencer = Arc<Mutex<Option<Arc<OperationFence>>>>;
 
-/// The existing shared file allocation also owns its original invocation
-/// claim. All queued jobs and quarantine anchors retain this same payload.
+/// The existing shared file allocation also owns its original invocation claim.
 pub(crate) struct NativeFilePayload {
     file: File,
     // Fields retire in declaration order: physical File before its claim.
@@ -40,30 +39,9 @@ impl std::fmt::Debug for NativeFilePayload {
 }
 
 #[cfg(unix)]
-impl std::os::fd::AsRawFd for NativeFilePayload {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        std::os::fd::AsRawFd::as_raw_fd(&self.file)
-    }
-}
-
-#[cfg(unix)]
 impl std::os::fd::AsFd for NativeFilePayload {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         std::os::fd::AsFd::as_fd(&self.file)
-    }
-}
-
-#[cfg(windows)]
-impl std::os::windows::io::AsRawHandle for NativeFilePayload {
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
-        std::os::windows::io::AsRawHandle::as_raw_handle(&self.file)
-    }
-}
-
-#[cfg(windows)]
-impl std::os::windows::io::AsHandle for NativeFilePayload {
-    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        std::os::windows::io::AsHandle::as_handle(&self.file)
     }
 }
 
@@ -74,13 +52,9 @@ type FileIdentity = linux::FileIdentity;
 #[cfg(target_vendor = "apple")]
 type FileIdentity = apple::FileIdentity;
 
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 struct FileHealth {
     tail: FileSequencer,
     uncertain: Arc<AtomicBool>,
-    // Only an uncertain identity needs an open handle to prevent inode reuse.
-    // Retaining healthy handles here would outlive their NativeFile owner and
-    // can keep an exclusive Windows share lock open indefinitely.
     poison_anchor: Mutex<Option<Arc<NativeFilePayload>>>,
 }
 
@@ -130,10 +104,7 @@ impl FileHealthRegistry {
     fn sweep_idle(&mut self, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
         let mut removed = 0;
         let mut shifted = 0;
-        // All platform registration limits are at most 4096. Snapshot the
-        // weak liveness decisions once: owners can drop concurrently while
-        // the registry lock is held, so a second strong_count pass would not
-        // describe the compaction whose moves were admitted.
+        // Snapshot liveness once so concurrent drops cannot change admitted compaction.
         let mut live = [0_u64; 64];
         for (index, (_, entry)) in self.entries.iter().enumerate() {
             if let Some(meter) = meter { meter.examine(1, 0)?; }
@@ -192,8 +163,6 @@ struct FileScope;
 
 impl FileScope {
     /// Publishes only this synchronous invocation's pinned borrowed frame.
-    /// No callback receives its address; this scope must never span async I/O
-    /// or escape into a returned future. All three callers execute synchronously.
     fn with<T>(tail: Option<&FileSequencer>, operation: impl FnOnce() -> T) -> T {
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         {
@@ -217,15 +186,12 @@ impl FileScope {
     }
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[allow(unsafe_code, reason = "TLS contains immutable pinned frames of live synchronous calls on this same thread")]
+    #[allow(unsafe_code)]
     fn contains(tail: &FileSequencer) -> bool {
         let identity = Arc::as_ptr(tail) as usize;
         let mut node = ACTIVE_FILES.with(Cell::get);
         while !node.is_null() {
-            // SAFETY: only `with` publishes pointers derived from its pinned
-            // stack node. Its immutable previous chain belongs to still-live
-            // outer calls on this thread. RAII restores the prior head before
-            // any node drops; no pointer is exposed to a callback or future.
+            // SAFETY: `with` publishes live, pinned frames on this thread and restores TLS before they drop.
             let active = unsafe { &*node };
             if active.identity == identity { return true; }
             node = active.previous;
@@ -328,9 +294,6 @@ fn shared_file_health_measured(file: &File, meter: Option<&dyn NativeReadMeter>)
     })();
     if let Some(meter) = meter {
         meter.release((retained_registry_bytes + pending_registry_bytes) as u64);
-        // Registration transfers these actual new allocations into the
-        // canonical shared runtime control root. Aliases borrow that root;
-        // they do not independently own its health or sequencing payloads.
         meter.release(pending_health_bytes as u64);
     }
     result
@@ -370,9 +333,6 @@ fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io::Result<T>
     let health = shared_file_health(file)?;
     let tail = Arc::clone(&health.tail);
     let uncertain = Arc::clone(&health.uncertain);
-    // A control/sync operation already running under this file's admitted
-    // fence may call the direct API. It must inherit that fence, not enqueue
-    // behind itself and deadlock the worker.
     if FileScope::contains(&tail) {
         if uncertain.load(Ordering::Acquire) {
             return Err(io::Error::other(
@@ -417,19 +377,9 @@ fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io::Result<T>
 }
 
 /// One file owned by the native I/O runtime.
-///
-/// Callers retain responsibility for capability-safe path resolution and pass
-/// the resulting handle here exactly once. Operations submitted through this
-/// handle execute in first-poll order. Creating an operation is lazy: an
-/// unpolled future neither submits I/O nor delays later operations. Once an
-/// operation has been polled, dropping its observer does not overtake earlier
-/// admitted work.
 pub struct NativeFile {
     file: Arc<NativeFilePayload>,
-    tail: FileSequencer,
-    uncertain: Arc<AtomicBool>,
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    _health: Arc<FileHealth>,
+    health: Arc<FileHealth>,
     #[cfg(windows)]
     overlapped: bool,
 }
@@ -440,28 +390,20 @@ impl NativeFile {
         let file = Arc::new(NativeFilePayload::unmetered(file));
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = shared_file_health(&file)?;
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let (tail, uncertain) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+        let health = Arc::new(FileHealth {
+            tail: Arc::new(Mutex::new(None)), uncertain: Arc::new(AtomicBool::new(false)),
+            poison_anchor: Mutex::new(None),
+        });
         Ok(Self {
             file,
-            tail,
-            uncertain,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: health,
+            health,
             #[cfg(windows)]
             overlapped: false,
         })
     }
 
-    /// Imports a caller-held file into the same sequenced capability while
-    /// admitting its actual identity probe and owned registration buffers.
-    /// Initialize shared control with `initialize_native_io_services` first;
-    /// this bounded entry never performs lazy resource-limit probes.
-    /// Failure returns the original held file without closing it. The caller
-    /// retires that file before projecting the original cause; an implicit
-    /// standard-library handle drop is not a fabricated native meter operation.
+    /// Imports a caller-held file into the same sequenced capability while admitting its actual identity probe and owned registration buffers.
     pub fn from_file_measured(
         file: File, meter: &dyn NativeReadMeter,
     ) -> Result<Self, (io::Error, File)> {
@@ -493,9 +435,6 @@ impl NativeFile {
         let health = match shared_file_health_measured(&file, Some(meter)) {
             Ok(health) => health,
             Err(error) => {
-                // No capability or queued payload has observed this Arc.
-                // Destroy its actual control allocation, but return the held
-                // OS handle for the caller's preaccepted close boundary.
                 let payload = match Arc::try_unwrap(file) {
                     Ok(payload) => payload,
                     Err(_) => unreachable!("unpublished native file import is uniquely owned"),
@@ -506,10 +445,8 @@ impl NativeFile {
                 return Err((error, file));
             }
         };
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let (tail, uncertain) = (Arc::clone(&health.tail), Arc::clone(&health.uncertain));
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let (tail, uncertain) = {
+        let health = {
             if let Err(error) = meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64) {
                 let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
                 meter.release(file_bytes as u64);
@@ -523,39 +460,40 @@ impl NativeFile {
                 meter.release(file_bytes as u64);
                 return Err((error, payload.file));
             }
-            (tail, Arc::new(AtomicBool::new(false)))
+            let uncertain = Arc::new(AtomicBool::new(false));
+            if let Err(error) = meter.allocate(arc_allocation_bytes::<FileHealth>() as u64) {
+                drop(tail);
+                drop(uncertain);
+                meter.release((arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
+                    + arc_allocation_bytes::<AtomicBool>()) as u64);
+                let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
+                meter.release(file_bytes as u64);
+                return Err((error, payload.file));
+            }
+            Arc::new(FileHealth { tail, uncertain, poison_anchor: Mutex::new(None) })
         };
         Ok(Self {
-            file, tail, uncertain,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: health,
+            file, health,
             #[cfg(windows)]
             overlapped: false,
         })
     }
 
     /// Imports a finite native file with intrinsic original-ledger custody.
-    /// The same physical Arc owns the claim through queued IO, observer Drop,
-    /// and uncertain-IO quarantine; no caller performs a manual early release.
-    /// Shared IO services must already have been explicitly initialized.
-    /// Failure returns the held file after retiring only unpublished runtime
-    /// metadata; the caller remains responsible for the file's actual lifetime.
     pub fn from_file_measured_owned(
         file: File, meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, (io::Error, File)> {
         Self::from_file_measured_inner(file, meter.as_ref(), Some(&meter))
     }
 
-    /// Logical handle storage owned by this capability, excluding the shared
-    /// runtime health/sequencing control root. New registration allocations
-    /// are still admitted and reported during their actual construction.
+    /// Logical handle storage owned by this capability, excluding the shared runtime health/sequencing control root.
     #[must_use]
     pub fn logical_owned_bytes(&self) -> u64 {
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = 0;
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let health = arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
-            + arc_allocation_bytes::<AtomicBool>();
+            + arc_allocation_bytes::<AtomicBool>() + arc_allocation_bytes::<FileHealth>();
         (arc_allocation_bytes::<NativeFilePayload>() + health) as u64
     }
 
@@ -580,10 +518,9 @@ impl NativeFile {
     /// Metered adoption of an already-authorized overlapped Windows handle.
     ///
     /// # Safety
-    /// The ownership and no-completion-port requirements of
-    /// `from_overlapped_file_unchecked` also apply here.
+    /// Same requirements as [`Self::from_overlapped_file_unchecked`].
     #[cfg(windows)]
-    #[allow(unsafe_code, reason = "the caller transfers sole overlapped-handle ownership")]
+    #[allow(unsafe_code)]
     pub unsafe fn from_overlapped_file_measured_unchecked(
         file: File,
         meter: &dyn NativeReadMeter,
@@ -596,10 +533,9 @@ impl NativeFile {
     /// Imports an authorized overlapped handle with intrinsic original custody.
     ///
     /// # Safety
-    /// The sole-ownership and no-completion-port requirements of
-    /// `from_overlapped_file_unchecked` also apply here.
+    /// Same requirements as [`Self::from_overlapped_file_unchecked`].
     #[cfg(windows)]
-    #[allow(unsafe_code, reason = "the caller transfers sole overlapped-handle ownership")]
+    #[allow(unsafe_code)]
     pub unsafe fn from_overlapped_file_measured_owned_unchecked(
         file: File, meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, (io::Error, File)> {
@@ -614,10 +550,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::SetLen(size),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
             #[cfg(windows)]
             self.overlapped,
@@ -625,8 +558,6 @@ impl NativeFile {
     }
 
     /// Runs a platform-specific handle control in this file's operation order.
-    /// The closure owns no borrowed handle after completion and executes off
-    /// the caller's async executor when native completion is unavailable.
     #[must_use]
     pub fn control_async(
         &self,
@@ -635,10 +566,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Control(Box::new(operation)),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.control"),
             #[cfg(windows)]
             self.overlapped,
@@ -651,32 +579,17 @@ impl NativeFile {
         &self.file
     }
 
-    /// Creates one metered positional read on this file's existing operation
-    /// queue. OS calls are cooperatively cancellable only between requests.
+    /// Creates one metered positional read on this file's existing operation queue.
     pub fn read_bounded_async(
         &self,
         offset: u64,
         length: usize,
         meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeReadCompletion> {
+    ) -> io::Result<NativeCompletion<NativeReadResult>> {
         self.read_bounded_async_inner(offset, length, meter, false)
     }
 
-    /// Reads an entire declared range or returns `UnexpectedEof` before
-    /// constructing shared returned bytes. Partial physical work remains in
-    /// the same invocation meter.
-    pub fn read_bounded_exact_async(
-        &self, offset: u64, length: usize, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeReadCompletion> {
-        self.read_bounded_async_inner(offset, length, meter, true)
-    }
-
-    /// Reads into caller-prepared fixed, initialized storage on this file's
-    /// existing queue. `storage.as_mut()` must expose the same writable slice
-    /// without allocating. The caller retains its allocation custody in `B`;
-    /// success returns that identical owner and its actual initialized prefix.
-    /// All completion storage is admitted with the original meter before IO.
-    /// Dropping an accepted observer does not cancel its physical operation.
+    /// Reads caller-owned storage; `AsMut` must expose the same initialized slice without allocating.
     pub fn read_prepared_bounded_async<B>(
         &self, offset: u64, mut storage: B, length: usize, require_full: bool,
         meter: Arc<dyn NativeReadMeter>,
@@ -691,15 +604,11 @@ impl NativeFile {
         let allocation = ReadAllocation::new(
             &meter, arc_allocation_bytes::<Mutex<CompletionState<(B, usize)>>>(),
         )?;
-        let state = Arc::new(Mutex::new(CompletionState {
-            task_pending: false,
-            result: None, panic: None, waker: None, _allocation: Some(allocation),
-        }));
+        let state = Arc::new(Mutex::new(CompletionState { task_pending: true, _allocation: Some(allocation), ..CompletionState::default() }));
         let output = Arc::clone(&state);
         #[cfg(windows)]
         let overlapped = self.overlapped;
-        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>,
-                              completion: Option<Arc<OperationFence>>| {
+        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let destination = storage.as_mut().get_mut(..length)
                     .ok_or(io::ErrorKind::InvalidInput)?;
@@ -714,34 +623,28 @@ impl NativeFile {
             drop(file);
             drop(meter);
             match result {
-                Ok(result) => finish_job(&output, result, completion),
-                Err(payload) => finish_panicked_job(&output, payload, completion),
+                Ok(result) => output.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result),
+                Err(payload) => output.stage_panic(payload),
             }
         };
         let allocation = ReadAllocation::new(&meter, std::mem::size_of_val(&operation))?;
-        Ok(NativeCompletion {
-            pending: Some(NativeJob::PreparedRead {
+        Ok(NativeCompletion::pending(NativeJob::PreparedRead {
                 file: Arc::clone(&self.file), operation: Box::new(operation),
-                meter, completion: None, _allocation: allocation,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state, waiter: None, sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)), predecessor: None,
-            completion: None, terminated: false,
-        })
+                meter, completion: None, terminal: state.clone(), _allocation: allocation,
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 
     fn read_bounded_async_inner(
         &self, offset: u64, length: usize, meter: Arc<dyn NativeReadMeter>,
         require_full: bool,
-    ) -> io::Result<NativeReadCompletion> {
+    ) -> io::Result<NativeCompletion<NativeReadResult>> {
         meter.check()?;
         meter.admit_bytes(length)?;
         if length == 0 {
-            return Ok(NativeReadCompletion::ready(NativeReadResult {
+            return Ok(NativeCompletion::ready(Ok(NativeReadResult {
                 bytes: Bytes::new(), buffer_capacity: 0, _allocation: None,
-            }));
+            })));
         }
         offset.checked_add(length as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -752,15 +655,8 @@ impl NativeFile {
         let allocation = ReadAllocation::new(
             &meter, arc_allocation_bytes::<Mutex<CompletionState<NativeReadResult>>>(),
         )?;
-        let state = Arc::new(Mutex::new(CompletionState {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: Some(allocation),
-        }));
-        Ok(NativeReadCompletion::pending(NativeCompletion {
-            pending: Some(NativeJob::BoundedRead {
+        let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
+        Ok(NativeCompletion::pending(NativeJob::BoundedRead {
                 file: Arc::clone(&self.file),
                 #[cfg(windows)]
                 overlapped: self.overlapped,
@@ -770,17 +666,8 @@ impl NativeFile {
                 meter,
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state,
-            waiter: None,
-            sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)),
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }))
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 
     /// Submits owned positional reads while retaining this handle.
@@ -789,10 +676,7 @@ impl NativeFile {
         ReadBatch::submit(
             Arc::clone(&self.file),
             reads,
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.read_batch"),
             #[cfg(windows)]
             self.overlapped,
@@ -805,10 +689,7 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Write(writes),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.write_batch"),
             #[cfg(windows)]
             self.overlapped,
@@ -821,19 +702,14 @@ impl NativeFile {
         UnitCompletion::submit(
             Arc::clone(&self.file),
             NativeUnitOperation::Sync(durability),
-            Some(Arc::clone(&self.tail)),
-            Some(Arc::clone(&self.uncertain)),
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            Some(Arc::clone(&self._health)),
+            Some(Arc::clone(&self.health)),
             obs::file_span!(DEBUG, "acyclic.runtime.sync"),
             #[cfg(windows)]
             self.overlapped,
         )
     }
 
-    /// Writes an already-accounted owned payload through this file's ordered
-    /// native queue. The payload's allocation owner must live until completion.
-    /// Physical prefixes are recorded before errors or cancellation are observed.
+    /// Writes an already-accounted owned payload through this file's ordered native queue.
     pub fn write_bounded_async(
         &self,
         offset: u64,
@@ -841,14 +717,10 @@ impl NativeFile {
         meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
         self.validate_bounded_write(offset, bytes.len(), meter.as_ref())?;
-        self.submit_bounded_unit(NativeBoundedUnitOperation::Write { offset, bytes }, meter)
+        self.submit_bounded_unit(NativeUnitOperation::BoundedWrite { offset, bytes }, meter)
     }
 
     /// Writes a caller-accounted payload on this same ordered native driver.
-    /// `custody` must retain the original ledger's actual allocation claim;
-    /// this method does not adopt `bytes.len()` or guess its owned capacity.
-    /// The existing measured control closure owns both values. Physical data
-    /// drops before custody, even if the observer is cancelled or dropped.
     pub fn write_bounded_async_with_custody<B: AsRef<[u8]> + Send + 'static, C: Send + 'static>(
         &self, offset: u64, bytes: B,
         meter: Arc<dyn NativeReadMeter>, custody: C,
@@ -870,8 +742,7 @@ impl NativeFile {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
         #[cfg(windows)]
         if !self.overlapped {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "metered writes require an admitted positional handle"));
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
         Ok(())
     }
@@ -880,18 +751,17 @@ impl NativeFile {
     pub fn set_len_bounded_async(
         &self, size: u64, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
-        self.submit_bounded_unit(NativeBoundedUnitOperation::SetLen(size), meter)
+        self.submit_bounded_unit(NativeUnitOperation::SetLen(size), meter)
     }
 
     /// Flushes at the existing file fence, charging only a supported OS flush.
     pub fn sync_bounded_async(
         &self, durability: Durability, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
-        self.submit_bounded_unit(NativeBoundedUnitOperation::Sync(durability), meter)
+        self.submit_bounded_unit(NativeUnitOperation::Sync(durability), meter)
     }
 
     /// Executes measured held-handle controls in this file's native order.
-    /// The callback must admit each actual OS leaf using the supplied meter.
     pub fn control_bounded_async<F>(
         &self, operation: F, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion>
@@ -899,36 +769,28 @@ impl NativeFile {
         meter.check()?;
         let allocation = ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
         self.submit_bounded_unit(
-            NativeBoundedUnitOperation::Control {
+            NativeUnitOperation::MeasuredControl {
                 operation: Box::new(operation), _allocation: allocation,
             }, meter,
         )
     }
 
     fn submit_bounded_unit(
-        &self, operation: NativeBoundedUnitOperation, meter: Arc<dyn NativeReadMeter>,
+        &self, operation: NativeUnitOperation, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<UnitCompletion> {
         meter.check()?;
         let allocation = ReadAllocation::new(
             &meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
         )?;
-        let state = Arc::new(Mutex::new(CompletionState {
-            task_pending: false,
-            result: None, panic: None, waker: None, _allocation: Some(allocation),
-        }));
-        Ok(NativeCompletion {
-            pending: Some(NativeJob::BoundedUnit {
-                file: Arc::clone(&self.file), operation, meter,
+        let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
+        Ok(NativeCompletion::pending(NativeJob::Unit {
+                file: Arc::clone(&self.file), operation, meter: Some(meter),
+                span: obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit"),
+                #[cfg(windows)]
+                overlapped: self.overlapped,
                 state: Arc::clone(&state), completion: None,
-                tail: Some(Arc::clone(&self.tail)),
-                uncertain: Some(Arc::clone(&self.uncertain)),
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: Some(Arc::clone(&self._health)),
-            }),
-            state, waiter: None, sequencer: Some(Arc::clone(&self.tail)),
-            uncertain: Some(Arc::clone(&self.uncertain)),
-            predecessor: None, completion: None, terminated: false,
-        })
+                health: Some(Arc::clone(&self.health)),
+            }, state, &NATIVE_WORKERS))
     }
 }
 
@@ -946,20 +808,12 @@ pub use process_tree::{ProcessCaptureFailure, ProcessInput, ProcessTree};
 pub use process_tree::PreparedClosedProcess;
 
 /// Whether a native operation may still have an unresolved kernel completion.
-///
-/// Such an error is not an ordinary retryable I/O failure: callers must not
-/// assume the previous write was rolled back or safely publish another view.
-pub fn is_uncertain_io_error(error: &io::Error) -> bool {
+fn is_uncertain_io_error(error: &io::Error) -> bool {
     #[cfg(target_os = "linux")]
     {
         linux::is_uncertain_completion(error)
     }
-    #[cfg(windows)]
-    {
-        let _ = error;
-        false
-    }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = error;
         false
@@ -967,10 +821,6 @@ pub fn is_uncertain_io_error(error: &io::Error) -> bool {
 }
 
 /// Shared lifetime token for native resources that must not outlive an external owner.
-///
-/// Cloning the token extends the owner's lifetime. The owned value is released only after the
-/// final token is dropped, allowing layered providers to carry a process-local ownership gate
-/// alongside every independently cloned native handle.
 #[derive(Clone)]
 pub struct OwnershipAnchor {
     // Keep this field before `release`: Rust drops fields in declaration order, so the notifier
@@ -1021,9 +871,6 @@ impl OwnershipAnchor {
 }
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
-///
-/// The barrier never extends the protected owner's lifetime. Waiting completes only after the
-/// final anchor clone has dropped the owner, making it suitable for explicit shutdown boundaries.
 pub struct OwnershipReleaseBarrier {
     owner: Weak<dyn Send + Sync>,
     released: Arc<(Mutex<()>, Condvar)>,
@@ -1056,9 +903,6 @@ pub enum Durability {
     /// Flush file contents and metadata to stable storage.
     Full,
     /// Order earlier writes before later writes without forcing the device cache to drain.
-    ///
-    /// This capability is currently exposed only where the operating system provides that
-    /// exact primitive. Other targets return [`io::ErrorKind::Unsupported`].
     Barrier,
 }
 
@@ -1120,11 +964,9 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
 /// What recovery found after the last valid frame of an append-only log.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogTail {
-    /// Nothing valid followed the invalid frame, so it was a torn append; the log now ends
-    /// before it, durably.
+    /// Nothing valid followed the invalid frame, so it was a torn append; the log now ends before it, durably.
     Torn,
-    /// A valid frame follows the invalid one, so a committed frame was damaged. The log is
-    /// left untouched.
+    /// A valid frame follows the invalid one, so a committed frame was damaged.
     Corrupt,
 }
 
@@ -1138,20 +980,6 @@ impl LogTail {
 }
 
 /// Recovers an append-only log whose frame at `invalid_start` is invalid.
-///
-/// A crash tears only the final append, and power loss can leave that append short,
-/// zero-filled, or garbage once the file's size grew but its data never landed. So an
-/// invalid frame is a torn tail exactly when no valid frame starts anywhere after it:
-/// the log is then truncated before it and synchronized, and its cursor left at the new
-/// end. Otherwise a committed frame was damaged, and recovery must fail closed rather than
-/// discard the frames after it; the log is left untouched.
-///
-/// `valid_frame` reports whether a complete valid frame starts at the beginning of its
-/// slice, which holds at most `maximum_frame_bytes` of the log's following bytes.
-///
-/// # Errors
-///
-/// Returns an I/O error when the log cannot be read, truncated, or synchronized.
 pub fn recover_log_tail(
     file: &mut File,
     invalid_start: u64,
@@ -1174,9 +1002,6 @@ pub fn recover_log_tail(
             let end = file.metadata()?.len();
             operation.record("bytes", end.saturating_sub(invalid_start));
             let frame_bytes = maximum_frame_bytes.max(1);
-            // Candidates are scanned through a window holding up to two frames' bytes, refilled
-            // once fewer than a whole frame remain ahead of the candidate, so each byte is read
-            // once.
             let first = invalid_start.saturating_add(1);
             let mut window = Vec::new();
             let mut window_start = first;
@@ -1218,7 +1043,6 @@ pub fn recover_log_tail(
 }
 
 /// Whether an exclusive file-lock failure proves that another owner holds the lock.
-/// Other failures must retain their original I/O error for recovery decisions.
 #[must_use]
 pub fn is_exclusive_lock_contention(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::WouldBlock || cfg!(windows) && error.raw_os_error() == Some(33)
@@ -1241,7 +1065,7 @@ pub fn durable_rename(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| operation.finish(durable_rename_impl(from, to, mode)))
+    operation.scope(|| operation.finish(durable_rename_engine(from, to, mode, None)))
 }
 
 /// Reads at an absolute offset without changing the file cursor.
@@ -1249,8 +1073,7 @@ pub fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<u
     with_file_admission(file, || read_at_impl(file, offset, destination))
 }
 
-/// Reads one declared source prefix into caller-admitted storage without
-/// changing the cursor or allocating. Actual work precedes late error delivery.
+/// Reads one declared source prefix into caller-admitted storage without changing the cursor or allocating.
 #[cfg(unix)]
 pub fn read_declared_source_bytes(
     file: &std::fs::File,
@@ -1292,14 +1115,7 @@ pub fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     with_file_admission(file, || write_all_at_impl(file, offset, bytes))
 }
 
-/// Issues one device control request on `file` and waits for it on the
-/// calling thread, whether the handle is synchronous or overlapped; an
-/// overlapped handle's completion never reaches a port it is attached to.
-/// Returns the output byte count.
-///
-/// # Errors
-///
-/// Returns the request's error, including a short output buffer.
+/// Issues one device control request on `file` and waits for it on the calling thread, whether the handle is synchronous or overlapped; an overlapped handle's completion never reaches a port it is attached to.
 #[cfg(windows)]
 pub fn device_control_in_place(
     file: &impl std::os::windows::io::AsRawHandle,
@@ -1307,14 +1123,10 @@ pub fn device_control_in_place(
     input: &[u8],
     output: &mut [u8],
 ) -> io::Result<usize> {
-    windows::control_in_place(file, code, input, output)
+    windows::control_in_place(file, code, input, output, None)
 }
 
-/// Applies one measured device request using the existing in-place completion
-/// primitive. Cancellation cannot abandon an already-issued kernel request.
-/// Metadata-control packets are not application/import source-body bytes.
-/// Their actual request/completion attempts are metered here; the caller
-/// admits its real input/output buffers and metadata examination/copies.
+/// Applies one measured device request using the existing in-place completion primitive.
 #[cfg(windows)]
 pub fn device_control_in_place_measured(
     file: &impl std::os::windows::io::AsRawHandle,
@@ -1324,7 +1136,7 @@ pub fn device_control_in_place_measured(
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
     meter.check()?;
-    windows::control_in_place_measured(file, code, input, output, meter)
+    windows::control_in_place(file, code, input, output, Some((meter, NativeOperationKind::Read)))
 }
 
 /// Applies an actual mutating device request and completion on a held handle.
@@ -1337,13 +1149,7 @@ pub fn device_control_in_place_measured_mutation(
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
     meter.check()?;
-    windows::control_in_place_measured_mutation(file, code, input, output, meter)
-}
-
-/// Applies the exact native Windows file-attribute bitset.
-#[cfg(windows)]
-pub fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
-    windows::set_file_attributes(path, attributes)
+    windows::control_in_place(file, code, input, output, Some((meter, NativeOperationKind::Write)))
 }
 
 /// One owned positional write whose buffer remains live through completion.
@@ -1365,10 +1171,6 @@ pub struct OwnedRead {
 }
 
 /// Submits an owned read batch to the shared native completion worker.
-///
-/// The first poll transfers ownership to the worker if capacity is available.
-/// Dropping before admission discards the job; dropping after admission only
-/// detaches the observer and the worker completes the operation.
 pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
     let file = Arc::new(NativeFilePayload::unmetered(file));
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -1377,8 +1179,6 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
             Ok(health) => ReadBatch::submit(
                 file,
                 reads,
-                Some(Arc::clone(&health.tail)),
-                Some(Arc::clone(&health.uncertain)),
                 Some(health),
                 obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
                 #[cfg(windows)]
@@ -1392,45 +1192,11 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> ReadBatch {
         file,
         reads,
         None,
-        None,
         obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
     )
 }
 
-/// Submits an owned write batch to the shared native completion workers.
-///
-/// Admission is irrevocable: after the first successful submission, dropping
-/// the returned future does not roll back or cancel the write.
-pub fn write_all_batch_async(file: File, writes: Vec<OwnedWrite>) -> UnitCompletion {
-    let file = Arc::new(NativeFilePayload::unmetered(file));
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    {
-        match shared_file_health(&file) {
-            Ok(health) => UnitCompletion::submit(
-                file,
-                NativeUnitOperation::Write(writes),
-                Some(Arc::clone(&health.tail)),
-                Some(Arc::clone(&health.uncertain)),
-                Some(health),
-                obs::file_span!(TRACE, "acyclic.runtime.write_batch"),
-                #[cfg(windows)]
-                false,
-            ),
-            Err(error) => UnitCompletion::failed(error),
-        }
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    UnitCompletion::submit(
-        file,
-        NativeUnitOperation::Write(writes),
-        None,
-        None,
-        obs::file_span!(TRACE, "acyclic.runtime.write_batch"),
-    )
-}
-
-/// The argument that tells a service started by [`spawn_service_process`]
-/// that its standard output is the readiness channel.
+/// The argument that tells a service started by [`spawn_service_process`] that its standard output is the readiness channel.
 pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 
 /// The starter's end of a service's readiness channel.
@@ -1438,12 +1204,7 @@ pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 pub struct ServiceReadiness(File);
 
 impl ServiceReadiness {
-    /// Blocks until the service signals that it answers requests (`true`),
-    /// or exits without signalling (`false`).
-    ///
-    /// # Errors
-    ///
-    /// Returns a failure to read the channel.
+    /// Blocks until the service signals that it answers requests (`true`), or exits without signalling (`false`).
     pub fn wait(mut self) -> io::Result<bool> {
         let operation = obs::span!(
             INFO,
@@ -1476,13 +1237,7 @@ impl ServiceReadiness {
 pub struct ServiceReadySignal(File);
 
 impl ServiceReadySignal {
-    /// Tells the starter that the service answers requests, and closes the
-    /// channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns a failure to write the channel, such as a starter that has
-    /// already exited.
+    /// Tells the starter that the service answers requests, and closes the channel.
     pub fn signal(mut self) -> io::Result<()> {
         io::Write::write_all(
             &mut self.0,
@@ -1492,14 +1247,7 @@ impl ServiceReadySignal {
     }
 }
 
-/// Takes a service's readiness channel from its standard output, which then
-/// discards everything written to it, so nothing the service prints can
-/// reach, or fail on, a starter that has exited. Returns `None` when the
-/// service was not started with [`SERVICE_READY_ARGUMENT`].
-///
-/// # Errors
-///
-/// Returns a failure to detach standard output.
+/// Takes a service's readiness channel from its standard output, which then discards everything written to it, so nothing the service prints can reach, or fail on, a starter that has exited.
 pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
     if !std::env::args_os()
         .skip(2)
@@ -1538,17 +1286,7 @@ fn take_standard_output() -> io::Result<File> {
     Ok(File::from(taken))
 }
 
-/// Starts the current executable's `__service` mode without inheriting host
-/// standard-I/O handles, and returns the channel on which the service
-/// signals that it answers requests.
-///
-/// On Windows this uses a detached process group and lets the service
-/// inherit only its readiness channel, preventing a durable service from
-/// keeping a short-lived hook runner's pipes open.
-///
-/// # Errors
-///
-/// Returns a failure to create the channel or the process.
+/// Starts the current executable's `__service` mode without inheriting host standard-I/O handles, and returns the channel on which the service signals that it answers requests.
 pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
     let operation = obs::span!(
         INFO,
@@ -1589,29 +1327,11 @@ fn spawn_service_process_unobserved(executable: &Path) -> io::Result<ServiceRead
 }
 
 /// Starts a child in an owned operating-system process tree.
-///
-/// Descendants inherit the Windows Job or Unix process group. Explicit cleanup
-/// reports unresolved termination; dropping the owner attempts best-effort
-/// cleanup and cannot report failure. Unix
-/// descendants can deliberately escape by creating another group or session,
-/// so independently durable services require their own lifecycle ownership.
 pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
     ProcessTree::spawn(command)
 }
 
 /// Starts the same owned process tree with the original invocation's meter.
-///
-/// The caller prepares and preclaims Command argument/environment/directory
-/// storage and stream configuration before this call. This adapter borrows it
-/// without copying. `Command::spawn` is one actual opaque standard-library SDK
-/// attempt: its private allocator, hidden kernel calls and process RSS are not
-/// reported as independently observed allocations, I/O or physical bytes.
-/// Observable native Job/setup/control calls are admitted individually.
-///
-/// `custody` must initially be empty. On failure it retains any acquired Job,
-/// setup handles and child, including a suspended or unreaped child. The caller
-/// must retain that original owner and use explicit measured terminal control;
-/// selecting measurement disables hidden unbounded Drop termination.
 pub fn spawn_process_tree_with_meter_custody(
     command: &mut std::process::Command, meter: &dyn NativeReadMeter,
     custody: &mut Option<ProcessTree>,
@@ -1620,8 +1340,6 @@ pub fn spawn_process_tree_with_meter_custody(
 }
 
 /// Runs a trusted host command with closed stdin and bounded captured output.
-/// Environment and authority policy remain the command builder's responsibility.
-/// Cleanup failure takes precedence; timeout never implies effects rolled back.
 pub fn process_output(
     command: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -1635,7 +1353,6 @@ pub fn process_output(
 }
 
 /// Runs a trusted host command with its configured streams and a bounded wait.
-/// Cleanup errors take precedence over exit observation errors.
 pub fn process_status(
     command: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -1646,10 +1363,12 @@ pub fn process_status(
     result
 }
 
-/// Runtime-independent completion of an owned native-file operation.
-/// Once admitted, dropping the observer never cancels the underlying operation.
+/// Runtime-independent completion of an owned file or host operation.
 pub struct NativeCompletion<T> {
-    state: Arc<Mutex<CompletionState<T>>>,
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
+    prepared_wake: Option<Arc<BlockingWaitWake>>,
+    state: Option<Arc<Mutex<CompletionState<T>>>>,
+    ready: Option<io::Result<T>>,
     pending: Option<NativeJob>,
     waiter: Option<Arc<CapacityWaiter>>,
     sequencer: Option<FileSequencer>,
@@ -1658,6 +1377,8 @@ pub struct NativeCompletion<T> {
     completion: Option<Arc<OperationFence>>,
     terminated: bool,
 }
+
+impl<T> Unpin for NativeCompletion<T> {}
 
 /// Completion of one owned native read batch.
 pub type ReadBatch = NativeCompletion<Vec<Bytes>>;
@@ -1674,56 +1395,6 @@ pub struct NativeReadResult {
     _allocation: Option<ReadAllocation>,
 }
 
-/// A bounded native read on the existing completion engine, or an inline
-/// zero-length result with no request, buffer, fence, or wake allocation.
-pub struct NativeReadCompletion(NativeReadCompletionState);
-
-enum NativeReadCompletionState {
-    Ready(Option<NativeReadResult>),
-    Pending(NativeCompletion<NativeReadResult>),
-}
-
-impl NativeReadCompletion {
-    fn ready(value: NativeReadResult) -> Self {
-        Self(NativeReadCompletionState::Ready(Some(value)))
-    }
-
-    fn pending(completion: NativeCompletion<NativeReadResult>) -> Self {
-        Self(NativeReadCompletionState::Pending(completion))
-    }
-
-    /// Waits through the same measured task engine. An inline empty result
-    /// needs no waiter and does not create an independent deadline producer.
-    pub fn wait_measured(
-        self,
-        deadline: Option<std::time::Instant>,
-        cancellation: impl Future<Output = ()>,
-        on_deadline: impl FnOnce(),
-    ) -> io::Result<NativeReadResult> {
-        match self.0 {
-            NativeReadCompletionState::Ready(mut value) =>
-                Ok(value.take().expect("native read polled after completion")),
-            NativeReadCompletionState::Pending(completion) => {
-                let meter = measured_completion_meter(&completion.state)?;
-                wait_measured_completion(completion, meter, None, deadline, cancellation, on_deadline)
-            }
-        }
-    }
-}
-
-impl Future for NativeReadCompletion {
-    type Output = io::Result<NativeReadResult>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        match &mut self.get_mut().0 {
-            NativeReadCompletionState::Ready(value) =>
-                Poll::Ready(Ok(value.take().expect("native read polled after completion"))),
-            NativeReadCompletionState::Pending(completion) =>
-                Pin::new(completion).poll(context),
-        }
-    }
-}
-
 /// Filesystem-operation allowance owned by one accepted native request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeOperationKind {
@@ -1732,15 +1403,10 @@ pub enum NativeOperationKind {
     /// A native write, mutating control, or its completion retrieval.
     Write,
     /// An actual durability attempt, reserved before its accepted commit point.
-    /// It consumes the original durability counter, not a fictional write.
     Durability,
 }
 
 /// Stack-only custody of this request's unspent operation allowance.
-///
-/// Credits are withheld from the original invocation, not reported as spent.
-/// Reentrant callbacks cannot consume them. Each physical operation consumes
-/// exactly one credit; immediate failures/EOF refund only unused credits.
 pub struct NativeOperationReservation<'a> {
     meter: &'a dyn NativeReadMeter,
     kind: NativeOperationKind,
@@ -1756,8 +1422,7 @@ impl<'a> NativeOperationReservation<'a> {
         Ok(Self { meter, kind, remaining: count })
     }
 
-    /// Invokes one actual native operation, even if recording its admitted
-    /// attempt reports a late error. Accepted completion must still drain.
+    /// Invokes one actual native operation, even if recording its admitted attempt reports a late error.
     pub fn attempt<T>(&mut self, operation: impl FnOnce() -> T) -> (T, io::Result<()>) {
         attempt_reserved_native_operation(self.meter, self.kind, &mut self.remaining, operation)
     }
@@ -1780,8 +1445,6 @@ fn attempt_reserved_native_operation<T>(
 }
 
 /// Transferable custody of already admitted operations on the original meter.
-/// The token has no heap allocation and can move into the existing native
-/// worker closure. Unused credits alone are refunded on its physical drop.
 pub struct OwnedNativeOperationReservation {
     meter: Arc<dyn NativeReadMeter>,
     kind: NativeOperationKind,
@@ -1798,7 +1461,6 @@ impl OwnedNativeOperationReservation {
     }
 
     /// Runs an already admitted physical operation despite late cancellation.
-    /// Its recording error is separate, so it cannot suppress actual dispatch.
     pub fn attempt<T>(&mut self, operation: impl FnOnce() -> T) -> (T, io::Result<()>) {
         attempt_reserved_native_operation(self.meter.as_ref(), self.kind, &mut self.remaining, operation)
     }
@@ -1814,12 +1476,7 @@ impl Drop for OwnedNativeOperationReservation {
     }
 }
 
-
 /// Stack-only custody of one request's possible physical byte transfer.
-///
-/// A live token withholds its maximum from the original invocation. Record
-/// the actual transfer after terminal completion, including failed partial
-/// transfers; dropping an unconsumed token refunds only its unused allowance.
 pub struct NativeByteReservation<'a> {
     meter: &'a dyn NativeReadMeter,
     kind: NativeOperationKind,
@@ -1837,7 +1494,6 @@ impl<'a> NativeByteReservation<'a> {
     }
 
     /// Records the exact physical transfer and refunds its unused maximum.
-    /// This must run before reporting late cancellation or completion errors.
     pub fn record(&mut self, actual: usize) -> io::Result<()> {
         record_reserved_native_bytes(self.meter, self.kind, &mut self.maximum, actual)
     }
@@ -1860,8 +1516,6 @@ fn record_reserved_native_bytes(
 }
 
 /// Transferable physical-byte allowance on the same original native meter.
-/// Owned buffers stay separately accountable; this token grants no source
-/// authority and neither creates another ledger nor allocates a control.
 pub struct OwnedNativeByteReservation {
     meter: Arc<dyn NativeReadMeter>,
     kind: NativeOperationKind,
@@ -1879,13 +1533,11 @@ impl OwnedNativeByteReservation {
     }
 
     /// Records a terminal physical transfer and refunds unused maximum.
-    /// Call before exposing any late cancellation or physical I/O failure.
     pub fn record(&mut self, actual: usize) -> io::Result<()> {
         record_reserved_native_bytes(self.meter.as_ref(), self.kind, &mut self.maximum, actual)
     }
 
-    /// Records a real completed prefix while retaining only its unused credit
-    /// for subsequent already-admitted writes in this accepted operation.
+    /// Records a real completed prefix while retaining only its unused credit for subsequent already-admitted writes in this accepted operation.
     pub fn record_partial(&mut self, actual: usize) -> io::Result<()> {
         let maximum = self.maximum.as_mut().expect("native byte allowance is still owned");
         *maximum = maximum.checked_sub(actual as u64)
@@ -1902,35 +1554,17 @@ impl Drop for OwnedNativeByteReservation {
     }
 }
 
-
 /// Invocation-local accounting shared by bounded native I/O.
-/// Admission precedes each allocation and each physical operation. Completed
-/// bytes are recorded even if cancellation arrives during a blocking syscall.
-///
-/// Completing already-admitted shared sequencing control is mandatory even
-/// after cancellation or exhaustion: settling fences, retiring a current tail,
-/// taking existing wakers/links, and iteratively dropping skipped fences are
-/// terminal ROOTCONTROL bookkeeping, not namespace/source examined items.
-/// This does not exclude SDK I/O, filesystem cleanup effects, namespace visits,
-/// or variable payload, path, proof, or cache buffers from invocation accounting.
-/// Finite work does not bound opaque waker execution, runtime scheduling, or the
-/// variable duration of terminal control draining; it is not a hard wall/CPU limit.
 pub trait NativeReadMeter: Send + Sync {
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
-    /// Returns a pre-existing allocation-lifetime owner when this request
-    /// meter also retains terminal-only request custody. The returned owner
-    /// must share the same invocation ledger, resource allowance, cancellation,
-    /// and limits, but must not retain that request's retirement anchor.
-    /// This is a pure Arc getter: no allocation, IO, or additional authority.
+    /// Returns a pre-existing owner of the same ledger, allowance, cancellation and limits, without request retirement custody.
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> { None }
-    /// Withholds a concrete request's possible operations without inventing
-    /// spent work; allowance remains unavailable to reentrant callbacks.
+    /// Withholds a concrete request's possible operations without inventing spent work; allowance remains unavailable to reentrant callbacks.
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()>;
     /// Refunds only a request token's unused withheld allowance.
     fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64);
-    /// Consumes one request-owned allowance and records its actual attempt,
-    /// without cancellation checks that could abandon accepted completion.
+    /// Consumes one request-owned allowance and records its actual attempt, without cancellation checks that could abandon accepted completion.
     fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()>;
     /// Preflights write bytes without reporting either bytes or an operation.
     fn admit_write_bytes(&self, maximum: usize) -> io::Result<()>;
@@ -1938,34 +1572,25 @@ pub trait NativeReadMeter: Send + Sync {
     fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()>;
     /// Refunds only this request's unconsumed physical-byte allowance.
     fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64);
-    /// Restores the request's maximum, then records its exact completed bytes,
-    /// without cancellation or proof reconciliation before preserving work.
+    /// Restores the request's maximum, then records its exact completed bytes, without cancellation or proof reconciliation before preserving work.
     fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()>;
     /// Admits and records a real allocation with this logical payload.
     fn allocate(&self, bytes: u64) -> io::Result<()>;
-    /// Withholds one future allocation attempt and its known logical payload
-    /// before accepting IO that may produce that allocation. No attempt or
-    /// retained payload is reported until the reservation is consumed.
+    /// Withholds one future allocation attempt and its known logical payload before accepting IO that may produce that allocation.
     fn reserve_allocation(&self, bytes: u64) -> io::Result<()>;
     /// Refunds only an unconsumed allocation reservation, even after cancellation.
     fn cancel_reserved_allocation(&self, bytes: u64);
-    /// Converts the caller's withheld credit into one actual allocation attempt
-    /// and retained logical payload immediately before the allocator boundary.
-    /// Accepted completion does not repeat cancellation or quota admission.
+    /// Converts the caller's withheld credit into one actual allocation attempt and retained logical payload immediately before the allocator boundary.
     fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()>;
-    /// Retains the real allocator failure in the original meter's existing
-    /// inline fatal-cause slot before returning a nonallocating IO relay.
+    /// Retains the real allocator failure in the original meter's existing inline fatal-cause slot before returning a nonallocating IO relay.
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error;
     /// Admits one real reference-count/header allocation with no logical payload.
     fn allocate_refcount_header(&self) -> io::Result<()>;
     /// Retains an already allocated owned payload without another allocation.
     fn adopt(&self, bytes: u64) -> io::Result<()>;
-    /// Records known SDK-owned capacity that already exists, before any late
-    /// cancellation/budget check. Returns the bytes actually retained even
-    /// when reporting an error, so physical-owner guards retire exact claims.
+    /// Records known SDK-owned capacity that already exists, before any late cancellation/budget check.
     fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>);
-    /// Preflights the real codec byte counters. Unsupported providers do not
-    /// silently grant finite codec work.
+    /// Preflights the real codec byte counters.
     fn admit_codec(&self, _encoded: u64, _copied: u64, _hashed: u64) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
     }
@@ -2006,7 +1631,6 @@ pub trait NativeReadMeter: Send + Sync {
     /// Admits and records one actual durability attempt before dispatch.
     fn admit_durability(&self) -> io::Result<()>;
     /// Reserves one mandatory native cleanup attempt before acquiring custody.
-    /// Its token owns one withheld allowance, independent of other reservations.
     fn reserve_cleanup_write(&self) -> io::Result<u64> {
         Err(io::ErrorKind::Unsupported.into())
     }
@@ -2014,17 +1638,13 @@ pub trait NativeReadMeter: Send + Sync {
     fn cancel_cleanup_write(&self, _reservation: u64) {
         unreachable!("this meter cannot create native cleanup reservations");
     }
-    /// Consumes a reservation without checking cancellation. The caller must
-    /// invoke the actual cleanup even if recording its admitted attempt fails.
+    /// Consumes a reservation without checking cancellation.
     fn record_cleanup_write(&self, _reservation: u64) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
     }
 }
 
 /// One inline, original-meter allocation credit prepared before accepted IO.
-///
-/// This reserves quota, not resource access. Consume immediately before the
-/// allocator call. Unused credits retire without fabricating spent work.
 #[must_use]
 pub struct ReadAllocationReservation {
     meter: Arc<dyn NativeReadMeter>,
@@ -2040,7 +1660,6 @@ impl ReadAllocationReservation {
     }
 
     /// Records the accepted allocation and transfers its exact original custody.
-    /// This allocates nothing and does not readmit already accepted completion.
     pub fn allocate(mut self) -> io::Result<ReadAllocation> {
         self.meter.record_reserved_allocation(self.bytes)?;
         self.pending = false;
@@ -2058,9 +1677,6 @@ impl Drop for ReadAllocationReservation {
 }
 
 /// Custody of logical SDK-owned payload on the original invocation ledger.
-///
-/// Keep this guard after its physical payload in an owner struct, so payload
-/// destruction precedes release. Transfers and aggregation allocate nothing.
 #[must_use]
 pub struct ReadAllocation {
     meter: Arc<dyn NativeReadMeter>,
@@ -2080,8 +1696,7 @@ impl ReadAllocation {
         Self { meter: meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter)), bytes: 0 }
     }
 
-    /// Admits retention of an existing transferred payload, with zero
-    /// allocation operations. No new allocator call is represented here.
+    /// Admits retention of an existing transferred payload, with zero allocation operations.
     pub fn adopt(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
         let bytes = bytes as u64;
         if bytes == 0 { meter.check()?; } else { meter.adopt(bytes)?; }
@@ -2098,8 +1713,7 @@ impl ReadAllocation {
         Ok(())
     }
 
-    /// Admits logical retention before an allocation/transfer, without another
-    /// allocation operation. A decrease requires prior physical retirement.
+    /// Admits logical retention before an allocation/transfer, without another allocation operation.
     pub fn resize_retained(&mut self, actual: usize) -> io::Result<()> {
         let actual = actual as u64;
         if actual > self.bytes {
@@ -2112,16 +1726,11 @@ impl ReadAllocation {
     }
 
     /// Records real capacity discovered after a controlled allocation.
-    /// Actual excess remains in this guard even if a late quota check fails.
-    /// A decrease requires that the physical capacity was already retired.
     pub fn reconcile_capacity(&mut self, actual: usize) -> io::Result<()> {
         Self::reconcile_capacity_recorded(&mut self.bytes, &self.meter, actual, self.meter.as_ref())
     }
 
-    /// Reconciles an already allocated buffer through its accepted completion
-    /// meter. The completion must project this exact original allocation owner;
-    /// this identity check does not grant new allocation or source authority.
-    /// Actual retained excess stays guarded even on a late quota failure.
+    /// Reconciles an already allocated buffer through its accepted completion meter.
     pub fn reconcile_capacity_with_meter(
         &mut self, actual: usize, completion: &dyn NativeReadMeter,
     ) -> io::Result<()> {
@@ -2156,8 +1765,6 @@ impl ReadAllocation {
     pub const fn meter(&self) -> &Arc<dyn NativeReadMeter> { &self.meter }
 
     /// Transfers an already-owned claim to its exact original meter owner.
-    /// No admission, cancellation check, release or new allocation occurs.
-    /// A mismatch returns the original guard intact.
     pub fn consume_same_meter_owned_bytes(
         mut self, expected: &Arc<dyn NativeReadMeter>,
     ) -> Result<u64, Self> {
@@ -2168,7 +1775,6 @@ impl ReadAllocation {
     }
 
     /// Moves another same-ledger claim without allocating or releasing it.
-    /// Both guards remain unchanged on identity mismatch or overflow.
     pub fn absorb(&mut self, other: &mut Self) -> io::Result<()> {
         if !Arc::ptr_eq(&self.meter, &other.meter) {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -2218,29 +1824,11 @@ fn arc_allocation_bytes<T>() -> usize {
     std::mem::size_of::<T>()
 }
 
-/// Runtime-independent bounded offload for host operations without a native
-/// completion path, such as file locks and directory namespace transactions.
-/// Dropping the observer after admission does not cancel the operation.
-/// A panicking operation first unwinds its own locals, then the observing poll
-/// resumes that same panic payload; it is not converted into an I/O error.
-/// An unobserved terminal payload is dropped with the completion state;
-/// dropping the observer never joins or drains an accepted operation.
-pub struct BlockingIoTask<T> {
-    state: Arc<Mutex<CompletionState<T>>>,
-    pending: Option<NativeJob>,
-    waiter: Option<Arc<CapacityWaiter>>,
-    terminated: bool,
-    prepared_wake: Option<Arc<BlockingWaitWake>>,
-}
-
 thread_local! {
     static INLINE_BLOCKING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Marks the current thread, while the guard lives, as one whose blocking
-/// stalls only the operation it is running, such as a native filesystem
-/// callback thread polling its own request. Host operations started from it
-/// run on it directly instead of hopping to a worker thread and back.
+/// Marks the current thread, while the guard lives, as one whose blocking stalls only the operation it is running, such as a native filesystem callback thread polling its own request.
 pub struct InlineBlocking {
     previous: bool,
 }
@@ -2263,59 +1851,46 @@ impl Drop for InlineBlocking {
 
 /// Whether host operations started on this thread may block it directly.
 #[must_use]
-pub fn inline_blocking_allowed() -> bool {
+fn inline_blocking_allowed() -> bool {
     INLINE_BLOCKING.get()
 }
 
-/// Schedules one owned host operation on the bounded native worker pool, or
-/// runs it in place on a thread that admits inline blocking.
+/// Schedules one owned host operation on the bounded native worker pool, or runs it in place on a thread that admits inline blocking.
 #[must_use]
 pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
-) -> BlockingIoTask<T> {
-    blocking_io_task(operation, None).expect("unmetered task construction cannot fail")
+) -> NativeCompletion<T> {
+    blocking_io_task(operation, None, None).expect("unmetered task construction cannot fail")
 }
 
-/// Uses the same host-operation queue with admission for the actual owned
-/// completion state, closure, and any capacity-waiter node.
+/// Uses the same host-operation queue with admission for the actual owned completion state, closure, and any capacity-waiter node.
 pub fn run_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
-    blocking_io_task(operation, Some(meter))
+) -> io::Result<NativeCompletion<T>> {
+    blocking_io_task(operation, Some(meter), None)
 }
 
-/// Prepares one operation on the existing host-operation engine without
-/// submitting or invoking it. Services must already be initialized.
-///
-/// Completion, exact closure storage, an unlinked capacity waiter, and the
-/// synchronous wake owner are all allocated now. If `meter` projects an
-/// original `allocation_owner`, those controls are admitted on that original
-/// meter; submission and execution retain the supplied operative meter.
-/// The caller must supply an authentic owned reservation for later cleanup,
-/// not a borrowed loan or a replacement operation allowance.
-///
-/// First polling submits the same one-shot task. Observer drop after
-/// submission still detaches rather than draining or undoing accepted work.
+/// Prepares one operation on the existing host-operation engine without submitting or invoking it.
 pub fn prepare_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
-    prepare_blocking_io_task(operation, meter)
+) -> io::Result<NativeCompletion<T>> {
+    workers(&BLOCKING_WORKERS, true)?;
+    let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
+    let mut task = blocking_io_task(
+        operation, Some(meter), Some(&allocation_meter),
+    )?;
+    task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
+    task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
+    Ok(task)
 }
 
 fn blocking_io_task<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
-) -> io::Result<BlockingIoTask<T>> {
-    blocking_io_task_with_allocation_meter(operation, meter, None)
-}
-
-fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
-    operation: impl FnOnce() -> T + Send + 'static,
-    meter: Option<Arc<dyn NativeReadMeter>>,
     allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> io::Result<BlockingIoTask<T>> {
+) -> io::Result<NativeCompletion<T>> {
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter { meter.check()?; }
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
@@ -2345,30 +1920,10 @@ fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
         meter, std::mem::size_of_val(&operation),
     )).transpose()?;
-    Ok(BlockingIoTask {
-        pending: Some(NativeJob::Task {
+    Ok(NativeCompletion::pending(NativeJob::Task {
             operation: Box::new(operation), meter, completion: Arc::clone(&state) as Arc<dyn TaskTerminal>,
             _allocation: allocation,
-        }),
-        state, waiter: None, terminated: false, prepared_wake: None,
-    })
-}
-
-fn prepare_blocking_io_task<T: Send + 'static>(
-    operation: impl FnOnce() -> T + Send + 'static,
-    meter: Arc<dyn NativeReadMeter>,
-) -> io::Result<BlockingIoTask<T>> {
-    // Preparation never starts services, queues a request, or invokes its
-    // producer. All four known heap controls belong to this same original
-    // meter before the caller starts a driver that may require retirement.
-    ready_workers(&BLOCKING_WORKERS)?;
-    let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
-    let mut task = blocking_io_task_with_allocation_meter(
-        operation, Some(Arc::clone(&meter)), Some(&allocation_meter),
-    )?;
-    task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
-    task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
-    Ok(task)
+        }, state, &BLOCKING_WORKERS))
 }
 
 #[derive(Default)]
@@ -2404,14 +1959,6 @@ impl OperationFence {
         }
     }
 
-    #[cfg(all(test, any(windows, target_os = "linux")))]
-    fn is_complete(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .complete
-    }
-
     fn complete_after(self: &Arc<Self>, predecessor: Option<Arc<Self>>) {
         let Some(predecessor) = predecessor else {
             self.complete();
@@ -2445,9 +1992,7 @@ impl OperationFence {
         }
     }
 
-    // No cancellation check or new admission may interrupt this already-
-    // admitted control drain. Keep it iterative and drop request custody only
-    // outside fence-state and sequencer mutexes.
+    // Drain without admission checks; retire custody outside state/sequencer locks.
     fn complete(&self) {
         let mut next: Option<Arc<Self>> = None;
         loop {
@@ -2460,10 +2005,7 @@ impl OperationFence {
             let successor = state.successor.take();
             let following = state.skipped_successor.take();
             drop(state);
-            // A completed tail is no longer an admission predecessor. Remove
-            // only this fence: a concurrently reserved successor owns its own
-            // tail and still retains any predecessor needed for FIFO ordering.
-            // Retiring the actual root alias also retires its request meter.
+            // Remove only this completed tail; a concurrent successor owns its own predecessor.
             if let Some(sequencer) = current.sequencer.as_ref().and_then(Weak::upgrade) {
                 let retired = {
                     let mut tail = sequencer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2494,7 +2036,24 @@ struct CompletionState<T> {
 }
 
 /// Publication authority for the existing task's already-funded state Arc.
-/// Erasing this alias allocates nothing and introduces no additional owner.
+impl<T> Default for CompletionState<T> {
+    fn default() -> Self {
+        Self { task_pending: false, result: None, panic: None, waker: None, _allocation: None }
+    }
+}
+
+impl<T> CompletionState<T> {
+    fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
+        if !self.task_pending && let Some(result) = self.result.take() {
+            return Poll::Ready(result);
+        }
+        if !self.waker.as_ref().is_some_and(|current| current.will_wake(waker)) {
+            self.waker = Some(waker.clone());
+        }
+        Poll::Pending
+    }
+}
+
 trait TaskTerminal: Send + Sync {
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
     fn publish(&self) -> Option<Waker>;
@@ -2511,39 +2070,30 @@ impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
     }
 }
 
-/// The only authority to finish an admitted file operation. Keeping the
-/// fence and observer state together prevents a backend from publishing the
-/// fence before it has reached a terminal native completion.
+/// The only authority to finish an admitted file operation.
 struct FileCompletion<T> {
     state: Arc<Mutex<CompletionState<T>>>,
     fence: Option<Arc<OperationFence>>,
-    uncertain: Option<Arc<AtomicBool>>,
-    _tail: Option<FileSequencer>,
+    health: Option<Arc<FileHealth>>,
     file: Option<Arc<NativeFilePayload>>,
     span: obs::OperationSpan,
     finished: bool,
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    _health: Option<Arc<FileHealth>>,
 }
 
 impl<T> FileCompletion<T> {
     fn new(
         state: Arc<Mutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
-        uncertain: Option<Arc<AtomicBool>>,
-        tail: Option<FileSequencer>,
+        health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
     ) -> Self {
         Self {
             state,
             fence,
-            uncertain,
-            _tail: tail,
+            health,
             file: None,
             span,
             finished: false,
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            _health: None,
         }
     }
 
@@ -2552,20 +2102,11 @@ impl<T> FileCompletion<T> {
         self
     }
 
-    fn for_health(mut self,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        health: Option<Arc<FileHealth>>,
-    ) -> Self {
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        { self._health = health; }
-        self
-    }
-
     fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
         let Self {
             state,
             fence,
-            uncertain,
+            health,
             file,
             span,
             finished,
@@ -2575,15 +2116,13 @@ impl<T> FileCompletion<T> {
             span.record_result(&result);
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             if result.as_ref().err().is_some_and(is_uncertain_io_error)
-                && let (Some(file), Some(uncertain)) = (file.as_ref(), uncertain.as_ref())
+                && let (Some(file), Some(health)) = (file.as_ref(), health.as_ref())
             {
-                poison_file_health(file, uncertain);
+                poison_file_health(file, &health.uncertain);
             }
-            // Health/quarantine decisions need the real handle; once they are
-            // settled, retire this accepted request's alias before publishing
-            // Ready so its caller cannot retire logical custody prematurely.
+            // Retire the handle after quarantine decisions and before publishing Ready.
             drop(file.take());
-            let waker = finish_file_job(state, result, fence.take(), uncertain.as_deref());
+            let waker = finish_file_job(state, result, fence.take(), health.as_ref().map(|health| health.uncertain.as_ref()));
             *finished = true;
             waker
         })
@@ -2593,9 +2132,6 @@ impl<T> FileCompletion<T> {
 impl<T> Drop for FileCompletion<T> {
     fn drop(&mut self) {
         if !self.finished {
-            // A backend must never abandon an admitted operation: its native
-            // request could still own buffers and the next file operation
-            // cannot safely cross this fence.
             std::process::abort();
         }
     }
@@ -2606,10 +2142,7 @@ fn submit_file_io<T: Send + 'static>(
     completion: FileCompletion<T>,
     submit: impl FnOnce(Box<dyn FnOnce(io::Result<T>) + Send>) -> io::Result<()>,
 ) -> Option<Waker> {
-    // A platform's Err means it accepted no I/O. This cell leaves the common
-    // layer holding the completion authority until that decision is known;
-    // Ok transfers it to the callback. Dropping an accepted callback without
-    // terminal completion drops FileCompletion and fails stop.
+    // Transfer completion only on acceptance; an abandoned accepted callback aborts.
     let handoff = Arc::new(Mutex::new(Some(completion)));
     let callback_handoff = Arc::clone(&handoff);
     let callback = Box::new(move |result| {
@@ -2638,12 +2171,9 @@ enum NativeJob {
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
         state: Arc<Mutex<CompletionState<Vec<Bytes>>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     BoundedRead {
         file: Arc<NativeFilePayload>,
@@ -2655,43 +2185,29 @@ enum NativeJob {
         meter: Arc<dyn NativeReadMeter>,
         state: Arc<Mutex<CompletionState<NativeReadResult>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     PreparedRead {
         file: Arc<NativeFilePayload>,
         operation: Box<dyn FnOnce(
-            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>, Option<Arc<OperationFence>>,
-        ) -> Option<Waker> + Send>,
+            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>,
+        ) + Send>,
         meter: Arc<dyn NativeReadMeter>,
         completion: Option<Arc<OperationFence>>,
+        terminal: Arc<dyn TaskTerminal>,
         _allocation: ReadAllocation,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
-    },
-    BoundedUnit {
-        file: Arc<NativeFilePayload>,
-        operation: NativeBoundedUnitOperation,
-        meter: Arc<dyn NativeReadMeter>,
-        state: Arc<Mutex<CompletionState<()>>>,
-        completion: Option<Arc<OperationFence>>,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     Unit {
         file: Arc<NativeFilePayload>,
         operation: NativeUnitOperation,
+        meter: Option<Arc<dyn NativeReadMeter>>,
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        tail: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
         state: Arc<Mutex<CompletionState<()>>>,
         completion: Option<Arc<OperationFence>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        _health: Option<Arc<FileHealth>>,
+        health: Option<Arc<FileHealth>>,
     },
     Task {
         operation: Box<dyn FnOnce() + Send>,
@@ -2703,9 +2219,14 @@ enum NativeJob {
 
 enum NativeUnitOperation {
     Write(Vec<OwnedWrite>),
+    BoundedWrite { offset: u64, bytes: Bytes },
     SetLen(u64),
     Sync(Durability),
     Control(FileControl),
+    MeasuredControl {
+        operation: Box<dyn FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send>,
+        _allocation: ReadAllocation,
+    },
 }
 
 type FileControl = Box<dyn FnOnce(&File) -> io::Result<()> + Send>;
@@ -2716,21 +2237,11 @@ struct NativeOwnedWrite<B, C> {
     _custody: C,
 }
 
-enum NativeBoundedUnitOperation {
-    Write { offset: u64, bytes: Bytes },
-    SetLen(u64),
-    Sync(Durability),
-    Control {
-        operation: Box<dyn FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send>,
-        _allocation: ReadAllocation,
-    },
-}
-
 impl NativeJob {
     fn set_completion(&mut self, fence: Arc<OperationFence>) {
         match self {
             Self::Read { completion, .. } | Self::BoundedRead { completion, .. }
-            | Self::PreparedRead { completion, .. } | Self::BoundedUnit { completion, .. }
+            | Self::PreparedRead { completion, .. }
             | Self::Unit { completion, .. } => {
                 *completion = Some(fence);
             }
@@ -2741,15 +2252,14 @@ impl NativeJob {
     fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
             Self::BoundedRead { meter, .. } | Self::PreparedRead { meter, .. }
-            | Self::BoundedUnit { meter, .. } => Some(meter),
+            => Some(meter),
+            Self::Unit { meter, .. } => meter.as_ref(),
             Self::Task { meter, .. } => meter.as_ref(),
             _ => None,
         }
     }
 
-    /// Whether this job may run on a thread that admits inline blocking:
-    /// a positional read or write on an overlapped Windows handle, which the
-    /// thread can issue and wait for itself without the driver.
+    /// Whether this job may run on a thread that admits inline blocking: a positional read or write on an overlapped Windows handle, which the thread can issue and wait for itself without the driver.
     #[cfg(windows)]
     const fn runs_in_place(&self) -> bool {
         matches!(
@@ -2757,7 +2267,7 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
-            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::BoundedUnit { .. } | Self::Unit {
+            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::Unit { meter: Some(_), .. } | Self::Unit {
                 overlapped: true,
                 operation: NativeUnitOperation::Write(_),
                 ..
@@ -2765,8 +2275,7 @@ impl NativeJob {
         )
     }
 
-    /// Runs a job [`Self::runs_in_place`] admits on the calling thread,
-    /// completing its fence exactly as the driver's completion would.
+    /// Runs a job [`Self::runs_in_place`] admits on the calling thread, completing its fence exactly as the driver's completion would.
     #[cfg(windows)]
     fn run_in_place(self) -> Option<Waker> {
         match self {
@@ -2775,30 +2284,25 @@ impl NativeJob {
                 reads,
                 span,
                 overlapped: true,
-                tail,
-                uncertain,
                 state,
                 completion,
-                _health,
+                health,
             } => span.scope(|| {
-                FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(_health)
+                FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file))
                     .finish(windows::read_batch_in_place(&file, &reads))
             }),
             Self::Unit {
                 file,
                 operation: NativeUnitOperation::Write(writes),
+                meter: None,
                 span,
                 overlapped: true,
-                tail,
-                uncertain,
                 state,
                 completion,
-                _health,
+                health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(_health)
+                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file));
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
@@ -2810,24 +2314,21 @@ impl NativeJob {
 
     fn run(self) -> Option<Waker> {
         match self {
-            Self::PreparedRead { file, operation, meter, completion, _allocation,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+            Self::PreparedRead { file, operation, meter, completion, terminal, _allocation,
+                health,
             } => {
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                let _held_health = _health;
-                let wake = operation(file, meter, completion);
+                operation(file, meter);
                 drop(_allocation);
-                wake
+                drop(health);
+                if let Some(completion) = completion { completion.complete(); }
+                terminal.publish()
             }
             Self::BoundedRead { file, offset, length, require_full, meter, state, completion,
                 #[cfg(windows)]
                 overlapped,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => {
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                let _held_health = _health;
+                let _held_health = health;
                 let result = read_bounded_in_place(
                     &file, offset, length, require_full, &meter,
                     #[cfg(windows)]
@@ -2836,52 +2337,17 @@ impl NativeJob {
                 drop(file);
                 finish_job(&state, result, completion)
             }
-            Self::BoundedUnit { file, operation, meter, state, completion, tail, uncertain,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
-            } => {
-                let finish = FileCompletion::new(
-                    state, completion, uncertain, tail.clone(),
-                    obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit"),
-                ).for_health(
-                    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                    _health,
-                ).for_file(Arc::clone(&file));
-                FileScope::with(tail.as_ref(), || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        meter.check()?;
-                        match operation {
-                            NativeBoundedUnitOperation::Write { offset, bytes } =>
-                                write_bounded_in_place(&file, offset, &bytes, meter.as_ref()),
-                            NativeBoundedUnitOperation::SetLen(size) =>
-                                set_len_measured(&file, size, meter.as_ref()),
-                            NativeBoundedUnitOperation::Sync(durability) =>
-                                sync_file_measured(&file, durability, meter.as_ref()),
-                            NativeBoundedUnitOperation::Control { operation, _allocation } =>
-                                operation(&file, meter.as_ref()),
-                        }
-                    })).unwrap_or_else(|_| std::process::abort());
-                    // The completion keeps its own handle until health/quarantine
-                    // decisions finish. Retire this operation alias before Ready.
-                    drop(file);
-                    finish.finish(result)
-                })
-            }
             Self::Read {
                 file,
                 reads,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail,
-                uncertain,
                 state,
                 completion,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, uncertain, tail, span.clone())
-                    .for_health(#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))] _health)
+                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
                     .for_file(Arc::clone(&file));
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
@@ -2896,10 +2362,6 @@ impl NativeJob {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         read_batch_impl(&file, &reads)
                     }))
-                    // An unwind can happen after native submission, while the OS
-                    // still owns an OVERLAPPED or io_uring buffer. Converting it
-                    // to an ordinary error would release those allocations and
-                    // publish the file fence before terminal completion.
                     .unwrap_or_else(|_| std::process::abort());
                     finish.finish(result)
                 }
@@ -2907,19 +2369,16 @@ impl NativeJob {
             Self::Unit {
                 file,
                 operation,
+                meter,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail,
-                uncertain,
                 state,
                 completion,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health,
+                health,
             } => span.scope(|| {
                 let finish =
-                    FileCompletion::new(state, completion, uncertain, tail.clone(), span.clone())
-                        .for_health(#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))] _health)
+                    FileCompletion::new(state, completion, health.clone(), span.clone())
                         .for_file(Arc::clone(&file));
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
@@ -2938,31 +2397,38 @@ impl NativeJob {
                     }
                     operation => operation,
                 };
-                FileScope::with(tail.as_ref(), || {
+                FileScope::with(health.as_ref().map(|health| &health.tail), || {
                     let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match operation {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if let Some(meter) = &meter { meter.check()?; }
+                            match operation {
                             #[cfg(not(any(windows, target_os = "linux")))]
                             NativeUnitOperation::Write(writes) => write_all_batch_owned(&file, writes),
                             #[cfg(any(windows, target_os = "linux"))]
                             NativeUnitOperation::Write(_) => {
                                 unreachable!("native writes are dispatched before bounded controls")
                             }
-                            NativeUnitOperation::SetLen(size) => file.set_len(size),
-                            NativeUnitOperation::Sync(durability) => sync_file(&file, durability),
+                            NativeUnitOperation::SetLen(size) => match &meter {
+                                Some(meter) => set_len_measured(&file, size, meter.as_ref()),
+                                None => file.set_len(size),
+                            },
+                            NativeUnitOperation::Sync(durability) => match &meter {
+                                Some(meter) => sync_file_measured(&file, durability, meter.as_ref()),
+                                None => sync_file(&file, durability),
+                            },
                             NativeUnitOperation::Control(operation) => operation(&file),
-                        }))
-                        // A write may already be executing in the kernel when
-                        // Rust unwinds. Fail-stop preserves buffer and fence
-                        // soundness; durable service recovery can restart later.
+                            NativeUnitOperation::BoundedWrite { offset, bytes } =>
+                                write_bounded_in_place(&file, offset, &bytes, meter.as_ref().expect("bounded job meter").as_ref()),
+                            NativeUnitOperation::MeasuredControl { operation, _allocation } =>
+                                operation(&file, meter.as_ref().expect("bounded job meter").as_ref()),
+                        }}))
                         .unwrap_or_else(|_| std::process::abort());
+                    drop(file);
                     finish.finish(result)
                 })
             }),
             Self::Task { operation, meter, completion, _allocation } => {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
-                // Calling the owned FnOnce also destroys its actual Box and
-                // captured payloads. Retire job custody and the operative lease
-                // before allowing any observer to consume staged output.
                 drop(_allocation);
                 drop(meter);
                 if let Err(panic) = result { completion.stage_panic(panic); }
@@ -3000,24 +2466,6 @@ fn finish_job<T>(
     if let Some(completion) = completion {
         completion.complete();
     }
-    waker
-}
-
-fn finish_panicked_job<T>(
-    state: &Mutex<CompletionState<T>>,
-    payload: Box<dyn std::any::Any + Send>,
-    completion: Option<Arc<OperationFence>>,
-) -> Option<Waker> {
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    state.panic = Some(payload);
-    let waker = state.waker.take();
-    drop(state);
-    if let Some(completion) = completion {
-        completion.complete();
-    }
-    // The same worker wakes outside the state lock, after retiring its job.
     waker
 }
 
@@ -3126,65 +2574,65 @@ impl NativeCompletion<Vec<Bytes>> {
     fn submit(
         file: Arc<NativeFilePayload>,
         reads: Vec<OwnedRead>,
-        sequencer: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
-        let state = Arc::new(Mutex::new(CompletionState {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        }));
-        Self {
-            pending: Some(NativeJob::Read {
+        let state = Arc::new(Mutex::new(CompletionState::default()));
+        Self::pending(NativeJob::Read {
                 file,
                 reads,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail: sequencer.clone(),
-                uncertain: uncertain.clone(),
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: health,
-            }),
-            state,
-            waiter: None,
-            sequencer,
-            uncertain,
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }
+                health,
+            }, state, &NATIVE_WORKERS)
     }
 }
 
 impl<T> NativeCompletion<T> {
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    fn failed(error: io::Error) -> Self {
+    fn pending(
+        job: NativeJob, state: Arc<Mutex<CompletionState<T>>>,
+        pool: &'static LazyLock<io::Result<NativeWorkers>>,
+    ) -> Self {
+        let health = match &job {
+            NativeJob::Read { health, .. } | NativeJob::BoundedRead { health, .. }
+            | NativeJob::PreparedRead { health, .. } | NativeJob::Unit { health, .. } => health.as_ref(),
+            NativeJob::Task { .. } => None,
+        };
+        let sequencer = health.map(|health| Arc::clone(&health.tail));
+        let uncertain = health.map(|health| Arc::clone(&health.uncertain));
         Self {
-            state: Arc::new(Mutex::new(CompletionState {
-                task_pending: false,
-                result: Some(Err(error)),
-                panic: None,
-                waker: None,
-                _allocation: None,
-            })),
-            pending: None,
-            waiter: None,
-            sequencer: None,
-            uncertain: None,
-            predecessor: None,
-            completion: None,
-            terminated: false,
+            pool, prepared_wake: None, state: Some(state), ready: None,
+            pending: Some(job), waiter: None, sequencer, uncertain,
+            predecessor: None, completion: None, terminated: false,
         }
+    }
+
+    fn ready(result: io::Result<T>) -> Self {
+        Self {
+            pool: &NATIVE_WORKERS, prepared_wake: None,
+            state: None, ready: Some(result), pending: None, waiter: None,
+            sequencer: None, uncertain: None, predecessor: None,
+            completion: None, terminated: false,
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    fn failed(error: io::Error) -> Self { Self::ready(Err(error)) }
+
+    /// Waits through the same measured task engine.
+    pub fn wait_measured(
+        mut self, deadline: Option<std::time::Instant>,
+        cancellation: impl Future<Output = ()>, on_deadline: impl FnOnce(),
+    ) -> io::Result<T> {
+        if let Some(result) = self.ready.take() { return result; }
+        let meter = measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
+        let wake = self.prepared_wake.take();
+        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
     }
 }
 
@@ -3192,9 +2640,6 @@ impl NativeCompletion<()> {
     fn submit(
         file: Arc<NativeFilePayload>,
         operation: NativeUnitOperation,
-        sequencer: Option<FileSequencer>,
-        uncertain: Option<Arc<AtomicBool>>,
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         health: Option<Arc<FileHealth>>,
         span: obs::OperationSpan,
         #[cfg(windows)] overlapped: bool,
@@ -3205,35 +2650,18 @@ impl NativeCompletion<()> {
                 writes.iter().map(|write| write.bytes.len()).sum()
             });
         }
-        let state = Arc::new(Mutex::new(CompletionState {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        }));
-        Self {
-            pending: Some(NativeJob::Unit {
+        let state = Arc::new(Mutex::new(CompletionState::default()));
+        Self::pending(NativeJob::Unit {
                 file,
                 operation,
+                meter: None,
                 span,
                 #[cfg(windows)]
                 overlapped,
-                tail: sequencer.clone(),
-                uncertain: uncertain.clone(),
                 state: Arc::clone(&state),
                 completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: health,
-            }),
-            state,
-            waiter: None,
-            sequencer,
-            uncertain,
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        }
+                health,
+            }, state, &NATIVE_WORKERS)
     }
 }
 
@@ -3252,7 +2680,7 @@ fn reserve_if_needed(
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
         Some(NativeJob::BoundedRead { meter, .. } | NativeJob::PreparedRead { meter, .. }
-            | NativeJob::BoundedUnit { meter, .. }) => Some(ReadAllocation::new(
+            | NativeJob::Unit { meter: Some(meter), .. }) => Some(ReadAllocation::new(
             meter, arc_allocation_bytes::<OperationFence>(),
         )?),
         _ => None,
@@ -3276,6 +2704,10 @@ impl<T> Future for NativeCompletion<T> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.terminated, "native I/O polled after completion");
+        if let Some(result) = this.ready.take() {
+            this.terminated = true;
+            return Poll::Ready(result);
+        }
         if let Err(error) = reserve_if_needed(
             &mut this.sequencer,
             &mut this.predecessor,
@@ -3319,15 +2751,20 @@ impl<T> Future for NativeCompletion<T> {
             this.terminated = true;
             return Poll::Ready(result);
         }
+        if std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
+            && let Some(job) = this.pending.take()
+        {
+            let _ = job.run();
+        }
         // A thread that admits inline blocking serves an overlapped handle's
         // positional I/O itself; the job records its result and fence.
         #[cfg(windows)]
-        if inline_blocking_allowed()
+        if !std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {
             let _ = job.run_in_place();
         }
-        match poll_submission(&mut this.pending, &mut this.waiter, context) {
+        match poll_submission(this.pool, &mut this.pending, &mut this.waiter, context) {
             Poll::Ready(Err(error)) => {
                 this.pending = None;
                 if let Some(completion) = &this.completion {
@@ -3340,23 +2777,17 @@ impl<T> Future for NativeCompletion<T> {
             Poll::Pending => return Poll::Pending,
         }
         let mut state = this
-            .state
+            .state.as_ref().expect("pending native completion")
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.task_pending {
-            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
-                state.waker = Some(context.waker().clone());
-            }
-            return Poll::Pending;
-        }
-        if let Some(payload) = state.panic.take() {
+        if !state.task_pending && let Some(payload) = state.panic.take() {
             this.terminated = true;
             let waker = state.waker.take();
             drop(state);
             drop(waker);
             drop(this.pending.take());
             if let Some(waiter) = this.waiter.take()
-                && let Ok(workers) = ready_workers(&NATIVE_WORKERS)
+                && let Ok(workers) = workers(this.pool, true)
             {
                 remove_capacity_waiter(workers, Some(waiter));
             }
@@ -3366,18 +2797,9 @@ impl<T> Future for NativeCompletion<T> {
             drop(this.completion.take());
             std::panic::resume_unwind(payload);
         }
-        if let Some(result) = state.result.take() {
-            this.terminated = true;
-            return Poll::Ready(result);
-        }
-        if !state
-            .waker
-            .as_ref()
-            .is_some_and(|waker| waker.will_wake(context.waker()))
-        {
-            state.waker = Some(context.waker().clone());
-        }
-        Poll::Pending
+        let result = state.poll_result(context.waker());
+        if result.is_ready() { this.terminated = true; }
+        result
     }
 }
 
@@ -3431,8 +2853,7 @@ fn measured_completion_meter<T>(
     state.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         ._allocation.as_ref().map(|allocation| Arc::clone(&allocation.meter))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
-            "synchronous measured wait requires a measured task"))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
 }
 
 fn wait_measured_completion<T>(
@@ -3469,97 +2890,8 @@ fn wait_measured_completion<T>(
     }
 }
 
-impl<T> BlockingIoTask<T> {
-    /// Waits synchronously through this task's existing measured completion and
-    /// capacity queue, admitting only its actual SDK-owned wake payload.
-    ///
-    /// An expired deadline invokes `on_deadline` once to request cooperative
-    /// stop. Waiting then continues until the same task has actually terminated;
-    /// this never reports a timeout while an accepted OS operation is running.
-    /// The concrete cancellation future is stack-pinned and polled with the
-    /// same wake context, so queued cancellation does not wait for an I/O wake.
-    /// Its readiness disarms the deadline; the task/meter owns cancellation
-    /// classification and accepted work still drains to terminal completion.
-    /// Native services must already be initialized unless execution is inline.
-    pub fn wait_measured(
-        mut self,
-        deadline: Option<std::time::Instant>,
-        cancellation: impl Future<Output = ()>,
-        on_deadline: impl FnOnce(),
-    ) -> io::Result<T> {
-        let meter = measured_completion_meter(&self.state)?;
-        let wake = self.prepared_wake.take();
-        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
-    }
-}
-
-impl<T> Future for BlockingIoTask<T> {
-    type Output = io::Result<T>;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        assert!(!this.terminated, "host I/O task polled after completion");
-        if let Some(job) = this.pending.take_if(|_| inline_blocking_allowed()) {
-            // The job records its result before returning; there is no
-            // observer to wake yet, and no worker is needed.
-            let _ = job.run();
-        } else if this.pending.is_some() {
-            let measured = this.pending.as_ref().is_some_and(|job| job.meter().is_some());
-            let workers = match if measured { ready_workers(&BLOCKING_WORKERS) } else { blocking_workers() } {
-                Ok(workers) => workers,
-                Err(error) => {
-                    this.terminated = true;
-                    return Poll::Ready(Err(error));
-                }
-            };
-            match poll_submission_with(workers, &mut this.pending, &mut this.waiter, context) {
-                Poll::Ready(Err(error)) => {
-                    this.terminated = true;
-                    return Poll::Ready(Err(error));
-                }
-                Poll::Ready(Ok(())) => {}
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        let mut state = this
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.task_pending {
-            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
-                state.waker = Some(context.waker().clone());
-            }
-            return Poll::Pending;
-        }
-        if let Some(payload) = state.panic.take() {
-            this.terminated = true;
-            let waker = state.waker.take();
-            drop(state);
-            drop(waker);
-            drop(this.pending.take());
-            if let Some(waiter) = this.waiter.take()
-                && let Ok(workers) = ready_workers(&BLOCKING_WORKERS)
-            {
-                remove_capacity_waiter(workers, Some(waiter));
-            }
-            std::panic::resume_unwind(payload);
-        }
-        if let Some(result) = state.result.take() {
-            this.terminated = true;
-            return Poll::Ready(result);
-        }
-        if !state
-            .waker
-            .as_ref()
-            .is_some_and(|waker| waker.will_wake(context.waker()))
-        {
-            state.waker = Some(context.waker().clone());
-        }
-        Poll::Pending
-    }
-}
-
 fn poll_submission(
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
     pending: &mut Option<NativeJob>,
     waiter: &mut Option<Arc<CapacityWaiter>>,
     context: &Context<'_>,
@@ -3568,7 +2900,7 @@ fn poll_submission(
         return Poll::Ready(Ok(()));
     }
     let measured = pending.as_ref().is_some_and(|job| job.meter().is_some());
-    let workers = match if measured { ready_workers(&NATIVE_WORKERS) } else { native_workers() } {
+    let workers = match if measured { workers(pool, true) } else { workers(pool, false) } {
         Ok(workers) => workers,
         Err(error) => return Poll::Ready(Err(error)),
     };
@@ -3638,7 +2970,7 @@ fn poll_submission_with(
             let next = waiter.take().and_then(|node| admission.retire(&node));
             drop(admission);
             wake_capacity_waiter(next);
-            Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "native I/O workers stopped")))
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
         }
     }
 }
@@ -3667,9 +2999,7 @@ fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             else { usize::from(admission.head.is_some()) };
         (admission.head.clone(), count)
     };
-    // Snapshot existing links, bounded by the initial queue length. Taking
-    // next before waking permits reentrant retirement without losing peers.
-    // No Vec<Waker> or other late completion allocation is needed.
+    // Snapshot next before waking so reentrant retirement cannot lose peers.
     for _ in 0..count {
         let Some(current) = node else { break; };
         let (next, waker) = {
@@ -3687,40 +3017,28 @@ static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> =
     LazyLock::new(|| start_workers("acyclic-host-io", |parallelism| parallelism.saturating_mul(2).clamp(2, 16)));
 static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Initializes the existing native and host I/O services before measured
-/// requests are admitted. Thread/channel startup and host-parallelism probes
-/// belong to this explicit service lifetime, never to a bounded request.
+/// Initializes the existing native and host I/O services before measured requests are admitted.
 pub fn initialize_native_io_services() -> io::Result<()> {
     // Resource-limit probes are fixed shared control metadata. A measured
     // registration only borrows the already initialized limit and registry.
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new()));
-    native_workers()?;
-    blocking_workers()?;
+    workers(&NATIVE_WORKERS, false)?;
+    workers(&BLOCKING_WORKERS, false)?;
     IO_SERVICES_INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
 
-fn ready_workers(
-    slot: &'static LazyLock<io::Result<NativeWorkers>>,
+fn workers(
+    slot: &'static LazyLock<io::Result<NativeWorkers>>, measured: bool,
 ) -> io::Result<&'static NativeWorkers> {
-    if !IO_SERVICES_INITIALIZED.load(Ordering::Acquire) {
-        return Err(io::Error::new(io::ErrorKind::NotConnected,
-            "native I/O services must be initialized before measured requests"));
+    if measured && !IO_SERVICES_INITIALIZED.load(Ordering::Acquire) {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     slot.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
 }
 
-fn native_workers() -> io::Result<&'static NativeWorkers> {
-    NATIVE_WORKERS.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
-}
-
-fn blocking_workers() -> io::Result<&'static NativeWorkers> {
-    BLOCKING_WORKERS.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
-}
-
-/// Starts one existing service pool. Host parallelism is queried once here,
-/// outside measured producer admission; it can read cgroup files.
+/// Starts one existing service pool.
 fn start_workers(
     name: &str,
     worker_count: impl FnOnce(usize) -> usize,
@@ -3766,47 +3084,23 @@ impl<T> Drop for NativeCompletion<T> {
         {
             completion.complete_after(self.predecessor.take());
         }
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waker = None;
+        if let Some(state) = &self.state {
+            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waker = None;
+        }
         let Some(waiter) = self.waiter.take() else {
             return;
         };
-        let Ok(workers) = native_workers() else {
+        let Ok(workers) = self.pool.as_ref() else {
             return;
         };
         remove_capacity_waiter(workers, Some(waiter));
     }
-}
-
-impl<T> Drop for BlockingIoTask<T> {
-    fn drop(&mut self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waker = None;
-        let Some(waiter) = self.waiter.take() else {
-            return;
-        };
-        let Ok(workers) = ready_workers(&BLOCKING_WORKERS) else {
-            return;
-        };
-        remove_capacity_waiter(workers, Some(waiter));
-    }
-}
-
-/// Bounded positional source for one file range.
-pub struct RangeReader<'a> {
-    file: &'a File,
-    offset: u64,
-    remaining: u64,
 }
 
 /// Resizes an already-held, ordered handle. Each retry is separately admitted.
 pub fn set_len_measured(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
     i64::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     loop {
         meter.check()?;
         meter.admit_write(0)?;
@@ -3826,7 +3120,6 @@ pub fn set_len_measured(file: &File, size: u64, meter: &dyn NativeReadMeter) -> 
 }
 
 /// Flushes an already-held, ordered handle without metadata queries or reopen.
-/// Unsupported barriers perform no OS request and consume no I/O allowance.
 pub fn sync_file_measured(
     file: &File, durability: Durability, meter: &dyn NativeReadMeter,
 ) -> io::Result<()> {
@@ -3850,8 +3143,7 @@ pub fn sync_file_measured(
     }
 }
 
-/// Writes positionally through the same held completion engine, admitting any
-/// Windows mode query and private overlapped reopen before their actual calls.
+/// Writes positionally through the same held completion engine, admitting any Windows mode query and private overlapped reopen before their actual calls.
 pub fn write_all_at_measured(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn NativeReadMeter,
 ) -> io::Result<()> {
@@ -3859,7 +3151,7 @@ pub fn write_all_at_measured(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(file, 0x0012_0116, false, meter, |file| {
+        windows::with_overlapped(file, 0x0012_0116, false, Some(meter), |file| {
             write_bounded_in_place(file, offset, bytes, meter)
         })
     }
@@ -3868,7 +3160,6 @@ pub fn write_all_at_measured(
 }
 
 /// Writes through an already-held positional handle in its admitted file scope.
-/// On Windows the caller must have admitted the handle as overlapped.
 pub fn write_all_at_measured_held(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn NativeReadMeter,
 ) -> io::Result<()> {
@@ -3885,16 +3176,25 @@ fn write_bounded_in_place(
         // The same native worker owns each request through terminal completion.
         let length = bytes.len().min(1024 * 1024);
         let chunk = &bytes[..length];
-        #[cfg(target_os = "linux")]
-        let result = linux::write_at_measured(file, offset, chunk, meter);
-        #[cfg(target_vendor = "apple")]
-        let result = apple::write_at_measured(file, offset, chunk, meter);
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        let result = (|| {
+            use std::os::fd::AsRawFd as _;
+            validate_prepared_read_range(offset, length)?;
+            let mut transfer = NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
+            meter.admit_write(0)?;
+            // SAFETY: the validated range and borrowed payload remain live through pwrite.
+            #[allow(unsafe_code)]
+            let count = unsafe {
+                libc::pwrite(file.as_raw_fd(), chunk.as_ptr().cast(), length, offset as libc::off_t)
+            };
+            if count < 0 { return Err(io::Error::last_os_error()); }
+            transfer.record(count as usize)?;
+            Ok(count as usize)
+        })();
         #[cfg(windows)]
         let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let result: io::Result<usize> = Err(io::Error::new(
-            io::ErrorKind::Unsupported, "bounded positional writes unavailable",
-        ));
+        let result: io::Result<usize> = Err(io::Error::from(io::ErrorKind::Unsupported));
         let count = match result {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
@@ -3941,11 +3241,11 @@ fn read_bounded_in_place(
     };
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(
+        windows::with_overlapped(
             file,
             windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
             known_overlapped,
-            meter.as_ref(),
+            Some(meter.as_ref()),
             read,
         )
     }
@@ -3980,9 +3280,9 @@ fn read_prepared_in_place(
     if destination.is_empty() { return Ok(0); }
     #[cfg(windows)]
     {
-        windows::with_overlapped_measured(
+        windows::with_overlapped(
             file, windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-            known_overlapped, meter,
+            known_overlapped, Some(meter),
             |file| read_bounded_slice(file, offset, destination, require_full, meter),
         )
     }
@@ -4025,8 +3325,7 @@ fn read_bounded_slice(
     Ok(filled)
 }
 
-/// Bounded asynchronous positional source for one range of a native file,
-/// read through the file's own ordered operations.
+/// Bounded asynchronous positional source for one range of a native file, read through the file's own ordered operations.
 pub struct AsyncRangeReader {
     file: Arc<NativeFile>,
     offset: u64,
@@ -4034,8 +3333,7 @@ pub struct AsyncRangeReader {
 }
 
 impl AsyncRangeReader {
-    /// Creates a source for at most `length` bytes of `file` starting at
-    /// `offset`.
+    /// Creates a source for at most `length` bytes of `file` starting at `offset`.
     #[must_use]
     pub const fn new(file: Arc<NativeFile>, offset: u64, length: u64) -> Self {
         Self {
@@ -4051,8 +3349,7 @@ impl AsyncRangeReader {
         self.remaining
     }
 
-    /// Reads using this file's existing ordered worker machinery, with actual
-    /// request, buffer, retry, and completed-byte accounting on every exit.
+    /// Reads using this file's existing ordered worker machinery, with actual request, buffer, retry, and completed-byte accounting on every exit.
     pub async fn read_measured(
         &mut self,
         maximum: usize,
@@ -4062,7 +3359,6 @@ impl AsyncRangeReader {
     }
 
     /// Reads a complete declared chunk using the same finite native queue.
-    /// Short physical input is rejected before any shared-byte header is built.
     pub async fn read_exact_measured(
         &mut self, maximum: usize, meter: Arc<dyn NativeReadMeter>,
     ) -> io::Result<NativeReadResult> {
@@ -4086,61 +3382,6 @@ impl AsyncRangeReader {
         Ok(result)
     }
 
-    /// Reads the next bounded chunk without blocking the caller's executor.
-    pub async fn read(&mut self, maximum: usize) -> io::Result<Bytes> {
-        let length = usize::try_from(self.remaining.min(maximum as u64))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range too large"))?;
-        if length == 0 {
-            return Ok(Bytes::new());
-        }
-        let mut result = self
-            .file
-            .read_batch_async(vec![OwnedRead {
-                offset: self.offset,
-                length,
-            }])
-            .await?;
-        let bytes = result
-            .pop()
-            .ok_or_else(|| io::Error::other("native read returned no result"))?;
-        self.offset = self
-            .offset
-            .checked_add(bytes.len() as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow"))?;
-        self.remaining -= bytes.len() as u64;
-        Ok(bytes)
-    }
-}
-
-impl<'a> RangeReader<'a> {
-    /// Creates a source for at most `length` bytes starting at `offset`.
-    pub const fn new(file: &'a File, offset: u64, length: u64) -> Self {
-        Self {
-            file,
-            offset,
-            remaining: length,
-        }
-    }
-}
-
-impl Read for RangeReader<'_> {
-    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
-        let maximum = usize::try_from(self.remaining.min(destination.len() as u64))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range too large"))?;
-        if maximum == 0 {
-            return Ok(0);
-        }
-        let selected = destination.get_mut(..maximum).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "range exceeds destination")
-        })?;
-        let count = read_at(self.file, self.offset, selected)?;
-        self.offset = self
-            .offset
-            .checked_add(count as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "read offset overflow"))?;
-        self.remaining -= count as u64;
-        Ok(count)
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -4193,7 +3434,7 @@ fn validate_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
 }
 
 #[cfg(target_vendor = "apple")]
-#[allow(unsafe_code, reason = "one positional read on a live descriptor and borrowed destination")]
+#[allow(unsafe_code)]
 fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -4359,7 +3600,7 @@ pub fn publish_new_measured(
     publish_new_engine(from, to, Some(meter))
 }
 
-#[allow(unsafe_code, reason = "native links borrow two retained terminated pathname buffers")]
+#[allow(unsafe_code)]
 fn publish_new_engine(
     from: &Path, to: &Path, meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> io::Result<()> {
@@ -4394,10 +3635,6 @@ fn publish_new_engine(
     }
 }
 
-fn durable_rename_impl(from: &Path, to: &Path, mode: RenameMode) -> io::Result<()> {
-    durable_rename_engine(from, to, mode, None)
-}
-
 /// Retains the actual platform pathname controls through durable publication.
 pub fn durable_rename_measured(
     from: &Path, to: &Path, mode: RenameMode, meter: &Arc<dyn NativeReadMeter>,
@@ -4405,7 +3642,7 @@ pub fn durable_rename_measured(
     durable_rename_engine(from, to, mode, Some(meter))
 }
 
-#[allow(unsafe_code, reason = "rename borrows live retained native path buffers")]
+#[allow(unsafe_code)]
 fn durable_rename_engine(
     from: &Path, to: &Path, mode: RenameMode, meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> io::Result<()> {
@@ -4492,74 +3729,8 @@ mod tests {
     use std::thread::Thread;
     use std::time::{Duration, Instant};
 
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn file_scope_nested_a_b_a_preserves_original_alias_detection() {
-        let a: FileSequencer = Arc::new(Mutex::new(None));
-        let b: FileSequencer = Arc::new(Mutex::new(None));
-        assert!(!FileScope::contains(&a));
-        FileScope::with(Some(&a), || {
-            assert!(FileScope::contains(&a));
-            assert!(!FileScope::contains(&b));
-            FileScope::with(Some(&b), || {
-                assert!(FileScope::contains(&a));
-                assert!(FileScope::contains(&b));
-                FileScope::with(Some(&a), || {
-                    assert!(FileScope::contains(&a));
-                    assert!(FileScope::contains(&b));
-                });
-                assert!(FileScope::contains(&a));
-                assert!(FileScope::contains(&b));
-            });
-            assert!(FileScope::contains(&a));
-            assert!(!FileScope::contains(&b));
-        });
-        assert!(!FileScope::contains(&a));
-        assert!(!FileScope::contains(&b));
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn file_scope_unwind_restores_live_outer_frame_before_node_retirement() {
-        let a: FileSequencer = Arc::new(Mutex::new(None));
-        let b: FileSequencer = Arc::new(Mutex::new(None));
-        FileScope::with(Some(&a), || {
-            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                FileScope::with(Some(&b), || {
-                    assert!(FileScope::contains(&a));
-                    assert!(FileScope::contains(&b));
-                    std::panic::panic_any(41_u32);
-                });
-            })).expect_err("inner synchronous scope unwinds");
-            assert_eq!(panic.downcast_ref::<u32>(), Some(&41));
-            assert!(FileScope::contains(&a));
-            assert!(!FileScope::contains(&b));
-        });
-        assert!(!FileScope::contains(&a));
-        assert!(!FileScope::contains(&b));
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn file_scope_borrowed_chain_never_crosses_calling_threads() {
-        let a: FileSequencer = Arc::new(Mutex::new(None));
-        FileScope::with(Some(&a), || {
-            std::thread::scope(|threads| {
-                threads.spawn(|| {
-                    assert!(!FileScope::contains(&a));
-                    FileScope::with(Some(&a), || assert!(FileScope::contains(&a)));
-                    assert!(!FileScope::contains(&a));
-                }).join().expect("scope isolation worker");
-            });
-            assert!(FileScope::contains(&a));
-        });
-        assert!(!FileScope::contains(&a));
-    }
-
     #[test]
     fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io::Result<()> {
-        // This test binary rejects the service arguments and exits, writing
-        // only to its discarded standard error.
         let readiness = spawn_service_process(&std::env::current_exe()?)?;
         assert!(!readiness.wait()?);
         Ok(())
@@ -4573,94 +3744,14 @@ mod tests {
 
     #[cfg(any(windows, target_os = "linux"))]
     #[test]
-    fn platform_submission_transfers_completion_only_after_acceptance() -> io::Result<()> {
-        let state = Arc::new(Mutex::new(CompletionState::<usize> {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        }));
-        let fence = Arc::new(OperationFence::default());
-        let uncertain = Arc::new(AtomicBool::new(false));
-        let mut callback = None;
-        let wake = submit_file_io(
-            FileCompletion::new(
-                Arc::clone(&state),
-                Some(Arc::clone(&fence)),
-                Some(Arc::clone(&uncertain)),
-                None,
-                obs::OperationSpan::new(tracing::Span::none()),
-            ),
-            |finish| {
-                callback = Some(finish);
-                Ok(())
-            },
-        );
-        assert!(wake.is_none());
-        assert!(!fence.is_complete());
-        callback
-            .take()
-            .ok_or_else(|| io::Error::other("accepted callback missing"))?(Ok(7));
-        assert!(fence.is_complete());
-        let actual = state
-            .lock()
-            .map_err(|_| io::Error::other("completion state poisoned"))?
-            .result
-            .take()
-            .ok_or_else(|| io::Error::other("accepted result missing"))??;
-        assert_eq!(actual, 7);
-        assert!(!uncertain.load(Ordering::Acquire));
-
-        let rejected = Arc::new(Mutex::new(CompletionState::<usize> {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        }));
-        let rejected_fence = Arc::new(OperationFence::default());
-        assert!(
-            submit_file_io(
-                FileCompletion::new(
-                    Arc::clone(&rejected),
-                    Some(Arc::clone(&rejected_fence)),
-                    None,
-                    None,
-                    obs::OperationSpan::new(tracing::Span::none())
-                ),
-                |_finish| Err(io::Error::other("not submitted")),
-            )
-            .is_none()
-        );
-        assert!(rejected_fence.is_complete());
-        let rejected_result = rejected
-            .lock()
-            .map_err(|_| io::Error::other("rejected completion state poisoned"))?
-            .result
-            .take()
-            .ok_or_else(|| io::Error::other("rejected result missing"))?;
-        assert!(matches!(rejected_result, Err(error) if error.to_string() == "not submitted"));
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux"))]
-    #[test]
     fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Result<()> {
         const MARKER: &str = "ACYCLIC_DROPPED_COMPLETION_CHILD";
         if std::env::var_os(MARKER).is_some() {
-            let state = Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: false,
-                result: None,
-                panic: None,
-                waker: None,
-                _allocation: None,
-            }));
+            let state = Arc::new(Mutex::new(CompletionState::<()>::default()));
             eprintln!("dropping accepted native callback");
             let _ = submit_file_io(
                 FileCompletion::new(
                     state,
-                    None,
                     None,
                     None,
                     obs::OperationSpan::new(tracing::Span::none()),
@@ -4700,7 +3791,7 @@ mod tests {
                     .write(true)
                     .open(directory.path().join("panic-worker"))?,
             )?;
-            let _ = complete_write(file.control_async(|_| {
+            let _ = complete(file.control_async(|_| {
                 eprintln!("injected native worker unwind");
                 std::panic::resume_unwind(Box::new("injected native worker unwind"));
             }));
@@ -4742,45 +3833,6 @@ mod tests {
 
     fn completion_waker() -> Waker {
         Waker::from(Arc::new(ThreadWake(std::thread::current())))
-    }
-
-    #[cfg(unix)]
-    fn direct_write_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
-        use std::os::unix::fs::FileExt as _;
-        file.write_all_at(bytes, offset)
-    }
-
-    #[cfg(windows)]
-    fn direct_write_at(file: &File, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
-        use std::os::windows::fs::FileExt as _;
-        while !bytes.is_empty() {
-            let count = file.seek_write(bytes, offset)?;
-            if count == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "direct write returned zero",
-                ));
-            }
-            offset = offset.checked_add(count as u64).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow")
-            })?;
-            bytes = bytes
-                .get(count..)
-                .ok_or_else(|| io::Error::other("overlong direct write"))?;
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    fn direct_read_at(file: &File, bytes: &mut [u8], offset: u64) -> io::Result<usize> {
-        use std::os::unix::fs::FileExt as _;
-        file.read_at(bytes, offset)
-    }
-
-    #[cfg(windows)]
-    fn direct_read_at(file: &File, bytes: &mut [u8], offset: u64) -> io::Result<usize> {
-        use std::os::windows::fs::FileExt as _;
-        file.seek_read(bytes, offset)
     }
 
     #[test]
@@ -4866,53 +3918,13 @@ mod tests {
         assert_eq!(durable_rename_measured(
             &source, &destination, RenameMode::Replace, &meter,
         ).unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(observer.operations.load(Ordering::Acquire), 0);
-        assert_eq!(observer.allocations.load(Ordering::Acquire), 0);
         assert_eq!(observer.memory.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::read(source)?, b"source");
         assert_eq!(std::fs::read(destination)?, b"destination");
         Ok(())
     }
 
-    fn complete_read(mut read: ReadBatch) -> io::Result<Vec<Bytes>> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let waker = completion_waker();
-        loop {
-            match Pin::new(&mut read).poll(&mut Context::from_waker(&waker)) {
-                Poll::Ready(result) => return result,
-                Poll::Pending if Instant::now() < deadline => {
-                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
-                }
-                Poll::Pending => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "owned native read did not complete",
-                    ));
-                }
-            }
-        }
-    }
-
-    fn complete_write(mut write: UnitCompletion) -> io::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let waker = completion_waker();
-        loop {
-            match Pin::new(&mut write).poll(&mut Context::from_waker(&waker)) {
-                Poll::Ready(result) => return result,
-                Poll::Pending if Instant::now() < deadline => {
-                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
-                }
-                Poll::Pending => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "owned native write did not complete",
-                    ));
-                }
-            }
-        }
-    }
-
-    fn complete_measured<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let waker = completion_waker();
         let mut future = std::pin::pin!(future);
@@ -4927,396 +3939,211 @@ mod tests {
     }
 
     pub(super) struct ReadBudgetMeter {
-        operations: AtomicU64,
-        withheld_operations: std::sync::Mutex<u64>,
+        used_operations: AtomicU64,
+        used_bytes: AtomicU64,
+        used_allocations: AtomicU64,
         read: AtomicU64,
-        withheld_bytes: std::sync::Mutex<u64>,
-        allocations: AtomicU64,
-        pending_allocations: parking_lot::Mutex<(u64, u64)>,
-        allocation_limit: u64,
-        headers: AtomicU64,
-        memory: AtomicU64,
-        peak: AtomicU64,
+        pub(super) memory: AtomicU64,
         operation_limit: u64,
         byte_limit: u64,
+        allocation_limit: u64,
+        pub(super) deny_allocations: AtomicBool,
+        pub(super) operation_denial: Option<NativeOperationKind>,
+        pub(super) cancel_after_operation: bool,
         memory_limit: u64,
-        cancelled: AtomicBool,
+        pub(super) cancelled: AtomicBool,
         cancel_after_read: bool,
         panic_after_read: bool,
-        allocation_failure: parking_lot::Mutex<Option<std::collections::TryReserveError>>,
     }
 
     impl ReadBudgetMeter {
         pub(super) fn new(operation_limit: u64, byte_limit: u64) -> Self {
             Self {
-                operations: AtomicU64::new(0), read: AtomicU64::new(0),
-                withheld_operations: std::sync::Mutex::new(0),
-                withheld_bytes: std::sync::Mutex::new(0),
-                allocations: AtomicU64::new(0), headers: AtomicU64::new(0),
-                pending_allocations: parking_lot::Mutex::new((0, 0)),
-                allocation_limit: u64::MAX,
-                memory: AtomicU64::new(0), peak: AtomicU64::new(0),
-                operation_limit, byte_limit, memory_limit: 1024 * 1024,
-                cancelled: AtomicBool::new(false), cancel_after_read: false,
-                panic_after_read: false,
-                allocation_failure: parking_lot::Mutex::new(None),
+                used_operations: AtomicU64::new(0), used_bytes: AtomicU64::new(0),
+                used_allocations: AtomicU64::new(0), read: AtomicU64::new(0), memory: AtomicU64::new(0),
+                operation_limit, byte_limit, allocation_limit: u64::MAX, memory_limit: 1024 * 1024,
+                deny_allocations: AtomicBool::new(false), operation_denial: None, cancel_after_operation: false,
+                cancelled: AtomicBool::new(false), cancel_after_read: false, panic_after_read: false,
             }
         }
         fn refuse() -> io::Error { io::ErrorKind::Other.into() }
-        fn held_operations(&self) -> std::sync::MutexGuard<'_, u64> {
-            match self.withheld_operations.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
-        fn held_bytes(&self) -> std::sync::MutexGuard<'_, u64> {
-            match self.withheld_bytes.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
     }
 
     impl NativeReadMeter for ReadBudgetMeter {
         fn check(&self) -> io::Result<()> {
-            if self.cancelled.load(Ordering::Acquire) {
-                Err(io::ErrorKind::Interrupted.into())
-            } else { Ok(()) }
+            if self.cancelled.load(Ordering::Acquire) { Err(io::ErrorKind::Interrupted.into()) }
+            else { Ok(()) }
+        }
+        fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
+            self.check()?;
+            if self.operation_denial == Some(kind) { return Err(Self::refuse()); }
+            self.used_operations.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                |used| used.checked_add(count).filter(|total| *total <= self.operation_limit))
+                .map(|_| ()).map_err(|_| Self::refuse())
+        }
+        fn cancel_reserved_operations(&self, _: NativeOperationKind, count: u64) {
+            assert!(self.used_operations.fetch_sub(count, Ordering::AcqRel) >= count);
+        }
+        fn record_reserved_operation(&self, _: NativeOperationKind) -> io::Result<()> {
+            if self.cancel_after_operation { self.cancelled.store(true, Ordering::Release); }
+            Ok(())
+        }
+        fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()> {
+            assert_ne!(kind, NativeOperationKind::Durability);
+            self.check()?;
+            self.used_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                |used| used.checked_add(maximum).filter(|total| *total <= self.byte_limit))
+                .map(|_| ()).map_err(|_| Self::refuse())
+        }
+        fn cancel_reserved_bytes(&self, _: NativeOperationKind, maximum: u64) {
+            assert!(self.used_bytes.fetch_sub(maximum, Ordering::AcqRel) >= maximum);
+        }
+        fn record_reserved_bytes(&self, _: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()> {
+            assert!(actual <= maximum);
+            assert!(self.used_bytes.fetch_sub(maximum - actual, Ordering::AcqRel) >= maximum);
+            self.read.fetch_add(actual, Ordering::AcqRel);
+            if self.cancel_after_read && actual != 0 { self.cancelled.store(true, Ordering::Release); }
+            Ok(())
         }
         fn allocate(&self, bytes: u64) -> io::Result<()> {
             self.reserve_allocation(bytes)?;
             self.record_reserved_allocation(bytes)
         }
         fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
             self.check()?;
-            self.allocations.load(Ordering::Acquire).checked_add(pending.0)
-                .and_then(|total| total.checked_add(1))
-                .filter(|total| *total <= self.allocation_limit).ok_or_else(Self::refuse)?;
-            self.memory.load(Ordering::Acquire).checked_add(pending.1)
-                .and_then(|total| total.checked_add(bytes))
-                .filter(|total| *total <= self.memory_limit).ok_or_else(Self::refuse)?;
-            pending.0 += 1;
-            pending.1 += bytes;
+            if self.deny_allocations.load(Ordering::Acquire) { return Err(Self::refuse()); }
+            self.used_allocations.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                |used| used.checked_add(1).filter(|total| *total <= self.allocation_limit))
+                .map_err(|_| Self::refuse())?;
+            if let Err(error) = self.adopt(bytes) {
+                self.used_allocations.fetch_sub(1, Ordering::AcqRel);
+                return Err(error);
+            }
             Ok(())
         }
         fn cancel_reserved_allocation(&self, bytes: u64) {
-            let mut pending = self.pending_allocations.lock();
-            pending.0 = pending.0.checked_sub(1).expect("refund owns an allocation credit");
-            pending.1 = pending.1.checked_sub(bytes).expect("refund owns its retained-byte credit");
+            assert!(self.used_allocations.fetch_sub(1, Ordering::AcqRel) != 0);
+            self.release(bytes);
         }
-        fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
-            let next_operations = pending.0.checked_sub(1).ok_or_else(Self::refuse)?;
-            let next_bytes = pending.1.checked_sub(bytes).ok_or_else(Self::refuse)?;
-            let allocations = self.allocations.load(Ordering::Acquire).checked_add(1)
-                .ok_or_else(Self::refuse)?;
-            let memory = self.memory.load(Ordering::Acquire).checked_add(bytes).ok_or_else(Self::refuse)?;
-            pending.0 = next_operations;
-            pending.1 = next_bytes;
-            self.allocations.store(allocations, Ordering::Release);
-            self.memory.store(memory, Ordering::Release);
-            self.peak.fetch_max(memory, Ordering::AcqRel);
-            Ok(())
-        }
+        fn record_reserved_allocation(&self, _: u64) -> io::Result<()> { Ok(()) }
         fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
-            let mut failure = self.allocation_failure.lock();
-            if failure.is_none() { *failure = Some(error); }
-            io::ErrorKind::OutOfMemory.into()
+            io::Error::new(io::ErrorKind::OutOfMemory, error)
         }
-        fn allocate_refcount_header(&self) -> io::Result<()> {
-            self.allocate(0)?;
-            self.headers.fetch_add(1, Ordering::AcqRel);
-            Ok(())
-        }
+        fn allocate_refcount_header(&self) -> io::Result<()> { self.allocate(0) }
         fn adopt(&self, bytes: u64) -> io::Result<()> {
-            let pending = self.pending_allocations.lock();
             self.check()?;
-            let previous = self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                |current| current.checked_add(bytes).filter(|next|
-                    next.checked_add(pending.1).is_some_and(|total| total <= self.memory_limit)))
-                .map_err(|_| Self::refuse())?;
-            self.peak.fetch_max(previous + bytes, Ordering::AcqRel);
-            Ok(())
+            self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                |used| used.checked_add(bytes).filter(|total| *total <= self.memory_limit))
+                .map(|_| ()).map_err(|_| Self::refuse())
         }
         fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-            let pending = self.pending_allocations.lock();
             let previous = match self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                |current| current.checked_add(bytes)) {
+                |used| used.checked_add(bytes)) {
                 Ok(previous) => previous,
                 Err(_) => return (0, Err(Self::refuse())),
             };
-            let actual = previous + bytes;
-            self.peak.fetch_max(actual, Ordering::AcqRel);
-            let result = if actual.checked_add(pending.1).is_none_or(|total| total > self.memory_limit) {
-                Err(Self::refuse())
-            } else { self.check() };
-            (bytes, result)
+            (bytes, if previous + bytes > self.memory_limit { Err(Self::refuse()) } else { self.check() })
         }
-        fn release(&self, bytes: u64) {
-            let _pending = self.pending_allocations.lock();
-            self.memory.fetch_sub(bytes, Ordering::AcqRel);
-        }
+        fn release(&self, bytes: u64) { assert!(self.memory.fetch_sub(bytes, Ordering::AcqRel) >= bytes); }
         fn examine(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
         fn record_examination(&self, _: u64, _: u64) -> io::Result<()> { Ok(()) }
         fn admit_bytes(&self, maximum: usize) -> io::Result<()> {
-            let held = self.held_bytes();
             self.check()?;
-            self.read.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(maximum as u64))
-                .filter(|total| *total <= self.byte_limit)
-                .map(|_| ()).ok_or_else(Self::refuse)
+            self.used_bytes.load(Ordering::Acquire).checked_add(maximum as u64)
+                .filter(|total| *total <= self.byte_limit).map(|_| ()).ok_or_else(Self::refuse)
         }
-        fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()> {
-            if kind != NativeOperationKind::Read { return Err(io::ErrorKind::Unsupported.into()); }
-            let mut held = self.held_bytes();
-            self.check()?;
-            self.read.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(maximum))
-                .filter(|total| *total <= self.byte_limit)
-                .ok_or_else(Self::refuse)?;
-            *held += maximum;
-            Ok(())
-        }
-        fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
-            assert_eq!(kind, NativeOperationKind::Read);
-            let mut held = self.held_bytes();
-            *held = held.checked_sub(maximum).expect("refund owns read byte allowance");
-        }
-        fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()> {
-            assert_eq!(kind, NativeOperationKind::Read);
-            assert!(actual <= maximum);
-            let mut held = self.held_bytes();
-            *held = held.checked_sub(maximum).expect("transfer owns read byte allowance");
-            self.read.fetch_add(actual, Ordering::AcqRel);
-            if self.cancel_after_read && actual != 0 {
-                self.cancelled.store(true, Ordering::Release);
-            }
-            Ok(())
-        }
-        fn admit_operations(&self, additional: u64) -> io::Result<()> {
-            let held = self.held_operations();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(additional))
-                .filter(|total| *total <= self.operation_limit)
-                .map(|_| ()).ok_or_else(Self::refuse)
-        }
-        fn record_operations(&self, completed: u64) -> io::Result<()> {
-            let _held = self.held_operations();
-            self.operations.fetch_add(completed, Ordering::AcqRel);
-            Ok(())
-        }
-        fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
-            if kind != NativeOperationKind::Read { return Err(io::ErrorKind::Unsupported.into()); }
-            let mut held = self.held_operations();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(count))
-                .filter(|total| *total <= self.operation_limit)
-                .ok_or_else(Self::refuse)?;
-            *held += count;
-            Ok(())
-        }
-        fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64) {
-            assert_eq!(kind, NativeOperationKind::Read);
-            let mut held = self.held_operations();
-            *held = held.checked_sub(count).expect("refund owns unspent read credits");
-        }
-        fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
-            assert_eq!(kind, NativeOperationKind::Read);
-            let mut held = self.held_operations();
-            *held = held.checked_sub(1).expect("native attempt owns a read credit");
-            self.operations.fetch_add(1, Ordering::AcqRel);
-            Ok(())
-        }
-        fn admit_write_bytes(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
         fn admit_read(&self, maximum: usize) -> io::Result<()> {
-            let held = self.held_operations();
             self.admit_bytes(maximum)?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(1))
-                .filter(|total| *total <= self.operation_limit)
-                .ok_or_else(Self::refuse)?;
-            self.operations.fetch_add(1, Ordering::AcqRel);
+            self.reserve_operations(NativeOperationKind::Read, 1)
+        }
+        fn admit_operations(&self, count: u64) -> io::Result<()> {
+            self.check()?;
+            self.used_operations.load(Ordering::Acquire).checked_add(count)
+                .filter(|total| *total <= self.operation_limit).map(|_| ()).ok_or_else(Self::refuse)
+        }
+        fn record_operations(&self, count: u64) -> io::Result<()> {
+            self.used_operations.fetch_add(count, Ordering::AcqRel);
             Ok(())
         }
         fn record_read(&self, bytes: usize) -> io::Result<()> {
-            let _held = self.held_bytes();
+            self.used_bytes.fetch_add(bytes as u64, Ordering::AcqRel);
             self.read.fetch_add(bytes as u64, Ordering::AcqRel);
-            if self.cancel_after_read && bytes != 0 {
-                self.cancelled.store(true, Ordering::Release);
-            }
+            if self.cancel_after_read && bytes != 0 { self.cancelled.store(true, Ordering::Release); }
             Ok(())
         }
         fn finish_read(&self, _: usize, completed: usize) -> io::Result<()> {
-            if self.panic_after_read && completed != 0 {
-                std::panic::panic_any(0x7072_6570_6172_6564_u64);
-            }
+            if self.panic_after_read && completed != 0 { std::panic::panic_any(0x7072_6570_6172_6564_u64); }
             self.check()
         }
-        fn admit_write(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
-        fn record_write(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
-        fn admit_write_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
-        fn record_write_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
-        fn admit_durability(&self) -> io::Result<()> { Err(Self::refuse()) }
-    }
-
-    fn prepared_metadata_task(
-        file: File, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<BlockingIoTask<io::Result<u64>>> {
-        let mut operation = OwnedNativeOperationReservation::new(
-            Arc::clone(&meter), NativeOperationKind::Read, 1,
-        )?;
-        prepare_blocking_io_measured(move || {
-            let (result, recorded) = operation.attempt(|| file.metadata().map(|metadata| metadata.len()));
-            result.and_then(|length| recorded.map(|()| length))
-        }, meter)
-    }
-
-    #[test]
-    fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation()
-    -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempfile()?;
-        temporary.set_len(17)?;
-        let sizing = Arc::new(ReadBudgetMeter::new(1, 0));
-        let task = prepared_metadata_task(temporary.try_clone()?, sizing.clone())?;
-        assert_eq!(sizing.operations.load(Ordering::Acquire), 0);
-        assert_eq!(sizing.allocations.load(Ordering::Acquire), 4);
-        let exact_bytes = sizing.memory.load(Ordering::Acquire);
-        assert!(exact_bytes > 0);
-        assert!(!task.waiter.as_ref().expect("preowned capacity node").state.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner).queued);
-        drop(task);
-        assert_eq!(sizing.memory.load(Ordering::Acquire), 0);
-        assert_eq!(*sizing.held_operations(), 0, "unused operation refunded without physical metadata I/O");
-        let mut limits = ReadBudgetMeter::new(1, 0);
-        limits.allocation_limit = 4;
-        limits.memory_limit = exact_bytes;
-        let observed = Arc::new(limits);
-        let task = prepared_metadata_task(temporary, observed.clone())?;
-        assert_eq!(observed.memory.load(Ordering::Acquire), exact_bytes);
-        assert!(observed.allocate(1).is_err(), "all four actual control attempts exhausted the allocation quota");
-        let _inline = InlineBlocking::enter();
-        assert_eq!(task.wait_measured(None, std::future::pending(), || {})??, 17);
-        assert_eq!(observed.operations.load(Ordering::Acquire), 1);
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
-        assert_eq!(observed.peak.load(Ordering::Acquire), exact_bytes);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn prepared_blocking_control_denial_retires_only_actual_reached_allocations()
-    -> io::Result<()> {
-        initialize_native_io_services()?;
-        for accepted in 0..4 {
-            let mut limits = ReadBudgetMeter::new(1, 0);
-            limits.allocation_limit = accepted;
-            let observed = Arc::new(limits);
-            assert!(prepared_metadata_task(tempfile::tempfile()?, observed.clone()).is_err());
-            assert_eq!(observed.operations.load(Ordering::Acquire), 0);
-            assert_eq!(observed.allocations.load(Ordering::Acquire), accepted);
-            assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-            assert_eq!(*observed.held_operations(), 0);
+        fn admit_write_bytes(&self, maximum: usize) -> io::Result<()> { self.admit_bytes(maximum) }
+        fn admit_write(&self, maximum: usize) -> io::Result<()> { self.admit_read(maximum) }
+        fn record_write(&self, bytes: usize) -> io::Result<()> { self.record_read(bytes) }
+        fn admit_write_operations(&self, count: u64) -> io::Result<()> { self.admit_operations(count) }
+        fn record_write_operations(&self, count: u64) -> io::Result<()> { self.record_operations(count) }
+        fn admit_durability(&self) -> io::Result<()> { self.admit_write(0) }
+        fn reserve_cleanup_write(&self) -> io::Result<u64> {
+            self.reserve_operations(NativeOperationKind::Write, 1)?;
+            Ok(1)
         }
+        fn cancel_cleanup_write(&self, token: u64) { self.cancel_reserved_operations(NativeOperationKind::Write, token); }
+        fn record_cleanup_write(&self, _: u64) -> io::Result<()> { self.record_reserved_operation(NativeOperationKind::Write) }
+
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf out; printf err >&2; sleep 60"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let mut meter = ReadBudgetMeter::new(1024, 32);
+        meter.memory_limit = 0;
+        meter.allocation_limit = 0;
+        let failure = tree.wait_with_exchange_observed_with_meter(
+            std::time::Duration::from_secs(5), 16, 1, b"",
+            [Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)],
+            &meter, || Ok(()), |_| {
+                meter.cancelled.store(true, std::sync::atomic::Ordering::Release);
+                Err(io::ErrorKind::Interrupted.into())
+            },
+        ).expect_err("caller cancels after physical stdout delivery");
+        assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(failure.stdout, b"out");
+        assert!(b"err".starts_with(&failure.stderr));
+        assert_eq!(meter.read.load(Ordering::Acquire), (failure.stdout.len() + failure.stderr.len()) as u64);
+        assert!(!failure.cleanup_completed);
+        assert!(!tree.is_reaped());
+        tree.terminate()?;
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
-    fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
-    -> io::Result<()> {
-        initialize_native_io_services()?;
-        let mut limits = ReadBudgetMeter::new(1, 0);
-        limits.allocation_limit = 4;
-        let observed = Arc::new(limits);
-        let file = tempfile::tempfile()?;
-        file.set_len(23)?;
-        let mut task = prepared_metadata_task(file, observed.clone())?;
-        let prepared_bytes = observed.memory.load(Ordering::Acquire);
-        let node = Arc::clone(task.waiter.as_ref().expect("prepared original node"));
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
-        workers.sender.try_send(NativeJob::Task {
-            operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
-            })),
-            _allocation: None,
-        }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
-        workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
-        let context = Context::from_waker(Waker::noop());
-        assert!(matches!(poll_submission_with(
-            &workers, &mut task.pending, &mut task.waiter, &context,
-        ), Poll::Pending));
-        assert!(Arc::ptr_eq(task.waiter.as_ref().expect("same preowned node"), &node));
-        assert!(node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued);
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
-        assert_eq!(observed.memory.load(Ordering::Acquire), prepared_bytes);
-        let filler = receiver.recv().map_err(io::Error::other)?;
-        notify_capacity_released(&workers.admission);
-        let _ = filler.run();
-        assert!(matches!(poll_submission_with(
-            &workers, &mut task.pending, &mut task.waiter, &context,
-        ), Poll::Ready(Ok(()))));
-        assert!(!node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued);
-        drop(node);
-        drop(task);
-        assert!(observed.memory.load(Ordering::Acquire) > 0,
-            "accepted job owns original completion and exact closure beyond observer drop");
-        assert_eq!(observed.operations.load(Ordering::Acquire), 0);
-        let accepted = receiver.recv().map_err(io::Error::other)?;
-        notify_capacity_released(&workers.admission);
-        let _ = accepted.run();
-        assert_eq!(observed.operations.load(Ordering::Acquire), 1);
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        assert_eq!(workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waiter_count, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn prepared_blocking_panic_preserves_original_payload_and_retires_actual_controls()
-    -> io::Result<()> {
-        initialize_native_io_services()?;
-        let mut limits = ReadBudgetMeter::new(0, 0);
-        limits.allocation_limit = 4;
-        let observed = Arc::new(limits);
-        let task = prepare_blocking_io_measured(|| -> () { std::panic::panic_any(0x5a17_u64) }, observed.clone())?;
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _inline = InlineBlocking::enter();
-            task.wait_measured(None, std::future::pending(), || {})
-        })).expect_err("same actual producer panic must resume");
-        assert_eq!(panic.downcast_ref::<u64>(), Some(&0x5a17_u64));
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn allocation_capacity_reconciliation_retains_real_excess_on_late_refusal() -> io::Result<()> {
-        let mut configured = ReadBudgetMeter::new(0, 0);
-        configured.memory_limit = 3;
-        let observer = Arc::new(configured);
-        let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let mut allocation = ReadAllocation::new(&meter, 3)?;
-        let mut payload = Vec::<u8>::new();
-        // Deliberate real over-capacity fault: the completed buffer is larger
-        // than its original admitted request, not an inferred allocator model.
-        payload.try_reserve_exact(64).map_err(io::Error::other)?;
-        let actual = payload.capacity();
-        assert!(actual > 3);
-        assert_eq!(allocation.reconcile_capacity(actual).unwrap_err().kind(), io::ErrorKind::Other);
-        assert_eq!(allocation.bytes(), actual as u64);
-        assert_eq!(observer.memory.load(Ordering::Acquire), actual as u64);
-        assert_eq!(observer.peak.load(Ordering::Acquire), actual as u64);
-        assert_eq!(observer.allocations.load(Ordering::Acquire), 1);
-        assert_eq!(observer.operations.load(Ordering::Acquire), 0);
-        drop(payload);
-        drop(allocation);
-        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+    fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<()> {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf out; sleep 60"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let mut meter = ReadBudgetMeter::new(1024, 32);
+        meter.memory_limit = 0;
+        meter.allocation_limit = 0;
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tree.wait_with_exchange_observed_with_meter(
+                std::time::Duration::from_secs(5), 16, 1, b"",
+                [Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)],
+                &meter, || Ok(()), |_| panic!("real protocol observer panic"),
+            )
+        }));
+        assert!(stopped.is_err());
+        assert_eq!(meter.read.load(Ordering::Acquire), 3);
+        assert!(!tree.is_reaped());
+        tree.terminate()?;
         Ok(())
     }
 
@@ -5331,7 +4158,6 @@ mod tests {
         let mut split = allocation.split(7)?;
         assert_eq!(split.bytes(), 7);
         assert_eq!(observer.memory.load(Ordering::Acquire), actual as u64);
-        assert_eq!(observer.allocations.load(Ordering::Acquire), 0);
         let other_meter: Arc<dyn NativeReadMeter> = Arc::new(ReadBudgetMeter::new(0, 0));
         let mut other = ReadAllocation::empty(&other_meter);
         assert_eq!(other.absorb(&mut split).unwrap_err().kind(), io::ErrorKind::InvalidInput);
@@ -5344,25 +4170,6 @@ mod tests {
         assert_eq!(allocation.bytes(), actual as u64);
         drop(payload);
         allocation.release(actual)?;
-        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn allocation_reconciliation_records_actual_capacity_before_cancellation() -> io::Result<()> {
-        let observer = Arc::new(ReadBudgetMeter::new(0, 0));
-        let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let mut allocation = ReadAllocation::new(&meter, 3)?;
-        let mut payload = Vec::<u8>::new();
-        payload.try_reserve_exact(17).map_err(io::Error::other)?;
-        observer.cancelled.store(true, Ordering::Release);
-        let actual = payload.capacity();
-        assert_eq!(allocation.reconcile_capacity(actual).unwrap_err().kind(), io::ErrorKind::Interrupted);
-        assert_eq!(allocation.bytes(), actual as u64);
-        assert_eq!(observer.memory.load(Ordering::Acquire), actual as u64);
-        assert_eq!(observer.allocations.load(Ordering::Acquire), 1);
-        drop(payload);
-        drop(allocation);
         assert_eq!(observer.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
@@ -5391,462 +4198,9 @@ mod tests {
             let mut original = [0_u8; 8];
             std::io::Read::read_exact(&mut file, &mut original)?;
             assert_eq!(&original, b"original");
-            assert_eq!(observer.operations.load(Ordering::Acquire), 0);
             assert_eq!(observer.memory.load(Ordering::Acquire), 0);
             drop(file);
-            assert_eq!(observer.operations.load(Ordering::Acquire), 0);
         }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[allow(unsafe_code, reason = "queries the exact retained file descriptor while its destructor is blocked")]
-    fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        struct HeldFile {
-            file: Option<File>,
-            entered: mpsc::SyncSender<()>,
-            release: mpsc::Receiver<()>,
-        }
-        impl Drop for HeldFile {
-            fn drop(&mut self) {
-                self.entered.send(()).expect("actual payload-drop observer remains owned");
-                self.release.recv().expect("actual destructor release remains owned");
-                drop(self.file.take());
-            }
-        }
-        initialize_native_io_services()?;
-        let file = tempfile::tempfile()?;
-        let fd = file.as_raw_fd();
-        let (entered, entered_drop) = mpsc::sync_channel(1);
-        let (release, released) = mpsc::sync_channel(1);
-        let held = HeldFile { file: Some(file), entered, release: released };
-        let mut policy = ReadBudgetMeter::new(0, 0);
-        policy.allocation_limit = 4;
-        let observer = Arc::new(policy);
-        let mut task = prepare_blocking_io_measured(move || { drop(held); }, observer.clone())?;
-        let prepared = observer.memory.load(Ordering::Acquire);
-        let job = task.pending.take().expect("same canonical prepared ingress");
-        observer.cancelled.store(true, Ordering::Release);
-        let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
-        entered_drop.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
-        assert!(task.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.is_some(),
-            "the actual worker admission error is staged before payload destruction");
-        assert!(Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())).is_pending());
-        assert_eq!(observer.memory.load(Ordering::Acquire), prepared,
-            "the real closure allocation remains owned while its payload destructor is pending");
-        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1,
-            "the original held file remains physically open before destructor release");
-        release.send(()).map_err(io::Error::other)?;
-        worker.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-        match Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
-            _ => panic!("the actual terminal admission error must now be observable"),
-        }
-        assert!(observer.memory.load(Ordering::Acquire) < prepared,
-            "job backing retires before terminal publication");
-        drop(task);
-        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn owned_native_file_claim_follows_physical_last_arc_not_capability_drop() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-file-custody");
-        std::fs::write(&path, b"x")?;
-        let observer = Arc::new(ReadBudgetMeter::new(16, 1));
-        let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter)
-            .map_err(|(error, file)| { drop(file); error })?;
-        let bytes = native.logical_owned_bytes();
-        let retained = Arc::clone(&native.file);
-        let weak = Arc::downgrade(&retained);
-        assert_eq!(observer.memory.load(Ordering::Acquire), bytes);
-        drop(native);
-        assert!(weak.upgrade().is_some());
-        assert_eq!(observer.memory.load(Ordering::Acquire), bytes);
-        drop(retained);
-        assert!(weak.upgrade().is_none());
-        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn dropped_queued_native_observer_keeps_file_claim_through_real_read() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("queued-file-custody");
-        std::fs::write(&path, b"x")?;
-        let observer = Arc::new(ReadBudgetMeter::new(16, 1));
-        let meter: Arc<dyn NativeReadMeter> = observer.clone();
-        let native = NativeFile::from_file_measured_owned(File::open(&path)?, meter.clone())
-            .map_err(|(error, file)| { drop(file); error })?;
-        let file_bytes = native.logical_owned_bytes();
-        let weak = Arc::downgrade(&native.file);
-        let (started, start) = mpsc::sync_channel(1);
-        let (release, released) = mpsc::sync_channel(1);
-        let mut operation = native.control_bounded_async(move |file, meter| {
-            started.send(()).map_err(io::Error::other)?;
-            released.recv().map_err(io::Error::other)?;
-            let mut byte = [0_u8; 1];
-            assert_eq!(read_declared_source_bytes(file, 0, &mut byte, meter)?, 1);
-            assert_eq!(byte, *b"x");
-            Ok(())
-        }, meter)?;
-        let waker = completion_waker();
-        assert!(Pin::new(&mut operation).poll(&mut Context::from_waker(&waker)).is_pending());
-        start.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
-        drop(native);
-        drop(operation);
-        assert!(weak.upgrade().is_some());
-        assert!(observer.memory.load(Ordering::Acquire) >= file_bytes);
-        release.send(()).map_err(io::Error::other)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while observer.memory.load(Ordering::Acquire) != 0 {
-            if Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
-            std::thread::yield_now();
-        }
-        assert!(weak.upgrade().is_none());
-        assert_eq!(observer.read.load(Ordering::Acquire), 1);
-        assert_eq!(observer.operations.load(Ordering::Acquire), 2);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn declared_source_invalid_range_records_no_physical_attempt() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("declared-invalid-range");
-        std::fs::write(&path, b"x")?;
-        let mut file = File::open(path)?;
-        for offset in [u64::MAX, i64::MAX as u64] {
-            let meter = ReadBudgetMeter::new(1, 1);
-            let mut destination = [0x55];
-            assert_eq!(
-                read_declared_source_bytes(&file, offset, &mut destination, &meter).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput,
-            );
-            assert_eq!(destination, [0x55]);
-            assert_eq!(file.stream_position()?, 0);
-            assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.read.load(Ordering::Acquire), 0);
-            assert_eq!(*meter.held_operations(), 0);
-            assert_eq!(*meter.held_bytes(), 0);
-            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn declared_source_refusal_precedes_io_and_preserves_cursor() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("declared-refusal");
-        std::fs::write(&path, b"abcdef")?;
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(3))?;
-        for meter in [ReadBudgetMeter::new(0, 8), ReadBudgetMeter::new(1, 0)] {
-            let mut destination = [0x55; 8];
-            assert!(read_declared_source_bytes(&file, 0, &mut destination, &meter).is_err());
-            assert_eq!(destination, [0x55; 8]);
-            assert_eq!(file.stream_position()?, 3);
-            assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.read.load(Ordering::Acquire), 0);
-            assert_eq!(*meter.held_operations(), 0);
-            assert_eq!(*meter.held_bytes(), 0);
-            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn declared_source_records_short_prefix_before_late_cancellation() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("declared-prefix");
-        std::fs::write(&path, b"abcdef")?;
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(1))?;
-        for cancel_after_read in [false, true] {
-            let mut meter = ReadBudgetMeter::new(1, 8);
-            meter.cancel_after_read = cancel_after_read;
-            let mut destination = [0x55; 8];
-            let result = read_declared_source_bytes(&file, 4, &mut destination, &meter);
-            if cancel_after_read {
-                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
-            } else {
-                assert_eq!(result?, 2);
-            }
-            assert_eq!(&destination[..2], b"ef");
-            assert_eq!(&destination[2..], &[0x55; 6]);
-            assert_eq!(file.stream_position()?, 1);
-            assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-            assert_eq!(meter.read.load(Ordering::Acquire), 2);
-            assert_eq!(*meter.held_operations(), 0);
-            assert_eq!(*meter.held_bytes(), 0);
-            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn declared_source_empty_destination_only_checks_original_request() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        // A directory cannot supply file bytes: success proves no read syscall.
-        let file = File::open(temporary.path())?;
-        let meter = ReadBudgetMeter::new(0, 0);
-        assert_eq!(read_declared_source_bytes(&file, u64::MAX, &mut [], &meter)?, 0);
-        meter.cancelled.store(true, Ordering::Release);
-        assert_eq!(
-            read_declared_source_bytes(&file, 0, &mut [], &meter).unwrap_err().kind(),
-            io::ErrorKind::Interrupted,
-        );
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.read.load(Ordering::Acquire), 0);
-        assert_eq!(*meter.held_operations(), 0);
-        assert_eq!(*meter.held_bytes(), 0);
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.headers.load(Ordering::Acquire), 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn declared_source_os_failure_preserves_attempt_and_refunds_body() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = File::open(temporary.path())?;
-        let meter = ReadBudgetMeter::new(1, 8);
-        assert!(read_declared_source_bytes(&file, 0, &mut [0; 8], &meter).is_err());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 0);
-        assert_eq!(*meter.held_operations(), 0);
-        assert_eq!(*meter.held_bytes(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn read_request_credits_protect_completion_from_reentrant_admission() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("reserved-read");
-        std::fs::write(&path, b"x")?;
-        let mut file = std::fs::File::open(&path)?;
-        let meter = ReadBudgetMeter::new(2, 2);
-        let mut request = NativeOperationReservation::new(&meter, NativeOperationKind::Read, 2)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        let mut byte = [0; 1];
-        let (first, recorded) = request.attempt(|| {
-            let result = std::io::Read::read(&mut file, &mut byte);
-            let callback = || meter.admit_read(1);
-            assert!(callback().is_err());
-            result
-        });
-        recorded?;
-        assert_eq!(first?, 1);
-        meter.record_read(1)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        meter.cancelled.store(true, Ordering::Release);
-        let (completion, recorded) = request.attempt(|| std::io::Read::read(&mut file, &mut byte));
-        recorded?;
-        assert_eq!(completion?, 0);
-        drop(request);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(*meter.held_operations(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn immediate_read_eof_refunds_unused_request_credit() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("empty-reserved-read");
-        std::fs::write(&path, b"")?;
-        let mut file = std::fs::File::open(&path)?;
-        let meter = ReadBudgetMeter::new(2, 1);
-        let mut request = NativeOperationReservation::new(&meter, NativeOperationKind::Read, 2)?;
-        let mut byte = [0; 1];
-        let (read, recorded) = request.attempt(|| std::io::Read::read(&mut file, &mut byte));
-        recorded?;
-        assert_eq!(read?, 0);
-        drop(request);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(*meter.held_operations(), 0);
-        meter.admit_read(1)?;
-        let bytes = std::io::Read::read(&mut file, &mut byte)?;
-        meter.record_read(bytes)?;
-        assert_eq!(bytes, 0);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn read_byte_reservation_protects_transfer_and_refunds_short_read() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("reserved-bytes");
-        std::fs::write(&path, b"abc")?;
-        let mut file = std::fs::File::open(&path)?;
-        let meter = ReadBudgetMeter::new(2, 8);
-        let mut bytes = NativeByteReservation::new(&meter, NativeOperationKind::Read, 8)?;
-        assert_eq!(meter.read.load(Ordering::Acquire), 0);
-        let mut request = NativeOperationReservation::new(&meter, NativeOperationKind::Read, 1)?;
-        let mut buffer = [0; 8];
-        let (read, recorded) = request.attempt(|| {
-            let result = std::io::Read::read(&mut file, &mut buffer);
-            let callback = || meter.admit_read(1);
-            assert!(callback().is_err());
-            result
-        });
-        recorded?;
-        let actual = read?;
-        assert_eq!(actual, 3);
-        bytes.record(actual)?;
-        drop(bytes);
-        drop(request);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(*meter.held_bytes(), 0);
-        assert!(meter.admit_bytes(6).is_err());
-        let unused = NativeByteReservation::new(&meter, NativeOperationKind::Read, 5)?;
-        assert!(meter.admit_bytes(1).is_err());
-        drop(unused);
-        meter.admit_read(5)?;
-        let actual = std::io::Read::read(&mut file, &mut buffer[..5])?;
-        meter.record_read(actual)?;
-        assert_eq!(actual, 0);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn allocation_reservation_withholds_both_limits_without_phantom_work() -> io::Result<()> {
-        let mut policy = ReadBudgetMeter::new(0, 0);
-        policy.allocation_limit = 1;
-        policy.memory_limit = 8;
-        let observed = Arc::new(policy);
-        let meter: Arc<dyn NativeReadMeter> = observed.clone();
-        let reserved = ReadAllocationReservation::new(&meter, 8)?;
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 0);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        assert_eq!(observed.peak.load(Ordering::Acquire), 0);
-        assert!(ReadAllocationReservation::new(&meter, 0).is_err());
-        assert!(ReadAllocation::adopt(&meter, 1).is_err());
-        drop(reserved);
-        assert_eq!(*observed.pending_allocations.lock(), (0, 0));
-        let allocation = ReadAllocationReservation::new(&meter, 8)?.allocate()?;
-        struct FundedBox {
-            payload: Box<[u8; 8]>,
-            _allocation: ReadAllocation,
-        }
-        let owner = FundedBox { payload: Box::new(*b"reserved"), _allocation: allocation };
-        assert_eq!(&*owner.payload, b"reserved");
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 1);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 8);
-        drop(owner);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        assert_eq!(observed.peak.load(Ordering::Acquire), 8);
-        Ok(())
-    }
-
-    #[test]
-    fn allocation_reservation_consumes_accepted_credit_after_cancellation() -> io::Result<()> {
-        let mut policy = ReadBudgetMeter::new(0, 0);
-        policy.allocation_limit = 1;
-        policy.memory_limit = 8;
-        let observed = Arc::new(policy);
-        let meter: Arc<dyn NativeReadMeter> = observed.clone();
-        let reserved = ReadAllocationReservation::new(&meter, 8)?;
-        observed.cancelled.store(true, Ordering::Release);
-        let allocation = reserved.allocate()?;
-        struct FundedBox {
-            payload: Box<[u8; 8]>,
-            _allocation: ReadAllocation,
-        }
-        let owner = FundedBox { payload: Box::new(*b"accepted"), _allocation: allocation };
-        assert_eq!(&*owner.payload, b"accepted");
-        assert_eq!(*observed.pending_allocations.lock(), (0, 0));
-        assert_eq!(observed.allocations.load(Ordering::Acquire), 1);
-        assert!(ReadAllocationReservation::new(&meter, 1).is_err());
-        drop(owner);
-        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_read_refusal_retains_actual_partial_io() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("partial");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        let physical_calls = if cfg!(windows) { 2 } else { 1 };
-        let meter = Arc::new(ReadBudgetMeter::new(physical_calls, 8));
-        let read = file.read_bounded_async(0, 8, meter.clone())?;
-        assert!({
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        }.is_err());
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), physical_calls);
-        assert!(meter.allocations.load(Ordering::Acquire) >= 3);
-        assert_eq!(meter.headers.load(Ordering::Acquire), 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert!(meter.peak.load(Ordering::Acquire) >= 8);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_read_cancellation_preserves_completed_prefix() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("cancel");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        let mut limits = ReadBudgetMeter::new(8, 8);
-        limits.cancel_after_read = true;
-        let meter = Arc::new(limits);
-        let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let error = match {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        } {
-            Err(error) => error,
-            Ok(_) => panic!("cancelled read returned success"),
-        };
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 2 } else { 1 });
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_short_read_transfers_actual_capacity_and_header_operation() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("eof");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        let meter = Arc::new(ReadBudgetMeter::new(8, 8));
-        let read = file.read_bounded_async(0, 8, meter.clone())?;
-        let result = {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        }?;
-        assert_eq!(result.bytes.as_ref(), b"abc");
-        assert_eq!(result.buffer_capacity, 8);
-        assert_eq!(meter.memory.load(Ordering::Acquire), result.buffer_capacity as u64);
-        assert_eq!(meter.headers.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
-        assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 3 } else { 2 });
-        drop(result);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
@@ -5865,15 +4219,14 @@ mod tests {
             let read = file.read_prepared_bounded_async(offset, storage, 8, false, meter.clone())?;
             let (storage, filled) = {
                 let _blocking = InlineBlocking::enter();
-                complete_measured(read)
+                complete(read)
             }?;
             assert_eq!(filled, expected);
             assert_eq!(storage.as_ptr(), identity);
             assert_eq!(&storage[..filled], &b"abc"[..expected]);
             assert!(storage[filled..].iter().all(|byte| *byte == 0x55));
             assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
-            assert_eq!(meter.headers.load(Ordering::Acquire), 0);
-            assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+            assert!(file.health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
             let weak = Arc::downgrade(&meter);
             drop(meter);
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -5894,23 +4247,22 @@ mod tests {
         let path = temporary.path().join("prepared-refusal");
         std::fs::write(&path, b"abc")?;
         let file = bounded_write_file(&path, false)?;
-        for late_cancel in [false, true] {
+        for (prepared, late_cancel) in [(true, false), (true, true), (false, true)] {
             let mut limits = ReadBudgetMeter::new(8, 8);
             limits.cancel_after_read = late_cancel;
             let meter = Arc::new(limits);
-            let read = file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?;
             let error = {
                 let _blocking = InlineBlocking::enter();
-                complete_measured(read)
-            }.unwrap_err();
+                if prepared {
+                    complete(file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?).unwrap_err()
+                } else {
+                    complete(file.read_bounded_async(0, 8, meter.clone())?).err().expect("cancelled read")
+                }
+            };
             assert_eq!(error.kind(), if late_cancel {
                 io::ErrorKind::Interrupted
             } else { io::ErrorKind::UnexpectedEof });
             assert_eq!(meter.read.load(Ordering::Acquire), 3);
-            assert_eq!(meter.operations.load(Ordering::Acquire),
-                if late_cancel { if cfg!(windows) { 2 } else { 1 } }
-                else if cfg!(windows) { 3 } else { 2 });
-            assert_eq!(meter.headers.load(Ordering::Acquire), 0);
             let deadline = Instant::now() + Duration::from_secs(10);
             while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
                 std::thread::yield_now();
@@ -5934,15 +4286,10 @@ mod tests {
         let mut read = file.read_prepared_bounded_async(0, [0; 3], 3, true, meter.clone())?;
         let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _blocking = InlineBlocking::enter();
-            complete_measured(&mut read)
+            complete(&mut read)
         })).expect_err("prepared observer resumes original terminal panic");
         assert_eq!(payload.downcast_ref::<u64>(), Some(&0x7072_6570_6172_6564_u64));
-        assert!(read.terminated);
-        assert!(!read.state.is_poisoned());
-        assert!(read.state.try_lock().expect("observer released state").panic.is_none());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), if cfg!(windows) { 2 } else { 1 });
-        assert_eq!(meter.headers.load(Ordering::Acquire), 0);
         drop(payload);
         drop(read);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -5950,86 +4297,7 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn prepared_read_bounds_and_header_denial_precede_io() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("prepared-bounds");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        for (offset, length) in [(0, 9), (u64::MAX, 1)] {
-            let meter = Arc::new(ReadBudgetMeter::new(8, 9));
-            assert!(file.read_prepared_bounded_async(offset, [0; 8], length, false, meter.clone()).is_err());
-            assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        }
-        let mut limits = ReadBudgetMeter::new(8, 8);
-        limits.memory_limit = 0;
-        let meter = Arc::new(limits);
-        assert!(file.read_prepared_bounded_async(0, [0; 8], 8, false, meter.clone()).is_err());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn prepared_read_dropped_accepted_observer_keeps_original_meter_until_terminal() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("prepared-observer-drop");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        struct PreparedProbe {
-            data: [u8; 3],
-            calls: usize,
-            started: mpsc::SyncSender<()>,
-            released: mpsc::Receiver<()>,
-            dropped_prefix: Arc<AtomicBool>,
-        }
-        impl AsMut<[u8]> for PreparedProbe {
-            fn as_mut(&mut self) -> &mut [u8] {
-                self.calls += 1;
-                if self.calls == 2 {
-                    self.started.send(()).expect("observer receives accepted job");
-                    self.released.recv().expect("observer releases accepted job");
-                }
-                &mut self.data
-            }
-        }
-        impl Drop for PreparedProbe {
-            fn drop(&mut self) {
-                self.dropped_prefix.store(self.data == *b"abc", Ordering::Release);
-            }
-        }
-        let (started, start) = mpsc::sync_channel(1);
-        let (release, released) = mpsc::sync_channel(1);
-        let dropped_prefix = Arc::new(AtomicBool::new(false));
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let weak = Arc::downgrade(&meter);
-        let storage = PreparedProbe { data: [0; 3], calls: 0, started, released,
-            dropped_prefix: Arc::clone(&dropped_prefix) };
-        let mut read = file.read_prepared_bounded_async(0, storage, 3, true, meter.clone())?;
-        let waker = completion_waker();
-        assert!(Pin::new(&mut read).poll(&mut Context::from_waker(&waker)).is_pending());
-        start.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
-        drop(read);
-        drop(meter);
-        assert!(weak.upgrade().is_some());
-        assert!(!dropped_prefix.load(Ordering::Acquire));
-        release.send(()).map_err(io::Error::other)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while weak.upgrade().is_some() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(weak.upgrade().is_none());
-        assert!(dropped_prefix.load(Ordering::Acquire));
-        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        assert!(file.health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
         Ok(())
     }
 
@@ -6042,358 +4310,11 @@ mod tests {
         let file = bounded_write_file(&path, false)?;
         let byte_meter = Arc::new(ReadBudgetMeter::new(8, 2));
         assert!(file.read_bounded_async(0, 3, byte_meter.clone()).is_err());
-        assert_eq!(byte_meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(byte_meter.allocations.load(Ordering::Acquire), 0);
         let mut limits = ReadBudgetMeter::new(8, 3);
         limits.memory_limit = 0;
         let memory_meter = Arc::new(limits);
         assert!(file.read_bounded_async(0, 3, memory_meter.clone()).is_err());
-        assert_eq!(memory_meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(memory_meter.allocations.load(Ordering::Acquire), 0);
         Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn completed_bounded_tail_retires_original_meter_without_another_request() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("retired-tail");
-        std::fs::write(&path, b"abc")?;
-        let file = bounded_write_file(&path, false)?;
-        let meter = Arc::new(ReadBudgetMeter::new(8, 3));
-        let borrowed = Arc::downgrade(&meter);
-        let read = file.read_bounded_async(0, 3, meter.clone())?;
-        let result = {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        }?;
-        assert_eq!(result.bytes.as_ref(), b"abc");
-        assert!(file.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
-        drop(result);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        drop(meter);
-        assert!(borrowed.upgrade().is_none());
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn zero_bounded_request_has_no_state_fence_buffer_or_waiter() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("zero-request");
-        std::fs::write(&path, b"real file")?;
-        let file = NativeFile::from_file(File::open(&path)?)?;
-        let mut limits = ReadBudgetMeter::new(0, 0);
-        limits.memory_limit = 0;
-        let meter = Arc::new(limits);
-        for synchronous in [false, true] {
-            let completion = file.read_bounded_async(u64::MAX, 0, meter.clone())?;
-            let result = if synchronous {
-                completion.wait_measured(
-                    Some(std::time::Instant::now()),
-                    std::future::pending(),
-                    || panic!("an inline zero read must not start a deadline waiter"),
-                )?
-            } else {
-                complete_measured(completion)?
-            };
-            assert!(result.bytes.is_empty());
-            assert_eq!(result.buffer_capacity, 0);
-            assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.read.load(Ordering::Acquire), 0);
-            assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-            assert_eq!(meter.headers.load(Ordering::Acquire), 0);
-            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-            assert_eq!(meter.peak.load(Ordering::Acquire), 0);
-        }
-        meter.cancelled.store(true, Ordering::Release);
-        let error = file.read_bounded_async(0, 0, meter.clone()).err()
-            .expect("zero reads retain the original cancellation boundary");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn ordinary_handle_bounded_read_counts_real_preparation_and_preserves_cursor() -> io::Result<()> {
-        use std::io::{Seek, SeekFrom};
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("ordinary-cursor");
-        std::fs::write(&path, b"abc")?;
-        let mut input = File::open(&path)?;
-        input.seek(SeekFrom::Start(2))?;
-        let file = NativeFile::from_file(input)?;
-        let meter = Arc::new(ReadBudgetMeter::new(4, 3));
-        let result = {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(file.read_bounded_async(0, 3, meter.clone())?)
-        }?;
-        assert_eq!(result.bytes.as_ref(), b"abc");
-        assert_eq!(meter.operations.load(Ordering::Acquire), 4);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        let mut cursor = file.as_file();
-        assert_eq!(cursor.stream_position()?, 2);
-        drop(result);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn ordinary_handle_refusal_keeps_real_query_and_reopen_prefix() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("ordinary-refusal");
-        std::fs::write(&path, b"abc")?;
-        let file = NativeFile::from_file(File::open(&path)?)?;
-        let meter = Arc::new(ReadBudgetMeter::new(2, 3));
-        let result = {
-            let _blocking = InlineBlocking::enter();
-            file.read_bounded_async(0, 3, meter.clone()).and_then(complete_measured)
-        };
-        assert!(result.is_err());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(meter.read.load(Ordering::Acquire), 0);
-        assert!(meter.allocations.load(Ordering::Acquire) >= 3);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn empty_measured_range_has_no_io_or_allocation() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("empty");
-        File::create(&path)?;
-        let file = Arc::new(bounded_write_file(&path, false)?);
-        let mut source = AsyncRangeReader::new(file, 0, 0);
-        let mut limits = ReadBudgetMeter::new(0, 0);
-        limits.memory_limit = 0;
-        let meter = Arc::new(limits);
-        let result = complete_measured(source.read_measured(8, meter.clone()))?;
-        assert!(result.bytes.is_empty());
-        assert_eq!(result.buffer_capacity, 0);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    #[allow(unsafe_code, reason = "Windows test opens its own overlapped attributes-only handle")]
-    fn bounded_read_os_failure_records_actual_request_without_bytes() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("denied");
-        std::fs::write(&path, b"abc")?;
-        let mut options = OpenOptions::new();
-        #[cfg(windows)]
-        let file = {
-            use std::os::windows::fs::OpenOptionsExt as _;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES};
-            options.access_mode(FILE_READ_ATTRIBUTES).custom_flags(FILE_FLAG_OVERLAPPED);
-            // SAFETY: this fresh handle was opened with FILE_FLAG_OVERLAPPED.
-            unsafe { NativeFile::from_overlapped_file_unchecked(options.open(&path)?)? }
-        };
-        #[cfg(not(windows))]
-        let file = {
-            options.write(true);
-            NativeFile::from_file(options.open(&path)?)?
-        };
-        let meter = Arc::new(ReadBudgetMeter::new(8, 8));
-        let read = file.read_bounded_async(0, 3, meter.clone())?;
-        assert!({
-            let _blocking = InlineBlocking::enter();
-            complete_measured(read)
-        }.is_err());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn measured_host_task_memory_refusal_precedes_body() {
-        let mut limits = ReadBudgetMeter::new(0, 0);
-        limits.memory_limit = 0;
-        let meter = Arc::new(limits);
-        let called = Arc::new(AtomicBool::new(false));
-        let body = called.clone();
-        assert!(run_blocking_io_measured(
-            move || body.store(true, Ordering::Release), meter.clone(),
-        ).is_err());
-        assert!(!called.load(Ordering::Acquire));
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn measured_host_task_cancelled_after_admission_retains_envelope_work() {
-        let meter = Arc::new(ReadBudgetMeter::new(0, 0));
-        let called = Arc::new(AtomicBool::new(false));
-        let body = called.clone();
-        let task = run_blocking_io_measured(
-            move || body.store(true, Ordering::Release), meter.clone(),
-        ).expect("finite envelope budget");
-        meter.cancelled.store(true, Ordering::Release);
-        let error = {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(task)
-        }.expect_err("cancelled envelope must not execute its body");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(!called.load(Ordering::Acquire));
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 2);
-        assert!(meter.peak.load(Ordering::Acquire) > 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn measured_host_task_panic_preserves_real_envelope_allocations() {
-        let meter = Arc::new(ReadBudgetMeter::new(0, 0));
-        let task = run_blocking_io_measured(
-            || -> () { panic!("controlled native host task panic") }, meter.clone(),
-        ).expect("finite envelope budget");
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _blocking = InlineBlocking::enter();
-            complete_measured(task)
-        })).expect_err("the observing poll must resume the original panic");
-        assert_eq!(payload.downcast_ref::<&'static str>(),
-            Some(&"controlled native host task panic"));
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 2);
-        assert!(meter.peak.load(Ordering::Acquire) > 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    }
-
-    #[derive(Debug)]
-    struct OriginalHostTaskPanic {
-        marker: u64,
-        tag: String,
-    }
-
-    #[test]
-    fn measured_host_task_panic_retains_physical_prefix_and_original_box() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("panic-prefix");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let body_meter = Arc::clone(&meter);
-        let address = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let body_address = Arc::clone(&address);
-        let operation_dropped = Arc::new(AtomicBool::new(false));
-        let body_dropped = Arc::clone(&operation_dropped);
-        struct PhysicalScope(Arc<AtomicBool>);
-        impl Drop for PhysicalScope {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-        let mut task = run_blocking_io_measured(move || -> io::Result<()> {
-            let _scope = PhysicalScope(body_dropped);
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            assert_eq!(completed, 3);
-            assert_eq!(&buffer, b"abc");
-            let payload = std::panic::catch_unwind(|| -> () {
-                std::panic::panic_any(OriginalHostTaskPanic {
-                    marker: 0x6e61_7469_7665,
-                    tag: "owned physical-read panic".to_owned(),
-                });
-            }).expect_err("physical operation must panic after its real read");
-            body_address.store(
-                payload.downcast_ref::<OriginalHostTaskPanic>()
-                    .expect("original typed payload") as *const OriginalHostTaskPanic as usize,
-                Ordering::Release,
-            );
-            std::panic::resume_unwind(payload);
-        }, meter.clone())?;
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            complete_measured(&mut task)
-        })).expect_err("observer must resume the operation's original panic");
-        let original = payload.downcast_ref::<OriginalHostTaskPanic>()
-            .expect("panic payload must not be erased or boxed again");
-        assert_eq!(original.marker, 0x6e61_7469_7665);
-        assert_eq!(original.tag, "owned physical-read panic");
-        assert_eq!(original as *const OriginalHostTaskPanic as usize,
-            address.load(Ordering::Acquire));
-        assert!(operation_dropped.load(Ordering::Acquire));
-        assert!(task.terminated);
-        assert!(!task.state.is_poisoned());
-        assert!(task.state.try_lock().expect("poll releases completion lock").panic.is_none());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        drop(payload);
-        drop(task);
-        // Publication can race the worker's final closure-allocation retirement.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert!(meter.allocations.load(Ordering::Acquire) >= 2);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        Ok(())
-    }
-
-    #[test]
-    fn host_task_observer_resumes_original_owned_panic() {
-        let mut task = run_blocking_io(|| -> () {
-            std::panic::panic_any(OriginalHostTaskPanic {
-                marker: 19,
-                tag: "ordinary host task".to_owned(),
-            });
-        });
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            complete_measured(&mut task)
-        })).expect_err("ordinary task panic must reach its observer");
-        let original = payload.downcast_ref::<OriginalHostTaskPanic>()
-            .expect("original owned payload type");
-        assert_eq!(original.marker, 19);
-        assert_eq!(original.tag, "ordinary host task");
-        assert!(task.terminated);
-        assert!(!task.state.is_poisoned());
-    }
-
-    #[test]
-    fn native_completion_resumes_original_task_panic() {
-        let mut task = run_blocking_io(|| -> () {
-            std::panic::panic_any(OriginalHostTaskPanic {
-                marker: 23,
-                tag: "generic native completion".to_owned(),
-            });
-        });
-        let mut completion = NativeCompletion {
-            state: Arc::clone(&task.state),
-            pending: task.pending.take(),
-            waiter: None,
-            sequencer: None,
-            uncertain: None,
-            predecessor: None,
-            completion: None,
-            terminated: false,
-        };
-        drop(task);
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            complete_measured(&mut completion)
-        })).expect_err("generic native completion must resume the same task panic");
-        let original = payload.downcast_ref::<OriginalHostTaskPanic>()
-            .expect("original owned payload type");
-        assert_eq!(original.marker, 23);
-        assert_eq!(original.tag, "generic native completion");
-        assert!(completion.terminated);
-        assert!(!completion.state.is_poisoned());
-        assert!(completion.pending.is_none());
-        assert!(completion.waiter.is_none());
-        assert!(completion.predecessor.is_none());
-        assert!(completion.completion.is_none());
     }
 
     #[test]
@@ -6408,7 +4329,6 @@ mod tests {
         let payload_dropped = Arc::new(AtomicBool::new(false));
         let body_dropped = Arc::clone(&payload_dropped);
         struct RetainedHostPanic {
-            tag: String,
             dropped: Arc<AtomicBool>,
         }
         impl Drop for RetainedHostPanic {
@@ -6428,7 +4348,6 @@ mod tests {
             prefix_sender.send(()).map_err(io::Error::other)?;
             release_receiver.recv().map_err(io::Error::other)?;
             std::panic::panic_any(RetainedHostPanic {
-                tag: "retained after actual OS completion".to_owned(),
                 dropped: body_dropped,
             });
         }, meter.clone())?;
@@ -6443,25 +4362,8 @@ mod tests {
                 Err(error) => return Err(io::Error::other(error)),
             }
         }
-        release_sender.send(()).map_err(io::Error::other)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let state = task.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(payload) = state.panic.as_ref() {
-                let original = payload.downcast_ref::<RetainedHostPanic>()
-                    .expect("unobserved completion retains the original owned payload");
-                assert_eq!(original.tag, "retained after actual OS completion");
-                break;
-            }
-            drop(state);
-            assert!(Instant::now() < deadline, "physical operation must reach terminal panic");
-            std::thread::yield_now();
-        }
-        assert!(!task.terminated);
-        assert!(!payload_dropped.load(Ordering::Acquire));
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
         drop(task);
+        release_sender.send(()).map_err(io::Error::other)?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while (!payload_dropped.load(Ordering::Acquire)
             || meter.memory.load(Ordering::Acquire) != 0) && Instant::now() < deadline
@@ -6470,32 +4372,7 @@ mod tests {
         }
         assert!(payload_dropped.load(Ordering::Acquire));
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        Ok(())
-    }
-
-    #[test]
-    fn measured_sync_wait_uses_real_file_work_on_existing_pool() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-wait");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let body_meter = meter.clone();
-        let task = run_blocking_io_measured(move || -> io::Result<[u8; 3]> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            Ok(buffer)
-        }, meter.clone())?;
-        let result = task.wait_measured(None, std::future::pending(), || panic!("unexpected deadline"))??;
-        assert_eq!(&result, b"abc");
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        assert!(meter.allocations.load(Ordering::Acquire) >= 3);
         Ok(())
     }
 
@@ -6516,55 +4393,47 @@ mod tests {
         assert_eq!(deadline_calls, 1);
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(!called.load(Ordering::Acquire));
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.allocations.load(Ordering::Acquire), 3);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
     #[test]
-    fn measured_sync_wait_deadline_drains_the_actual_terminal_body() -> io::Result<()> {
+    fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<()> {
         initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-deadline");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let body_gate = gate.clone();
-        let body_terminal = terminal.clone();
-        let body_meter = meter.clone();
-        let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            let (lock, changed) = &*body_gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = true;
-            changed.notify_all();
-            while !state.1 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        for expired_deadline in [false, true] {
+            let temporary = tempfile::tempdir()?;
+            let path = temporary.path().join("sync-cancel-wake");
+            std::fs::write(&path, b"abc")?;
+            let mut file = File::open(path)?;
+            let meter = Arc::new(ReadBudgetMeter::new(1, 3));
+            let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+            let terminal = Arc::new(AtomicBool::new(false));
+            let body_gate = gate.clone();
+            let body_terminal = terminal.clone();
+            let body_meter = meter.clone();
+            let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
+                let mut buffer = [0_u8; 3];
+                body_meter.admit_read(buffer.len())?;
+                let completed = file.read(&mut buffer)?;
+                body_meter.record_read(completed)?;
+                let (lock, changed) = &*body_gate;
+                let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.0 = true;
+                changed.notify_all();
+                while !state.1 {
+                    state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                body_terminal.store(true, Ordering::Release);
+                Ok(completed)
+            }, meter.clone())?;
+            let waker = completion_waker();
+            let mut context = Context::from_waker(&waker);
+            loop {
+                assert!(Pin::new(&mut task).poll(&mut context).is_pending());
+                if task.pending.is_none() { break; }
+                std::thread::park_timeout(Duration::from_millis(1));
             }
-            body_terminal.store(true, Ordering::Release);
-            Ok(completed)
-        }, meter.clone())?;
-        // Admit the real queued body before making the deadline immediately
-        // expired; the deadline callback must observe an actual read prefix.
-        let waker = completion_waker();
-        let mut context = Context::from_waker(&waker);
-        loop {
-            assert!(Pin::new(&mut task).poll(&mut context).is_pending());
-            if task.pending.is_none() { break; }
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
-        let mut deadline_calls = 0;
-        let completed = task.wait_measured(
-            Some(Instant::now()),
-            std::future::pending(),
-            || {
-                deadline_calls += 1;
+            let release = || {
                 let (lock, changed) = &*gate;
                 let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 while !state.0 {
@@ -6573,446 +4442,29 @@ mod tests {
                 meter.cancelled.store(true, Ordering::Release);
                 state.1 = true;
                 changed.notify_all();
-            },
-        )??;
-        assert_eq!(deadline_calls, 1);
-        assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(completed, 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        Ok(())
-    }
-
-    #[test]
-    fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<()> {
-        initialize_native_io_services()?;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-cancel-wake");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
-        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let body_gate = gate.clone();
-        let body_terminal = terminal.clone();
-        let body_meter = meter.clone();
-        let mut task = run_blocking_io_measured(move || -> io::Result<usize> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            let (lock, changed) = &*body_gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = true;
-            changed.notify_all();
-            while !state.1 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            body_terminal.store(true, Ordering::Release);
-            Ok(completed)
-        }, meter.clone())?;
-        let waker = completion_waker();
-        let mut context = Context::from_waker(&waker);
-        loop {
-            assert!(Pin::new(&mut task).poll(&mut context).is_pending());
-            if task.pending.is_none() { break; }
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
-        let mut cancellation_polls = 0;
-        let cancellation = std::future::poll_fn(|context| {
-            cancellation_polls += 1;
-            if cancellation_polls == 1 {
-                // This wake must survive the following task poll/park, even
-                // though no I/O completion or deadline can wake the caller.
-                context.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            let (lock, changed) = &*gate;
-            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !state.0 {
-                state = changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            meter.cancelled.store(true, Ordering::Release);
-            state.1 = true;
-            changed.notify_all();
-            Poll::Ready(())
-        });
-        let completed = task.wait_measured(None, cancellation, || panic!("unexpected deadline"))??;
-        assert_eq!(cancellation_polls, 2);
-        assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(completed, 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        Ok(())
-    }
-
-    struct WriteBudgetMeter {
-        allocation_failure: parking_lot::Mutex<Option<std::collections::TryReserveError>>,
-        operations: AtomicU64,
-        held_operations: parking_lot::Mutex<u64>,
-        held_bytes: parking_lot::Mutex<u64>,
-        written: AtomicU64,
-        durability: AtomicU64,
-        memory: AtomicU64,
-        allocations: AtomicU64,
-        pending_allocations: parking_lot::Mutex<(u64, u64)>,
-        operation_limit: u64,
-        byte_limit: u64,
-        memory_limit: u64,
-        cancel_after_write: bool,
-        cancelled: AtomicBool,
-    }
-
-    impl WriteBudgetMeter {
-        fn new(operation_limit: u64, byte_limit: u64) -> Self {
-            Self {
-                operations: AtomicU64::new(0), written: AtomicU64::new(0),
-                held_operations: parking_lot::Mutex::new(0),
-                held_bytes: parking_lot::Mutex::new(0),
-                durability: AtomicU64::new(0), memory: AtomicU64::new(0),
-                allocations: AtomicU64::new(0),
-                pending_allocations: parking_lot::Mutex::new((0, 0)),
-                operation_limit, byte_limit, memory_limit: u64::MAX,
-                cancel_after_write: false, cancelled: AtomicBool::new(false),
-                allocation_failure: parking_lot::Mutex::new(None),
-            }
-        }
-
-        fn refuse() -> io::Error { io::ErrorKind::Other.into() }
-    }
-
-    impl NativeReadMeter for WriteBudgetMeter {
-        fn check(&self) -> io::Result<()> {
-            if self.cancelled.load(Ordering::Acquire) {
-                Err(io::ErrorKind::Interrupted.into())
-            } else { Ok(()) }
-        }
-        fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
-            if kind == NativeOperationKind::Read { return Err(io::ErrorKind::Unsupported.into()); }
-            let mut held = self.held_operations.lock();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(count))
-                .filter(|total| *total <= self.operation_limit).ok_or_else(Self::refuse)?;
-            *held += count;
-            Ok(())
-        }
-        fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64) {
-            assert!(matches!(kind, NativeOperationKind::Write | NativeOperationKind::Durability));
-            let mut held = self.held_operations.lock();
-            *held = held.checked_sub(count).expect("refund owns unused write allowance");
-        }
-        fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
-            assert!(matches!(kind, NativeOperationKind::Write | NativeOperationKind::Durability));
-            let mut held = self.held_operations.lock();
-            *held = held.checked_sub(1).expect("write attempt owns reserved allowance");
-            self.operations.fetch_add(1, Ordering::AcqRel);
-            if kind == NativeOperationKind::Durability {
-                self.durability.fetch_add(1, Ordering::AcqRel);
-            }
-            Ok(())
-        }
-        fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()> {
-            if kind != NativeOperationKind::Write { return Err(io::ErrorKind::Unsupported.into()); }
-            let mut held = self.held_bytes.lock();
-            self.check()?;
-            self.written.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(maximum))
-                .filter(|total| *total <= self.byte_limit).ok_or_else(Self::refuse)?;
-            *held += maximum;
-            Ok(())
-        }
-        fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
-            assert_eq!(kind, NativeOperationKind::Write);
-            let mut held = self.held_bytes.lock();
-            *held = held.checked_sub(maximum).expect("refund owns unused write bytes");
-        }
-        fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()> {
-            assert_eq!(kind, NativeOperationKind::Write);
-            assert!(actual <= maximum);
-            let mut held = self.held_bytes.lock();
-            *held = held.checked_sub(maximum).expect("completion owns reserved write bytes");
-            self.written.fetch_add(actual, Ordering::AcqRel);
-            if self.cancel_after_write { self.cancelled.store(true, Ordering::Release); }
-            Ok(())
-        }
-        fn admit_write_bytes(&self, maximum: usize) -> io::Result<()> {
-            let held = self.held_bytes.lock();
-            self.check()?;
-            self.written.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(maximum as u64))
-                .filter(|total| *total <= self.byte_limit)
-                .map(|_| ()).ok_or_else(Self::refuse)
-        }
-        fn allocate(&self, bytes: u64) -> io::Result<()> {
-            self.reserve_allocation(bytes)?;
-            self.record_reserved_allocation(bytes)
-        }
-        fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
-            self.check()?;
-            self.allocations.load(Ordering::Acquire).checked_add(pending.0)
-                .and_then(|total| total.checked_add(1)).ok_or_else(Self::refuse)?;
-            self.memory.load(Ordering::Acquire).checked_add(pending.1)
-                .and_then(|total| total.checked_add(bytes))
-                .filter(|total| *total <= self.memory_limit).ok_or_else(Self::refuse)?;
-            pending.0 += 1;
-            pending.1 += bytes;
-            Ok(())
-        }
-        fn cancel_reserved_allocation(&self, bytes: u64) {
-            let mut pending = self.pending_allocations.lock();
-            pending.0 = pending.0.checked_sub(1).expect("refund owns one allocation credit");
-            pending.1 = pending.1.checked_sub(bytes).expect("refund owns its allocation bytes");
-        }
-        fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
-            let next_operations = pending.0.checked_sub(1).ok_or_else(Self::refuse)?;
-            let next_bytes = pending.1.checked_sub(bytes).ok_or_else(Self::refuse)?;
-            let allocations = self.allocations.load(Ordering::Acquire).checked_add(1)
-                .ok_or_else(Self::refuse)?;
-            let memory = self.memory.load(Ordering::Acquire).checked_add(bytes).ok_or_else(Self::refuse)?;
-            pending.0 = next_operations;
-            pending.1 = next_bytes;
-            self.allocations.store(allocations, Ordering::Release);
-            self.memory.store(memory, Ordering::Release);
-            Ok(())
-        }
-        fn adopt(&self, bytes: u64) -> io::Result<()> {
-            let pending = self.pending_allocations.lock();
-            self.check()?;
-            self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current|
-                current.checked_add(bytes).filter(|next|
-                    next.checked_add(pending.1).is_some_and(|total| total <= self.memory_limit)))
-                .map(|_| ()).map_err(|_| Self::refuse())
-        }
-        fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-            let pending = self.pending_allocations.lock();
-            let previous = match self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                |current| current.checked_add(bytes)) {
-                Ok(previous) => previous,
-                Err(_) => return (0, Err(Self::refuse())),
             };
-            let result = if (previous + bytes).checked_add(pending.1)
-                .is_none_or(|total| total > self.memory_limit) {
-                Err(Self::refuse())
-            } else { self.check() };
-            (bytes, result)
+            let mut first_poll = true;
+            let cancellation = std::future::poll_fn(|context| {
+                if expired_deadline { return Poll::Pending; }
+                if std::mem::take(&mut first_poll) {
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    release();
+                    Poll::Ready(())
+                }
+            });
+            let completed = task.wait_measured(expired_deadline.then(Instant::now), cancellation, release)??;
+            assert!(terminal.load(Ordering::Acquire));
+            assert_eq!(completed, 3);
+            assert_eq!(meter.read.load(Ordering::Acquire), 3);
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         }
-        fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
-            let mut failure = self.allocation_failure.lock();
-            if failure.is_none() { *failure = Some(error); }
-            io::ErrorKind::OutOfMemory.into()
-        }
-        fn allocate_refcount_header(&self) -> io::Result<()> { Err(Self::refuse()) }
-        fn release(&self, bytes: u64) {
-            let _pending = self.pending_allocations.lock();
-            self.memory.fetch_sub(bytes, Ordering::AcqRel);
-        }
-        fn examine(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
-        fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
-        fn record_examination(&self, _: u64, _: u64) -> io::Result<()> { Ok(()) }
-        fn admit_bytes(&self, _: usize) -> io::Result<()> { self.check() }
-        fn admit_read(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
-        fn record_read(&self, _: usize) -> io::Result<()> { Err(Self::refuse()) }
-        fn admit_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
-        fn record_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
-        fn admit_write_operations(&self, additional: u64) -> io::Result<()> {
-            let held = self.held_operations.lock();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(additional))
-                .filter(|total| *total <= self.operation_limit)
-                .map(|_| ()).ok_or_else(Self::refuse)
-        }
-        fn record_write_operations(&self, completed: u64) -> io::Result<()> {
-            let held = self.held_operations.lock();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(completed))
-                .filter(|total| *total <= self.operation_limit).ok_or_else(Self::refuse)?;
-            self.operations.fetch_add(completed, Ordering::AcqRel);
-            Ok(())
-        }
-        fn admit_write(&self, maximum: usize) -> io::Result<()> {
-            let held = self.held_operations.lock();
-            self.admit_write_bytes(maximum)?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(1))
-                .filter(|total| *total <= self.operation_limit).ok_or_else(Self::refuse)?;
-            self.operations.fetch_add(1, Ordering::AcqRel);
-            Ok(())
-        }
-        fn record_write(&self, bytes: usize) -> io::Result<()> {
-            let held = self.held_bytes.lock();
-            self.written.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(bytes as u64))
-                .filter(|total| *total <= self.byte_limit).ok_or_else(Self::refuse)?;
-            self.written.fetch_add(bytes as u64, Ordering::AcqRel);
-            if self.cancel_after_write { self.cancelled.store(true, Ordering::Release); }
-            Ok(())
-        }
-        fn admit_durability(&self) -> io::Result<()> {
-            let held = self.held_operations.lock();
-            self.check()?;
-            self.operations.load(Ordering::Acquire).checked_add(*held)
-                .and_then(|total| total.checked_add(1))
-                .filter(|total| *total <= self.operation_limit).ok_or_else(Self::refuse)?;
-            self.operations.fetch_add(1, Ordering::AcqRel);
-            self.durability.fetch_add(1, Ordering::AcqRel);
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn write_byte_reservation_preserves_actual_prefix_and_refunds_unused_maximum() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("reserved-write-prefix");
-        let mut file = File::create(&path)?;
-        let meter = Arc::new(WriteBudgetMeter::new(4, 8));
-        let second_io_alias = meter.clone();
-        let mut bytes = NativeByteReservation::new(&*meter, NativeOperationKind::Write, 8)?;
-        assert_eq!(meter.written.load(Ordering::Acquire), 0);
-        assert!(second_io_alias.admit_write_bytes(1).is_err());
-        assert!(second_io_alias.admit_write(1).is_err());
-        let mut operation = NativeOperationReservation::new(&*meter, NativeOperationKind::Write, 1)?;
-        let (written, recorded) = operation.attempt(|| std::io::Write::write(&mut file, b"abc"));
-        recorded?;
-        let written = written?;
-        bytes.record(written)?;
-        assert_eq!(written, 3);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.written.load(Ordering::Acquire), 3);
-        second_io_alias.admit_write_bytes(5)?;
-        assert!(second_io_alias.admit_write_bytes(6).is_err());
-        assert_eq!(std::fs::read(&path)?, b"abc");
-        {
-            let _unused = NativeByteReservation::new(&*meter, NativeOperationKind::Write, 5)?;
-            assert!(second_io_alias.admit_write_bytes(1).is_err());
-        }
-        second_io_alias.admit_write_bytes(5)?;
-        meter.cancelled.store(true, Ordering::Release);
-        assert!(NativeByteReservation::new(&*meter, NativeOperationKind::Write, 1).is_err());
-        meter.cancelled.store(false, Ordering::Release);
-        let mut completion = NativeByteReservation::new(&*meter, NativeOperationKind::Write, 5)?;
-        meter.cancelled.store(true, Ordering::Release);
-        completion.record(0)?;
-        assert_eq!(meter.written.load(Ordering::Acquire), 3);
-        Ok(())
-    }
-
-    #[test]
-    fn write_reservation_withholds_completion_from_direct_callback() -> io::Result<()> {
-        let meter = WriteBudgetMeter::new(2, 8);
-        let mut request = NativeOperationReservation::new(&meter, NativeOperationKind::Write, 2)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        let (_, recorded) = request.attempt(|| {
-            assert!(meter.admit_write(1).is_err());
-            assert!(meter.record_write_operations(1).is_err());
-            assert!(meter.admit_durability().is_err());
-            meter.cancelled.store(true, Ordering::Release);
-        });
-        recorded?;
-        let (_, recorded) = request.attempt(|| ());
-        recorded?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(meter.durability.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn write_reservation_refunds_unused_immediate_failure_allowance() -> io::Result<()> {
-        let meter = WriteBudgetMeter::new(2, 8);
-        {
-            let mut request = NativeOperationReservation::new(&meter, NativeOperationKind::Write, 2)?;
-            let (failure, recorded) = request.attempt(|| Err::<(), _>(io::ErrorKind::PermissionDenied));
-            recorded?;
-            assert!(failure.is_err());
-            assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-            assert!(meter.admit_write(1).is_err());
-        }
-        meter.admit_write_bytes(8)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        meter.admit_write(1)?;
-        meter.record_write(1)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(meter.written.load(Ordering::Acquire), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn owned_request_tokens_cross_worker_and_drain_write_flush_after_cancellation() -> io::Result<()> {
-        use std::io::Write as _;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-credits");
-        let mut file = OpenOptions::new().create_new(true).read(true).write(true).open(&path)?;
-        let meter = Arc::new(WriteBudgetMeter::new(2, 3));
-        let mut write = OwnedNativeOperationReservation::new(
-            meter.clone(), NativeOperationKind::Write, 1,
-        )?;
-        let mut flush = OwnedNativeOperationReservation::new(
-            meter.clone(), NativeOperationKind::Durability, 1,
-        )?;
-        let mut bytes = OwnedNativeByteReservation::new(
-            meter.clone(), NativeOperationKind::Write, 3,
-        )?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(meter.durability.load(Ordering::Acquire), 0);
-        assert_eq!(meter.written.load(Ordering::Acquire), 0);
-        meter.cancelled.store(true, Ordering::Release);
-        let result = std::thread::spawn(move || -> io::Result<()> {
-            let (physical, recorded_write) = write.attempt(|| file.write(b"x"));
-            let count = physical?;
-            let recorded_bytes = bytes.record_partial(count);
-            let (physical_flush, recorded_flush) = flush.attempt(|| file.sync_data());
-            physical_flush?;
-            recorded_write?;
-            recorded_bytes?;
-            recorded_flush?;
-            Ok(())
-        }).join().expect("actual admitted worker does not panic");
-        result?;
-        assert_eq!(std::fs::read(&path)?, b"x");
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(meter.durability.load(Ordering::Acquire), 1);
-        assert_eq!(meter.written.load(Ordering::Acquire), 1);
-        assert_eq!(*meter.held_operations.lock(), 0);
-        assert_eq!(*meter.held_bytes.lock(), 0);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn owned_request_failure_refunds_only_unused_physical_allowance() -> io::Result<()> {
-        use std::io::Write as _;
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-readonly");
-        std::fs::write(&path, b"original")?;
-        let mut file = File::open(&path)?;
-        let meter = Arc::new(WriteBudgetMeter::new(2, 3));
-        let mut operation = OwnedNativeOperationReservation::new(
-            meter.clone(), NativeOperationKind::Write, 2,
-        )?;
-        let mut bytes = OwnedNativeByteReservation::new(
-            meter.clone(), NativeOperationKind::Write, 3,
-        )?;
-        let (physical, recorded) = operation.attempt(|| file.write(b"x"));
-        assert!(physical.is_err());
-        bytes.record(0)?;
-        recorded?;
-        assert_eq!(operation.remaining(), 1);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert!(meter.admit_write_operations(1).is_err());
-        drop(operation);
-        meter.admit_write_operations(1)?;
-        meter.admit_write_bytes(3)?;
-        assert_eq!(meter.written.load(Ordering::Acquire), 0);
-        assert_eq!(std::fs::read(&path)?, b"original");
         Ok(())
     }
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[allow(unsafe_code, reason = "Windows test opens its handle with FILE_FLAG_OVERLAPPED")]
+    #[allow(unsafe_code)]
     fn bounded_write_file(path: &Path, writable: bool) -> io::Result<NativeFile> {
         initialize_native_io_services()?;
         let mut options = OpenOptions::new();
@@ -7044,44 +4496,16 @@ mod tests {
     struct ObservedWriteCustody {
         bytes_dropped: Arc<AtomicBool>,
         retired: Arc<AtomicBool>,
-        meter: Arc<WriteBudgetMeter>,
+        meter: Arc<ReadBudgetMeter>,
         actual_prefix: u64,
     }
 
     impl Drop for ObservedWriteCustody {
         fn drop(&mut self) {
             assert!(self.bytes_dropped.load(Ordering::Acquire));
-            assert_eq!(self.meter.written.load(Ordering::Acquire), self.actual_prefix);
+            assert_eq!(self.meter.read.load(Ordering::Acquire), self.actual_prefix);
             self.retired.store(true, Ordering::Release);
         }
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_custody_retires_after_actual_partial_prefix() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("custodied-prefix");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let per_request = if cfg!(windows) { 2 } else { 1 };
-        let meter = Arc::new(WriteBudgetMeter::new(per_request, 1024 * 1024 + 7));
-        let bytes_dropped = Arc::new(AtomicBool::new(false));
-        let retired = Arc::new(AtomicBool::new(false));
-        let bytes = Bytes::from_owner(ObservedWriteBytes {
-            bytes: vec![0x5a; 1024 * 1024 + 7],
-            dropped: bytes_dropped.clone(),
-        });
-        let custody = ObservedWriteCustody {
-            bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
-            meter: meter.clone(), actual_prefix: 1024 * 1024,
-        };
-        assert!(complete_write(file.write_bounded_async_with_custody(
-            0, bytes, meter.clone(), custody,
-        )?).is_err());
-        assert!(retired.load(Ordering::Acquire));
-        assert_eq!(meter.operations.load(Ordering::Acquire), per_request);
-        assert_eq!(std::fs::read(&path)?, vec![0x5a; 1024 * 1024]);
-        Ok(())
     }
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -7092,7 +4516,7 @@ mod tests {
         File::create(&path)?;
         let file = bounded_write_file(&path, true)?;
         let per_request = if cfg!(windows) { 2 } else { 1 };
-        let meter = Arc::new(WriteBudgetMeter::new(per_request, 9));
+        let meter = Arc::new(ReadBudgetMeter { memory_limit: u64::MAX, ..ReadBudgetMeter::new(per_request, 9) });
         let bytes_dropped = Arc::new(AtomicBool::new(false));
         let retired = Arc::new(AtomicBool::new(false));
         let bytes = Bytes::from_owner(ObservedWriteBytes {
@@ -7105,19 +4529,18 @@ mod tests {
         let mut write = file.write_bounded_async_with_custody(
             0, bytes, meter.clone(), custody,
         )?;
-        let completed = write.state.clone();
+        let completed = write.state.as_ref().expect("pending write").clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.try_send(write.pending.take().expect("the real write is pending"))
             .map_err(|_| io::Error::other("write admission failed"))?;
         drop(write);
         assert!(!retired.load(Ordering::Acquire));
         assert!(!bytes_dropped.load(Ordering::Acquire));
-        let _ = receiver.recv().map_err(|_| io::Error::other("write disappeared"))?.run();
+        let _ = receiver.recv().map_err(|_| io::Error::from(io::ErrorKind::Other))?.run();
         completed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .result.take().expect("real write completes")?;
         assert!(retired.load(Ordering::Acquire));
         assert_eq!(std::fs::read(&path)?, b"persisted");
-        assert_eq!(meter.operations.load(Ordering::Acquire), per_request);
         drop(completed);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
@@ -7130,7 +4553,7 @@ mod tests {
         let path = temporary.path().join("custodied-denied");
         File::create(&path)?;
         let file = bounded_write_file(&path, true)?;
-        let mut budget = WriteBudgetMeter::new(2, 9);
+        let mut budget = ReadBudgetMeter { memory_limit: u64::MAX, ..ReadBudgetMeter::new(2, 9) };
         budget.memory_limit = 0;
         let meter = Arc::new(budget);
         let bytes_dropped = Arc::new(AtomicBool::new(false));
@@ -7144,122 +4567,8 @@ mod tests {
         };
         assert!(file.write_bounded_async_with_custody(0, bytes, meter.clone(), custody).is_err());
         assert!(retired.load(Ordering::Acquire));
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::read(&path)?, b"");
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_cancelled_custody_records_physical_prefix_before_retirement() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("custodied-cancel");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let per_request = if cfg!(windows) { 2 } else { 1 };
-        let mut budget = WriteBudgetMeter::new(per_request, 9);
-        budget.cancel_after_write = true;
-        let meter = Arc::new(budget);
-        let bytes_dropped = Arc::new(AtomicBool::new(false));
-        let retired = Arc::new(AtomicBool::new(false));
-        let bytes = Bytes::from_owner(ObservedWriteBytes {
-            bytes: b"persisted".to_vec(), dropped: bytes_dropped.clone(),
-        });
-        let custody = ObservedWriteCustody {
-            bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
-            meter: meter.clone(), actual_prefix: 9,
-        };
-        let error = complete_write(file.write_bounded_async_with_custody(
-            0, bytes, meter.clone(), custody,
-        )?).expect_err("actual transfer sets the cancellation control");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(retired.load(Ordering::Acquire));
-        assert_eq!(meter.operations.load(Ordering::Acquire), per_request);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert_eq!(std::fs::read(&path)?, b"persisted");
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_refusal_preserves_actual_physical_prefix() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("prefix");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let per_request = if cfg!(windows) { 2 } else { 1 };
-        let meter = Arc::new(WriteBudgetMeter::new(per_request, 1024 * 1024 + 7));
-        let bytes = Bytes::from(vec![0x5a; 1024 * 1024 + 7]);
-        let failure = complete_write(file.write_bounded_async(0, bytes, meter.clone())?);
-        assert!(failure.is_err());
-        assert_eq!(meter.written.load(Ordering::Acquire), 1024 * 1024);
-        assert_eq!(meter.operations.load(Ordering::Acquire), per_request);
-        assert_eq!(std::fs::read(&path)?, vec![0x5a; 1024 * 1024]);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_cancellation_records_completed_bytes() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("cancel");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let mut budget = WriteBudgetMeter::new(10, 10);
-        budget.cancel_after_write = true;
-        let meter = Arc::new(budget);
-        let error = complete_write(file.write_bounded_async(
-            0, Bytes::from_static(b"prefix"), meter.clone(),
-        )?).expect_err("observer must see cancellation");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(meter.written.load(Ordering::Acquire), 6);
-        assert_eq!(std::fs::read(path)?, b"prefix");
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_write_os_failure_records_only_issued_request() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("readonly");
-        std::fs::write(&path, b"unchanged")?;
-        let file = bounded_write_file(&path, false)?;
-        let meter = Arc::new(WriteBudgetMeter::new(2, 10));
-        assert!(complete_write(file.write_bounded_async(
-            0, Bytes::from_static(b"change"), meter.clone(),
-        )?).is_err());
-        assert_eq!(meter.written.load(Ordering::Acquire), 0);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(std::fs::read(path)?, b"unchanged");
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_sync_counts_actual_flush_and_unsupported_barrier() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("durable");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let meter = Arc::new(WriteBudgetMeter::new(1, 0));
-        complete_write(file.sync_bounded_async(Durability::Full, meter.clone())?)?;
-        assert_eq!(meter.durability.load(Ordering::Acquire), 1);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let error = complete_write(file.sync_bounded_async(
-                Durability::Barrier, meter.clone(),
-            )?).expect_err("barrier capability is absent");
-            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-            assert_eq!(meter.durability.load(Ordering::Acquire), 1);
-        }
-        let error = complete_write(file.sync_bounded_async(
-            Durability::Full, meter.clone(),
-        )?).expect_err("a second actual flush exceeds the one-call budget");
-        assert_eq!(error.kind(), io::ErrorKind::Other);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 1);
-        assert_eq!(meter.durability.load(Ordering::Acquire), 1);
         Ok(())
     }
 
@@ -7270,100 +4579,13 @@ mod tests {
         let path = temporary.path().join("memory");
         File::create(&path)?;
         let file = bounded_write_file(&path, true)?;
-        let mut budget = WriteBudgetMeter::new(10, 10);
+        let mut budget = ReadBudgetMeter { memory_limit: u64::MAX, ..ReadBudgetMeter::new(10, 10) };
         budget.memory_limit = 0;
         let meter = Arc::new(budget);
         assert!(file.write_bounded_async(
             0, Bytes::from_static(b"x"), meter.clone(),
         ).is_err());
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::metadata(path)?.len(), 0);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_control_uses_exact_held_handle_leaves() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("control");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let meter = Arc::new(WriteBudgetMeter::new(2, 0));
-        complete_write(file.control_bounded_async(|held, meter| {
-            set_len_measured(held, 17, meter)?;
-            sync_file_measured(held, Durability::Full, meter)
-        }, meter.clone())?)?;
-        assert_eq!(meter.operations.load(Ordering::Acquire), 2);
-        assert_eq!(meter.durability.load(Ordering::Acquire), 1);
-        assert_eq!(std::fs::metadata(path)?.len(), 17);
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_invalid_resize_performs_no_native_operation() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("invalid");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let meter = Arc::new(WriteBudgetMeter::new(0, 0));
-        let error = complete_write(file.set_len_bounded_async(u64::MAX, meter.clone())?)
-            .expect_err("invalid native length");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(meter.operations.load(Ordering::Acquire), 0);
-        assert_eq!(std::fs::metadata(path)?.len(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn completed_native_futures_reject_repoll() -> io::Result<()> {
-        fn finish<T>(future: &mut (impl Future<Output = io::Result<T>> + Unpin)) -> io::Result<T> {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let waker = completion_waker();
-            loop {
-                match Pin::new(&mut *future).poll(&mut Context::from_waker(&waker)) {
-                    Poll::Ready(result) => return result,
-                    Poll::Pending if Instant::now() < deadline => {
-                        std::thread::park_timeout(
-                            deadline.saturating_duration_since(Instant::now()),
-                        );
-                    }
-                    Poll::Pending => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "native future stalled",
-                        ));
-                    }
-                }
-            }
-        }
-
-        fn repoll_panics(future: &mut (impl Future + Unpin)) {
-            assert!(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _ = Pin::new(future).poll(&mut Context::from_waker(Waker::noop()));
-                }))
-                .is_err()
-            );
-        }
-
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("completed-native-futures"))?;
-        let mut read = read_batch_async(file.try_clone()?, vec![]);
-        assert!(finish(&mut read)?.is_empty());
-        repoll_panics(&mut read);
-
-        let mut write = write_all_batch_async(file, vec![]);
-        finish(&mut write)?;
-        repoll_panics(&mut write);
-
-        let mut host_task = run_blocking_io(|| 7);
-        assert_eq!(finish(&mut host_task)?, 7);
-        repoll_panics(&mut host_task);
         Ok(())
     }
 
@@ -7387,14 +4609,7 @@ mod tests {
         assert_eq!(&bytes[16..21], &[0x33; 5]);
         assert_eq!(read_at(&file, 21, &mut bytes)?, 0);
 
-        let mut range = RangeReader::new(&file, 15, 8);
-        let mut selected = Vec::new();
-        range.read_to_end(&mut selected)?;
-        assert_eq!(selected, [0, 0x33, 0x33, 0x33, 0x33, 0x33]);
-
-        complete_write(write_all_batch_async(
-            file.try_clone()?,
-            vec![
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                 OwnedWrite {
                     offset: 32,
                     bytes: Bytes::from_static(&[0x44; 5]),
@@ -7411,11 +4626,9 @@ mod tests {
         assert_eq!(&batch[5..16], &[0; 11]);
         assert_eq!(&batch[16..], &[0x55; 7]);
 
-        // Native batch reads are positional even after another handle sharing
-        // the open file description has moved its cursor to EOF.
         let mut cursor = file.try_clone()?;
         cursor.seek(SeekFrom::End(0))?;
-        let selected = complete_read(read_batch_async(
+        let selected = complete(read_batch_async(
             file.try_clone()?,
             vec![OwnedRead {
                 offset: 16,
@@ -7425,10 +4638,7 @@ mod tests {
         assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
         assert_eq!(cursor.stream_position()?, 55);
 
-        // Batch writes must be independent of the shared file cursor too.
-        complete_write(write_all_batch_async(
-            file.try_clone()?,
-            vec![OwnedWrite {
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
                 offset: 4,
                 bytes: Bytes::from_static(b"cursor-independent"),
             }],
@@ -7442,19 +4652,14 @@ mod tests {
 
     #[test]
     fn batch_larger_than_native_queue_preserves_every_write() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("large-batch"))?;
+        let file = tempfile::tempfile()?;
         let writes: Vec<_> = (0_u8..17)
             .map(|value| OwnedWrite {
                 offset: u64::from(value) * 4,
                 bytes: Bytes::from(vec![value; 3]),
             })
             .collect();
-        complete_write(write_all_batch_async(file.try_clone()?, writes))?;
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(writes))?;
 
         let mut actual = [0_u8; 67];
         assert_eq!(read_at(&file, 0, &mut actual)?, actual.len());
@@ -7478,9 +4683,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         std::fs::write(&path, b"unchanged")?;
-        let result = complete_write(write_all_batch_async(
-            file,
-            vec![
+        let result = complete(NativeFile::from_file(file)?.write_all_batch_async(vec![
                 OwnedWrite {
                     offset: 0,
                     bytes: Bytes::from_static(b"first"),
@@ -7496,48 +4699,12 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn completed_batches_preserve_ring_reuse() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("ring-reuse"))?;
-        for value in 0_u16..256 {
-            complete_write(write_all_batch_async(
-                file.try_clone()?,
-                vec![OwnedWrite {
-                    offset: u64::from(value),
-                    bytes: Bytes::copy_from_slice(&[value.to_le_bytes()[0]]),
-                }],
-            ))?;
-        }
-        let contents = complete_read(read_batch_async(
-            file,
-            vec![OwnedRead {
-                offset: 0,
-                length: 256,
-            }],
-        ))?;
-        assert_eq!(contents.first().map(Bytes::len), Some(256));
-        Ok(())
-    }
-
     #[cfg(windows)]
     #[test]
     fn native_write_batch_preserves_empty_writes_and_port_reuse() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("write-batch-reuse"))?;
+        let file = tempfile::tempfile()?;
         for value in 0_u8..8 {
-            complete_write(write_all_batch_async(
-                file.try_clone()?,
-                vec![
+            complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                     OwnedWrite {
                         offset: u64::from(value) * 2,
                         bytes: Bytes::copy_from_slice(&[value]),
@@ -7557,71 +4724,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn owned_write_outlives_the_callers_file_and_buffers() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-write");
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        let write = write_all_batch_async(
-            file,
-            vec![OwnedWrite {
-                offset: 3,
-                bytes: Bytes::from_static(b"owned"),
-            }],
-        );
-        complete_write(write)?;
-        let mut actual = Vec::new();
-        File::open(path)?.read_to_end(&mut actual)?;
-        assert_eq!(actual, [0, 0, 0, b'o', b'w', b'n', b'e', b'd']);
-        Ok(())
-    }
-
-    #[test]
-    fn owned_native_file_preserves_positional_contract() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-native-file");
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        let native = NativeFile::from_file(file)?;
-        complete_write(native.set_len_async(32))?;
-        complete_write(native.write_all_batch_async(vec![OwnedWrite {
-            offset: 7,
-            bytes: Bytes::from_static(b"native"),
-        }]))?;
-        complete_write(native.write_all_batch_async(vec![
-            OwnedWrite {
-                offset: 0,
-                bytes: Bytes::from_static(b"one"),
-            },
-            OwnedWrite {
-                offset: 20,
-                bytes: Bytes::from_static(b"two"),
-            },
-        ]))?;
-        complete_write(native.sync_async(Durability::Full))?;
-
-        let actual = complete_read(native.read_batch_async(vec![OwnedRead {
-            offset: 0,
-            length: 32,
-        }]))?
-        .remove(0);
-        assert_eq!(actual.len(), 32);
-        assert_eq!(actual.get(..3), Some(b"one".as_slice()));
-        assert_eq!(actual.get(7..13), Some(b"native".as_slice()));
-        assert_eq!(actual.get(20..23), Some(b"two".as_slice()));
-        Ok(())
-    }
-
-    /// An inline thread serves an overlapped handle's positional I/O in
-    /// place with exactly the driver's results, before and after the
-    /// driver has attached that handle, and neither moves the other.
+    /// An inline thread serves an overlapped handle's positional I/O in place with exactly the driver's results, before and after the driver has attached that handle, and neither moves the other.
     #[cfg(windows)]
     #[test]
     #[allow(
@@ -7655,29 +4758,27 @@ mod tests {
             Bytes::new(),
         ];
         let write = |offset, bytes| {
-            complete_write(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
+            complete(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
         };
         {
             let _inline = InlineBlocking::enter();
             write(0, Bytes::from_static(b"abcdefgh"))?;
             write(10, Bytes::from_static(b"xy"))?;
-            assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+            assert_eq!(complete(native.read_batch_async(reads()))?, expected);
         }
-        // The driver attaches the handle and sees exactly the same file.
-        assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+        assert_eq!(complete(native.read_batch_async(reads()))?, expected);
         write(0, Bytes::from_static(b"A"))?;
         {
-            // In-place requests on an attached handle post nothing to its port.
             let _inline = InlineBlocking::enter();
             write(1, Bytes::from_static(b"B"))?;
-            let read = complete_read(native.read_batch_async(vec![OwnedRead {
+            let read = complete(native.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 3,
             }]))?;
             assert_eq!(read, [Bytes::from_static(b"ABc")]);
         }
         assert_eq!(
-            complete_read(native.read_batch_async(vec![OwnedRead {
+            complete(native.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 3,
             }]))?,
@@ -7698,7 +4799,7 @@ mod tests {
         let native = NativeFile::from_file(file)?;
         let resize = native.set_len_async(64);
         drop(native);
-        complete_write(resize)?;
+        complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 64);
         Ok(())
     }
@@ -7718,8 +4819,6 @@ mod tests {
             .open(&path)?;
         let native = NativeFile::from_file(file)?;
         drop(native);
-        // No unrelated admission or registry sweep is required to release
-        // the caller's exclusive Windows share lock.
         File::open(&path)?;
         Ok(())
     }
@@ -7737,16 +4836,9 @@ mod tests {
                 .open(&path)?,
         )?;
         let completion = FileCompletion::new(
-            Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: false,
-                result: None,
-                panic: None,
-                waker: None,
-                _allocation: None,
-            })),
+            Arc::new(Mutex::new(CompletionState::<()>::default())),
             None,
-            Some(Arc::clone(&native.uncertain)),
-            Some(Arc::clone(&native.tail)),
+            Some(Arc::clone(&native.health)),
             obs::OperationSpan::new(tracing::Span::none()),
         )
         .for_file(Arc::clone(&native.file));
@@ -7755,49 +4847,14 @@ mod tests {
         )));
         drop(native);
         let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?)?;
-        assert!(alias.uncertain.load(Ordering::Acquire));
+        assert!(alias.health.uncertain.load(Ordering::Acquire));
         assert!(
-            complete_read(alias.read_batch_async(vec![OwnedRead {
+            complete(alias.read_batch_async(vec![OwnedRead {
                 offset: 0,
                 length: 1,
             }]))
             .is_err()
         );
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn concurrent_alias_registration_uses_one_gate() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("concurrent-identity");
-        std::fs::write(&path, b"shared")?;
-        let start = Arc::new(std::sync::Barrier::new(16));
-        let mut handles = Vec::new();
-        for _ in 0..16 {
-            let path = path.clone();
-            let start = Arc::clone(&start);
-            handles.push(std::thread::spawn(move || {
-                let file = OpenOptions::new().read(true).write(true).open(path)?;
-                start.wait();
-                NativeFile::from_file(file)
-            }));
-        }
-        let mut files = Vec::new();
-        for handle in handles {
-            files.push(
-                handle
-                    .join()
-                    .map_err(|_| io::Error::other("registration panicked"))??,
-            );
-        }
-        assert_eq!(files.len(), 16);
-        if let Some(first) = files.first() {
-            for file in files.iter().skip(1) {
-                assert!(Arc::ptr_eq(&first.tail, &file.tail));
-                assert!(Arc::ptr_eq(&first.uncertain, &file.uncertain));
-            }
-        }
         Ok(())
     }
 
@@ -7817,14 +4874,14 @@ mod tests {
         std::fs::hard_link(&path, &alias)?;
         let second =
             NativeFile::from_file(OpenOptions::new().read(true).write(true).open(&alias)?)?;
-        assert!(Arc::ptr_eq(&first.tail, &second.tail));
-        assert!(Arc::ptr_eq(&first.uncertain, &second.uncertain));
-        poison_file_health(&first.file, &first.uncertain);
+        assert!(Arc::ptr_eq(&first.health.tail, &second.health.tail));
+        assert!(Arc::ptr_eq(&first.health.uncertain, &second.health.uncertain));
+        poison_file_health(&first.file, &first.health.uncertain);
         drop(first);
-        let result = complete_write(second.set_len_async(1));
+        let result = complete(second.set_len_async(1));
         assert!(result.is_err(), "an alias bypassed an uncertain completion");
         drop(second);
-        let bare_result = complete_read(read_batch_async(
+        let bare_result = complete(read_batch_async(
             OpenOptions::new().read(true).open(&path)?,
             vec![OwnedRead {
                 offset: 0,
@@ -7850,7 +4907,7 @@ mod tests {
                 .write(true)
                 .open(temporary.path().join("clean"))?,
         )?;
-        complete_write(independent.set_len_async(1))?;
+        complete(independent.set_len_async(1))?;
         Ok(())
     }
 
@@ -7869,7 +4926,7 @@ mod tests {
         )?;
 
         std::fs::hard_link(&path, &alias_path)?;
-        let tail = Arc::downgrade(&native.tail);
+        let tail = Arc::downgrade(&native.health.tail);
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel::<()>(1);
         let mut pending = native.control_async(move |_| {
@@ -7896,10 +4953,10 @@ mod tests {
             &tail
                 .upgrade()
                 .ok_or_else(|| io::Error::other("admitted job lost its alias tail"))?,
-            &alias.tail
+            &alias.health.tail
         ));
         release_sender.send(()).map_err(io::Error::other)?;
-        complete_write(pending)?;
+        complete(pending)?;
         Ok(())
     }
 
@@ -7920,14 +4977,11 @@ mod tests {
         }]);
         let mut sync = native.sync_async(Durability::Full);
         let waker = completion_waker();
-        // Polled first, the sync is admitted ahead of the unpolled write and
-        // completes without it. A fast worker may finish it before this first
-        // poll returns, so either outcome of that poll is correct.
         match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => result?,
-            Poll::Pending => complete_write(sync)?,
+            Poll::Pending => complete(sync)?,
         }
-        complete_write(write)?;
+        complete(write)?;
         assert_eq!(std::fs::read(&path)?, b"ordered");
 
         let discarded = native.write_all_batch_async(vec![OwnedWrite {
@@ -7936,7 +4990,7 @@ mod tests {
         }]);
         let resize = native.set_len_async(16);
         drop(discarded);
-        complete_write(resize)?;
+        complete(resize)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 16);
         Ok(())
     }
@@ -7955,26 +5009,20 @@ mod tests {
         )?;
         let prior = Arc::new(OperationFence::default());
         *poisoned
-            .tail
+            .health.tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
-        let state = Mutex::new(CompletionState::<()> {
-            task_pending: false,
-            result: None,
-            panic: None,
-            waker: None,
-            _allocation: None,
-        });
-        poison_file_health(&poisoned.file, &poisoned.uncertain);
+        let state = Mutex::new(CompletionState::<()>::default());
+        poison_file_health(&poisoned.file, &poisoned.health.uncertain);
         finish_file_job(
             &state,
             Err(linux::uncertain_completion(io::Error::other(
                 "injected ambiguous completion",
             ))),
             Some(prior),
-            Some(&poisoned.uncertain),
+            Some(&poisoned.health.uncertain),
         );
-        let Err(error) = complete_write(poisoned.set_len_async(4)) else {
+        let Err(error) = complete(poisoned.set_len_async(4)) else {
             return Err(io::Error::other(
                 "an uncertain prior operation did not fence its successor",
             ));
@@ -7990,21 +5038,14 @@ mod tests {
                 .write(true)
                 .open(&unrelated_path)?,
         )?;
-        complete_write(unrelated.set_len_async(4))?;
+        complete(unrelated.set_len_async(4))?;
         assert_eq!(std::fs::metadata(unrelated_path)?.len(), 4);
         Ok(())
     }
 
     #[test]
     fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let native = NativeFile::from_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("ordered-control"))?,
-        )?;
+        let native = NativeFile::from_file(tempfile::tempfile()?)?;
         let mut write = native.write_all_batch_async(vec![OwnedWrite {
             offset: 0,
             bytes: Bytes::from_static(b"ready"),
@@ -8037,10 +5078,10 @@ mod tests {
                 .send(bytes)
                 .map_err(|error| io::Error::other(error.to_string()))
         });
-        complete_write(control)?;
+        complete(control)?;
         assert_eq!(receiver.recv().map_err(io::Error::other)?, *b"ready");
         if !write_completed {
-            complete_write(write)?;
+            complete(write)?;
         }
         Ok(())
     }
@@ -8058,48 +5099,11 @@ mod tests {
         )?;
         let never_polled = native.set_len_async(8);
         let last = native.set_len_async(32);
-        complete_write(last)?;
+        complete(last)?;
         assert_eq!(std::fs::metadata(&path)?.len(), 32);
         drop(never_polled);
         assert_eq!(std::fs::metadata(&path)?.len(), 32);
         Ok(())
-    }
-
-    #[test]
-    fn skipped_fence_chain_completes_iteratively() -> io::Result<()> {
-        let first = Arc::new(OperationFence::default());
-        let mut prior = Arc::clone(&first);
-        for _ in 0..100_000 {
-            let skipped = Arc::new(OperationFence::default());
-            skipped.complete_after(Some(prior));
-            prior = skipped;
-        }
-        first.complete();
-        assert!(prior.ready_or_register(Waker::noop()));
-        Ok(())
-    }
-
-    #[test]
-    fn skipped_fence_does_not_wake_a_dropped_waiter() {
-        struct CountWake(AtomicU64);
-        impl Wake for CountWake {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let predecessor = Arc::new(OperationFence::default());
-        let skipped = Arc::new(OperationFence::default());
-        let count = Arc::new(CountWake(AtomicU64::new(0)));
-        let waker = Waker::from(Arc::clone(&count));
-        assert!(!predecessor.ready_or_register(&waker));
-        skipped.complete_after(Some(Arc::clone(&predecessor)));
-        predecessor.complete();
-        assert_eq!(count.0.load(Ordering::Relaxed), 0);
-        assert!(skipped.ready_or_register(Waker::noop()));
     }
 
     #[test]
@@ -8151,13 +5155,8 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(|error| io::Error::other(error.to_string()))?;
         }
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("independent-native-io"))?;
-        complete_read(read_batch_async(
+        let file = tempfile::tempfile()?;
+        complete(read_batch_async(
             file,
             vec![OwnedRead {
                 offset: 0,
@@ -8192,14 +5191,9 @@ mod tests {
 
     #[test]
     fn native_read_batch_preserves_order_and_short_reads() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("read-batch"))?;
+        let file = tempfile::tempfile()?;
         write_all_at(&file, 0, b"abcdefgh")?;
-        let reads = complete_read(read_batch_async(
+        let reads = complete(read_batch_async(
             file,
             vec![
                 OwnedRead {
@@ -8221,51 +5215,6 @@ mod tests {
 
     #[cfg(target_vendor = "apple")]
     #[test]
-    fn native_batches_reject_all_invalid_offsets_before_submission() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("invalid-offset-batch");
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        write_all_at(&file, 0, b"stable")?;
-
-        let read = complete_read(read_batch_async(
-            file.try_clone()?,
-            vec![
-                OwnedRead {
-                    offset: 0,
-                    length: 1,
-                },
-                OwnedRead {
-                    offset: u64::MAX,
-                    length: 1,
-                },
-            ],
-        ));
-        assert!(matches!(read, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-
-        let write = complete_write(write_all_batch_async(
-            file,
-            vec![
-                OwnedWrite {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"changed"),
-                },
-                OwnedWrite {
-                    offset: u64::MAX,
-                    bytes: Bytes::from_static(b"x"),
-                },
-            ],
-        ));
-        assert!(matches!(write, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-        assert_eq!(std::fs::read(path)?, b"stable");
-        Ok(())
-    }
-
-    #[cfg(target_vendor = "apple")]
-    #[test]
     fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("unlinked-open-file");
@@ -8275,15 +5224,13 @@ mod tests {
             .write(true)
             .open(&path)?;
         std::fs::remove_file(path)?;
-        complete_write(write_all_batch_async(
-            file.try_clone()?,
-            vec![OwnedWrite {
+        complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![OwnedWrite {
                 offset: 3,
                 bytes: Bytes::from_static(b"kept"),
             }],
         ))?;
         assert_eq!(
-            complete_read(read_batch_async(
+            complete(read_batch_async(
                 file,
                 vec![OwnedRead {
                     offset: 3,
@@ -8295,9 +5242,8 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn io_uring_rejects_cursor_aliases_before_any_submission() -> io::Result<()> {
+    fn invalid_positional_batches_leave_contents_and_cursor_unchanged() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("invalid-io-uring-offset");
         let mut file = OpenOptions::new()
@@ -8318,7 +5264,7 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
         assert!(matches!(
-            complete_read(read_batch_async(
+            complete(read_batch_async(
                 file.try_clone()?,
                 vec![
                     OwnedRead {
@@ -8334,9 +5280,7 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
         assert!(matches!(
-            complete_write(write_all_batch_async(
-                file.try_clone()?,
-                vec![
+            complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                     OwnedWrite {
                         offset: 0,
                         bytes: Bytes::from_static(b"changed"),
@@ -8355,28 +5299,6 @@ mod tests {
     }
 
     #[test]
-    fn owned_read_outlives_the_callers_file_and_request() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("owned-read");
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(path)?;
-        write_all_at(&file, 0, b"abcdefgh")?;
-        let read = read_batch_async(
-            file,
-            vec![OwnedRead {
-                offset: 2,
-                length: 4,
-            }],
-        );
-        let actual = complete_read(read)?;
-        assert_eq!(actual, [Bytes::from_static(b"cdef")]);
-        Ok(())
-    }
-
-    #[test]
     fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("detached-write");
@@ -8385,9 +5307,7 @@ mod tests {
             .read(true)
             .write(true)
             .open(&path)?;
-        let mut write = write_all_batch_async(
-            file,
-            vec![OwnedWrite {
+        let mut write = NativeFile::from_file(file)?.write_all_batch_async(vec![OwnedWrite {
                 offset: 0,
                 bytes: Bytes::from_static(b"persisted"),
             }],
@@ -8397,7 +5317,7 @@ mod tests {
             .pending
             .take()
             .ok_or_else(|| io::Error::other("write was not pending admission"))?;
-        let completed = Arc::clone(&write.state);
+        let completed = Arc::clone(write.state.as_ref().expect("pending write"));
         sender
             .try_send(admitted)
             .map_err(|_| io::Error::other("write admission failed"))?;
@@ -8434,11 +5354,6 @@ mod tests {
 
     #[test]
     fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
-        enum FirstPoll {
-            Ready(io::Result<Vec<Bytes>>),
-            Pending(Box<ReadBatch>),
-        }
-
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("admission-drop");
         let file = OpenOptions::new()
@@ -8456,33 +5371,17 @@ mod tests {
                     length: 1,
                 }],
             );
-            reads.push(
-                match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
-                    Poll::Ready(result) => FirstPoll::Ready(result),
-                    Poll::Pending => FirstPoll::Pending(Box::new(read)),
-                },
-            );
-        }
-        for read in &reads {
-            if let FirstPoll::Ready(result) = read {
-                match result {
-                    Ok(completed) => assert_eq!(completed, &[Bytes::from_static(b"x")]),
-                    Err(error) => {
-                        return Err(io::Error::new(
-                            error.kind(),
-                            format!("initial native read failed: {error}"),
-                        ));
-                    }
+            reads.push(match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
+                Poll::Ready(result) => {
+                    assert_eq!(result?, [Bytes::from_static(b"x")]);
+                    None
                 }
-            }
+                Poll::Pending => Some(read),
+            });
         }
         reads.truncate(8);
-        for read in reads {
-            let completed = match read {
-                FirstPoll::Ready(result) => result?,
-                FirstPoll::Pending(read) => complete_read(*read)?,
-            };
-            assert_eq!(completed, [Bytes::from_static(b"x")]);
+        for read in reads.into_iter().flatten() {
+            assert_eq!(complete(read)?, [Bytes::from_static(b"x")]);
         }
         let final_read = read_batch_async(
             file,
@@ -8491,152 +5390,218 @@ mod tests {
                 length: 1,
             }],
         );
-        assert_eq!(complete_read(final_read)?, [Bytes::from_static(b"x")]);
+        assert_eq!(complete(final_read)?, [Bytes::from_static(b"x")]);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
+        let file = tempfile::tempfile()?;
+        write_all_at(&file, 0, b"abc")?;
+        let reads = complete(read_batch_async(
+            file.try_clone()?,
+            vec![
+                OwnedRead {
+                    offset: 0,
+                    length: 0,
+                },
+                OwnedRead {
+                    offset: 3,
+                    length: 4,
+                },
+                OwnedRead {
+                    offset: 30,
+                    length: 4,
+                },
+            ],
+        ))?;
+        assert_eq!(reads, [Bytes::new(), Bytes::new(), Bytes::new()]);
+        for (offset, expected) in b"abc".iter().copied().enumerate() {
+            let repeated = complete(read_batch_async(
+                file.try_clone()?,
+                vec![OwnedRead {
+                    offset: offset as u64,
+                    length: 1,
+                }],
+            ))?;
+            assert_eq!(repeated, [Bytes::copy_from_slice(&[expected])]);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_read_batch_windows_requests_beyond_the_ring() -> io::Result<()> {
+        let file = tempfile::tempfile()?;
+        let expected: Vec<u8> = (0..17).collect();
+        write_all_at(&file, 0, &expected)?;
+        let requests = (0_u64..17)
+            .map(|offset| OwnedRead { offset, length: 1 })
+            .collect();
+        let actual = complete(read_batch_async(file, requests))?;
+        assert_eq!(
+            actual,
+            expected
+                .into_iter()
+                .map(|value| Bytes::copy_from_slice(&[value]))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_read_batch_windows_one_range_beyond_the_ring() -> io::Result<()> {
+        let file = tempfile::tempfile()?;
+        let expected = Bytes::from(vec![0x69; 16 * 1024 * 1024 + 1]);
+        write_all_at(&file, 3, &expected)?;
+        let actual = complete(read_batch_async(
+            file,
+            vec![OwnedRead {
+                offset: 3,
+                length: expected.len(),
+            }],
+        ))?;
+        assert_eq!(actual, [expected]);
+        Ok(())
+    }
+    fn prepared_metadata_task(
+        file: File, meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<NativeCompletion<io::Result<u64>>> {
+        let mut operation = OwnedNativeOperationReservation::new(
+            Arc::clone(&meter), NativeOperationKind::Read, 1,
+        )?;
+        prepare_blocking_io_measured(move || {
+            let (result, recorded) = operation.attempt(|| file.metadata().map(|metadata| metadata.len()));
+            result.and_then(|length| recorded.map(|()| length))
+        }, meter)
+    }
+
+    #[test]
+    fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let file = tempfile::tempfile()?;
+        file.set_len(17)?;
+        let meter = Arc::new(ReadBudgetMeter::new(1, 0));
+        let task = prepared_metadata_task(file, meter.clone())?;
+        assert!(meter.memory.load(Ordering::Acquire) > 0);
+        let stages = meter.used_allocations.load(Ordering::Acquire);
+        meter.deny_allocations.store(true, Ordering::Release);
+        assert_eq!(task.wait_measured(None, std::future::pending(), || {})??, 17);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        for accepted in 0..stages {
+            let mut limits = ReadBudgetMeter::new(1, 0);
+            limits.allocation_limit = accepted;
+            let denied = Arc::new(limits);
+            assert!(prepared_metadata_task(tempfile::tempfile()?, denied.clone()).is_err());
+            assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+        }
         Ok(())
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered scenario keeps each step next to the state it checks"
-    )]
-    fn bounded_native_admission_is_work_conserving_and_cancellation_wakes_the_successor()
+    fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     -> io::Result<()> {
-        use std::sync::atomic::AtomicUsize;
-
-        struct CountWake(AtomicUsize);
-
-        impl Wake for CountWake {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        fn job(file: &File) -> io::Result<NativeJob> {
-            Ok(NativeJob::Read {
-                file: Arc::new(NativeFilePayload::unmetered(file.try_clone()?)),
-                reads: vec![OwnedRead {
-                    offset: 0,
-                    length: 1,
-                }],
-                span: obs::OperationSpan::new(tracing::Span::none()),
-                #[cfg(windows)]
-                overlapped: false,
-                tail: None,
-                uncertain: None,
-                state: Arc::new(Mutex::new(CompletionState {
-                    task_pending: false,
-                    result: None,
-                    panic: None,
-                    waker: None,
-                    _allocation: None,
-                })),
-                completion: None,
-                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-                _health: None,
-            })
-        }
-
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("fifo-admission"))?;
-        write_all_at(&file, 0, b"x")?;
+        initialize_native_io_services()?;
+        let limits = ReadBudgetMeter::new(1, 0);
+        let observed = Arc::new(limits);
+        let file = tempfile::tempfile()?;
+        file.set_len(23)?;
+        let mut task = prepared_metadata_task(file, observed.clone())?;
+        let prepared_bytes = observed.memory.load(Ordering::Acquire);
+        observed.deny_allocations.store(true, Ordering::Release);
         let (sender, receiver) = mpsc::sync_channel(1);
-        let workers = NativeWorkers {
-            sender,
-            admission: Arc::new(Mutex::new(AdmissionState::new())),
-        };
-        workers
-            .sender
-            .try_send(job(&file)?)
-            .map_err(|_| io::Error::other("failed to saturate test queue"))?;
-        workers
-            .admission
-            .lock()
-            .map_err(|_| io::Error::other("admission mutex poisoned"))?
-            .queued_jobs += 1;
+        let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
+        workers.sender.try_send(NativeJob::Task {
+            operation: Box::new(|| ()), meter: None,
+            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
+            _allocation: None,
+        }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
+        workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
+        let context = Context::from_waker(Waker::noop());
+        assert!(matches!(poll_submission_with(
+            &workers, &mut task.pending, &mut task.waiter, &context,
+        ), Poll::Pending));
+        assert_eq!(observed.memory.load(Ordering::Acquire), prepared_bytes);
+        let filler = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = filler.run();
+        assert!(matches!(poll_submission_with(
+            &workers, &mut task.pending, &mut task.waiter, &context,
+        ), Poll::Ready(Ok(()))));
+        drop(task);
+        assert!(observed.memory.load(Ordering::Acquire) > 0,
+            "accepted job owns original completion and exact closure beyond observer drop");
+        let accepted = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = accepted.run();
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
 
-        let mut first = Some(job(&file)?);
-        let mut first_waiter = None;
-        let mut second = Some(job(&file)?);
-        let mut second_waiter = None;
-        let noop = Waker::noop();
-        let context = Context::from_waker(noop);
-        assert!(matches!(
-            poll_submission_with(&workers, &mut first, &mut first_waiter, &context),
-            Poll::Pending
-        ));
-        assert!(matches!(
-            poll_submission_with(&workers, &mut second, &mut second_waiter, &context),
-            Poll::Pending
-        ));
-        let _ = receiver
-            .recv()
-            .map_err(|_| io::Error::other("queue closed"))?;
-        notify_capacity_released(&workers.admission);
-        assert!(matches!(
-            poll_submission_with(&workers, &mut second, &mut second_waiter, &context),
-            Poll::Ready(Ok(()))
-        ));
-        assert!(matches!(
-            poll_submission_with(&workers, &mut first, &mut first_waiter, &context),
-            Poll::Pending
-        ));
-        let _ = receiver
-            .recv()
-            .map_err(|_| io::Error::other("queue closed"))?;
-        notify_capacity_released(&workers.admission);
-        assert!(matches!(
-            poll_submission_with(&workers, &mut first, &mut first_waiter, &context),
-            Poll::Ready(Ok(()))
-        ));
-        let _ = receiver
-            .recv()
-            .map_err(|_| io::Error::other("queue closed"))?;
-        notify_capacity_released(&workers.admission);
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        struct HeldFile {
+            file: Option<File>,
+            entered: mpsc::SyncSender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Drop for HeldFile {
+            fn drop(&mut self) {
+                self.entered.send(()).expect("actual payload-drop observer remains owned");
+                self.release.recv().expect("actual destructor release remains owned");
+                drop(self.file.take());
+            }
+        }
+        initialize_native_io_services()?;
+        let file = tempfile::tempfile()?;
+        let fd = file.as_raw_fd();
+        let (entered, entered_drop) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let held = HeldFile { file: Some(file), entered, release: released };
+        let policy = ReadBudgetMeter::new(0, 0);
+        let observer = Arc::new(policy);
+        let mut task = prepare_blocking_io_measured(move || { drop(held); }, observer.clone())?;
+        let prepared = observer.memory.load(Ordering::Acquire);
+        let job = task.pending.take().expect("same canonical prepared ingress");
+        observer.cancelled.store(true, Ordering::Release);
+        let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
+        entered_drop.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
+        assert!(Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert_eq!(observer.memory.load(Ordering::Acquire), prepared,
+            "the real closure allocation remains owned while its payload destructor is pending");
+        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1,
+            "the original held file remains physically open before destructor release");
+        release.send(()).map_err(io::Error::other)?;
+        worker.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+        match Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
+            _ => panic!("the actual terminal admission error must now be observable"),
+        }
+        assert!(observer.memory.load(Ordering::Acquire) < prepared,
+            "job backing retires before terminal publication");
+        drop(task);
+        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
 
-        workers
-            .sender
-            .try_send(job(&file)?)
-            .map_err(|_| io::Error::other("failed to saturate cancellation queue"))?;
-        workers
-            .admission
-            .lock()
-            .map_err(|_| io::Error::other("admission mutex poisoned"))?
-            .queued_jobs += 1;
-        let mut cancelled = Some(job(&file)?);
-        let mut cancelled_waiter = None;
-        assert!(matches!(
-            poll_submission_with(&workers, &mut cancelled, &mut cancelled_waiter, &context),
-            Poll::Pending
-        ));
-        let wake_count = Arc::new(CountWake(AtomicUsize::new(0)));
-        let successor_waker = Waker::from(Arc::clone(&wake_count));
-        let successor_context = Context::from_waker(&successor_waker);
-        let mut successor = Some(job(&file)?);
-        let mut successor_waiter = None;
-        assert!(matches!(
-            poll_submission_with(
-                &workers,
-                &mut successor,
-                &mut successor_waiter,
-                &successor_context
-            ),
-            Poll::Pending
-        ));
-        remove_capacity_waiter(&workers, cancelled_waiter.take());
-        assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
-        assert!(workers.admission.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner).head.as_ref()
-            .is_some_and(|head| successor_waiter.as_ref()
-                .is_some_and(|successor| Arc::ptr_eq(head, successor))));
+    #[test]
+    fn observed_host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
+        initialize_native_io_services()?;
+        let meter = Arc::new(ReadBudgetMeter::new(0, 0));
+        let payload: Box<dyn std::any::Any + Send> = Box::new(0x5a5a_u64);
+        let address = payload.as_ref() as *const dyn std::any::Any as *const () as usize;
+        let task = prepare_blocking_io_measured(move || -> () { std::panic::resume_unwind(payload) }, meter.clone())?;
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            task.wait_measured(None, std::future::pending(), || {})
+        })).expect_err("original panic reaches observer");
+        assert_eq!(observed.downcast_ref::<u64>(), Some(&0x5a5a));
+        assert_eq!(observed.as_ref() as *const dyn std::any::Any as *const () as usize, address);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
@@ -8662,9 +5627,7 @@ mod tests {
         };
         let job = || NativeJob::Task {
             operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> {
-                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
-            })),
+            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
             _allocation: None,
         };
         workers
@@ -8718,221 +5681,106 @@ mod tests {
         ));
         let _ = receiver.recv().map_err(io::Error::other)?;
         notify_capacity_released(&workers.admission);
-        assert_eq!(
-            workers
-                .admission
-                .lock()
-                .map_err(|_| io::Error::other("admission mutex poisoned"))?
-                .queued_jobs,
-            0
-        );
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("read-batch-eof"))?;
-        write_all_at(&file, 0, b"abc")?;
-        let reads = complete_read(read_batch_async(
-            file.try_clone()?,
-            vec![
-                OwnedRead {
-                    offset: 0,
-                    length: 0,
-                },
-                OwnedRead {
-                    offset: 3,
-                    length: 4,
-                },
-                OwnedRead {
-                    offset: 30,
-                    length: 4,
-                },
-            ],
-        ))?;
-        assert_eq!(reads, [Bytes::new(), Bytes::new(), Bytes::new()]);
-        for (offset, expected) in b"abc".iter().copied().enumerate() {
-            let repeated = complete_read(read_batch_async(
-                file.try_clone()?,
-                vec![OwnedRead {
-                    offset: offset as u64,
-                    length: 1,
-                }],
-            ))?;
-            assert_eq!(repeated, [Bytes::copy_from_slice(&[expected])]);
-        }
         Ok(())
     }
 
     #[test]
-    #[ignore = "local backend comparison; run with --ignored --nocapture on each target"]
-    fn owned_io_backend_baseline() -> io::Result<()> {
-        const BLOCK_BYTES: usize = 64 * 1024;
-        const BLOCKS: usize = 256;
-        let directory = tempfile::tempdir()?;
-        let payload = Bytes::from(vec![0x5a; BLOCK_BYTES]);
-        let baseline = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(directory.path().join("baseline"))?;
-        let native = NativeFile::from_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(directory.path().join("native"))?,
-        )?;
-
-        let copy_start = Instant::now();
-        for _ in 0..BLOCKS {
-            std::hint::black_box(Bytes::copy_from_slice(&payload));
-        }
-        let copy_elapsed = copy_start.elapsed();
-
-        let baseline_start = Instant::now();
-        for block in 0..BLOCKS {
-            direct_write_at(&baseline, &payload, (block * BLOCK_BYTES) as u64)?;
-        }
-        let baseline_write = baseline_start.elapsed();
-        baseline.sync_all()?;
-        let baseline_sync = baseline_start.elapsed();
-        let mut buffer = vec![0_u8; BLOCK_BYTES];
-        for block in 0..BLOCKS {
-            assert_eq!(
-                direct_read_at(&baseline, &mut buffer, (block * BLOCK_BYTES) as u64)?,
-                BLOCK_BYTES
-            );
-            assert_eq!(buffer, payload);
-        }
-        let baseline_elapsed = baseline_start.elapsed();
-
-        complete_read(native.read_batch_async(Vec::new()))?;
-        let native_start = Instant::now();
-        complete_write(
-            native.write_all_batch_async(
-                (0..BLOCKS)
-                    .map(|block| OwnedWrite {
-                        offset: (block * BLOCK_BYTES) as u64,
-                        bytes: payload.clone(),
-                    })
-                    .collect(),
-            ),
-        )?;
-        let native_write = native_start.elapsed();
-        complete_write(native.sync_async(Durability::Full))?;
-        let native_sync = native_start.elapsed();
-        let reads = complete_read(
-            native.read_batch_async(
-                (0..BLOCKS)
-                    .map(|block| OwnedRead {
-                        offset: (block * BLOCK_BYTES) as u64,
-                        length: BLOCK_BYTES,
-                    })
-                    .collect(),
-            ),
-        )?;
-        assert_eq!(reads.len(), BLOCKS);
-        assert!(reads.iter().all(|bytes| bytes == &payload));
-        let native_elapsed = native_start.elapsed();
-        let serial_start = Instant::now();
-        for block in 0..BLOCKS {
-            let read = complete_read(native.read_batch_async(vec![OwnedRead {
-                offset: (block * BLOCK_BYTES) as u64,
-                length: BLOCK_BYTES,
-            }]))?;
-            assert_eq!(read.as_slice(), std::slice::from_ref(&payload));
-        }
-        let native_serial_read = serial_start.elapsed();
-        eprintln!(
-            "owned-io-baseline os={} arch={} bytes={} copy_us={} baseline_us={}/{}/{} native_us={}/{}/{} native_serial_read_us={}",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            BLOCKS * BLOCK_BYTES * 2,
-            copy_elapsed.as_micros(),
-            baseline_write.as_micros(),
-            baseline_sync.as_micros() - baseline_write.as_micros(),
-            baseline_elapsed.as_micros() - baseline_sync.as_micros(),
-            native_write.as_micros(),
-            native_sync.as_micros() - native_write.as_micros(),
-            native_elapsed.as_micros() - native_sync.as_micros(),
-            native_serial_read.as_micros(),
-        );
+    fn skipped_fence_chain_completes_iteratively() -> io::Result<()> {
+        std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
+            let first = Arc::new(OperationFence::default());
+            let mut prior = first.clone();
+            for _ in 0..100_000 {
+                let next = Arc::new(OperationFence::default());
+                next.complete_after(Some(prior));
+                prior = next;
+            }
+            first.complete();
+            assert!(prior.ready_or_register(Waker::noop()));
+        })?.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn native_read_batch_chunks_large_ranges() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("large-read-batch"))?;
-        let expected = Bytes::from(vec![0x5a; 1024 * 1024 + 1]);
-        write_all_at(&file, 7, &expected)?;
-        let actual = complete_read(read_batch_async(
-            file,
-            vec![OwnedRead {
-                offset: 7,
-                length: expected.len(),
-            }],
-        ))?;
-        assert_eq!(actual, [expected]);
+    fn file_scope_nested_unwind_and_thread_isolation() {
+        let a = Arc::new(Mutex::new(None));
+        let b = Arc::new(Mutex::new(None));
+        FileScope::with(Some(&a), || {
+            FileScope::with(Some(&b), || FileScope::with(Some(&a), || {
+                assert!(FileScope::contains(&a) && FileScope::contains(&b));
+            }));
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                FileScope::with(Some(&b), || panic!("unwind"));
+            })).is_err());
+            assert!(FileScope::contains(&a) && !FileScope::contains(&b));
+            let other = a.clone();
+            assert!(!std::thread::spawn(move || FileScope::contains(&other)).join().unwrap());
+        });
+        assert!(!FileScope::contains(&a) && !FileScope::contains(&b));
+    }
+
+    #[test]
+    fn allocation_reconciliation_retains_capacity_on_refusal_and_cancellation() -> io::Result<()> {
+        for cancelled in [false, true] {
+            let mut limits = ReadBudgetMeter::new(0, 0);
+            if !cancelled { limits.memory_limit = 3; }
+            let observer = Arc::new(limits);
+            let meter: Arc<dyn NativeReadMeter> = observer.clone();
+            let mut allocation = ReadAllocation::new(&meter, 3)?;
+            let mut payload = Vec::<u8>::new();
+            payload.try_reserve_exact(if cancelled { 17 } else { 64 }).map_err(io::Error::other)?;
+            observer.cancelled.store(cancelled, Ordering::Release);
+            let actual = payload.capacity() as u64;
+            assert_eq!(allocation.reconcile_capacity(payload.capacity()).unwrap_err().kind(),
+                if cancelled { io::ErrorKind::Interrupted } else { io::ErrorKind::Other });
+            assert_eq!(allocation.bytes(), actual);
+            assert_eq!(observer.memory.load(Ordering::Acquire), actual);
+            drop(payload);
+            drop(allocation);
+            assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+        }
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn native_read_batch_windows_requests_beyond_the_ring() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("windowed-read-batch"))?;
-        let expected: Vec<u8> = (0..17).collect();
-        write_all_at(&file, 0, &expected)?;
-        let requests = (0_u64..17)
-            .map(|offset| OwnedRead { offset, length: 1 })
-            .collect();
-        let actual = complete_read(read_batch_async(file, requests))?;
-        assert_eq!(
-            actual,
-            expected
-                .into_iter()
-                .map(|value| Bytes::copy_from_slice(&[value]))
-                .collect::<Vec<_>>()
-        );
+    fn zero_bounded_read_needs_no_quota() -> io::Result<()> {
+        let file = NativeFile::from_file(tempfile::tempfile()?)?;
+        let mut limits = ReadBudgetMeter::new(0, 0);
+        limits.memory_limit = 0;
+        limits.allocation_limit = 0;
+        let meter = Arc::new(limits);
+        let output = complete(file.read_bounded_async(u64::MAX, 0, meter.clone())?)?;
+        assert!(output.bytes.is_empty());
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn native_read_batch_windows_one_range_beyond_the_ring() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(temporary.path().join("windowed-large-read"))?;
-        let expected = Bytes::from(vec![0x69; 16 * 1024 * 1024 + 1]);
-        write_all_at(&file, 3, &expected)?;
-        let actual = complete_read(read_batch_async(
-            file,
-            vec![OwnedRead {
-                offset: 3,
-                length: expected.len(),
-            }],
-        ))?;
-        assert_eq!(actual, [expected]);
+    fn bounded_write_cancellation_retires_custody_after_actual_prefix() -> io::Result<()> {
+        for payload in [b"persisted".to_vec(), vec![0x5a; 1024 * 1024 + 7]] {
+            let temporary = tempfile::tempdir()?;
+            let path = temporary.path().join("custodied-cancel");
+            File::create(&path)?;
+            let file = bounded_write_file(&path, true)?;
+            let expected = payload[..payload.len().min(1024 * 1024)].to_vec();
+            let mut limits = ReadBudgetMeter::new(u64::MAX, payload.len() as u64);
+            limits.cancel_after_read = true;
+            let meter = Arc::new(limits);
+            let bytes_dropped = Arc::new(AtomicBool::new(false));
+            let retired = Arc::new(AtomicBool::new(false));
+            let bytes = Bytes::from_owner(ObservedWriteBytes { bytes: payload, dropped: bytes_dropped.clone() });
+            let custody = ObservedWriteCustody {
+                bytes_dropped, retired: retired.clone(), meter: meter.clone(),
+                actual_prefix: expected.len() as u64,
+            };
+            let error = complete(file.write_bounded_async_with_custody(0, bytes, meter.clone(), custody)?).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(retired.load(Ordering::Acquire));
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+            assert_eq!(std::fs::read(&path)?, expected);
+        }
         Ok(())
     }
 }
