@@ -619,6 +619,37 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// First-party complete JSON projection for registered SDK tools, including MCP.
+/// This stateless producer owns no logical buffers or metadata; the native
+/// returned envelope retains its actual Self and deep storage until payload drop.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JsonToolProjection;
+
+impl ToolProjection for JsonToolProjection {
+    fn project(&self, _invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        schema::project_json(&result.value)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_projection(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn project_with_native_work(
+        &self,
+        _invocation: &ToolInvocation,
+        result: &ToolResult,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        schema::project_json_with_native_work(&result.value, work)
+    }
+}
+
 /// Trusted journal check for a resolved approval bound to one exact tool definition.
 pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
     /// Rejects absent, declined, mismatched, or indeterminate approvals.
