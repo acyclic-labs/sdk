@@ -29,6 +29,11 @@ vector untouched. `try_into_ordinary_vec` reuses only unique, fully visible,
 known ordinary backing. Guarded, opaque, sliced, or aliased carriers cannot
 escape custody through that operation.
 
+The ordinary HTTP protobuf bridge uses `Bytes::from_owner(OwnedBytes)` without
+copying the source payload or detaching its custody. Encoding creates the
+ordinary request body before transport; this unbounded control allocation is
+not a finite native provider guarantee.
+
 On browser WASM builds, `BrowserStream::open(name, limits)` binds that same Rust state machine to a strict `IndexedDB` command journal. It implements the ordinary `StreamProvider` contract, including atomic multi-path commits and provider-clock deadlines. Native and browser persistence share the command codec and Rust replay. Tabs and workers serialize refresh, admission and publication in one transaction on one named database; this gives no atomicity across databases, filesystem volumes or other providers. Browser storage eviction and origin quotas remain platform limits.
 
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow polls durable state every 100 ms while consumed, so killing a publisher before any wakeup cannot hide its committed records. Dropping the cursor ends that polling. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
