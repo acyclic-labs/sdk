@@ -1215,6 +1215,22 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         assert_eq!(work.bytes_encoded, before.bytes_encoded + folded.len() as u64);
         assert_eq!(work.bytes_copied, before.bytes_copied);
         assert!(work.items_examined > before.items_examined);
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED, &cancellation,
+        );
+        let (bridged, allocation) = crate::kernel::types::lowercase_unicode_with_accounting(
+            &text, &mut accounting, &cancellation,
+        )?;
+        assert_eq!(bridged, expected, "accounting bridge: {text:?}");
+        let bridged_work = accounting.spent();
+        assert_eq!(bridged_work.items_examined, work.items_examined - before.items_examined);
+        assert_eq!(bridged_work.bytes_encoded, work.bytes_encoded - before.bytes_encoded);
+        assert_eq!(bridged_work.bytes_copied, 0);
+        let bridged_bytes = bridged.capacity() as u64;
+        drop(bridged);
+        crate::kernel::persistent_point::retire_allocation(
+            allocation, bridged_bytes, &mut accounting,
+        )?;
         drop(folded);
         ledger.release(bytes)?;
         assert_eq!(ledger.live_bytes(), held_bytes);
