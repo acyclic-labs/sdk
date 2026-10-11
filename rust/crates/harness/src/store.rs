@@ -520,6 +520,38 @@ impl<P: StreamProvider> StreamAggregate<P> {
         work.finish(result)
     }
 
+    /// Publishes the exact report on the original native ledger and atomic owner
+    /// fence. The result's guard must outlive its returned event payload.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn publish_fork_report_with_native_work(
+        &mut self, report: &ForkReport, scope: &Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ApplyResult, acyclic_fs::NativeAllocation)> {
+        let mut io = history::native_work_io(original)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        history::HistoryIo::retain_owned(
+            &mut io, std::mem::size_of::<ApplyResult>() as u64)?;
+        let result = {
+            let mut observed = Some(&mut io as &mut dyn history::HistoryIo);
+            let mut input = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+            let (report, report_bytes) = report.clone_with_work_and_custody(input.work())?;
+            input.adopt(report_bytes)?;
+            let scope = scope.copy_with_quota(&mut input)?;
+            let input_bytes = input.retained();
+            let result = self.publish_fork_report_with_work(
+                report, scope, owner, input.work()).await;
+            // The canonical command consumed both input DTOs before returning;
+            // persistent reducer components retain only their own funded copies.
+            let released = input.relinquish(input_bytes);
+            match result {
+                Err(error) => Err(error),
+                Ok(result) => { released?; Ok(result) }
+            }
+        }?;
+        Ok((result, io.into_custody()))
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) async fn publish_fork_report_with_work(
         &mut self, report: ForkReport, scope: Scope,
@@ -696,6 +728,29 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 parent, seed, scope, owner, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
+    }
+
+    /// Binds only the exact canonically published child on the original ledger.
+    /// This preserves the parent's publication proof and current owner fence.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn bind_published_child_with_native_work(
+        &mut self, parent: &Self, seed: &ForkSeed, scope: &Scope,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = history::native_work_io(original)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observed = Some(&mut io as &mut dyn history::HistoryIo);
+        let mut input = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        let scope = scope.copy_with_quota(&mut input)?;
+        let input_bytes = input.retained();
+        let result = self.bind_published_child_with_work(
+            parent, seed, scope, owner, input.work()).await;
+        let released = input.relinquish(input_bytes);
+        match result {
+            Err(error) => Err(error),
+            Ok(()) => released,
+        }
     }
 
     #[cfg(feature = "filesystem")]

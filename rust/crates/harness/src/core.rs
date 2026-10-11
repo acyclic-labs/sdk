@@ -207,15 +207,20 @@ impl Scope {
             return Ok(self.clone());
         }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let id = native_custody::copy_text(&self.id, &mut custody)?;
-        let issuer = native_custody::copy_text(&self.issuer, &mut custody)?;
-        let capabilities = native_custody::copy_capabilities(&self.capabilities, &mut custody)?;
-        let cloned = Self {
-            id, capabilities, agent: self.agent, issuer,
-            parent_proof: self.parent_proof, proof: self.proof,
-        };
+        let cloned = self.copy_with_quota(&mut custody)?;
         custody.transfer();
         Ok(cloned)
+    }
+
+    pub(crate) fn copy_with_quota(
+        &self, custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        if custody.work().is_none() { return Ok(self.clone()); }
+        let id = native_custody::copy_text(&self.id, custody)?;
+        let issuer = native_custody::copy_text(&self.issuer, custody)?;
+        let capabilities = native_custody::copy_capabilities(&self.capabilities, custody)?;
+        Ok(Self { id, capabilities, agent: self.agent, issuer,
+            parent_proof: self.parent_proof, proof: self.proof })
     }
 
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
