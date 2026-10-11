@@ -151,6 +151,10 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         maximum_work: 7,
         maximum_bytes: 65_536,
         payload: serde_json::json!({"allocation":"one"}),
+        command: None,
+        source_checkpoint: None,
+        input_files: Vec::new(),
+        read_authorization: None,
     };
     let input = serde_json::to_value(&request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(

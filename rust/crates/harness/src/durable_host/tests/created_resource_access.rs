@@ -390,6 +390,7 @@ impl CreationFixture {
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
         Ok(ResourcePreparationRequest { command: None, source_checkpoint:None, provider: self.creator.provider.clone(), child, resources: vec![proof.resource],
+        input_files: Vec::new(), read_authorization: None,
         creation_grant: "resource:create:custom".into(), maximum_resources: 1,
         maximum_work: 4, maximum_bytes: 65_536, payload: serde_json::json!({"image":"isolated"}), })
     }
@@ -722,9 +723,10 @@ impl CreationFixture {
             resources: preparer.creation_resources(&fork)?, creation_grant: "fork:publish".into(),
             maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
+            input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
-        let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
+        let report = preparer.prepare_for_task(fork, &preparation).await?;
         let seed = report.clone().into_seed()?;
         Ok(PreparedFilesystemChild { request, private, project, seed, report,
             parent: aggregate.reducer().clone(), parent_scope: fork_scope, parent_verifier: fork_issuer.verifier() })
