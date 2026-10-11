@@ -44,7 +44,7 @@ pub struct TaskEffectPlan {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for TaskEffectPlan {
     fn maximum_slot_bytes() -> u64 {
-        std::mem::size_of::<Self>().max(std::mem::size_of::<serde_json::Value>()) as u64
+        crate::filesystem::preparation_slot_bytes::<Self>()
     }
 }
 
