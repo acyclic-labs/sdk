@@ -276,6 +276,8 @@ const PREPARATION_DIAGNOSTIC_LABELS: &[&str] = &[
     "ToolTaskCommand", "MailSendTaskCommand", "MailReceiveTaskCommand", "SelectedModelContext",
     "deadline_unix_ms", "admission_operation", "name", "version", "input",
     "selected_context", "max_steps", "max_output_tokens", "revision", "arguments",
+    // Model output selection is a typed VolumeRef, not another Value field.
+    "selected_output_volume",
     "recipient", "payload", "after", "selection", "messages",
     "Outcome", "Succeeded", "Failed", "Cancelled", "Indeterminate", "message", "operation_id",
 ];
