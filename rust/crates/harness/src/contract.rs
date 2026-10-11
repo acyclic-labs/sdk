@@ -744,10 +744,12 @@ pub enum Error {
         /// Existing custody, released after the diagnostic is dropped.
         custody: acyclic_fs::NativeAllocation,
     },
-    /// An actual malformed native record, preserving its decoder cause.
+    /// An actual native decode failure, preserving its source and classification.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeDecode {
+        /// Invalid for a request; Storage for a persisted record.
+        code: crate::wire::ErrorCode,
         /// The original decoder error.
         #[source]
         source: serde_json::Error,
@@ -784,6 +786,16 @@ pub enum Error {
         /// Existing custody for any SDK-owned diagnostic payload.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An actual native workspace failure, moved without diagnostic conversion.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeWorkspace {
+        /// The original workspace cause.
+        #[source]
+        source: acyclic_fs::WorkspaceError,
+        /// Existing custody, released after the original cause is dropped.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// A native view failure, including any retained physical cleanup owner.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -804,6 +816,26 @@ pub enum Error {
         #[source]
         failure: Box<crate::filesystem::NativeViewPublicationError>,
         /// Custody for the slot, released after its Box is deallocated.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual SDK workspace publication failure, including its original prefix.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeWorkspacePublication {
+        /// The original publication cause and any physical cleanup ownership.
+        #[source]
+        source: acyclic_fs::NativeWorkspacePublicationError,
+        /// Existing custody, released after the original cause is dropped.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
+    /// An actual native process timeout, without a new boxed IO error.
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeTimeout {
+        /// The original elapsed timeout.
+        #[source]
+        source: tokio::time::error::Elapsed,
+        /// Existing payload custody, not opaque timer allocator metadata.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
 }
@@ -832,15 +864,18 @@ impl Error {
             Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. } => *code,
+            Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
+            | Self::NativeDecode { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
-            | Self::NativeDecode { .. }
             | Self::NativeStream { .. }
             | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. } => ErrorCode::Storage,
+            | Self::NativeSource { .. }
+            | Self::NativeWorkspace { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            Self::NativeView { .. } | Self::NativePublication { .. } => ErrorCode::Storage,
+            Self::NativeView { .. } | Self::NativePublication { .. }
+            | Self::NativeWorkspacePublication { .. }
+            | Self::NativeTimeout { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => {
                 use acyclic_fs::NativeTreeMaterializationError as Native;
@@ -891,9 +926,12 @@ impl Error {
             | Self::NativeDecode { .. }
             | Self::NativeStream { .. }
             | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. } => true,
+            | Self::NativeSource { .. }
+            | Self::NativeWorkspace { .. } => true,
             #[cfg(feature = "native-execution")]
-            Self::NativeView { .. } | Self::NativePublication { .. } => true,
+            Self::NativeView { .. } | Self::NativePublication { .. }
+            | Self::NativeWorkspacePublication { .. }
+            | Self::NativeTimeout { .. } => true,
             _ => false,
         }
     }
