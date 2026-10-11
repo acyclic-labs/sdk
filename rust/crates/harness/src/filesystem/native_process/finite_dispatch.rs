@@ -1,11 +1,9 @@
-//! The original launch supervisor, with optional original native work custody.
+//! The original launch supervisor and native work ledger.
 
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use crate::contract::JsonBounds;
 use std::future::Future;
-
-type NativeResult<T> = std::result::Result<T, Error>;
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -35,22 +33,19 @@ struct ObservedWrite<'a> {
 }
 
 pub(super) fn dispatch_payload(
-    dispatch: EffectDispatch, work: Option<&NativeMaterializationWork>,
-) -> NativeResult<(EffectDispatch, Option<NativeAllocation>)> {
-    let custody = match work {
-        Some(work) => {
+    dispatch: EffectDispatch, work: &NativeMaterializationWork,
+) -> Result<(EffectDispatch, Option<NativeAllocation>)> {
+    let custody = {
             let bytes = checked_add(checked_add(dispatch.provider.capacity() as u64,
                 dispatch.effect_kind.capacity() as u64)?, dispatch.request.logical_owned_bytes()?)?;
             Some(work.retain_owned(bytes)?)
-        }
-        None => None,
-    };
+        };
     Ok((dispatch, custody))
 }
 
 pub(super) fn into_observed_effect(
     observed: NativeObservation, mut custody: Option<NativeAllocation>,
-) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
+) -> Result<(EffectObservation, Option<NativeAllocation>)> {
     let NativeObservation {
         effect, diagnostic, publication_failure, invocation_failure, published, work: _,
     } = observed;
@@ -64,8 +59,10 @@ pub(super) fn into_observed_effect(
     Ok((effect, custody))
 }
 
-fn check(work: Option<&NativeMaterializationWork>) -> NativeResult<()> {
-    if let Some(work) = work { work.remaining()?; }
+fn check(work: &NativeMaterializationWork) -> Result<()> {
+    {
+ work.remaining()?;
+}
     Ok(())
 }
 
@@ -81,42 +78,30 @@ pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     Ok(())
 }
 
-fn examine(work: Option<&NativeMaterializationWork>, compare: impl FnOnce() -> bool) -> NativeResult<bool> {
-    if let Some(work) = work {
+fn examine(work: &NativeMaterializationWork, compare: impl FnOnce() -> bool) -> Result<bool> {
+    {
+
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-    }
+
+}
     Ok(compare())
 }
 
-fn checked_add(left: u64, right: u64) -> NativeResult<u64> {
+fn checked_add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right).ok_or(receipt_error("native dispatch custody overflows"))
 }
 
-fn effect_result(receipt: NativeProcessReceipt, finite: bool)
-    -> NativeResult<(EffectObservation, Option<NativeAllocation>)>
-{
-    if finite {
-        receipt.into_effect().map(|(effect, guard)| (effect, Some(guard)))
-    } else { Ok((receipt.effect, None)) }
-}
-
-type SupervisorFuture<'a, T> = futures::future::Either<
-    BoxProviderFuture<'a, Result<T>>, crate::NativeFutureBundle<'a, T>>;
-
-fn supervisor_future_original<'a, T: 'a, F, B>(build: B, work: Option<&NativeMaterializationWork>)
-    -> NativeResult<SupervisorFuture<'a, T>>
+fn supervisor_future_original<'a, T: 'a, F, B>(build: B, work: &NativeMaterializationWork)
+    -> Result<crate::NativeFutureBundle<'a, T>>
 where F: Future<Output = T> + Send + 'a, B: FnOnce() -> F + Send + 'a {
-    match work {
-        Some(work) => crate::NativeFutureBundle::new(work, || async move { Ok(build().await) })
-            .map(futures::future::Either::Right),
-        None => Ok(futures::future::Either::Left(Box::pin(async move { Ok(build().await) }))),
-    }
+    crate::NativeFutureBundle::new(work, || async move { Ok(build().await) })
+
 }
 
 fn observed_matches(
     observed: Option<&NativeObservation>, receipt: &ObservedWrite<'_>,
-    work: Option<&NativeMaterializationWork>,
-) -> NativeResult<bool> {
+    work: &NativeMaterializationWork,
+) -> Result<bool> {
     let Some(observed) = observed else { return Ok(false); };
     Ok(examine(work, || observed.effect.provider == receipt.effect.provider
             && observed.effect.effect_id == receipt.effect.effect_id
@@ -133,8 +118,8 @@ fn observed_matches(
 
 fn published_matches(
     observed: &[NativeProcessPublishedVolume], expected: &[NativeProcessPublishedVolume],
-    work: Option<&NativeMaterializationWork>,
-) -> NativeResult<bool> {
+    work: &NativeMaterializationWork,
+) -> Result<bool> {
     if !examine(work, || observed.len() == expected.len())? { return Ok(false); }
     for (actual, expected) in observed.iter().zip(expected) {
         if !examine(work, || actual == expected)? { return Ok(false); }
@@ -144,8 +129,8 @@ fn published_matches(
 
 fn require_same_launch(
     retained: &LaunchReceipt<'_>, requested: &LaunchReceipt<'_>,
-    work: Option<&NativeMaterializationWork>,
-) -> NativeResult<()> {
+    work: &NativeMaterializationWork,
+) -> Result<()> {
     if !examine(work, || retained.dispatch == requested.dispatch)?
         || !examine(work, || retained.plan == requested.plan)?
         || !examine(work, || retained.conversation == requested.conversation)?
@@ -160,19 +145,16 @@ fn require_same_launch(
 
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     pub(super) async fn require_dispatch_original(
-        &self, dispatch: &EffectDispatch, work: Option<&NativeMaterializationWork>,
-    ) -> NativeResult<()> {
+        &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
+    ) -> Result<()> {
         check(work)?;
-        match work {
-            Some(work) => self.owner.verify_with_native_work(false, work).await?,
-            None => { self.owner.verify(false).await?; }
-        }
-        let mut io = work.map(crate::store::history::native_work_io).transpose()?;
+        self.owner.verify_with_native_work(false, work).await?;
+        let mut io = crate::store::history::native_work_io(work)?;
         let cursor = self.history.pin_with_work(0,
-            io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?;
+            Some(&mut io)).await?;
         let state = self.history.effect_with_work(&cursor, self.effect_id,
             self.authority.history_limits,
-            io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?
+            Some(&mut io)).await?
             .ok_or(receipt_error("native command has no committed effect admission"))?;
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?
@@ -201,8 +183,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-        match work {
-            Some(work) => {
+        {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
@@ -215,30 +196,20 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 }
                 self.owner.verify_with_native_work(false, work).await?;
             }
-            None => {
-                request.validate_native_paths(view.manifest(), None)?;
-                self.authority.approvals.verify(self.approval, self.command, approval_digest).await?;
-                require_view_grants(&self.owner, &request.view)?;
-                self.owner.verify(false).await?;
-            }
-        }
         check(work)
     }
 
     pub(super) async fn launch_original(
-        &self, payload: (EffectDispatch, Option<NativeAllocation>), work: Option<&NativeMaterializationWork>,
-    ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
+        &self, payload: (EffectDispatch, Option<NativeAllocation>), work: &NativeMaterializationWork,
+    ) -> Result<(EffectObservation, Option<NativeAllocation>)> {
         let dispatch = &payload.0;
         self.require_dispatch_original(dispatch, work).await?;
         if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work, None).await? {
-            return effect_result(receipt, work.is_some());
+            return receipt.into_effect().map(|(effect, custody)| (effect, Some(custody)));
         }
         let (task, fence) = self.owner.task_binding();
-        let path = match work {
-            Some(work) => super::receipt_observation::receipt_path_with_native_work(
-                dispatch.attempt_id, work)?,
-            None => receipt_path(dispatch.attempt_id)?,
-        };
+        let path = super::receipt_observation::receipt_path(
+                dispatch.attempt_id, work)?;
         let launch = LaunchReceipt {
             dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(&self.plan),
             conversation: Cow::Borrowed(self.authority.verifier.audience()), task,
@@ -249,7 +220,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             &ReceiptWrite::Launch(&launch), JournalWrite::Fresh, work).await? {
             let receipt = self.receipt_original(dispatch.attempt_id, work, None).await?
                 .ok_or(receipt_error("native launch receipt changed"))?;
-            return effect_result(receipt, work.is_some());
+            return receipt.into_effect().map(|(effect, custody)| (effect, Some(custody)));
         }
         drop(launch);
         let (dispatch, custody) = payload;
@@ -266,12 +237,12 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let history = Arc::clone(&self.history);
         let approval = self.approval;
         let attempt = dispatch.attempt_id;
-        let original_work = work.cloned();
+        let original_work = work.clone();
         let provider_custody = self._custody.clone();
         let future = supervisor_future_original(|| async move {
             let _provider_custody = provider_custody;
             let _completion = NativeSupervisorCompletion(Arc::clone(&supervisor));
-            let work = original_work.as_ref();
+            let work = &original_work;
             let (execution, mut execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &dispatch, &schema, &supervisor, work)?.await?;
             let mut custody = custody;
@@ -327,21 +298,19 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }, work)?;
         self.supervisor.begin(attempt)?;
         tokio::spawn(future).await
-            .map_err(|source| Error::NativeSupervisor { source, custody: None })?
-            ?
+            .map_err(|source| Error::NativeSupervisor { source, custody: None })??
     }
 }
 
 async fn append_receipt_original<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, tail: u64,
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
-    work: Option<&NativeMaterializationWork>,
-) -> NativeResult<bool> {
-    let codec_slot = work.map(NativeReceiptCodecSlot::new).transpose()?;
-    let diagnostic_bytes = work.map_or(0, |_| crate::contract::sdk_json_diagnostic_bytes());
-    let mut custody = work.map(|work| work.retain_owned(diagnostic_bytes)).transpose()?;
-    let bytes = match work {
-        Some(work) => {
+    work: &NativeMaterializationWork,
+) -> Result<bool> {
+    let codec_slot = Some(NativeReceiptCodecSlot::new(work)?);
+    let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
+    let mut custody = Some(work.retain_owned(diagnostic_bytes)?);
+    let bytes = {
             let codec_slot = codec_slot.ok_or(receipt_error(
                 "native receipt codec slot is missing"))?;
             let remaining = work.remaining()?;
@@ -353,47 +322,19 @@ async fn append_receipt_original<P: StreamProvider>(
                     crate::filesystem::native_execution::native_codec_charge_typed(charge, work, guard)
                         .map_err(Error::from)
                 }).map_err(|source| codec_slot.retain(source, custody.take()))?
-        }
-        None => crate::contract::canonical_json_bytes(receipt)?,
-    };
+        };
     if let Some(guard) = custody.as_mut() {
         guard.release(diagnostic_bytes)?;
     }
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(receipt_error("native receipt exceeds Stream limit"));
     }
-    let mut key_custody = None;
-    if let Some(work) = work {
-        work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
-    }
-    let hash = blake3::hash(&bytes);
-    let mut key_bytes = Vec::new();
-    if let Some(work) = work {
-        work.admit(WorkCounters { bytes_copied: 32, ..WorkCounters::default() })?;
-        key_custody = Some(work.claim(32)?);
-    }
-    key_bytes.try_reserve_exact(32)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
-    if let Some(work) = work {
-        work.charge(WorkCounters { bytes_copied: 32, ..WorkCounters::default() })?;
-    }
-    key_bytes.extend_from_slice(hash.as_bytes());
+    work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
+    let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key = acyclic_stream::IdempotencyKey::new(Bytes::from(key_bytes))?;
-    let target = match work {
-        Some(_) => path.clone(),
-        None => {
-            let mut target = String::new();
-            target.try_reserve_exact(path.as_str().len())
-                .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
-            target.push_str(path.as_str());
-            StreamPath::new(target)?
-        }
-    };
+    let target = path.clone();
     let bytes = Bytes::from(bytes);
-    let result = match work {
-        Some(work) => owner.append_with_native_work(target, tail, &key, bytes.clone(), write, work).await,
-        None => owner.append(target, tail, &key, bytes.clone(), write).await,
-    };
+    let result = owner.append_with_native_work(target, tail, &key, bytes.clone(), write, work).await;
     drop(bytes);
     drop(key);
     drop(key_custody);

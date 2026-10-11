@@ -80,7 +80,7 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
             }
         }
         Ok(())
-    
+
 }
 }
 
@@ -110,7 +110,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 ..WorkCounters::default() }).map_err(Error::from)?;
             view.validate_working_directory(&request.cwd, original)?.await?;
             view.validate_for_dispatch(original)?.await?;
-        
+
 }
         if view.manifest() != &request.view {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
@@ -133,9 +133,10 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 &bytes, crate::wire::ErrorCode::Invalid)?;
             crate::contract::validate_json_schema_value_with_io(schema, &decoded.value, "native process result", Some(&io))?;
             drop(decoded);
-            let guard = io.into_native_custody(bytes.capacity() as u64)?;
+            let retained = io.owned_bytes()?;
+            let guard = io.into_native_custody(retained)?;
             (bytes, Some(guard))
-        
+
 };
         drop(captured);
         drop(capture_custody);
@@ -156,7 +157,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 &result, u64::from(request.maximum_result_bytes), original,
             )?.await?;
             result
-        
+
 };
         drop(bytes);
         drop(bytes_custody);
@@ -196,7 +197,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                                     Ok(())
                                 },
                                 Err(cause) => Err(NativeViewPublicationError {
-                                    cause, accounting_failure: None, original: receipt.original,
+                                    cause, accounting_failure: None, work: receipt.work,
                                     destination: None, completed: receipt.completed, published: receipt.published,
                                     diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
                                 }),
@@ -213,7 +214,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                         .absorb(&mut result_custody).expect("same original admitted ledger");
                     return Err(publication_slot.take().expect("preadmitted failure slot").retain(failure));
                 }
-            
+
 }
         }
         let work = original.receipt();
@@ -263,7 +264,7 @@ async fn capture<P: StreamProvider + 'static>(
             }
         }
         buffers = Some(allocated);
-    
+
 }
     let check_owner = Arc::clone(owner);
     let invocation = Arc::clone(request);
@@ -310,11 +311,11 @@ async fn capture<P: StreamProvider + 'static>(
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
                 for argument in &invocation.argv { bytes = bytes.checked_add(argument.len()).ok_or(std::io::ErrorKind::OutOfMemory)?; }
                 for (key, value) in &invocation.environment { bytes = bytes.checked_add(key.len()).and_then(|bytes| bytes.checked_add(value.len())).ok_or(std::io::ErrorKind::OutOfMemory)?; }
-                &original.charge(WorkCounters { bytes_copied: bytes as u64,
+                original.charge(WorkCounters { bytes_copied: bytes as u64,
                     items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
                     .map_err(|error| root_failure(Error::from(error)))?;
-                Some(&original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error)))?)
-            
+                Some(original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error)))?)
+
 };
             let mut command = Command::new(&invocation.executable);
             command.args(&invocation.argv).current_dir(&invocation.cwd).env_clear().envs(&invocation.environment)
@@ -325,7 +326,7 @@ async fn capture<P: StreamProvider + 'static>(
             let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error)))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
-                    &mut command, &original.runtime_meter(), &mut process,
+                    &mut command, original.runtime_meter(), &mut process,
                 )
 };
             if let Err(error) = spawned {
@@ -369,17 +370,17 @@ async fn capture<P: StreamProvider + 'static>(
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
                 let output = {process.wait_with_exchange_observed_with_meter(timeout, maximum,
-                        request.maximum_bytes as usize, &first, buffers.take().expect("admitted capture buffers"), &original.runtime_meter(), poll, observe)
+                        request.maximum_bytes as usize, &first, buffers.take().expect("admitted capture buffers"), original.runtime_meter(), poll, observe)
 };
                 drop(exchange); drop(first); drop(response_custody); drop(exchange_custody);
                 output
             } else if let Some(input) = &invocation.standard_input {
                 {process.wait_with_input_observed_with_meter(timeout, maximum, input,
-                        buffers.take().expect("admitted capture buffers"), &original.runtime_meter(), poll)
+                        buffers.take().expect("admitted capture buffers"), original.runtime_meter(), poll)
 }
             } else {
                 {process.wait_with_output_observed_with_meter(timeout, maximum,
-                        buffers.take().expect("admitted capture buffers"), &original.runtime_meter(), poll)
+                        buffers.take().expect("admitted capture buffers"), original.runtime_meter(), poll)
 }
             };
             if !process.is_reaped()
@@ -425,7 +426,7 @@ async fn capture<P: StreamProvider + 'static>(
         Ok(Ok(output)) => NativeProcessResult { success: output.status.success(), exit_code: output.status.code(), stdout: output.stdout, stderr: output.stderr, stop: None },
         Ok(Err(mut failure)) => {
             {
-                failure.error = match &invocation_work.runtime_error(failure.error) {
+                failure.error = match invocation_work.runtime_error(failure.error) {
                     acyclic_fs::NativeTreeMaterializationError::Io(error)
                         if !error.get_ref().is_some_and(|cause|
                             cause.is::<acyclic_fs::DemandError>() || cause.is::<Error>()
@@ -437,7 +438,7 @@ async fn capture<P: StreamProvider + 'static>(
                         return Err(Error::NativeWork { cause, custody });
                     }
                 };
-            
+
 }
             let kind = match failure.error.kind() {
                 std::io::ErrorKind::TimedOut => NativeProcessStopKind::Timeout,
@@ -446,19 +447,19 @@ async fn capture<P: StreamProvider + 'static>(
                 _ => NativeProcessStopKind::CaptureFailed,
             };
             let message = {
-                let (message, guard) = &invocation_work.display(&failure.error).map_err(Error::from)?;
+                let (message, guard) = invocation_work.display(&failure.error).map_err(Error::from)?;
                 let mut guard = guard;
                 let mut message = message;
                 let mut truncate = None;
                 for (index, (offset, _)) in message.char_indices().enumerate() {
-                    &invocation_work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                    invocation_work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
                         .map_err(Error::from)?;
                     if index == 128 { truncate = Some(offset); break; }
                 }
                 if let Some(offset) = truncate { message.truncate(offset); }
                 custody.as_mut().expect("original capture custody").absorb(&mut guard).map_err(Error::from)?;
                 message
-            
+
 };
             NativeProcessResult { success: false, exit_code: failure.status.and_then(|status| status.code()),
                 stdout: failure.stdout, stderr: failure.stderr,

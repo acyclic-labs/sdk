@@ -37,24 +37,18 @@ use drain::NativeCleanupControl;
 use finite_execution::execute;
 
 impl NativeProcessRequest {
-    fn validate(&self, io: Option<&super::PreparationIo>) -> Result<()> {
+    fn validate(&self, io: &super::PreparationIo) -> Result<()> {
         use super::native_contract::validation_error;
         if self.standard_input.is_some() && self.mcp_stdio.is_some() {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "literal stdin and MCP exchange are mutually exclusive"));
         }
         if let Some(exchange) = &self.mcp_stdio {
-            match io.and_then(super::PreparationIo::original_native_work) {
-                Some(work) => {
-                    let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
-                    drop(exchange);
-                    drop(first);
-                    drop(custody);
-                }
-                None => exchange.validate()?,
-            }
+            let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
+            let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
+            drop((exchange, first, custody));
         }
-        if let Some(io) = io {
+        {
             let items = self.environment.len().checked_add(self.argv.len())
                 .and_then(|items| items.checked_add(self.cwd.components().count()))
                 .ok_or_else(|| validation_error(Some(io), crate::wire::ErrorCode::Invalid,
@@ -75,18 +69,18 @@ impl NativeProcessRequest {
             })
             || self.argv.iter().any(|arg| arg.contains('\0'))
         {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "invalid or changed native process invocation"));
         }
         #[cfg(windows)]
         for (index, key) in self.environment.keys().enumerate() {
             for prior in self.environment.keys().take(index) {
-                if let Some(io) = io {
+                {
                     io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 }
                 if key.chars().flat_map(char::to_uppercase)
                     .eq(prior.chars().flat_map(char::to_uppercase)) {
-                    return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                    return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                         "duplicate native environment key under Windows case folding"));
                 }
             }
@@ -95,19 +89,19 @@ impl NativeProcessRequest {
     }
 
     fn validate_native_paths(
-        &self, view: &NativeViewManifest, io: Option<&super::PreparationIo>,
+        &self, view: &NativeViewManifest, io: &super::PreparationIo,
     ) -> Result<()> {
         use super::native_contract::validation_error;
         self.validate(io)?;
         if &self.view != view {
-            return Err(validation_error(io, crate::wire::ErrorCode::Conflict,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
         }
         let relative = self.cwd.strip_prefix(&view.options.root)
-            .map_err(|_| validation_error(io, crate::wire::ErrorCode::Conflict,
+            .map_err(|_| validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native cwd is outside the selected locator"))?;
         if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "native cwd has a non-relative component"));
         }
         Ok(())
@@ -652,11 +646,9 @@ where
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)
             .map_err(Error::from)?;
-        let payload = finite_dispatch::dispatch_payload(request, Some(work))
-            ?;
+        let payload = finite_dispatch::dispatch_payload(request, work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            let (effect, custody) = self.launch_original(payload, Some(work)).await
-                ?;
+            let (effect, custody) = self.launch_original(payload, work).await?;
             let custody = custody.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "finite native dispatch lost original effect custody",
@@ -672,8 +664,7 @@ where
         finite_dispatch::require_finite(work)?;
         self.require_work_family(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            self.receipt_original(attempt, Some(work), None).await
-                ?
+            self.receipt_original(attempt, work, None).await?
                 .map(NativeProcessReceipt::into_effect)
                 .transpose()
         })

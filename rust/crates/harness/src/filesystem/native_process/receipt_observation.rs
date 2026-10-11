@@ -6,43 +6,17 @@ use crate::contract::{JsonBounds, JsonCodecCharge};
 use std::mem::size_of;
 use futures::StreamExt as _;
 
-enum ReceiptRecord {
-    Ordinary(acyclic_stream::Record),
-    Original(acyclic_stream::NativeObservedRecord),
-}
-
-impl ReceiptRecord {
-    fn record(&self) -> &acyclic_stream::Record {
-        match self {
-            Self::Ordinary(record) => record,
-            Self::Original(record) => record.value(),
-        }
+async fn next_record(
+    records: &mut acyclic_stream::NativeStreamOutput<acyclic_stream::NativeRecordStream>,
+    work: &NativeMaterializationWork,
+) -> Result<Option<acyclic_stream::NativeObservedRecord>> {
+    match records.value_mut().next().await {
+        None => Ok(None),
+        Some(record) => Ok(Some(record.map_err(|error| Error::from(work.runtime_error(error)))??)),
     }
 }
 
-enum ReceiptRecords<'a> {
-    Ordinary(acyclic_stream::RecordStream),
-    Original {
-        records: acyclic_stream::NativeStreamOutput<acyclic_stream::NativeRecordStream>,
-        work: &'a NativeMaterializationWork,
-    },
-}
-
-impl ReceiptRecords<'_> {
-    async fn next(&mut self) -> std::result::Result<Option<ReceiptRecord>, Error> {
-        match self {
-            Self::Ordinary(records) => Ok(records.try_next().await?.map(ReceiptRecord::Ordinary)),
-            Self::Original { records, work } => match records.value_mut().next().await {
-                None => Ok(None),
-                Some(record) => Ok(Some(ReceiptRecord::Original(
-                    record.map_err(|error| Error::from(work.runtime_error(error)))??,
-                ))),
-            },
-        }
-    }
-}
-
-pub(super) fn receipt_path_with_native_work(
+pub(super) fn receipt_path(
     attempt: crate::EffectAttemptId,
     work: &NativeMaterializationWork,
 ) -> std::result::Result<StreamPath, Error> {
@@ -72,13 +46,17 @@ pub(super) struct ReadReceipt {
     pub(super) custody: Option<NativeAllocation>,
 }
 
-fn check(work: Option<&NativeMaterializationWork>) -> std::result::Result<(), Error> {
-    if let Some(work) = work { work.remaining()?; }
+fn check(work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
+    {
+ work.remaining()?;
+}
     Ok(())
 }
 
-fn examine(work: Option<&NativeMaterializationWork>, operation: impl FnOnce() -> bool) -> std::result::Result<bool, Error> {
-    if let Some(work) = work { work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?; }
+fn examine(work: &NativeMaterializationWork, operation: impl FnOnce() -> bool) -> std::result::Result<bool, Error> {
+    {
+ work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+}
     Ok(operation())
 }
 
@@ -173,13 +151,9 @@ const RECEIPT_LABELS: &str = concat!(
 );
 
 pub(super) fn decode(
-    bytes: &[u8], work: Option<&NativeMaterializationWork>,
+    bytes: &[u8], work: &NativeMaterializationWork,
     custody: &mut Option<NativeAllocation>, _marker: OperationId,
 ) -> std::result::Result<Receipt<'static>, Error> {
-    let Some(work) = work else {
-        return crate::contract::json_from_slice(bytes)
-            .map_err(|source| Error::NativeDecode { code: crate::wire::ErrorCode::Storage, source, custody: None });
-    };
     let remaining = work.remaining()?;
     let codec_slot = NativeReceiptCodecSlot::new(work)?;
     let bounds = JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -221,56 +195,40 @@ pub(super) fn decode(
 }
 
 pub(super) async fn read<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>, path: &StreamPath, work: Option<&NativeMaterializationWork>,
+    owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
     marker: OperationId,
 ) -> std::result::Result<Option<ReadReceipt>, Error> {
-    let mut custody = work.map(|work| work.retain_owned(0)).transpose()?;
+    let mut custody = Some(work.retain_owned(0)?);
     let client = owner.stream();
     check(work)?;
-    let native_meter = work.map(NativeMaterializationWork::runtime_meter_owner);
-    let bounds = if let (Some(original), Some(meter)) = (work, &native_meter) {
-        match client.native_bounds(path.clone(), meter.clone()).await
-            .map_err(|error| Error::from(original.runtime_error(error)))? {
-            Ok(bounds) => *bounds.value(),
-            Err(StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(receipt_backend(error)),
-        }
-    } else {
-        let stream = client.stream(path.as_str()).map_err(receipt_backend)?;
-        match stream.bounds().await {
-            Ok(bounds) => bounds,
-            Err(StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(receipt_backend(error)),
-        }
+    let meter = work.runtime_meter_owner();
+    let bounds = match client.native_bounds(path.clone(), meter.clone()).await
+        .map_err(|error| Error::from(work.runtime_error(error)))? {
+        Ok(bounds) => *bounds.value(),
+        Err(StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(receipt_backend(error)),
     };
     check(work)?;
     if !(1..=2).contains(&bounds.tail) { return Err(receipt_error("invalid native receipt length")); }
     let limit = bounds.tail as u32;
-    let mut records = if let (Some(original), Some(meter)) = (work, native_meter) {
-        let records = client.native_read(acyclic_stream::ReadRequest {
-            path: path.clone(), from: 0, limit,
-        }, meter).await.map_err(|error| Error::from(original.runtime_error(error)))??;
-        ReceiptRecords::Original { records, work: original }
-    } else {
-        let stream = client.stream(path.as_str()).map_err(receipt_backend)?;
-        ReceiptRecords::Ordinary(stream.read(0, limit).await?)
-    };
+    let mut records = client.native_read(acyclic_stream::ReadRequest { path: path.clone(), from: 0, limit }, meter)
+        .await.map_err(|error| Error::from(work.runtime_error(error)))??;
     check(work)?;
-    let first = records.next().await?.ok_or(receipt_error("missing native launch receipt"))?;
-    receive(first.record(), work)?;
-    if first.record().sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
-    let Receipt::Launch(launch) = decode(&first.record().value, work, &mut custody, marker)? else {
+    let first = next_record(&mut records, work).await?.ok_or(receipt_error("missing native launch receipt"))?;
+    receive(first.value(), work)?;
+    if first.value().sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
+    let Receipt::Launch(launch) = decode(&first.value().value, work, &mut custody, marker)? else {
         return Err(receipt_error("native launch receipt required"));
     };
     drop(first);
     check(work)?;
-    let observed = match records.next().await? {
+    let observed = match next_record(&mut records, work).await? {
         Some(record) => {
-            receive(record.record(), work)?;
-            let Receipt::Observed(observed) = decode(&record.record().value, work, &mut custody, marker)? else {
+            receive(record.value(), work)?;
+            let Receipt::Observed(observed) = decode(&record.value().value, work, &mut custody, marker)? else {
                 return Err(receipt_error("native observed receipt required"));
             };
-            if !examine(work, || record.record().sequence == 1)?
+            if !examine(work, || record.value().sequence == 1)?
                 || !examine(work, || observed.effect.provider == launch.dispatch.provider)?
                 || !examine(work, || observed.effect.effect_id == launch.dispatch.effect_id)?
                 || !examine(work, || observed.effect.attempt_id == launch.dispatch.attempt_id)?
@@ -286,18 +244,20 @@ pub(super) async fn read<P: StreamProvider>(
         None => None,
     };
     check(work)?;
-    if bounds.tail != 1 + u64::from(observed.is_some()) || records.next().await?.is_some() {
+    if bounds.tail != 1 + u64::from(observed.is_some()) || next_record(&mut records, work).await?.is_some() {
         return Err(receipt_error("native receipt sequence is invalid"));
     }
     check(work)?;
     Ok(Some(ReadReceipt { launch: *launch, observed, custody }))
 }
 
-fn receive(record: &acyclic_stream::Record, work: Option<&NativeMaterializationWork>) -> std::result::Result<(), Error> {
-    if let Some(work) = work {
+fn receive(record: &acyclic_stream::Record, work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
+    {
+
         work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: record.value.len() as u64,
             ..WorkCounters::default() })?;
-    }
+
+}
     if record.value.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
     check(work)
 }
@@ -307,14 +267,14 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     reader: &HistoryReader<P>,
     launch: &LaunchReceipt<'_>,
     authority: &NativeProcessAuthority,
-    work: Option<&NativeMaterializationWork>,
+    work: &NativeMaterializationWork,
 ) -> std::result::Result<(), Error> {
-    let mut native_io = work.map(crate::store::history::native_work_io).transpose()?;
+    let mut native_io = crate::store::history::native_work_io(work)?;
     let result = async {
-        let io = native_io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        let io = Some(&mut native_io);
         let cursor = reader.pin_with_work(0, io).await?;
         reader.effect_with_work(&cursor, launch.dispatch.effect_id, authority.history_limits,
-            native_io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await
+            Some(&mut native_io)).await
     }.await;
     let state = match result {
         Ok(Some(state)) => state,
@@ -377,8 +337,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             self.owner.task_binding().0, self.command, work,
         )?;
         self.authority.approvals.verify_with_native_work(self.approval, self.command, digest, work)?.await?;
-        self.receipt_original(attempt, Some(work), Some(digest)).await
-            ?
+        self.receipt_original(attempt, work, Some(digest)).await?
             .ok_or(Error::Indeterminate(self.command))
     }
 
@@ -425,7 +384,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let (after, after_custody) = owner.outcome_with_native_work(work).await?;
             if after.is_none() { owner.verify_with_native_work(true, work).await?; }
             drop(after); drop(after_custody);
-            check(Some(work))?;
+            check(work)?;
             drop(outcome); drop(outcome_custody);
             Ok(Self { owner, command, plan, admission: NativeAdmission::ReceiptOnly,
                 view: None, approval, authority, supervisor, effect_id, history,
@@ -439,26 +398,27 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
         crate::NativeFutureBundle::new(work, || async move {
-            Ok::<_, Error>(self.receipt_original(attempt, Some(work), None).await)
+            Ok::<_, Error>(self.receipt_original(attempt, work, None).await)
         })?.await?
     }
 
     pub(super) async fn receipt_original(
-        &self, attempt: crate::EffectAttemptId, work: Option<&NativeMaterializationWork>,
+        &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
         expected_approval_digest: Option<[u8; 32]>,
     ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
-        let outcome_custody = if let Some(work) = work {
+        let outcome_custody = {
+
             let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
             if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
             Some((outcome, custody))
-        } else { self.owner.verify(true).await?; None };
-        if let Some(work) = work {
+
+};
+        {
+
             self.owner.require_volume_grant_with_native_work(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, work)?;
-        }
-        let path = match work {
-            Some(work) => receipt_path_with_native_work(attempt, work)?,
-            None => receipt_path(attempt)?,
-        };
+
+}
+        let path = receipt_path(attempt, work)?;
         let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work, self.command).await? else { return Ok(None); };
         if !examine(work, || launch.task == self.owner.task_binding().0)?
             || !examine(work, || launch.command == self.command)?
@@ -483,11 +443,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             return Err(receipt_error("native receipt differs from its original approved request digest"));
         }
         authenticate_core_launch(&self.history, &launch, &self.authority, work).await?;
-        if let Some(work) = work {
+        {
+
             let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
             if after.is_none() { self.owner.verify_with_native_work(true, work).await?; }
             drop(after); drop(after_custody);
-        }
+
+}
         check(work)?;
         let LaunchReceipt { dispatch, plan, conversation, task, command, fence,
             approval: _, approval_digest: _ } = launch;

@@ -175,7 +175,7 @@ async fn bind_body<P: StreamProvider + 'static>(
             owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Write, work)?;
         }
     }
-    request.validate_native_paths(view.manifest(), Some(io))?;
+    request.validate_native_paths(view.manifest(), io)?;
     if request.view.volumes.iter().any(|mapping| &mapping.volume == authority.results.volume()) {
         return Err(validation_error(Some(io), crate::wire::ErrorCode::Unsupported,
             "native result storage must be separate from materialized volumes"));
