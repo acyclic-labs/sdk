@@ -239,6 +239,10 @@ impl<'a> PiSelectedHost<'a> {
             return Err(denied("immutable mixed-view inspection changed its authorized frozen source"));
         }
         selection.1.absorb(&mut observed.2).map_err(native_error)?;
+    } else if task != self.protected.policy().root_task {
+        let mut qualified = self.native.validate_published_selection_snapshot(
+            task, &inspection, project, frozen, work).await?;
+        selection.1.absorb(&mut qualified).map_err(native_error)?;
     }
     let volume = selection.0.project;
     drop(selection.0.generation);

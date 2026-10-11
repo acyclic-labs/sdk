@@ -29,7 +29,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
         NativeProcessAuthority, NativeProcessDrainProof, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
         NativeVolumeView, NativeVolumeNamespace, NativeTaskViewDrainReceipt, NativeReceiptError,
         NativePreparationJournalObservation, NativePreparationJournalError,
-        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
+        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt},
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
@@ -558,8 +558,10 @@ impl PiNativeCommandHost {
         Some(display(&mapping.path))
     }
 
-    /// Persist this actual first-selection snapshot before inspect/diff/import.
-    /// Existing requests must replay their retained snapshot, never call again.
+    /// Captures an active source checkpoint or a terminal publication candidate.
+    /// A terminal candidate is metadata only: retain its custody through the
+    /// genuine source-reader factory and validate it before persisting selection.
+    /// Existing requests replay their retained snapshot rather than recapturing.
     pub(crate) async fn selection_snapshot(&self, task: TaskId,
         meter: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
@@ -583,18 +585,40 @@ impl PiNativeCommandHost {
                 drop(snapshots.0);
                 return Ok((snapshot, snapshots.1));
             }
-            let receipt = effect.runner.receipt_with_native_work(&meter).await.map_err(receipt_error)?
-                .ok_or_else(|| Error::Indeterminate(effect.command))?;
-            if receipt.task != task || receipt.command != effect.command || !receipt.observed {
-                return Err(Error::Indeterminate(effect.command));
+            if prepared.binding.project_volumes.len() != 1 {
+                return Err(unauthorized("Pi published child has no unique original project binding"));
             }
-            effect.runner.verify_terminal_process_result_with_native_work(&prepared.binding, effect.context(),
-                effect.context().scope().limits().file_bytes, meter).await.map_err(receipt_error)?;
-            // The original terminal receipt authenticates process output, not a
-            // subsequently observed workspace HEAD. A qualified project
-            // generation must come from its protected publication companion.
-            Err(Error::Indeterminate(effect.command))
+            let project = prepared.binding.project_volumes.values().next()
+                .ok_or_else(|| unauthorized("Pi published child has no original project binding"))?;
+            effect.runner.published_project_candidate_with_native_work(project, meter)?.await
         }.await
+    }
+
+    /// Authorizes a terminal metadata candidate through the actual operation's
+    /// Common Project reader, then rereads the same protected publication.
+    pub(crate) async fn validate_published_selection_snapshot(&self, task: TaskId,
+        inspection: &TaskSourceInspection<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+        project: &acyclic_harness::conversation::VolumeRef, frozen: LazySnapshotRef,
+        meter: &NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeAllocation> {
+        let prepared = self.prepared(task)
+            .ok_or_else(|| unauthorized("Pi published selection has no authenticated creator companion"))?;
+        if prepared.binding.project_volumes.len() != 1
+            || prepared.binding.project_volumes.values().next() != Some(project) {
+            return Err(unauthorized("Pi published selection replaced its original project binding"));
+        }
+        let entry = self.registered_entry(task)?;
+        let effect = entry.handles.lock().await.effect.clone()
+            .ok_or_else(|| unauthorized("Pi published selection has no original native operation"))?;
+        let (snapshot, custody) = effect.runner.inspect_published_project_snapshot_with_native_work(
+            inspection, project, frozen, meter)?.await?;
+        meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(native_error)?;
+        if snapshot != frozen {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi qualified publication changed its selected snapshot" });
+        }
+        Ok(custody)
     }
 
     pub(crate) fn project_mount(&self, task: TaskId,
