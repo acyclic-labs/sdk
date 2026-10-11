@@ -31,7 +31,7 @@ use crate::obs;
 use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
     commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
-    fork_receipt_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
+    fork_receipt_to_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
     optional_key, path, read_response_records, read_response_wire, record, record_wire,
 };
 use crate::{
@@ -1176,7 +1176,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     })
                     .await
                     .map_err(|error| error_status(&error))?;
-                Ok(Response::new(fork_receipt_wire(&receipt)))
+                Ok(Response::new(fork_receipt_to_wire(&receipt)))
             })
             .await;
         finish_served(&mut completion, result, false)
