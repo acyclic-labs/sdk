@@ -460,7 +460,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(report)
     }
 
-    /// Converts a fully captured report to a seed and publishes it only through the parent's authenticated, conflict-checked Stream append.
+    /// Publishes a captured fork through the authenticated parent append.
     pub async fn publish_fork_report(
         &mut self,
         report: ForkReport,
@@ -486,7 +486,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
-    /// Publishes the original fork report under its admitted task owner's fresh atomic fence, charging the same canonical publication engine.
+    /// Publishes a fork report under the admitted owner's atomic fence.
     #[cfg(feature = "filesystem")]
     pub async fn publish_fork_report_measured(
         &mut self,
@@ -839,7 +839,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     }
 
-    /// Opens through the original authenticated checkpoint and finite suffix engine with a cumulative SDK-boundary receipt, including failed prefixes.
+    /// Opens from an authenticated checkpoint and bounded suffix.
     #[cfg(feature = "filesystem")]
     pub async fn open_measured(
         client: &StreamClient<P>,
@@ -910,7 +910,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     pub fn into_reducer(self) -> Reducer {
         self.reducer
     }
-    /// Restores the original authenticated checkpoint at or before an exact committed revision, then only its bounded canonical suffix through that revision.
+    /// Restores a bounded suffix through an exact committed revision.
     pub async fn open_at_revision_with_read_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -1037,7 +1037,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     }
 
-    /// Restores caller-supplied authenticated state under one cumulative input allowance for serialized snapshot bytes, cached events and canonical suffix.
+    /// Restores authenticated state within a cumulative input allowance.
     pub async fn open_from_snapshot_with_read_limits(
         client: &StreamClient<P>,
         authority: Authority,
@@ -1281,7 +1281,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(self)
     }
 
-    /// Sets the finite archive allowance used by effect permission checks and fresh transitions, including exact retries whose terminal state was retired.
+    /// Sets the archive allowance for effect checks and retries.
     pub fn with_effect_history_read_limits(mut self, limits: HistoryReadLimits) -> Result<Self> {
         if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
             return Err(Error::Invalid(
@@ -1668,73 +1668,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await
     }
 
-    /// Uses the existing conversation reducer and content validation, while the task owner compares its lease and this conversation tail in one Stream transaction.
-    #[cfg(feature = "filesystem")]
-    pub(crate) async fn execute_task_command(
-        &mut self,
-        command: Command,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-    ) -> Result<ApplyResult> {
-        use crate::distributed::JournalWrite;
-        let write = match &command.action {
-            Action::OpenInteraction { .. } => {
-                owner.require_interaction_grant()?;
-                JournalWrite::Fresh
-            }
-            Action::PlanEffect {
-                provider,
-                request,
-                result_schema,
-                ..
-            } => {
-                owner.require_effect_grants(provider, true)?;
-                owner.validate_input_file(request)?;
-                owner.validate_input_file(result_schema)?;
-                JournalWrite::Fresh
-            }
-            Action::MarkEffectDispatched { effect_id, .. }
-            | Action::ResolveEffect {
-                observation: crate::core::EffectAttestation { effect_id, .. },
-            } => {
-                let effect = self
-                    .effect(*effect_id, self.effect_history_limits)
-                    .await?
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                owner.require_effect_grants(&effect.provider, false)?;
-                if matches!(command.action, Action::ResolveEffect { .. }) {
-                    JournalWrite::Settlement
-                } else {
-                    JournalWrite::Fresh
-                }
-            }
-            _ => {
-                return Err(Error::Invalid(
-                    "task journal action is not an admitted request or effect".into(),
-                ));
-            }
-        };
-        owner.verify(write.settlement()).await?;
-        if let Some(result) = self.replay_indexed(&command).await? {
-            return Ok(result);
-        }
-        let planned = self.plan_command(&command, false).await?;
-        let ApplyResult::Applied { event } = planned else {
-            return Ok(planned);
-        };
-        self.validate_admission_content(&command.action).await?;
-        self.validate_causal_reference(event.causal_parent.as_ref())
-            .await?;
-        let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-        let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        if !owner.append_conversation(&publication, &key, write).await? {
-            return Err(Error::Conflict(
-                "task publication lost its owner or conversation tail".into(),
-            ));
-        }
-        self.apply_published_event(&event)
-            .map_err(|_| Error::Indeterminate(command.operation_id))
-    }
-
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
@@ -1742,7 +1675,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             {
                 return self
                     .reducer
-                    .plan_with_archived_effect(command, effect_id, &effect);
+                    .plan_with_archived_effect(command, effect_id, &effect, &mut None).map(|(result, _)| result);
             }
             return self.reducer.plan_indexed_with_retained_quota(command, false, &mut None).map(|(result, _)| result);
         }
@@ -1937,111 +1870,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     #[cfg(feature = "filesystem")]
-    async fn validate_extension_admission_content_with_work(
-        &self, action: &Action, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        if work.is_none() { return self.validate_extension_admission_content(action).await; }
-        let reference = match action {
-            Action::AppendCustom { content, .. } | Action::ConfigureExtension { content, .. }
-                | Action::MigrateExtensionState { content, .. } => content,
-            _ => return Ok(()),
-        };
-        let verifier = self.content_verifier.as_ref().ok_or_else(||
-            guarded::guarded_boundary(work, guarded::GuardedBoundary::Unsupported,
-                "extension content verifier is not bound"))?;
-        let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
-        if let Action::AppendCustom { schema, version, .. } = action {
-            let (bytes, claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(), reference, scratch.work()).await?;
-            scratch.adopt(claim)?;
-            return self.reducer.validate_custom_bytes_with_work(
-                schema, *version, reference, &bytes, scratch.work());
-        }
-        if let Action::ConfigureExtension { extension, .. } = action {
-            let (bytes, claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(), reference, scratch.work()).await?;
-            scratch.adopt(claim)?;
-            return self.reducer.validate_configuration_bytes_with_work(
-                extension, reference, &bytes, scratch.work());
-        }
-        if let Action::MigrateExtensionState { name, previous, to_version, content } = action {
-            let migrations = self.extension_migrations.as_ref().ok_or_else(||
-                guarded::guarded_boundary(scratch.work(), guarded::GuardedBoundary::Unsupported,
-                    "extension migration executor is not bound"))?;
-            let (source, prior) = self.reducer.extension_state(name).ok_or_else(||
-                guarded::guarded_boundary(scratch.work(), guarded::GuardedBoundary::NotFound,
-                    "extension state is not found"))?;
-            if source != previous {
-                return Err(guarded::guarded_boundary(scratch.work(), guarded::GuardedBoundary::Conflict,
-                    "extension migration source changed"));
-            }
-            self.limits.validate_file_with_work(&prior.content, scratch.work())?;
-            self.limits.validate_file_with_work(content, scratch.work())?;
-            let (old_bytes, old_claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(), &prior.content, scratch.work()).await?;
-            scratch.adopt(old_claim)?;
-            prior.content.verify_with_work(&old_bytes, scratch.work())?;
-            self.reducer.validate_custom_bytes_with_work(
-                name, prior.version, &prior.content, &old_bytes, scratch.work())?;
-            let decoded = match scratch.work().as_deref_mut() {
-                Some(observer) => observer.decode_json_value(&old_bytes)?,
-                None => return Err(Error::Invalid("extension observer is not bound".into())),
-            };
-            scratch.adopt(decoded.1)?;
-            let previous_value = decoded.0;
-            let target_digest = self.reducer.extension_implementation_digest_with_work(
-                name, *to_version, scratch.work())?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let generated = if let Some(original) = scratch.work().as_ref()
-                .and_then(|observer| observer.original_native_work()) {
-                let (value, custody) = migrations.migrate_with_native_work(
-                    name, prior.version, *to_version, target_digest, &previous_value, original)?;
-                (value, Some(custody))
-            } else {
-                (migrations.migrate(name, prior.version, *to_version, target_digest, &previous_value)?, None)
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let output_custody = generated.1;
-            #[cfg(not(target_arch = "wasm32"))]
-            let expected = generated.0;
-            #[cfg(target_arch = "wasm32")]
-            let expected = migrations.migrate(
-                name, prior.version, *to_version, target_digest, &previous_value)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(custody) = output_custody {
-                let same_ledger = scratch.work().as_ref()
-                    .and_then(|observer| observer.original_native_work())
-                    .is_some_and(|original| custody.work().shares_ledger(original));
-                if !same_ledger {
-                    drop(expected);
-                    return Err(guarded::guarded_boundary(
-                        scratch.work(), guarded::GuardedBoundary::Invalid,
-                        "extension migration custody belongs to another ledger"));
-                }
-                let retained = custody.bytes();
-                if let Some(observer) = scratch.work().as_deref_mut() {
-                    observer.absorb_native_custody(custody)?;
-                }
-                scratch.adopt(retained)?;
-            }
-            let (bytes, claim) = Self::read_admission_content_with_work(
-                verifier.as_ref(), content, scratch.work()).await?;
-            scratch.adopt(claim)?;
-            content.verify_with_work(&bytes, scratch.work())?;
-            self.reducer.validate_custom_bytes_with_work(
-                name, *to_version, content, &bytes, scratch.work())?;
-            let canonical = history::canonical_identity_bytes_with_work(
-                &expected, scratch.work())?;
-            scratch.adopt(canonical.capacity() as u64)?;
-            if bytes.as_ref() != canonical.as_slice() {
-                return Err(guarded::guarded_boundary(scratch.work(), guarded::GuardedBoundary::Conflict,
-                    "staged extension migration differs from its pinned implementation"));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
     async fn validate_interaction_part_with_work(
         &self, ticket: &crate::interaction::InteractionTicket,
         reference: &crate::conversation::FileRef, detail_outcome: Option<&InteractionOutcome>,
@@ -2067,99 +1895,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-    #[cfg(feature = "filesystem")]
-    async fn validate_interaction_admission_with_work(
-        &self, action: &Action, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        if work.is_none() { return self.validate_interaction_admission(action).await; }
-        if let Action::ResolveInteraction { resolution } = action
-            && matches!(resolution.outcome, InteractionOutcome::Expired) {
-            let (ticket, _) = self.reducer.interaction(&resolution.id).ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::NotFound,
-                    "interaction is not found"))?;
-            let deadline = ticket.deadline_unix_ms.ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::Invalid,
-                    "interaction has no expiry deadline"))?;
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| guarded::guarded_boundary(work, guarded::GuardedBoundary::Storage,
-                    "system clock predates the Unix epoch"))?.as_millis();
-            if now < u128::from(deadline) {
-                return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Conflict,
-                    "interaction deadline has not elapsed"));
-            }
-        }
-        if matches!(action, Action::OpenInteraction { .. }) {
-            self.validate_task_admission_content_with_work(action, work).await?;
-        }
-        if let Action::ResolveInteraction { resolution } = action
-            && let InteractionOutcome::Answered { answer } = &resolution.outcome {
-            let (ticket, _) = self.reducer.interaction(&resolution.id).ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::NotFound,
-                    "interaction is not found"))?;
-            self.validate_interaction_part_with_work(ticket, answer, None, work).await?;
-        }
-        if let Action::ResolveInteraction { resolution } = action
-            && let Some(detail) = &resolution.detail {
-            let (ticket, _) = self.reducer.interaction(&resolution.id).ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::NotFound,
-                    "interaction is not found"))?;
-            self.validate_interaction_part_with_work(
-                ticket, detail, Some(&resolution.outcome), work).await?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    async fn validate_admission_content_with_work(
-        &self, action: &Action, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        if work.is_none() { return self.validate_admission_content(action).await; }
-        self.validate_interaction_admission_with_work(action, work).await?;
-        self.validate_extension_admission_content_with_work(action, work).await?;
-        let message = match action {
-            Action::AppendConversationMessage { message } => Some(message.as_ref()),
-            Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
-            _ => None,
-        };
-        if let Some(message) = message {
-            self.limits.validate_message_with_work(message, work)?;
-            let verifier = self.content_verifier.as_ref().ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::Unsupported,
-                    "conversation content verifier is not bound"))?;
-            if let Some(observer) = work.as_deref_mut() {
-                history::verify_content_with_work(observer, verifier.as_ref(), &message.content).await?;
-            }
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for attachment in items {
-                        if let Some(observer) = work.as_deref_mut() {
-                            history::verify_content_with_work(
-                                observer, verifier.as_ref(), &attachment.file).await?;
-                        }
-                    }
-                },
-                ReferencedAttachments::Manifest { manifest, item_count } => {
-                    crate::conversation::verified_attachment_manifest_with_work(
-                        verifier.as_ref(), manifest, *item_count, &self.limits, work).await?;
-                },
-            }
-            for reference in message.extensions.values() {
-                if let Some(observer) = work.as_deref_mut() {
-                    history::verify_content_with_work(observer, verifier.as_ref(), reference).await?;
-                }
-            }
-        }
-        if matches!(action, Action::PlanEffect { .. } | Action::ResolveEffect { .. }) {
-            self.validate_task_admission_content_with_work(action, work).await?;
-        }
-        if let Action::PublishProjectMerge { receipt } = action {
-            let verifier = self.merge_verifier.as_ref().ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::Unsupported,
-                    "project merge verifier is not bound"))?;
-            crate::merge::verify_project_merge_with_work(verifier.as_ref(), receipt, work).await?;
-        }
-        Ok(())
-    }
     async fn validate_admission_content(&self, action: &crate::core::Action) -> Result<()> {
         self.validate_interaction_admission(action).await?;
         self.validate_extension_admission_content(action).await?;
