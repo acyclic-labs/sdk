@@ -2422,7 +2422,7 @@ impl CapturedResource {
         self.validate_with_work(&mut None)
     }
 
-    fn validate_with_work(
+    pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.source.validate_with_work(work)?;
