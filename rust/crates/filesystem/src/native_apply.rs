@@ -315,6 +315,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_later_writer_matching_the_desired_bytes_is_not_adopted_as_a_completed_apply() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new(false).await?;
+        std::fs::write(fixture.source.join("file.txt"), b"actual desired bytes")?;
+        let writer = crate::NativeRootIdentity::from_file(&std::fs::File::open(fixture.source.join("file.txt"))?)?;
+        assert!(fixture.apply(OperationId::new()).await.is_err());
+        assert_eq!(std::fs::read(fixture.source.join("file.txt"))?, b"actual desired bytes");
+        assert_eq!(crate::NativeRootIdentity::from_file(&std::fs::File::open(fixture.source.join("file.txt"))?)?, writer);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn moved_original_root_never_mutates_a_foreign_replacement() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = Fixture::new(false).await?;
         let moved = fixture.directory.path().join("moved-original");
