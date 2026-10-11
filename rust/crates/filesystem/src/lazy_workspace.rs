@@ -35,7 +35,7 @@ type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 #[cfg(not(target_arch = "wasm32"))]
 type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-pub(crate) const LAZY_STATE_SCHEMA: u32 = 9;
+pub(crate) const LAZY_STATE_SCHEMA: u32 = 10;
 
 const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
 
@@ -50,6 +50,28 @@ impl LazySnapshotId {
     pub const fn into_bytes(self) -> [u8; 32] {
         self.0
     }
+}
+
+/// A borrowed-path member of one complete lazy upload candidate.
+///
+/// The caller supplies its existing ordered directory/file mutation vector as
+/// an iterator; this representation allocates no second plan or byte buffer.
+/// Payloads are `OwnedBytes` in every role, retaining any original intrinsic
+/// custody without a raw-byte alias. This is data, never publication authority.
+#[derive(Debug)]
+pub enum LazyWriteMutation<'path> {
+    /// Creates every missing directory through the canonical transaction.
+    CreateDirectory {
+        /// Canonical customer path, borrowed from the caller's original plan.
+        path: &'path str,
+    },
+    /// Creates or replaces a complete file while preserving its lazy identity.
+    PutFile {
+        /// Canonical customer path, borrowed from the caller's original plan.
+        path: &'path str,
+        /// Complete original immutable payload.
+        bytes: acyclic_stream::OwnedBytes,
+    },
 }
 
 /// Authenticated selected source inputs for the canonical lazy import engine.
@@ -246,6 +268,46 @@ fn deserialize_completed_selected_import<'de, D: serde::Deserializer<'de>>(
     Option::<CompletedSelectedImport>::deserialize(deserializer)
 }
 
+/// Exact current candidate hint in the existing companion. The same fixed
+/// fields are authenticated by its canonical DATA publication evidence.
+/// Its historical permit is evidence, never a grant to a recovery caller.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingLazyWrite {
+    /// Original SDK publication operation.
+    pub operation: crate::OperationId,
+    /// Authentic original authored/source/overlay/shadow freeze.
+    pub basis: LazySnapshotRef,
+    /// Canonical digest of the complete ordered mutation input.
+    pub input: crate::Digest,
+    /// Actual immutable workspace decode context, including profile and limits.
+    pub config: VolumeConfig,
+    /// Permit bound into the original canonical publication fingerprint.
+    pub permit: crate::PublicationPermit,
+}
+
+/// Latest finished snapshot hint, not an archive or historical authority.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletedLazyWrite {
+    /// Exact original candidate and preconditions.
+    pub prepared: PendingLazyWrite,
+    /// Genuine snapshot from the original committed generation.
+    pub snapshot: LazySnapshotRef,
+}
+
+fn deserialize_pending_lazy_write<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PendingLazyWrite>, D::Error> {
+    Option::<PendingLazyWrite>::deserialize(deserializer)
+}
+
+fn deserialize_completed_lazy_write<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<CompletedLazyWrite>, D::Error> {
+    Option::<CompletedLazyWrite>::deserialize(deserializer)
+}
+
 /// Durable constant-size binding for one sparse workspace.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -272,6 +334,12 @@ pub struct LazyWorkspaceState {
     /// Latest original selected publication, never reconstructed from the head.
     #[serde(deserialize_with = "deserialize_completed_selected_import")]
     pub completed_selected_import: Option<CompletedSelectedImport>,
+    /// Exact original prepared write, retained across an uncertain DATA ACK.
+    #[serde(deserialize_with = "deserialize_pending_lazy_write")]
+    pub pending_write: Option<PendingLazyWrite>,
+    /// Latest finished write; unavailable older witnesses remain indeterminate.
+    #[serde(deserialize_with = "deserialize_completed_lazy_write")]
+    pub completed_write: Option<CompletedLazyWrite>,
 }
 
 impl LazyWorkspaceState {
@@ -1700,6 +1768,45 @@ enum LazyTreapMeter {
     },
 }
 
+/// The original DATA record stays with its provider's physical custody.
+enum LazyWriteOriginalRecord<A, O> {
+    Standalone((crate::Generation<A, O>, crate::DurableCommit)),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(NativeOwnedCoreState<(crate::Generation<A, O>, crate::DurableCommit)>),
+}
+
+impl<A, O> LazyWriteOriginalRecord<A, O> {
+    fn as_record(&self) -> &(crate::Generation<A, O>, crate::DurableCommit) {
+        match self {
+            Self::Standalone(value) => value,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(value) => value.as_state(),
+        }
+    }
+
+    fn into_generation(self) -> crate::Generation<A, O> {
+        match self {
+            Self::Standalone((generation, record)) => {
+                drop(record);
+                generation
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(value) => {
+                let ((generation, record), allocation) = value.into_parts();
+                drop(record);
+                drop(allocation);
+                generation
+            }
+        }
+    }
+}
+
+/// Constructed only by authentication of the original canonical DATA record.
+struct AuthenticatedLazyWrite {
+    prepared: PendingLazyWrite,
+    generation: crate::GenerationId,
+}
+
 enum LazyStatePhase {
     Standalone(LazyWorkspaceState),
     #[cfg(not(target_arch = "wasm32"))]
@@ -2867,7 +2974,7 @@ struct PinnedSourceNode {
 enum LazyPromotionMutation<'a> {
     Directory,
     Parents,
-    File(Bytes),
+    File(acyclic_stream::OwnedBytes),
     Link(crate::kernel::OwnedSourceChunk),
     Special(FileKind, Option<(u32, u32)>),
     Metadata(FileMetadata),
@@ -3175,6 +3282,12 @@ fn lazy_cursor_fixed_read_step(
         }),
         ReadAllocationStep::Copied(bytes) => accounting.record_completed(WorkCounters {
             bytes_copied: bytes, ..WorkCounters::UNCHARGED
+        }),
+        ReadAllocationStep::BeforeHash(bytes) => accounting.admit(WorkCounters {
+            bytes_hashed: bytes, ..WorkCounters::UNCHARGED
+        }),
+        ReadAllocationStep::Hashed(bytes) => accounting.record_completed(WorkCounters {
+            bytes_hashed: bytes, ..WorkCounters::UNCHARGED
         }),
         ReadAllocationStep::BeforeItem => accounting.admit(WorkCounters {
             items_examined: 1, ..WorkCounters::UNCHARGED
@@ -3749,6 +3862,16 @@ pub enum LazyWorkspaceError {
     /// Original workspace cause retained without allocating a diagnostic.
     #[error(transparent)]
     WorkspaceCause(WorkspaceError),
+    /// The actual workspace failure and a subsequent prefix-recording invariant
+    /// failure remain distinct; neither replaces the other.
+    #[error("workspace operation failed: {source}; recording its prefix failed: {accounting}")]
+    WorkspacePrefixFailure {
+        /// Original SDK cause, including its intrinsic payload custody.
+        #[source]
+        source: WorkspaceError,
+        /// Actual checked-accounting or poison cause, not a synthetic cancellation.
+        accounting: WorkspaceError,
+    },
     /// Original native SDK cause and its actual remaining allocation custody.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
@@ -3801,6 +3924,18 @@ pub enum LazyWorkspaceError {
     #[error("original selected-import operation {operation:?} is indeterminate")]
     SelectedImportIndeterminate {
         /// The original identity; a caller must not relaunch against the head.
+        operation: crate::OperationId,
+    },
+    /// DATA is authentic but its exact original lazy write proof is unavailable.
+    #[error("original lazy write operation {operation:?} is indeterminate")]
+    WriteIndeterminate {
+        /// Original identity, never permission to relaunch from HEAD.
+        operation: crate::OperationId,
+    },
+    /// An existing original operation has different frozen input or basis.
+    #[error("original lazy write operation {operation:?} has different input")]
+    WriteInputConflict {
+        /// The authentic original operation, not an inferred authority.
         operation: crate::OperationId,
     },
     /// The original selected seal returned a semantic publication decision.
@@ -4078,6 +4213,8 @@ impl LazySnapshotRef {
             parent_workspace_id: Some(parent_workspace_id),
             fork_origin: None,
             completed_selected_import: None,
+            pending_write: None,
+            completed_write: None,
             // Observed overlay records retain their pinned source epochs. This
             // binding is deliberately live for paths unresolved at capture.
             source: source.0,
@@ -4215,6 +4352,7 @@ where
                 schema_version: LAZY_STATE_SCHEMA, revision: 1,
                 workspace_id: workspace.id(), parent_workspace_id: None,
                 fork_origin: None, completed_selected_import: None, source: reference,
+                pending_write: None, completed_write: None,
                 overlay, shadows, pending_remove: None,
             };
             let swapped = match &meter.meter {
@@ -4305,6 +4443,8 @@ where
             parent_workspace_id: None,
             fork_origin: None,
             completed_selected_import: None,
+            pending_write: None,
+            completed_write: None,
             source: source.reference(),
             overlay: overlay_id,
             shadows: shadow_id,
@@ -5038,6 +5178,7 @@ where
                 schema_version: LAZY_STATE_SCHEMA, revision: 1, workspace_id: destination,
                 parent_workspace_id: Some(snapshot.workspace_id), fork_origin: Some(origin),
                 completed_selected_import: None,
+                pending_write: None, completed_write: None,
                 source: snapshot.source, overlay: snapshot.overlay, shadows: snapshot.shadows, pending_remove: None,
             };
             // Reuse SDK publication custody: the actual closure is protected from
@@ -5230,7 +5371,7 @@ where
         .await?;
         control_meter.release(control_bytes)?;
         work = work.with_backend(exactified.work, control_bytes)?;
-        work.verify(&budget)?;
+        work.verify(budget)?;
         Ok(OperationReceipt {
             value: exactified.value,
             work,
@@ -5401,22 +5542,24 @@ where
     /// Projects selected regions of the original immutable cut on the caller's
     /// native ledger. The baseline is forked from `frozen`, never from head.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn exactify_snapshot_selected_at_generation_with_native_work_guarded<'original, F, Fut>(
+    pub async fn exactify_snapshot_selected_at_generation_with_native_work_guarded<E, F, Fut>(
         &self, frozen: LazySnapshotRef, imported: &crate::Generation<A, O>,
         paths: &[String], destination: &str, baseline_key: IdempotencyKey,
         candidate_key: IdempotencyKey, permit: crate::PublicationPermit,
-        original: &'original crate::NativeMaterializationWork, cancellation: &CancellationToken,
-        mut before_publication: F,
-    ) -> Result<(crate::Generation<A, O>, crate::Generation<A, O>), LazyWorkspaceError>
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+        before_publication: F,
+    ) -> Result<(crate::Generation<A, O>, crate::Generation<A, O>), E>
     where
-        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), crate::FsError>> + Send,
+        D: 'static,
+        E: From<LazyWorkspaceError> + From<crate::FsError> + From<WorkspaceError> + Send + 'static,
+        F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&work, || async {
+        in_heap_lazy_with_error(&work, || async {
             self.validate_snapshot_with_accounting(frozen, &work, cancellation).await?;
             if !self.workspace.volume.fs.same_deployment(&imported.workspace.volume.fs) {
-                return Err(native_workspace_error(WorkspaceError::ForeignGeneration));
+                return Err(E::from(native_workspace_error(WorkspaceError::ForeignGeneration)));
             }
             let mut accounting = ExactifyCollectorWork::Native { work: &work, original };
             for path in paths {
@@ -5432,44 +5575,65 @@ where
                     && (!source_used.load(std::sync::atomic::Ordering::Acquire)
                         || current.epoch == frozen.source.epoch)
             };
-            let mut seal_guard = |_: &crate::NativeMaterializationWork| {
-                let owner = before_publication(original);
-                let source_is_current = &source_is_current;
-                async move {
-                    original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from)?;
-                    cancellation.check().map_err(crate::FsError::from)?;
-                    if !source_is_current() { return Err(crate::FsError::SourceSnapshotStale); }
-                    let receipt = owner.await?;
-                    original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from)?;
-                    cancellation.check().map_err(crate::FsError::from)?;
-                    if !source_is_current() { return Err(crate::FsError::SourceSnapshotStale); }
-                    Ok(receipt)
+            let mut owned_guard_builder = |check_epoch: bool| {
+                let mut owner_factory = before_publication.clone();
+                let source = Arc::clone(&self.source);
+                let original = original.clone();
+                let cancellation = cancellation.clone();
+                move |_: &crate::NativeMaterializationWork| {
+                    let owner = owner_factory(&original);
+                    let source = Arc::clone(&source);
+                    let original = original.clone();
+                    let cancellation = cancellation.clone();
+                    async move {
+                        original.admit(WorkCounters::UNCHARGED)
+                            .map_err(crate::FsError::from).map_err(E::from)?;
+                        cancellation.check().map_err(crate::FsError::from).map_err(E::from)?;
+                        let current = source.reference();
+                        if current.identity != frozen.source.identity
+                            || (check_epoch && current.epoch != frozen.source.epoch) {
+                            return Err(E::from(crate::FsError::SourceSnapshotStale));
+                        }
+                        owner.await?;
+                        original.admit(WorkCounters::UNCHARGED)
+                            .map_err(crate::FsError::from).map_err(E::from)?;
+                        cancellation.check().map_err(crate::FsError::from).map_err(E::from)?;
+                        let current = source.reference();
+                        if current.identity != frozen.source.identity
+                            || (check_epoch && current.epoch != frozen.source.epoch) {
+                            return Err(E::from(crate::FsError::SourceSnapshotStale));
+                        }
+                        Ok(())
+                    }
                 }
             };
+            let mut fork_guard = owned_guard_builder(
+                source_used.load(std::sync::atomic::Ordering::Acquire),
+            );
             let generation = self.workspace.generation_with_native_work(
                 frozen.authored_generation, original, cancellation,
             ).await.map_err(native_workspace_error_pair)?;
             let workspace = self.workspace.fork_with_permit_guarded_with_native_work(
                 destination, ForkOptions::from_generation(generation, baseline_key),
-                permit, original, cancellation, &mut seal_guard,
-            ).await.map_err(native_workspace_error_pair)?;
+                permit, original, cancellation, &mut fork_guard,
+            ).await?;
             let mut baseline = workspace.operation_generation_with_native_work(
                 baseline_key.operation_id(), original, cancellation,
             ).await.map_err(native_workspace_error_pair)?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let current = workspace.head_with_native_work(original, cancellation)
                 .await.map_err(native_workspace_error_pair)?;
-            if current.id() != baseline.id() { return Err(LazyWorkspaceError::Concurrent); }
+            if current.id() != baseline.id() { return Err(E::from(LazyWorkspaceError::Concurrent)); }
             drop(current);
             for (index, path) in paths.iter().enumerate() {
                 if accounting.with_kernel(cancellation, |accounting|
                     exactify_root_is_covered_with_accounting(paths, index, accounting, cancellation))? {
                     continue;
                 }
-                let mut guard = |_: WorkBudget| seal_guard(original);
+                let mut publication = NativeOwnedBuilder { builder: &mut owned_guard_builder, original };
                 baseline = self.exactify_selected_with_accounting(
                     &workspace, path, Some((self, frozen)), cancellation, permit,
-                    &mut guard, Some(&source_used), None, &mut accounting,
+                    &mut publication, Some(&source_used), None, &mut accounting,
                 ).await?;
             }
             let (mut removed, _) = self.collect_selected_paths_with_accounting(
@@ -5514,14 +5678,18 @@ where
                             ..WorkCounters::UNCHARGED })?;
                     }
                     let key = selected_restore_batch_key(candidate_key, batch_index);
+                    let mut restore_guard = owned_guard_builder(
+                        source_used.load(std::sync::atomic::Ordering::Acquire),
+                    );
                     candidate = match workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
                         imported, batch, candidate.id(), key, permit, original,
-                        cancellation, &mut seal_guard,
-                    ).await.map_err(native_workspace_error_pair)? {
+                        cancellation, &mut restore_guard,
+                    ).await? {
                         TransactionCommit::Committed(next) | TransactionCommit::AlreadyCommitted(next) => next,
                         TransactionCommit::Conflict { .. } | TransactionCommit::Fenced =>
-                            return Err(LazyWorkspaceError::StaleIdentity),
-                        TransactionCommit::IdempotencyConflict => return Err(LazyWorkspaceError::Concurrent),
+                            return Err(E::from(LazyWorkspaceError::StaleIdentity)),
+                        TransactionCommit::IdempotencyConflict =>
+                            return Err(E::from(LazyWorkspaceError::Concurrent)),
                     };
                     batch_index = batch_index.checked_add(1).ok_or_else(counter_overflow)?;
                 }
@@ -5533,7 +5701,7 @@ where
             accounting.release(removed_bytes)?;
             accounting.release(present_bytes)?;
             accounting.check(cancellation)?;
-            if !source_is_current() { return Err(LazyWorkspaceError::StaleSource); }
+            if !source_is_current() { return Err(E::from(LazyWorkspaceError::StaleSource)); }
             Ok((baseline, candidate))
         }).await
     }
@@ -6777,6 +6945,8 @@ where
             parent_workspace_id: None,
             fork_origin: None,
             completed_selected_import: None,
+            pending_write: None,
+            completed_write: None,
             source: snapshot.source,
             overlay: snapshot.overlay,
             shadows: snapshot.shadows,
@@ -6948,7 +7118,7 @@ where
                     self.readonly_snapshot_state(frozen, false, counters, budget, cancellation).map(|_| ()))?;
                 let generation = work.accept(self.workspace.generation_measured(
                     frozen.authored_generation, work.remaining()?, cancellation,
-                ).await.map_err(measured_workspace_error))?;
+                ).await.map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::WorkspaceCause)))?;
                 drop(generation);
                 let overlay = work.accept(self.store.load_lazy_overlay_measured(
                     frozen.overlay, work.remaining()?, cancellation,
@@ -7040,13 +7210,13 @@ where
 
     /// Reads the exact frozen regular file on the caller's original ledger.
     ///
-    /// Bytes intrinsically retain their original payload custody until final
-    /// clone drop. The separate guard covers metadata, not the byte payload.
+    /// Owned bytes retain original payload custody until final clone or slice
+    /// drop. Request metadata is retired before returning the byte carrier.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_at_snapshot_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Bytes, crate::NativeAllocation),
+    ) -> Result<acyclic_stream::OwnedBytes,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         self.read_at_snapshot_body_with_work(
             snapshot, path, maximum_bytes, false, original, cancellation,
@@ -7055,12 +7225,12 @@ where
 
     /// Reads the exact opaque frozen symbolic-link target without following it.
     ///
-    /// Payload custody is intrinsic to Bytes; the separate guard is metadata only.
+    /// Payload custody is intrinsic; request metadata is retired before return.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_link_at_snapshot_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Bytes, crate::NativeAllocation),
+    ) -> Result<acyclic_stream::OwnedBytes,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         self.read_at_snapshot_body_with_work(
             snapshot, path, maximum_bytes, true, original, cancellation,
@@ -7071,7 +7241,7 @@ where
     async fn read_at_snapshot_body_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64, symbolic_link: bool,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Bytes, crate::NativeAllocation),
+    ) -> Result<acyclic_stream::OwnedBytes,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
@@ -7104,10 +7274,10 @@ where
                     path, maximum_bytes, original, cancellation,
                 ).await
             };
-            // The source request namespace has physically died. The whole
-            // producer packet still retains any separately funded byte custody.
+            // The source request namespace has physically died; every byte
+            // alias still retains its inseparable original allocation custody.
             let chunk = match read {
-                Ok((chunk, metadata)) => { drop(metadata); chunk }
+                Ok(chunk) => chunk,
                 Err((error, metadata)) => { drop(metadata); return Err(error); }
             };
             original.admit(WorkCounters::UNCHARGED)?;
@@ -7118,17 +7288,9 @@ where
             }
             Ok(chunk)
         }.await;
-        let (chunk, mut allocation) = finish_native_frozen_read(frozen, result)?;
-        let (bytes, _, _, custody) = chunk.into_owned_parts();
-        if let Some(mut custody) = custody {
-            if let Err(error) = allocation.absorb(&mut custody) {
-                drop(bytes);
-                drop(custody);
-                drop(allocation);
-                return Err((LazyWorkspaceError::NativeWork(error), None));
-            }
-        }
-        Ok((bytes, allocation))
+        let chunk = finish_native_frozen_read(frozen, result)?;
+        let (bytes, _, _) = chunk.into_owned_parts();
+        Ok(bytes)
             }.await)
         }).await.map_err(|error| (error, None))?
     }
@@ -7144,7 +7306,7 @@ where
         maximum_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<Bytes>, LazyWorkspaceError> {
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::UNCHARGED;
             let result = async {
@@ -7202,7 +7364,7 @@ where
         length: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<Bytes>, LazyWorkspaceError> {
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::UNCHARGED;
             let result = async {
@@ -7250,7 +7412,7 @@ where
         path: &str,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<Bytes>, LazyWorkspaceError> {
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::UNCHARGED;
             let result = async {
@@ -7297,7 +7459,7 @@ where
         path: &str,
         offset: u64,
         length: u64,
-    ) -> Result<Bytes, LazyWorkspaceError> {
+    ) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
         self.read_range_measured(path, offset, length, WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -7361,7 +7523,7 @@ where
         length: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<Bytes>, LazyWorkspaceError> {
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         let mut work = WorkCounters::default();
         let mut allocations = crate::kernel::allocation::AllocationLedger::default();
         let result = async {
@@ -7389,7 +7551,7 @@ where
         reader: Option<&crate::PinnedReader<A, O>>,
         authored_record: Option<FileRecord>, path: &str, offset: u64, length: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, Option<crate::NativeAllocation>),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         original.admit(WorkCounters::UNCHARGED)
             .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
@@ -7406,7 +7568,7 @@ where
                 let source = source.ok_or((LazyWorkspaceError::Concurrent, None))?;
                     return self.read_source_range_with_work(
                         path, source, node.version, offset, length, original, cancellation,
-                    ).await.map(|(bytes, custody)| (bytes, Some(custody)));
+                    ).await;
             }
         };
         if record.kind != FileKind::Regular {
@@ -7415,9 +7577,9 @@ where
         let reader = reader.ok_or((LazyWorkspaceError::OriginalSnapshotUnavailable, None))?;
         reader.read_record_range_with_native_work(
             record, crate::ByteRange { offset, length }, original, cancellation,
-        ).await.map(|read| (crate::kernel::OwnedSourceChunk::intrinsic(
-            read.bytes, read.logical_owned_bytes, None,
-        ), None)).map_err(|error| (native_filesystem_error(error), None))
+        ).await.map(|read| crate::kernel::OwnedSourceChunk::intrinsic(
+            read.bytes, read.logical_owned_bytes,
+        )).map_err(|error| (native_filesystem_error(error), None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -7437,7 +7599,7 @@ where
         &self, lookup: &LazyLookup, source: Option<SourceReference>, path: &str,
         offset: u64, length: u64, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, Option<crate::NativeAllocation>),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         if matches!(lookup, LazyLookup::Shadow { record, .. } if record.kind != FileKind::Regular) {
             return Err((LazyWorkspaceError::NotRegularFile, None));
@@ -7454,7 +7616,7 @@ where
         &self, lookup: &LazyLookup, source: Option<SourceReference>, path: &str,
         maximum_bytes: u64, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, Option<crate::NativeAllocation>),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         if matches!(lookup, LazyLookup::Shadow { record, .. } if record.kind != FileKind::SymbolicLink) {
             return Err((LazyWorkspaceError::NotRegularFile, None));
@@ -7548,7 +7710,7 @@ where
     }
 
     /// Reads a complete regular file under an explicit byte bound.
-    pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<Bytes, LazyWorkspaceError> {
+    pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
         let stat = self.stat(path).await?;
         let length = stat
             .logical_bytes
@@ -7560,7 +7722,7 @@ where
     }
 
     /// Reads one exact symbolic-link target without following it.
-    pub async fn read_link(&self, path: &str) -> Result<Bytes, LazyWorkspaceError> {
+    pub async fn read_link(&self, path: &str) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
         self.read_link_measured(path, WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -7573,7 +7735,7 @@ where
         path: &str,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<Bytes>, LazyWorkspaceError> {
+    ) -> crate::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, LazyWorkspaceError> {
         let mut work = WorkCounters::default();
         let mut allocations = crate::kernel::allocation::AllocationLedger::default();
         let result = async {
@@ -7601,7 +7763,7 @@ where
         reader: Option<&crate::PinnedReader<A, O>>,
         authored_record: Option<FileRecord>, path: &str, maximum_bytes: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, Option<crate::NativeAllocation>),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         original.admit(WorkCounters::UNCHARGED)
             .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
@@ -7621,7 +7783,7 @@ where
                 let source = source.ok_or((LazyWorkspaceError::Concurrent, None))?;
                     return self.read_source_link_with_work(
                         path, source, node.version, maximum_bytes, original, cancellation,
-                    ).await.map(|(bytes, custody)| (bytes, Some(custody)));
+                    ).await;
             }
         };
         if record.kind != FileKind::SymbolicLink {
@@ -7634,7 +7796,7 @@ where
         }
         let reader = reader.ok_or((LazyWorkspaceError::OriginalSnapshotUnavailable, None))?;
         reader.read_record_symbolic_link_owned_with_native_work(record, original, cancellation)
-            .await.map(|chunk| (chunk, None))
+            .await
             .map_err(|error| (native_filesystem_error(error), None))
     }
 
@@ -7870,7 +8032,7 @@ where
                 let length = pinned.node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)?;
                 if length > maximum_bytes { return Err(LazyWorkspaceError::TooLarge); }
                 self.promotion_mutation_with_accounting(
-                    transaction, requested, LazyPromotionMutation::File(Bytes::new()), work, cancellation,
+                    transaction, requested, LazyPromotionMutation::File(acyclic_stream::OwnedBytes::new()), work, cancellation,
                 ).await?;
                 let mut offset = 0_u64;
                 while offset < length {
@@ -8060,11 +8222,7 @@ where
                         ).await,
                     };
                     match read {
-                        Ok((chunk, metadata_custody)) => {
-                            // Keep the whole packet's payload custody through compilation.
-                            drop(metadata_custody);
-                            Ok(chunk)
-                        }
+                        Ok(chunk) => Ok(chunk),
                         Err((error, metadata_custody)) => { drop(metadata_custody); Err(error) }
                     }
                 }
@@ -8248,45 +8406,15 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
-        #[cfg(not(target_arch = "wasm32"))]
-        original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
         F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future + Send,
-        Fut::Output: Into<ExactifyPublicationResult>,
+        Fut: Future<Output = crate::FsResult<()>> + Send,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = original {
-            let work = LazyTreapWork::native_with_work(original, cancellation)?;
-            let value = in_heap_lazy_with_work(&work, || async {
-                // The shared controller hook only validates its pinned source;
-                // native publication work stays on the SDK's borrowed original.
-                let mut guard = |_: &crate::NativeMaterializationWork| {
-                    let outcome = before_publication(budget);
-                    async move {
-                        match outcome.await.into() {
-                            ExactifyPublicationResult::Native(result) => result,
-                            ExactifyPublicationResult::Portable(_) =>
-                                unreachable!("native exactification requires the original native guard"),
-                        }
-                    }
-                };
-                transaction.commit_with_permit_guarded_with_native_work(
-                    permit, original, cancellation, &mut guard,
-                ).await.map_err(|error| native_workspace_error(WorkspaceError::from(error)))
-            }).await?;
-            return Self::exactify_batch_commit_result(value, WorkCounters::UNCHARGED, false);
-        }
         let mut guard = |allowance| {
             let outcome = before_publication(allowance);
             async move {
-                match outcome.await.into() {
-                    ExactifyPublicationResult::Portable(result) => result,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    ExactifyPublicationResult::Native(_) =>
-                        unreachable!("portable exactification requires a measured guard"),
-                }
+                outcome.await.map_err(|failure| failure.map_error(WorkspaceError::from))
             }
         };
         let receipt = transaction.commit_with_permit_measured_guarded(
@@ -9184,7 +9312,7 @@ where
         &self, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::PinnedReader<A, O>, LazyWorkspaceError> {
         let checkout = self.workspace.engine_checkout_with_native_work(
-            crate::GenerationSelector::Head, crate::CheckoutMode::read_only_pinned(),
+            crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
             original, cancellation,
         ).await.map_err(native_workspace_error)?;
         checkout.into_pinned_reader_with_native_work(original, cancellation)
@@ -9959,7 +10087,9 @@ where
         &self, path: &str, permit: crate::PublicationPermit,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError>
+    where D: 'static,
+    {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
         let result = in_heap_lazy_with_work(&work, || async {
             original.admit(WorkCounters::UNCHARGED)?;
@@ -9975,18 +10105,29 @@ where
             if !is_directory { return Err(LazyWorkspaceError::NotDirectory); }
             if self.source.reference() != source { return Err(LazyWorkspaceError::StaleSource); }
             let source_used = std::sync::atomic::AtomicBool::new(false);
-            let mut before_publication = |_: WorkBudget| {
-                std::future::ready((|| {
-                    original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from)?;
-                    cancellation.check().map_err(crate::FsError::from)?;
-                    if self.source.reference() != source {
-                        return Err(crate::FsError::SourceSnapshotStale);
+            let source_owner = Arc::clone(&self.source);
+            let mut builder = |_current_source_used: bool| {
+                let source_owner = Arc::clone(&source_owner);
+                let original = original.clone();
+                let cancellation = cancellation.clone();
+                move |_: &crate::NativeMaterializationWork| {
+                    let source_owner = Arc::clone(&source_owner);
+                    let original = original.clone();
+                    let cancellation = cancellation.clone();
+                    async move {
+                        original.admit(WorkCounters::UNCHARGED)?;
+                        cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
+                            crate::NativeTreeMaterializationError::Cancelled))?;
+                        if source_owner.reference() != source {
+                            return Err(LazyWorkspaceError::StaleSource);
+                        }
+                        Ok(())
                     }
-                    Ok(())
-                })())
+                }
             };
+            let mut publication = NativeOwnedBuilder { builder: &mut builder, original };
             self.exactify_selected_with_accounting(
-                &self.workspace, path, None, cancellation, permit, &mut before_publication,
+                &self.workspace, path, None, cancellation, permit, &mut publication,
                 Some(&source_used), Some(source),
                 &mut ExactifyCollectorWork::Native { work: &work, original },
             ).await
@@ -10336,8 +10477,9 @@ where
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::default();
             let mut retained_bytes = 0;
+            let mut publication = BorrowedExactifyPublication { callback: before_publication };
             let result = self.exactify_selected_with_accounting(
-                workspace, root, read_view, cancellation, permit, before_publication, source_used,
+                workspace, root, read_view, cancellation, permit, &mut publication, source_used,
                 None, &mut ExactifyCollectorWork::Portable {
                     retained_bytes: &mut retained_bytes, work: &mut work, budget,
                 },
@@ -10348,17 +10490,15 @@ where
             .map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
     }
 
-    async fn exactify_selected_with_accounting<F, Fut>(
+    async fn exactify_selected_with_accounting<P>(
         &self, workspace: &Workspace<A, O>, root: &str,
         read_view: Option<(&Self, LazySnapshotRef)>, cancellation: &CancellationToken,
-        permit: crate::PublicationPermit, before_publication: &mut F,
+        permit: crate::PublicationPermit, publication: &mut P,
         source_used: Option<&std::sync::atomic::AtomicBool>, live_source: Option<SourceReference>,
         accounting: &mut ExactifyCollectorWork<'_>,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError>
+    ) -> Result<crate::Generation<A, O>, P::Error>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future + Send,
-        Fut::Output: Into<ExactifyPublicationResult>,
+        P: ExactifyPublication<A, O>,
     {
         accounting.check(cancellation)?;
         let state = match &mut *accounting {
@@ -10432,7 +10572,7 @@ where
                     ).await?;
                     let committed = self.exactify_commit_with_accounting(
                         transaction.take().ok_or(LazyWorkspaceError::Concurrent)?, permit,
-                        before_publication, accounting, cancellation,
+                        publication, source_used, accounting, cancellation,
                     ).await?;
                     accounting.replace_generation(&mut pinned_generation, committed)?;
                 }
@@ -10619,7 +10759,7 @@ where
             ).await?;
             let committed = self.exactify_commit_with_accounting(
                 transaction.take().ok_or(LazyWorkspaceError::Concurrent)?, permit,
-                before_publication, accounting, cancellation,
+                publication, source_used, accounting, cancellation,
             ).await?;
             accounting.replace_generation(&mut pinned_generation, committed)?;
         }
@@ -10642,7 +10782,7 @@ where
         let head = self.exactify_head_with_accounting(workspace, accounting, cancellation).await
             .map_err(|error| accounting.context_error("load head", "/", error))?;
         self.check_exactify_live_source(live_source, state.source)?;
-        if head.id() != expected_generation { return Err(LazyWorkspaceError::Concurrent); }
+        if head.id() != expected_generation { return Err(LazyWorkspaceError::Concurrent.into()); }
         Ok(head)
     }
 
@@ -10871,83 +11011,992 @@ where
         }
     }
 
-    async fn exactify_commit_with_accounting<F, Fut>(
+    async fn exactify_commit_with_accounting<P>(
         &self, transaction: crate::Transaction<A, O>, permit: crate::PublicationPermit,
-        before_publication: &mut F, accounting: &mut ExactifyCollectorWork<'_>,
+        publication: &mut P, source_used: Option<&std::sync::atomic::AtomicBool>,
+        accounting: &mut ExactifyCollectorWork<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError>
+    ) -> Result<crate::Generation<A, O>, P::Error>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future + Send,
-        Fut::Output: Into<ExactifyPublicationResult>,
+        P: ExactifyPublication<A, O>,
     {
-        match &mut *accounting {
-            ExactifyCollectorWork::Portable { .. } => {
-                let receipt = self.commit_exactify_batch_guarded_with_accounting(
-                    transaction, permit, accounting.remaining()?, cancellation, before_publication,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    None,
-                ).await.map_err(|error| accounting.nested_error(error))?;
-                accounting.accept(Ok(receipt))
+        let current_source_used = source_used.is_some_and(|used|
+            used.load(std::sync::atomic::Ordering::Acquire));
+        publication.commit(
+            self, transaction, permit, current_source_used, accounting, cancellation,
+        ).await
+    }
+
+    /// Creates or replaces one complete authored file using the same candidate
+    /// compiler as the frozen guarded writer. Source tombstones and shadows
+    /// remain attached; replacing an authored binding never resurrects them.
+    pub async fn write(
+        &self, path: &str, bytes: Bytes,
+    ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
+        let cancellation = CancellationToken::new();
+        let work = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut guard = |_| async {
+            LazyWriteGuardResult::Portable(Ok(OperationReceipt {
+                value: (), work: WorkCounters::UNCHARGED,
+            }))
+        };
+        self.write_with_accounting(
+            None, path, bytes.into(), IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted, &work, &cancellation, &mut guard,
+        ).await.map(|(commit, _)| commit)
+    }
+
+    /// Ordinary guarded form of the frozen writer, with the same postpublish
+    /// uncertainty result as [`Self::write_at_snapshot_measured_guarded`].
+    #[allow(clippy::too_many_arguments, reason = "explicit frozen publication authority")]
+    pub async fn write_at_snapshot_guarded<E, F, Fut>(
+        &self, basis: LazySnapshotRef, path: &str, bytes: Bytes,
+        key: IdempotencyKey, permit: crate::PublicationPermit,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+    {
+        let mut guard = |_| {
+            let future = before_mutation();
+            async move {
+                future.await.map(|()| OperationReceipt { value: (), work: WorkCounters::UNCHARGED })
+                    .map_err(crate::OperationFailure::before_work)
             }
+        };
+        self.write_at_snapshot_measured_guarded(
+            basis, path, bytes, key, permit, WorkBudget::UNBOUNDED, cancellation, &mut guard,
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// Writes only from this authentic frozen authored/source/overlay/shadow
+    /// basis. The owner is checked before every logical mutation and at each
+    /// canonical publication seal, including retries. No current head is adopted.
+    ///
+    /// A successful commit accompanied by a failed snapshot proof is an
+    /// uncertain logical publication, not permission to relaunch the operation.
+    /// The inner error retains the actual postpublication producer failure.
+    #[allow(clippy::too_many_arguments, reason = "explicit frozen basis, original operation, permit and owner")]
+    pub async fn write_at_snapshot_measured_guarded<E, F, Fut>(
+        &self, basis: LazySnapshotRef, path: &str, bytes: Bytes,
+        key: IdempotencyKey, permit: crate::PublicationPermit,
+        budget: WorkBudget, cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> crate::MeasuredResult<OperationReceipt<(
+        TransactionCommit<A, O>, Result<LazySnapshotRef, E>,
+    )>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + Send,
+    {
+        let work = LazyTreapWork::new(budget, cancellation);
+        let mut guard = |allowance| {
+            let future = before_mutation(allowance);
+            async move { LazyWriteGuardResult::Portable(future.await) }
+        };
+        let result = self.write_with_accounting(
+            Some(basis), path, bytes.into(), key, permit, &work, cancellation, &mut guard,
+        ).await;
+        let spent = work.spent();
+        result.map(|value| OperationReceipt { value, work: spent })
+            .map_err(|error| crate::OperationFailure::new(error, spent))
+    }
+
+    /// Original-native form of the same writer. Input custody must already be
+    /// intrinsic to this original ledger; it is neither copied nor rebilled.
+    /// The callback is the caller's actual owner, not an external publisher Arc.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "explicit original frozen publication authority")]
+    pub async fn write_at_snapshot_with_native_work_guarded<'original, E, F, Fut>(
+        &self, basis: LazySnapshotRef, path: &str, bytes: acyclic_stream::OwnedBytes,
+        key: IdempotencyKey, permit: crate::PublicationPermit,
+        original: &'original crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+    {
+        original.admit(WorkCounters::UNCHARGED).map_err(LazyWorkspaceError::from)?;
+        if !bytes.matches_meter(&original.runtime_meter_owner()) {
+            return Err(E::from(LazyWorkspaceError::NativeLedgerMismatch));
+        }
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let mut guard = |_: WorkBudget| {
+            let future = before_mutation(original);
+            async move { LazyWriteGuardResult::Native(future.await) }
+        };
+        self.write_with_accounting(
+            Some(basis), path, bytes, key, permit, &work, cancellation, &mut guard,
+        ).await
+    }
+
+    /// Publishes every directory, data file, descriptor and upload receipt in
+    /// one frozen candidate and one actual DATA CAS. That same publication
+    /// authenticates the fixed original snapshot and full-input digest; its
+    /// existing companion settlement never launches another data batch.
+    #[allow(clippy::too_many_arguments, reason = "explicit whole frozen upload publication authority")]
+    pub async fn write_batch_at_snapshot_guarded<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        permit: crate::PublicationPermit, cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let mut guard = |_| {
+            let future = before_mutation();
+            async move {
+                future.await.map(|()| OperationReceipt { value: (), work: WorkCounters::UNCHARGED })
+                    .map_err(crate::OperationFailure::before_work)
+            }
+        };
+        self.write_batch_at_snapshot_measured_guarded(
+            basis, mutations, key, permit, WorkBudget::UNBOUNDED, cancellation, &mut guard,
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// The same whole candidate with ordinary measured owner callbacks.
+    #[allow(clippy::too_many_arguments, reason = "explicit whole frozen upload bounds and owner")]
+    pub async fn write_batch_at_snapshot_measured_guarded<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        permit: crate::PublicationPermit, budget: WorkBudget,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> crate::MeasuredResult<OperationReceipt<(
+        TransactionCommit<A, O>, Result<LazySnapshotRef, E>,
+    )>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let work = LazyTreapWork::new(budget, cancellation);
+        let mut guard = |allowance| {
+            let future = before_mutation(allowance);
+            async move { LazyWriteGuardResult::Portable(future.await) }
+        };
+        let result = self.write_batch_with_accounting(
+            Some(basis), mutations.into_iter(),
+            key, permit, &work, cancellation, &mut guard,
+        ).await;
+        let spent = work.spent();
+        result.map(|value| OperationReceipt { value, work: spent })
+            .map_err(|error| crate::OperationFailure::new(error, spent))
+    }
+
+    /// Original-native whole-candidate publication. Borrowed paths and intrinsic
+    /// payload aliases reuse the caller's funded plan; no second vector or copy
+    /// is constructed. The actual returned Generation remains live for the
+    /// caller's original pin/retention step before it may erase that handle.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "explicit original whole frozen upload authority")]
+    pub async fn write_batch_at_snapshot_with_native_work_guarded<'original, 'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        permit: crate::PublicationPermit, original: &'original crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let mut guard = |_: WorkBudget| {
+            let future = before_mutation(original);
+            async move { LazyWriteGuardResult::Native(future.await) }
+        };
+        self.write_batch_with_accounting(
+            Some(basis), mutations.into_iter(),
+            key, permit, &work, cancellation, &mut guard,
+        ).await
+    }
+
+    /// Resolves only an authentic original write from its immutable DATA
+    /// publication evidence, even after the companion's latest hint changes.
+    /// A durable original lacking that evidence retains an inner uncertainty.
+    #[allow(clippy::too_many_arguments, reason = "explicit original input and current owner")]
+    pub async fn original_write_snapshot_guarded<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<Option<(crate::Generation<A, O>, Result<LazySnapshotRef, E>)>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let mut guard = |_| {
+            let future = before_mutation();
+            async move {
+                future.await.map(|()| OperationReceipt { value: (), work: WorkCounters::UNCHARGED })
+                    .map_err(crate::OperationFailure::before_work)
+            }
+        };
+        self.original_write_snapshot_measured_guarded(
+            basis, mutations, key, WorkBudget::UNBOUNDED, cancellation, &mut guard,
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    }
+
+    /// The same original lookup with exact bounded work, including hash-only
+    /// full-input verification and any genuine pending companion finalization.
+    /// The current owner is checked before protected lookup and at each CAS.
+    #[allow(clippy::too_many_arguments, reason = "explicit original input, bounds and owner")]
+    pub async fn original_write_snapshot_measured_guarded<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        budget: WorkBudget, cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<(
+        crate::Generation<A, O>, Result<LazySnapshotRef, E>,
+    )>>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let work = LazyTreapWork::new(budget, cancellation);
+        let mut guard = |allowance| {
+            let future = before_mutation(allowance);
+            async move { LazyWriteGuardResult::Portable(future.await) }
+        };
+        let result = self.original_write_snapshot_with_accounting(
+            basis, mutations.into_iter(), key, &work, cancellation, &mut guard,
+        ).await;
+        let spent = work.spent();
+        result.map(|value| OperationReceipt { value, work: spent })
+            .map_err(|error| crate::OperationFailure::new(error, spent))
+    }
+
+    /// Original-ledger lookup of the same immutable write proof. Supplied input
+    /// is intrinsically funded; recovery hashes it without copying or staging.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "explicit original input, ledger and current owner")]
+    pub async fn original_write_snapshot_with_native_work_guarded<'original, 'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        original: &'original crate::NativeMaterializationWork,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<Option<(crate::Generation<A, O>, Result<LazySnapshotRef, E>)>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
+        I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
+        I::IntoIter: Send,
+    {
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let mut guard = |_: WorkBudget| {
+            let future = before_mutation(original);
+            async move { LazyWriteGuardResult::Native(future.await) }
+        };
+        self.original_write_snapshot_with_accounting(
+            basis, mutations.into_iter(), key, &work, cancellation, &mut guard,
+        ).await
+    }
+
+    async fn write_companion_owner_with_accounting<E, F, Fut>(
+        &self, work: &LazyTreapWork<'_>, before_mutation: &mut F,
+    ) -> Result<(), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        match before_mutation(work.remaining()?).await {
+            LazyWriteGuardResult::Portable(result) => accept_lazy_write_receipt(work, result),
             #[cfg(not(target_arch = "wasm32"))]
-            ExactifyCollectorWork::Native { original, .. } => {
-                self.commit_exactify_batch_guarded_with_accounting(
-                    transaction, permit, WorkBudget::UNBOUNDED, cancellation, before_publication, Some(original),
-                ).await.map(|receipt| receipt.value)
+            LazyWriteGuardResult::Native(result) => result,
+        }
+    }
+
+    async fn write_original_record_with_accounting<E, F, Fut>(
+        &self, key: IdempotencyKey, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<Option<LazyWriteOriginalRecord<A, O>>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        self.write_companion_owner_with_accounting(work, before_mutation).await?;
+        match &work.meter {
+            LazyTreapMeter::Standalone { .. } => accept_lazy_write_receipt(
+                work, self.workspace.operation_generation_record_measured(
+                    key, work.remaining()?, cancellation,
+                ).await.map_err(|failure| failure.map_error(|error|
+                    E::from(LazyWorkspaceError::WorkspaceCause(error)))),
+            ).map(|value| value.map(LazyWriteOriginalRecord::Standalone)),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } => {
+                let (value, allocation) = self.workspace.operation_generation_record_with_native_work(
+                    key.operation_id(), original, cancellation,
+                ).await.map_err(|error| E::from(native_workspace_error_pair(error)))?;
+                Ok(match value {
+                    Some(value) => Some(LazyWriteOriginalRecord::Native(
+                        NativeOwnedCoreState::from_parts(value, allocation),
+                    )),
+                    None => { drop(allocation); None }
+                })
             }
         }
     }
 
-    /// Creates or replaces one complete authored file.
-    ///
-    /// Authored state always wins over the source overlay, so no companion
-    /// metadata mutation is needed. An inherited tombstone deliberately stays
-    /// attached to the underlying source fact: deleting the authored
-    /// replacement later must not resurrect the source file.
-    pub async fn write(
-        &self,
-        path: &str,
-        bytes: Bytes,
-    ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        let path = self.canonical_path(path)?;
-        let source_identity = match self.lookup(&path).await {
-            Ok(LazyLookup::Source(node)) => Some(self.source_file_id(&node)),
-            Ok(LazyLookup::Authored { stat, .. }) => {
-                self.promote_exact(&path, stat.file_id, u64::MAX, IdempotencyKey::new())
-                    .await?;
-                None
+    async fn original_write_snapshot_with_accounting<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        work: &LazyTreapWork<'_>, cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<Option<(crate::Generation<A, O>, Result<LazySnapshotRef, E>)>, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+        I: Iterator<Item = LazyWriteMutation<'path>> + Send,
+    {
+        in_heap_lazy_with_error(work, || async {
+            let Some(original) = self.write_original_record_with_accounting(
+                key, work, cancellation, before_mutation,
+            ).await? else { return Ok(None); };
+            self.write_reconcile_original_with_accounting(
+                basis, mutations, key, original, work, cancellation, before_mutation,
+            ).await.map(Some)
+        }).await
+    }
+
+    async fn write_reconcile_original_with_accounting<'path, E, F, Fut, I>(
+        &self, basis: LazySnapshotRef, mutations: I, key: IdempotencyKey,
+        original: LazyWriteOriginalRecord<A, O>, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(crate::Generation<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+        I: Iterator<Item = LazyWriteMutation<'path>> + Send,
+    {
+        let authenticated = self.write_authenticate_original_record_with_accounting(&original, work);
+        // Fixed-copy authentication performs no allocation. Retire the entire
+        // DATA payload before another pin, backend call or path allocation.
+        let generation = original.into_generation();
+        let proof = async {
+            let authenticated = authenticated?;
+            let saved = authenticated.prepared;
+            if saved.basis != basis {
+                return Err(E::from(LazyWorkspaceError::WriteInputConflict { operation: key.operation_id() }));
             }
-            Ok(LazyLookup::Shadow { record, .. }) => {
-                self.promote_exact(&path, record.file_id, u64::MAX, IdempotencyKey::new())
-                    .await?;
-                None
+            // Authenticate every captured immutable source/root flag before
+            // inspecting or hashing the caller's complete candidate.
+            self.validate_snapshot_with_accounting(saved.basis, work, cancellation).await?;
+            let mut hasher = lazy_write_input_hasher(work)?;
+            let mut count = 0_u64;
+            for mutation in mutations {
+                let scope = TreapAllocationScope::new(work);
+                let (path, bytes) = lazy_write_mutation_parts(mutation, work)?;
+                let requested = work.canonical_path_owned(path, self.workspace.limits())?;
+                lazy_write_hash_mutation(&mut hasher, &mut count, &requested, bytes.as_ref(), work)?;
+                drop(bytes);
+                drop(requested);
+                drop(scope);
             }
-            Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) => None,
-            Err(error) => return Err(error),
+            let input = lazy_write_finish_input(hasher, count, work)?;
+            if saved.input != input {
+                return Err(E::from(LazyWorkspaceError::WriteInputConflict { operation: key.operation_id() }));
+            }
+            self.write_settle_original_with_accounting(
+                authenticated, work, cancellation, before_mutation,
+            ).await
+        }.await;
+        // Keep the actual original generation even if finalization, owner,
+        // cancellation, quota or authentic companion recovery fails.
+        Ok((generation, proof))
+    }
+
+    async fn write_prepare_original_with_accounting<E, F, Fut>(
+        &self, prepared: PendingLazyWrite, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        loop {
+            self.write_owner_with_accounting(prepared.basis, work, cancellation, before_mutation).await?;
+            let state = self.load_state_with_accounting(work, cancellation).await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+            if let Some(pending) = state.as_state().pending_write {
+                if pending == prepared { return Ok(()); }
+                return Err(E::from(if pending.operation == prepared.operation {
+                    LazyWorkspaceError::WriteInputConflict { operation: prepared.operation }
+                } else { LazyWorkspaceError::Concurrent }));
+            }
+            let revision = state.as_state().revision;
+            work.charge(WorkCounters {
+                bytes_copied: std::mem::size_of::<LazyWorkspaceState>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let mut replacement = state.as_state().clone();
+            replacement.revision = revision.checked_add(1).ok_or(LazyWorkspaceError::Concurrent)?;
+            replacement.pending_write = Some(prepared);
+            drop(state);
+            // This is the actual companion mutation boundary, not a preflight.
+            self.write_owner_with_accounting(prepared.basis, work, cancellation, before_mutation).await?;
+            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn write_prepared_basis_with_accounting(
+        &self, prepared: PendingLazyWrite, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), LazyWorkspaceError> {
+        self.write_basis_with_accounting(prepared.basis, work, cancellation).await?;
+        let state = self.load_state_with_accounting(work, cancellation).await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        if state.as_state().pending_write != Some(prepared) {
+            return Err(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation });
+        }
+        Ok(())
+    }
+
+    fn write_authenticate_original_record_with_accounting(
+        &self, original: &LazyWriteOriginalRecord<A, O>, work: &LazyTreapWork<'_>,
+    ) -> Result<AuthenticatedLazyWrite, LazyWorkspaceError> {
+        let (generation, commit) = original.as_record();
+        let operation = commit.operation_id;
+        let authenticate = |accounting: &mut crate::kernel::allocation::KernelAccounting<'_>| {
+            // The protected Workspace producer already imposed its canonical
+            // event bound. Borrow this exact owned record; never copy its C.
+            let publication = crate::kernel::decode_publication_evidence_with_accounting(
+                &commit.payload, commit.payload.len() as u64, accounting,
+            ).map_err(lazy_cursor_filesystem_error)?;
+            let evidence = publication.original_evidence.ok_or(
+                LazyWorkspaceError::WriteIndeterminate { operation },
+            )?;
+            let prepared = lazy_write_decode_original_with_accounting(evidence, operation, accounting)?;
+            if prepared.config != self.workspace.volume_config()
+                || prepared.basis.workspace_id != self.workspace.id()
+                || publication.publication.volume_id != self.workspace.id().volume_id()
+                || publication.publication.generation_root.digest != generation.id().digest()
+            {
+                return Err(LazyWorkspaceError::WriteInputConflict { operation });
+            }
+            let previous = commit.sequence.get().checked_sub(1)
+                .ok_or(LazyWorkspaceError::WriteIndeterminate { operation })?;
+            let context = lazy_write_context_with_accounting(prepared.basis, prepared.input, accounting)?;
+            let context = crate::kernel::permit_context_with_accounting(
+                Some(context), prepared.permit, accounting,
+            ).map_err(lazy_cursor_filesystem_error)?
+                .ok_or(LazyWorkspaceError::WriteIndeterminate { operation })?;
+            let request = crate::kernel::PublishGenerationRequest {
+                authority_id: self.workspace.authority_id(),
+                volume_id: self.workspace.id().volume_id(),
+                epoch: commit.epoch,
+                expected: crate::Head {
+                    epoch: commit.epoch, sequence: crate::Sequence::new(previous),
+                    digest: commit.previous_digest,
+                },
+                operation_id: operation,
+                generation_root: publication.publication.generation_root,
+            };
+            let expected = crate::kernel::contextual_publication_fingerprint_from_payload_with_accounting(
+                request, context, &commit.payload, accounting,
+            ).map_err(lazy_cursor_filesystem_error)?;
+            if commit.fingerprint != expected {
+                return Err(LazyWorkspaceError::WriteInputConflict { operation });
+            }
+            Ok(AuthenticatedLazyWrite { prepared, generation: generation.id() })
         };
-        let mut transaction = self
-            .workspace
-            .begin_transaction(IdempotencyKey::new())
-            .await
-            .map_err(workspace_error)?;
-        if let Some(parent) = parent_path(&path) {
-            transaction
-                .create_dir_all(parent)
-                .await
-                .map_err(workspace_error)?;
+        match &work.meter {
+            LazyTreapMeter::Standalone { .. } => work.with_allocation_state(
+                |allocations, spent, budget, cancellation| {
+                    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                        allocations, spent, budget, cancellation,
+                    );
+                    authenticate(&mut accounting)
+                },
+            ),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } => {
+                let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, work.cancellation);
+                authenticate(&mut accounting)
+            }
         }
-        transaction
-            .write(&path, bytes)
-            .await
-            .map_err(workspace_error)?;
-        if let Some(file_id) = source_identity {
-            transaction
-                .preserve_file_identity(&path, file_id)
-                .await
-                .map_err(workspace_error)?;
+    }
+
+    async fn write_finish_original_with_accounting<E, F, Fut>(
+        &self, prepared: PendingLazyWrite, generation: crate::GenerationId,
+        work: &LazyTreapWork<'_>, cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        let original = self.write_original_record_with_accounting(
+            IdempotencyKey::from_bytes(prepared.operation.into_bytes()), work, cancellation, before_mutation,
+        ).await?.ok_or(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation })?;
+        let authenticated = self.write_authenticate_original_record_with_accounting(&original, work)?;
+        drop(original);
+        if authenticated.prepared != prepared || authenticated.generation != generation {
+            return Err(E::from(LazyWorkspaceError::WriteInputConflict { operation: prepared.operation }));
         }
-        transaction.commit().await.map_err(workspace_error)
+        self.validate_snapshot_with_accounting(prepared.basis, work, cancellation).await?;
+        self.write_settle_original_with_accounting(
+            authenticated, work, cancellation, before_mutation,
+        ).await
+    }
+
+    // Both callers have authenticated the original DATA record and validated
+    // its immutable basis. Validate the final roots, never the mutable head.
+    async fn write_settle_original_with_accounting<E, F, Fut>(
+        &self, authenticated: AuthenticatedLazyWrite, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        let AuthenticatedLazyWrite { prepared, generation } = authenticated;
+        work.charge(WorkCounters {
+            bytes_hashed: (LAZY_SNAPSHOT_DOMAIN.len() + 136) as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let snapshot = LazySnapshotRef::new(
+            prepared.basis.workspace_id, generation, prepared.basis.source,
+            prepared.basis.overlay, prepared.basis.shadows,
+        );
+        self.validate_snapshot_with_accounting(snapshot, work, cancellation).await?;
+        loop {
+            let state = self.load_state_with_accounting(work, cancellation).await?
+                .ok_or(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation })?;
+            if state.as_state().schema_version != LAZY_STATE_SCHEMA
+                || state.as_state().workspace_id != prepared.basis.workspace_id
+            {
+                return Err(E::from(LazyWorkspaceError::WriteIndeterminate { operation: prepared.operation }));
+            }
+            if let Some(saved) = state.as_state().completed_write
+                .filter(|saved| saved.prepared.operation == prepared.operation)
+            {
+                if saved.prepared != prepared || saved.snapshot != snapshot {
+                    return Err(E::from(LazyWorkspaceError::WriteInputConflict { operation: prepared.operation }));
+                }
+                return Ok(saved.snapshot);
+            }
+            if state.as_state().pending_write != Some(prepared) {
+                // A later frozen write may have replaced the companion's
+                // single latest hint. Immutable DATA evidence remains genuine;
+                // return its exact old snapshot without mutating current state.
+                return Ok(snapshot);
+            }
+            let revision = state.as_state().revision;
+            work.charge(WorkCounters {
+                bytes_copied: std::mem::size_of::<LazyWorkspaceState>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let mut replacement = state.as_state().clone();
+            replacement.revision = revision.checked_add(1).ok_or(LazyWorkspaceError::Concurrent)?;
+            replacement.pending_write = None;
+            replacement.completed_write = Some(CompletedLazyWrite { prepared, snapshot });
+            drop(state);
+            // Preserve all concurrent current roots; this CAS only settles the
+            // authentic original witness and is guarded on every retry.
+            self.write_companion_owner_with_accounting(work, before_mutation).await?;
+            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+                return Ok(snapshot);
+            }
+        }
+    }
+
+    async fn write_abandon_original_with_accounting<E, F, Fut>(
+        &self, prepared: PendingLazyWrite, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        // Only a definitive canonical nonpublication decision reaches here.
+        // Unknown/lost ACK errors retain the original pending witness.
+        loop {
+            self.write_companion_owner_with_accounting(work, before_mutation).await?;
+            let state = self.load_state_with_accounting(work, cancellation).await?
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+            if state.as_state().pending_write != Some(prepared) { return Ok(()); }
+            let revision = state.as_state().revision;
+            work.charge(WorkCounters {
+                bytes_copied: std::mem::size_of::<LazyWorkspaceState>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let mut replacement = state.as_state().clone();
+            replacement.revision = revision.checked_add(1).ok_or(LazyWorkspaceError::Concurrent)?;
+            replacement.pending_write = None;
+            drop(state);
+            self.write_companion_owner_with_accounting(work, before_mutation).await?;
+            if self.compare_state_with_accounting(revision, replacement, work, cancellation).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn write_basis_with_accounting(
+        &self, basis: LazySnapshotRef, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), LazyWorkspaceError> {
+        self.validate_snapshot_with_accounting(basis, work, cancellation).await?;
+        let phase = self.load_state_with_accounting(work, cancellation).await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        let state = phase.as_state();
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != basis.workspace_id || state.source != basis.source
+            || state.overlay != basis.overlay || state.shadows != basis.shadows
+            || state.pending_remove.is_some() || self.source.reference() != basis.source
+        {
+            return Err(LazyWorkspaceError::StaleIdentity);
+        }
+        Ok(())
+    }
+
+    async fn write_owner_with_accounting<E, F, Fut>(
+        &self, basis: LazySnapshotRef, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        self.write_basis_with_accounting(basis, work, cancellation).await?;
+        match before_mutation(work.remaining()?).await {
+            LazyWriteGuardResult::Portable(result) => accept_lazy_write_receipt(work, result),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyWriteGuardResult::Native(result) => result,
+        }?;
+        // The asynchronous owner may itself change the companion binding.
+        self.write_basis_with_accounting(basis, work, cancellation).await?;
+        Ok(())
+    }
+
+    async fn write_with_accounting<E, F, Fut>(
+        &self, basis: Option<LazySnapshotRef>, path: &str, bytes: acyclic_stream::OwnedBytes,
+        key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+    {
+        self.write_batch_with_accounting(
+            basis, std::iter::once(LazyWriteMutation::PutFile { path, bytes }),
+            key, permit, work, cancellation, before_mutation,
+        ).await
+    }
+
+    async fn write_batch_with_accounting<'path, E, F, Fut, I>(
+        &self, basis: Option<LazySnapshotRef>, mutations: I,
+        key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken, before_mutation: &mut F,
+    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    where
+        E: From<LazyWorkspaceError> + Send,
+        F: FnMut(WorkBudget) -> Fut + Send,
+        Fut: Future<Output = LazyWriteGuardResult<E>> + Send,
+        I: Iterator<Item = LazyWriteMutation<'path>> + Send,
+    {
+        in_heap_lazy_with_error(work, || async {
+            let frozen_basis = basis.is_some();
+            if let Some(basis) = basis
+                && let Some(original) = self.write_original_record_with_accounting(
+                    key, work, cancellation, before_mutation,
+                ).await?
+            {
+                let (generation, proof) = self.write_reconcile_original_with_accounting(
+                    basis, mutations, key, original, work, cancellation, before_mutation,
+                ).await?;
+                return Ok((TransactionCommit::AlreadyCommitted(generation), proof));
+            }
+            let mut input_hasher = if frozen_basis { Some(lazy_write_input_hasher(work)?) } else { None };
+            let mut input_count = 0_u64;
+            let mut captured = basis;
+            let mut candidate = None;
+            for mutation in mutations {
+                let scope = TreapAllocationScope::new(work);
+                let (path, bytes) = lazy_write_mutation_parts(mutation, work)?;
+                let requested = work.canonical_path_owned(path, self.workspace.limits())?;
+                if let Some(hasher) = &mut input_hasher {
+                    lazy_write_hash_mutation(hasher, &mut input_count, &requested, bytes.as_ref(), work)?;
+                }
+                let ordinary_lookup = if !frozen_basis && bytes.is_some() {
+                    match self.promotion_lookup_with_accounting(&requested, work, cancellation).await {
+                        Ok(lookup) => Some(lookup),
+                        Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) => None,
+                        Err(error) => return Err(E::from(error)),
+                    }
+                } else { None };
+                let basis = match captured {
+                    Some(basis) => basis,
+                    None => accept_lazy_write_receipt(work,
+                        self.snapshot_measured(work.remaining()?, cancellation).await
+                            .map_err(|failure| failure.map_error(E::from)))?,
+                };
+                captured = Some(basis);
+                self.write_basis_with_accounting(basis, work, cancellation).await?;
+                let frozen_lookup = if frozen_basis && bytes.is_some() {
+                    match self.selected_lookup_with_accounting(basis, &requested, work, cancellation).await {
+                        Ok(lookup) => Some(lookup),
+                        Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) => None,
+                        Err(error) => return Err(E::from(error)),
+                    }
+                } else { None };
+                let lookup = ordinary_lookup.as_ref().map(|lookup| &lookup.as_state().lookup)
+                    .or_else(|| frozen_lookup.as_ref().map(SelectedLookupPhase::lookup));
+                if let Some(frozen) = &frozen_lookup {
+                    let bytes = frozen.portable_owned_bytes();
+                    if bytes != 0 { work.adopt_input(bytes)?; }
+                }
+                if candidate.is_none() {
+                    let generation = match &work.meter {
+                        LazyTreapMeter::Standalone { .. } => accept_lazy_write_receipt(work,
+                            self.workspace.generation_measured(
+                                basis.authored_generation, work.remaining()?, cancellation,
+                            ).await.map_err(|failure| failure.map_error(|error|
+                                E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        LazyTreapMeter::NativeOriginal { original, .. } =>
+                            self.workspace.generation_with_native_work(
+                                basis.authored_generation, original, cancellation,
+                            ).await.map_err(native_workspace_error_pair)?,
+                    };
+                    candidate = Some(match &work.meter {
+                        LazyTreapMeter::Standalone { .. } => accept_lazy_write_receipt(work,
+                            self.workspace.begin_pinned_transaction_measured(
+                                &generation, key, work.remaining()?, cancellation,
+                            ).await.map_err(|failure| failure.map_error(|error|
+                                E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        LazyTreapMeter::NativeOriginal { original, .. } =>
+                            self.workspace.begin_pinned_transaction_with_native_work(
+                                &generation, key, original, cancellation,
+                            ).await.map_err(native_workspace_error_pair)?,
+                    });
+                    drop(generation);
+                }
+                let transaction = candidate.as_mut().ok_or(LazyWorkspaceError::Concurrent)?;
+                let Some(bytes) = bytes else {
+                    self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                    self.promotion_mutation_with_accounting(
+                        transaction, &requested, LazyPromotionMutation::Parents, work, cancellation,
+                    ).await?;
+                    drop(frozen_lookup);
+                    drop(ordinary_lookup);
+                    drop(requested);
+                    drop(scope);
+                    continue;
+                };
+                if let Some(parent) = parent_path(&requested) {
+                    self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                    self.promotion_mutation_with_accounting(
+                        transaction, parent, LazyPromotionMutation::Parents, work, cancellation,
+                    ).await?;
+                }
+                let identity = match lookup {
+                    Some(LazyLookup::Source(node)) => Some(
+                        self.promotion_source_file_id(node, work, cancellation)?),
+                    Some(LazyLookup::Authored { path: authored, .. }) if authored != &requested => {
+                        self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                        self.promotion_mutation_with_accounting(
+                            transaction, &requested, LazyPromotionMutation::HardLink(authored), work, cancellation,
+                        ).await?;
+                        None
+                    }
+                    Some(LazyLookup::Shadow { record, .. }) => {
+                        self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                        self.promotion_mutation_with_accounting(
+                            transaction, &requested, LazyPromotionMutation::Restore(*record), work, cancellation,
+                        ).await?;
+                        None
+                    }
+                    _ => None,
+                };
+                self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                match &work.meter {
+                    LazyTreapMeter::Standalone { .. } => {
+                        accept_lazy_write_receipt(work, transaction.write_measured(
+                            &requested, bytes, work.remaining()?, cancellation,
+                        ).await.map(|work| OperationReceipt { value: (), work })
+                            .map_err(|failure| failure.map_error(|error|
+                                E::from(LazyWorkspaceError::WorkspaceCause(error)))))?;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    LazyTreapMeter::NativeOriginal { original, .. } =>
+                        transaction.write_with_native_work(&requested, bytes, original, cancellation)
+                            .await.map_err(native_workspace_error_pair)?,
+                }
+                if let Some(identity) = identity {
+                    self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
+                    self.promotion_mutation_with_accounting(
+                        transaction, &requested, LazyPromotionMutation::Identity(identity), work, cancellation,
+                    ).await?;
+                }
+                drop(frozen_lookup);
+                drop(ordinary_lookup);
+                drop(requested);
+                drop(scope);
+            }
+            let basis = captured.ok_or(LazyWorkspaceError::WorkspaceCause(WorkspaceError::EmptyContentSet))?;
+            let mut transaction = candidate.ok_or(LazyWorkspaceError::WorkspaceCause(WorkspaceError::EmptyContentSet))?;
+            let evidence_scope = TreapAllocationScope::new(work);
+            let mut operation_evidence = None;
+            let mut context = None;
+            let prepared = match input_hasher {
+                Some(hasher) => {
+                    let prepared = PendingLazyWrite {
+                        operation: key.operation_id(), basis,
+                        input: lazy_write_finish_input(hasher, input_count, work)?,
+                        config: self.workspace.volume_config(), permit,
+                    };
+                    context = Some(lazy_write_context(basis, prepared.input, work)?);
+                    operation_evidence = Some(lazy_write_original_bytes(prepared, work)?);
+                    self.write_prepare_original_with_accounting(
+                        prepared, work, cancellation, before_mutation,
+                    ).await?;
+                    Some(prepared)
+                }
+                None => None,
+            };
+            let commit = match &work.meter {
+                LazyTreapMeter::Standalone { .. } => {
+                    let mut guard = |allowance| {
+                        let owner = before_mutation(allowance);
+                        async move {
+                            let seal = LazyTreapWork::new(allowance, cancellation);
+                            let result: Result<(), E> = async {
+                                if let Some(prepared) = prepared {
+                                    self.write_prepared_basis_with_accounting(prepared, &seal, cancellation).await?;
+                                } else {
+                                    self.write_basis_with_accounting(basis, &seal, cancellation).await?;
+                                }
+                                match owner.await {
+                                    LazyWriteGuardResult::Portable(result) =>
+                                        accept_lazy_write_receipt(&seal, result)?,
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    LazyWriteGuardResult::Native(_) => unreachable!("ordinary write owner"),
+                                }
+                                if let Some(prepared) = prepared {
+                                    self.write_prepared_basis_with_accounting(prepared, &seal, cancellation).await?;
+                                } else {
+                                    self.write_basis_with_accounting(basis, &seal, cancellation).await?;
+                                }
+                                Ok(())
+                            }.await;
+                            let spent = seal.spent();
+                            result.map(|()| OperationReceipt { value: (), work: spent })
+                                .map_err(|error| crate::OperationFailure::new(
+                                    LazyWriteSealError::Owner(error), spent,
+                                ))
+                        }
+                    };
+                    let result = if let Some(context) = context {
+                        transaction.commit_with_context_with_permit_measured_guarded(
+                            context, operation_evidence.as_ref()
+                                .ok_or(LazyWorkspaceError::WriteIndeterminate { operation: key.operation_id() })?.clone(),
+                            permit, work.remaining()?, cancellation, &mut guard,
+                        ).await
+                    } else {
+                        transaction.commit_with_permit_measured_guarded(
+                            permit, work.remaining()?, cancellation, &mut guard,
+                        ).await
+                    }.map_err(|failure| failure.map_error(LazyWriteSealError::into_owner));
+                    accept_lazy_write_receipt(work, result)?
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyTreapMeter::NativeOriginal { original, .. } => {
+                    let mut guard = |_: &crate::NativeMaterializationWork| {
+                        let owner = before_mutation(WorkBudget::UNBOUNDED);
+                        async move {
+                            let result: Result<(), E> = async {
+                                if let Some(prepared) = prepared {
+                                    self.write_prepared_basis_with_accounting(prepared, work, cancellation).await?;
+                                } else {
+                                    self.write_basis_with_accounting(basis, work, cancellation).await?;
+                                }
+                                match owner.await {
+                                    LazyWriteGuardResult::Native(result) => result?,
+                                    LazyWriteGuardResult::Portable(_) => unreachable!("original native write owner"),
+                                }
+                                if let Some(prepared) = prepared {
+                                    self.write_prepared_basis_with_accounting(prepared, work, cancellation).await?;
+                                } else {
+                                    self.write_basis_with_accounting(basis, work, cancellation).await?;
+                                }
+                                Ok(())
+                            }.await;
+                            result.map_err(LazyWriteSealError::Owner)
+                        }
+                    };
+                    let result = if let Some(context) = context {
+                        transaction.commit_with_context_with_permit_guarded_with_native_work(
+                            context, operation_evidence.as_ref()
+                                .ok_or(LazyWorkspaceError::WriteIndeterminate { operation: key.operation_id() })?.clone(),
+                            permit, original, cancellation, &mut guard,
+                        ).await
+                    } else {
+                        transaction.commit_with_permit_guarded_with_native_work(
+                            permit, original, cancellation, &mut guard,
+                        ).await
+                    };
+                    result.map_err(LazyWriteSealError::into_owner)?
+                }
+            };
+            let snapshot = match &commit {
+                TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => {
+                    if let Some(prepared) = prepared {
+                        self.write_finish_original_with_accounting(
+                            prepared, generation.id(), work, cancellation, before_mutation,
+                        ).await
+                    } else {
+                        // The ordinary unqualified writer retains its existing
+                        // snapshot compiler and publication behavior.
+                        async {
+                            self.write_basis_with_accounting(basis, work, cancellation).await?;
+                            work.charge(WorkCounters {
+                                bytes_hashed: (LAZY_SNAPSHOT_DOMAIN.len() + 136) as u64,
+                                ..WorkCounters::UNCHARGED
+                            })?;
+                            let snapshot = LazySnapshotRef::new(
+                                basis.workspace_id, generation.id(), basis.source, basis.overlay, basis.shadows,
+                            );
+                            self.validate_snapshot_with_accounting(snapshot, work, cancellation).await?;
+                            Ok(snapshot)
+                        }.await
+                    }
+                }
+                _ => {
+                    if let Some(prepared) = prepared {
+                        self.write_abandon_original_with_accounting(
+                            prepared, work, cancellation, before_mutation,
+                        ).await?;
+                    }
+                    Err(E::from(LazyWorkspaceError::StaleIdentity))
+                }
+            };
+            drop(transaction);
+            drop(operation_evidence);
+            drop(evidence_scope);
+            Ok((commit, snapshot))
+        }).await
     }
 
     /// Prepares mounted whiteouts and identity updates under the checkout's
@@ -12262,12 +13311,12 @@ where
         &self, path: &str, source: SourceReference, expected: SourceVersion,
         offset: u64, length: u64, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, crate::materializer::NativeAllocation),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
             self.source.read_range_with_native_work(source, &path, expected, offset, length,
                 crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
-        }).await
+        }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -12275,12 +13324,12 @@ where
         &self, path: &str, source: SourceReference, expected: SourceVersion, maximum_bytes: u64,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::OwnedSourceChunk, crate::materializer::NativeAllocation),
+    ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
             self.source.read_link_with_native_work(source, &path, expected, maximum_bytes,
                 crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
-        }).await
+        }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
     /// Prepares selected namespace replacement in the caller's actual private
@@ -12496,7 +13545,7 @@ where
     }
 
     async fn checkout_with_accounting(
-        &self, selector: crate::GenerationSelector, mode: crate::CheckoutMode,
+        &self, selector: crate::model::GenerationSelector, mode: crate::model::CheckoutMode,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::Checkout<A, O>, LazyWorkspaceError> {
         match &accounting.meter {
@@ -12618,11 +13667,11 @@ where
                         .ok_or_else(counter_overflow)?;
                 }
                 let mut baseline = self.checkout_with_accounting(
-                    crate::GenerationSelector::Exact(destination.authored_generation),
-                    crate::CheckoutMode {
-                        access: crate::AccessMode::ReadWrite,
-                        consistency: crate::ConsistencyMode::Pinned,
-                        mutations: crate::MutationMode::PrivateOverlay,
+                    crate::model::GenerationSelector::Exact(destination.authored_generation),
+                    crate::model::CheckoutMode {
+                        access: crate::model::AccessMode::ReadWrite,
+                        consistency: crate::model::ConsistencyMode::Pinned,
+                        mutations: crate::model::MutationMode::PrivateOverlay,
                     }, accounting, cancellation,
                 ).await?;
                 let baseline_bytes = accounting.retain_fresh_checkout(&baseline)?;
@@ -12955,9 +14004,10 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 allocation: None,
             };
+            let mut publication = BorrowedSelectedImportGuard { callback: &mut before_publication };
             let result = self.import_selected_with_accounting_guarded(
                 destination, incoming, operation, permit, &accounting, cancellation,
-                &mut before_publication, &mut || async { unreachable!("standalone native guard") },
+                &mut publication,
             ).await;
             let work = accounting.spent();
             result.map(|value| OperationReceipt { value, work })
@@ -12969,20 +14019,21 @@ where
     /// Denial retains the actual private checkout and companion candidate; retry
     /// must use the same original operation and native work, never a fresh head.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn import_selected_with_native_work_guarded<'a, F, Fut>(
+    pub async fn import_selected_with_native_work_guarded<E, F, Fut>(
         &self,
         destination: LazySnapshotRef,
         plan: SelectedImportPlan,
         allocation: crate::materializer::NativeAllocation,
         operation: crate::OperationId,
         permit: crate::PublicationPermit,
-        original: &'a crate::materializer::NativeMaterializationWork,
+        original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
         mut before_publication: F,
-    ) -> Result<LazySnapshotRef, LazyWorkspaceError>
+    ) -> Result<LazySnapshotRef, E>
     where
-        F: FnMut(&'a crate::materializer::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), crate::FsError>> + Send,
+        E: From<LazyWorkspaceError> + From<crate::FsError> + From<WorkspaceError> + Send + 'static,
+        F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         // Field order keeps the transferred data alive under its existing claim,
         // including admission failure before the boxed engine future exists.
@@ -12992,23 +14043,19 @@ where
             || !paid.work().shares_resource_allowance(original)
             || paid.bytes() < incoming.plan.logical_owned_bytes()
         {
-            return Err(LazyWorkspaceError::NativeLedgerMismatch);
+            return Err(E::from(LazyWorkspaceError::NativeLedgerMismatch));
         }
         let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy_with_work(&accounting, || async {
+        in_heap_lazy_with_error(&accounting, || async {
+            let mut publication = OwnedNativeImportGuard { callback: &mut before_publication, original };
             self.import_selected_with_accounting_guarded(
                 destination, incoming, operation, permit, &accounting, cancellation,
-                &mut |_| async { unreachable!("native standalone guard") },
-                &mut || before_publication(original),
+                &mut publication,
             ).await
-        }).await.map_err(|error| match error {
-            LazyWorkspaceError::OriginalSnapshotUnavailable =>
-                LazyWorkspaceError::SelectedImportIndeterminate { operation },
-            error => error,
-        })
+        }).await
     }
 
-    async fn import_selected_with_accounting_guarded<F, Fut, N, NFut>(
+    async fn import_selected_with_accounting_guarded<P>(
         &self,
         destination: LazySnapshotRef,
         incoming: SelectedImportInput,
@@ -13016,20 +14063,16 @@ where
         permit: crate::PublicationPermit,
         accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
-        before_publication: &mut F,
-        native_before_publication: &mut N,
-    ) -> Result<LazySnapshotRef, LazyWorkspaceError>
+        publication: &mut P,
+    ) -> Result<LazySnapshotRef, P::Error>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
-        N: FnMut() -> NFut + Send,
-        NFut: Future<Output = Result<(), crate::FsError>> + Send,
+        P: SelectedImportGuard<A, O>,
     {
         if self.selected_publication.busy.compare_exchange(
             false, true, std::sync::atomic::Ordering::Acquire,
             std::sync::atomic::Ordering::Relaxed,
         ).is_err() {
-            return Err(LazyWorkspaceError::Concurrent);
+            return Err(LazyWorkspaceError::Concurrent.into());
         }
         let mut custody = SelectedImportCustody {
             control: &self.selected_publication,
@@ -13051,7 +14094,7 @@ where
                     if !paid.work().shares_ledger(original)
                         || !paid.work().shares_resource_allowance(original)
                     {
-                        return Err(LazyWorkspaceError::NativeLedgerMismatch);
+                        return Err(LazyWorkspaceError::NativeLedgerMismatch.into());
                     }
                 }
                 0
@@ -13078,7 +14121,7 @@ where
             let snapshot = self.selected_committed_snapshot_with_accounting(
                 operation, generation, destination, incoming.plan.source,
                 incoming.plan.source_config, input, accounting, cancellation,
-            ).await?;
+            ).await.map_err(|error| publication.map_lazy(error, operation))?;
             custody.retained = None;
             if retained_bytes != 0 { accounting.release(retained_bytes)?; }
             drop(incoming);
@@ -13090,7 +14133,7 @@ where
             if retained.operation != operation || retained.destination != destination
                 || retained.effects.input != input
             {
-                return Err(LazyWorkspaceError::StaleIdentity);
+                return Err(LazyWorkspaceError::StaleIdentity.into());
             }
             drop(incoming);
             if incoming_bytes != 0 { accounting.release(incoming_bytes)?; }
@@ -13098,15 +14141,15 @@ where
             let phase = self.load_state_with_accounting(accounting, cancellation).await?
                 .ok_or(LazyWorkspaceError::StaleIdentity)?;
             if phase.as_state().pending_remove.is_some() {
-                return Err(LazyWorkspaceError::Concurrent);
+                return Err(LazyWorkspaceError::Concurrent.into());
             }
             drop(phase);
             let mut checkout = self.checkout_with_accounting(
-                crate::GenerationSelector::Head,
-                crate::CheckoutMode {
-                    access: crate::AccessMode::ReadWrite,
-                    consistency: crate::ConsistencyMode::TrackingSafe,
-                    mutations: crate::MutationMode::PrivateOverlay,
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode {
+                    access: crate::model::AccessMode::ReadWrite,
+                    consistency: crate::model::ConsistencyMode::TrackingSafe,
+                    mutations: crate::model::MutationMode::PrivateOverlay,
                 }, accounting, cancellation,
             ).await?;
             accounting.retain_fresh_checkout(&checkout)?;
@@ -13150,7 +14193,7 @@ where
                     if let crate::kernel::RebaseDecision::Conflicted { conflicts, truncated } = rebase {
                         return Err(LazyWorkspaceError::Filesystem(crate::FsError::LiveConflict {
                             conflicts, truncated,
-                        }));
+                        }).into());
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -13163,7 +14206,7 @@ where
                         return Err(native_workspace_error_pair((
                             WorkspaceError::Filesystem(crate::FsError::LiveConflict { conflicts, truncated }),
                             Some(allocation),
-                        )));
+                        )).into());
                     }
                     drop(rebase);
                     drop(allocation);
@@ -13176,26 +14219,13 @@ where
             retained.prepared = true;
         }
         accounting.charge(WorkCounters::UNCHARGED)?;
-        let published = match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                retained.checkout.commit_with_permit_even_if_clean_guarded(
-                    operation, permit, accounting.remaining()?, cancellation, before_publication, None,
-                ).await.map_err(|failure|
-                    lazy_operation_failure(failure, |error| workspace_error(error.into()))),
-            )?,
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                let mut guard = |_: &crate::materializer::NativeMaterializationWork|
-                    native_before_publication();
-                retained.checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
-                    operation, permit, original, cancellation, &mut guard, None,
-                ).await.map_err(native_filesystem_error)?
-            }
-        };
+        let published = publication.commit(
+            &mut retained.checkout, operation, permit, accounting, cancellation,
+        ).await?;
         let generation = match published {
             crate::CheckoutCommitOutcome::Committed { generation_id, .. }
             | crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-            outcome => return Err(LazyWorkspaceError::SelectedPublication(outcome)),
+            outcome => return Err(LazyWorkspaceError::SelectedPublication(outcome).into()),
         };
         // Preserve the actual completed DATA prefix before the post-CAS fence.
         retained.published = Some(generation);
@@ -13204,7 +14234,7 @@ where
         let snapshot = self.selected_committed_snapshot_with_accounting(
             operation, generation, retained.destination, retained.plan.source,
             retained.plan.source_config, retained.effects.input, accounting, cancellation,
-        ).await?;
+        ).await.map_err(|error| publication.map_lazy(error, operation))?;
         custody.retained = None;
         Ok(snapshot)
     }
@@ -13583,11 +14613,11 @@ where
                     .ok_or_else(counter_overflow)?;
                 let mut checkout = match &accounting.meter {
                     LazyTreapMeter::Standalone { .. } => Some(self.checkout_with_accounting(
-                        crate::GenerationSelector::Exact(snapshot.authored_generation),
-                        crate::CheckoutMode {
-                            access: crate::AccessMode::ReadOnly,
-                            consistency: crate::ConsistencyMode::Pinned,
-                            mutations: crate::MutationMode::None,
+                        crate::model::GenerationSelector::Exact(snapshot.authored_generation),
+                        crate::model::CheckoutMode {
+                            access: crate::model::AccessMode::ReadOnly,
+                            consistency: crate::model::ConsistencyMode::Pinned,
+                            mutations: crate::model::MutationMode::None,
                         }, accounting, cancellation,
                     ).await?),
                     #[cfg(not(target_arch = "wasm32"))]
@@ -13762,6 +14792,24 @@ impl From<crate::WorkError> for LazyWorkspaceError {
     }
 }
 
+impl From<crate::FsError> for LazyWorkspaceError {
+    fn from(error: crate::FsError) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        { native_filesystem_error(error) }
+        #[cfg(target_arch = "wasm32")]
+        { Self::Filesystem(error) }
+    }
+}
+
+impl From<WorkspaceError> for LazyWorkspaceError {
+    fn from(error: WorkspaceError) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        { native_workspace_error(error) }
+        #[cfg(target_arch = "wasm32")]
+        { Self::WorkspaceCause(error) }
+    }
+}
+
 fn counter_overflow() -> LazyWorkspaceError {
     crate::WorkError::Overflow.into()
 }
@@ -13769,7 +14817,7 @@ fn counter_overflow() -> LazyWorkspaceError {
 #[cfg(not(target_arch = "wasm32"))]
 fn finish_native_frozen_read<A: AsyncAuthorityStore, O: AsyncObjectStore, T>(
     frozen: NativeFrozenLookup<A, O>, result: Result<T, LazyWorkspaceError>,
-) -> Result<(T, crate::NativeAllocation),
+) -> Result<T,
     (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
     let NativeFrozenLookup { resolved, reader, record: _, metadata: _, mut allocation } = frozen;
     drop(resolved);
@@ -13785,7 +14833,7 @@ fn finish_native_frozen_read<A: AsyncAuthorityStore, O: AsyncObjectStore, T>(
         };
     }
     match result {
-        Ok(value) => Ok((value, allocation)),
+        Ok(value) => { drop(allocation); Ok(value) }
         Err(error) => Err(error.into_native_failure_with_frame(Some(allocation))),
     }
 }
@@ -13862,6 +14910,16 @@ async fn in_heap_lazy_with_work<T, F>(
 ) -> Result<T, LazyWorkspaceError>
 where
     F: Future<Output = Result<T, LazyWorkspaceError>>,
+{
+    in_heap_lazy_with_error(work, create).await
+}
+
+async fn in_heap_lazy_with_error<T, E, F>(
+    work: &LazyTreapWork<'_>, create: impl FnOnce() -> F,
+) -> Result<T, E>
+where
+    E: From<LazyWorkspaceError>,
+    F: Future<Output = Result<T, E>>,
 {
     let mut frame = LazyHeapFrame { work, bytes: 0 };
     let (mut future, _) = in_heap_admitted(
@@ -13995,21 +15053,499 @@ pub(crate) fn logical_child_path(parent: &str, name: &LogicalName) -> Option<Str
     })
 }
 
-/// Keeps measured callbacks receipt-bearing and original-native callbacks
-/// receipt-free while sharing the exact same selected traversal.
-enum ExactifyPublicationResult {
-    Portable(crate::FsResult<()>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(Result<(), crate::FsError>),
+const LAZY_WRITE_INPUT_DOMAIN: &[u8] = b"acyclic-fs-lazy-write-input-v1\0";
+const LAZY_WRITE_CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-lazy-write-context-v1\0";
+const LAZY_WRITE_ORIGINAL_DOMAIN: &[u8] = b"acyclic-fs-lazy-write-original-v1\0";
+const LAZY_WRITE_ORIGINAL_FIXED_BYTES: usize = 216 + crate::kernel::CONFIG_ENCODED_BYTES;
+const LAZY_WRITE_ORIGINAL_MAX_BYTES: usize = LAZY_WRITE_ORIGINAL_DOMAIN.len() + 2
+    + LAZY_WRITE_ORIGINAL_FIXED_BYTES + 73;
+
+fn lazy_write_encode_original_with_accounting(
+    prepared: PendingLazyWrite, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<(Vec<u8>, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError> {
+    use crate::kernel::EncodeAllocationStep;
+    let permit_bytes = match prepared.permit {
+        crate::PublicationPermit::Unrestricted => 1,
+        crate::PublicationPermit::Lease { .. } => 57,
+        crate::PublicationPermit::Reservation { .. } => 73,
+    };
+    let size = LAZY_WRITE_ORIGINAL_DOMAIN.len() + 2 + LAZY_WRITE_ORIGINAL_FIXED_BYTES + permit_bytes;
+    let mut allocation = accounting.claim_owned(0, 0).map_err(lazy_cursor_filesystem_error)?;
+    let mut owned_bytes = 0;
+    let result = (|| {
+        let mut encoder = crate::kernel::Encoder::with_exact_capacity_with_steps(
+            LAZY_WRITE_ORIGINAL_DOMAIN, 1, size,
+            |step| match step {
+                EncodeAllocationStep::Reserve { capacity } => {
+                    let bytes = crate::foundation::usize_to_u64(capacity);
+                    let mut incoming = accounting.claim_owned(bytes, u64::from(capacity != 0))?;
+                    allocation.absorb(&mut incoming)?;
+                    owned_bytes = bytes;
+                    Ok(())
+                }
+                EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
+                    owned_bytes = actual_bytes;
+                    accounting.reconcile_owned(&mut allocation, admitted_bytes, actual_bytes)
+                }
+                EncodeAllocationStep::BeforeHeader { bytes } =>
+                    accounting.admit(WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED }),
+                EncodeAllocationStep::HeaderWritten { bytes } =>
+                    accounting.record_completed(WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED }),
+            },
+            lazy_cursor_reservation_filesystem_error,
+        ).map_err(lazy_cursor_filesystem_error)?;
+        let encoding = WorkCounters {
+            bytes_encoded: (LAZY_WRITE_ORIGINAL_FIXED_BYTES + permit_bytes) as u64,
+            bytes_copied: (LAZY_WRITE_ORIGINAL_FIXED_BYTES + permit_bytes) as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(encoding).map_err(lazy_cursor_filesystem_error)?;
+        encoder.fixed(&prepared.operation.into_bytes());
+        encoder.fixed(&prepared.basis.id.into_bytes());
+        encoder.fixed(&prepared.basis.workspace_id.into_bytes());
+        encoder.fixed(prepared.basis.authored_generation.digest().as_bytes());
+        encoder.fixed(&prepared.basis.source.identity);
+        encoder.u64(prepared.basis.source.epoch);
+        encoder.fixed(&prepared.basis.overlay.into_bytes());
+        encoder.fixed(&prepared.basis.shadows.into_bytes());
+        encoder.fixed(prepared.input.as_bytes());
+        crate::kernel::encode_config(&mut encoder, prepared.config);
+        match prepared.permit {
+            crate::PublicationPermit::Unrestricted => encoder.u8(0),
+            crate::PublicationPermit::Lease { authority_id, workspace_id, lease_id, expires_at_millis } => {
+                encoder.u8(1);
+                encoder.fixed(&authority_id);
+                encoder.fixed(&workspace_id);
+                encoder.fixed(&lease_id);
+                encoder.u64(expires_at_millis);
+            }
+            crate::PublicationPermit::Reservation { operation_id, gate_tail, expected } => {
+                encoder.u8(2);
+                encoder.fixed(&operation_id);
+                encoder.u64(gate_tail);
+                encoder.u64(expected.epoch.get());
+                encoder.u64(expected.sequence.get());
+                encoder.fixed(expected.digest.as_bytes());
+            }
+        }
+        accounting.record_completed(encoding).map_err(lazy_cursor_filesystem_error)?;
+        if encoder.remaining_capacity() != encoder.capacity().checked_sub(size).ok_or_else(counter_overflow)? {
+            return Err(LazyWorkspaceError::WriteInputConflict { operation: prepared.operation });
+        }
+        Ok(encoder.finish())
+    })();
+    match result {
+        Ok(bytes) => Ok((bytes, allocation)),
+        Err(error) => {
+            accounting.release_owned(&mut allocation, owned_bytes).map_err(lazy_cursor_filesystem_error)?;
+            Err(error)
+        }
+    }
 }
 
-impl From<crate::FsResult<()>> for ExactifyPublicationResult {
-    fn from(result: crate::FsResult<()>) -> Self { Self::Portable(result) }
+fn lazy_write_original_bytes(
+    prepared: PendingLazyWrite, work: &LazyTreapWork<'_>,
+) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
+    match &work.meter {
+        LazyTreapMeter::Standalone { .. } => work.with_allocation_state(
+            |allocations, spent, budget, cancellation| {
+                let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                    allocations, spent, budget, cancellation,
+                );
+                let (bytes, _) = lazy_write_encode_original_with_accounting(prepared, &mut accounting)?;
+                // Bytes' private backing layout is not estimated. Admit its
+                // one shared-control allocation before immutable promotion,
+                // and force it now rather than on a later publication clone.
+                let control = WorkCounters { allocations: 1, ..WorkCounters::UNCHARGED };
+                accounting.admit(control).map_err(lazy_cursor_filesystem_error)?;
+                let bytes: acyclic_stream::OwnedBytes = bytes.into();
+                drop(bytes.clone());
+                accounting.record_completed(control).map_err(lazy_cursor_filesystem_error)?;
+                Ok(bytes)
+            },
+        ),
+        #[cfg(not(target_arch = "wasm32"))]
+        LazyTreapMeter::NativeOriginal { original, .. } => {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, work.cancellation);
+            let (bytes, custody) = lazy_write_encode_original_with_accounting(prepared, &mut accounting)?;
+            acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
+                .map_err(|failure| match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
+                        native_filesystem_error(original.runtime_error(error).into()),
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                    | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                        native_filesystem_error(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+                })
+        }
+    }
+}
+
+fn lazy_write_decode_original_with_accounting(
+    bytes: &[u8], expected_operation: crate::OperationId,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<PendingLazyWrite, LazyWorkspaceError> {
+    let mut observe = |step| lazy_cursor_fixed_read_step(accounting, step);
+    let mut decoder = crate::kernel::Decoder::new_with_steps::<crate::FsError>(
+        bytes, LAZY_WRITE_ORIGINAL_DOMAIN, 1, LAZY_WRITE_ORIGINAL_MAX_BYTES as u64, &mut observe,
+    ).map_err(lazy_cursor_filesystem_error)?;
+    let operation = crate::OperationId::from_bytes(
+        decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let snapshot_id = LazySnapshotId(
+        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let workspace_id = WorkspaceId::from_bytes(
+        decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let authored_generation = crate::GenerationId::new(crate::Digest::from_bytes(
+        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?));
+    let source = SourceReference {
+        identity: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+        epoch: decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+    };
+    let overlay = LazyOverlayId::from_bytes(
+        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let shadows = LazyShadowId::from_bytes(
+        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let input = crate::Digest::from_bytes(
+        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let config = crate::kernel::decode_config_with_steps(&mut decoder, &mut observe)
+        .map_err(lazy_cursor_filesystem_error)?;
+    let permit = match decoder.u8_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)? {
+        0 => crate::PublicationPermit::Unrestricted,
+        1 => crate::PublicationPermit::Lease {
+            authority_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            workspace_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            lease_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            expires_at_millis: decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+        },
+        2 => {
+            let operation_id = decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?;
+            let gate_tail = decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?;
+            let epoch = crate::Epoch::new(decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?)
+                .map_err(|_| LazyWorkspaceError::WriteInputConflict { operation: expected_operation })?;
+            let sequence = crate::Sequence::new(
+                decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+            let digest = crate::Digest::from_bytes(
+                decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+            crate::PublicationPermit::Reservation {
+                operation_id, gate_tail, expected: crate::Head { epoch, sequence, digest },
+            }
+        }
+        tag => return Err(lazy_cursor_filesystem_error(crate::kernel::CanonicalDecodeError::UnknownTag {
+            field: "original lazy write permit", tag,
+        }.into())),
+    };
+    decoder.finish().map_err(|error| lazy_cursor_filesystem_error(error.into()))?;
+    let hashing = WorkCounters {
+        bytes_hashed: (LAZY_SNAPSHOT_DOMAIN.len() + 136) as u64, ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(hashing).map_err(lazy_cursor_filesystem_error)?;
+    let basis = LazySnapshotRef::new(workspace_id, authored_generation, source, overlay, shadows);
+    accounting.record_completed(hashing).map_err(lazy_cursor_filesystem_error)?;
+    if operation != expected_operation || basis.id != snapshot_id {
+        return Err(LazyWorkspaceError::WriteInputConflict { operation: expected_operation });
+    }
+    Ok(PendingLazyWrite { operation, basis, input, config, permit })
+}
+
+fn lazy_write_mutation_parts<'path>(
+    mutation: LazyWriteMutation<'path>, work: &LazyTreapWork<'_>,
+) -> Result<(&'path str, Option<acyclic_stream::OwnedBytes>), LazyWorkspaceError> {
+    let (path, bytes) = match mutation {
+        LazyWriteMutation::CreateDirectory { path } => (path, None),
+        LazyWriteMutation::PutFile { path, bytes } => (path, Some(bytes)),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(bytes) = &bytes
+        && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
+        && !bytes.matches_meter(&original.runtime_meter_owner())
+    {
+        return Err(LazyWorkspaceError::NativeLedgerMismatch);
+    }
+    Ok((path, bytes))
+}
+
+fn lazy_write_input_hasher(work: &LazyTreapWork<'_>) -> Result<blake3::Hasher, LazyWorkspaceError> {
+    work.charge(WorkCounters {
+        bytes_hashed: LAZY_WRITE_INPUT_DOMAIN.len() as u64, ..WorkCounters::UNCHARGED
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(LAZY_WRITE_INPUT_DOMAIN);
+    Ok(hasher)
+}
+
+fn lazy_write_hash_mutation(
+    hasher: &mut blake3::Hasher, count: &mut u64, path: &str,
+    bytes: Option<&acyclic_stream::OwnedBytes>, work: &LazyTreapWork<'_>,
+) -> Result<(), LazyWorkspaceError> {
+    let path_bytes = crate::foundation::usize_to_u64(path.len());
+    let data_bytes = bytes.map_or(0, |bytes| crate::foundation::usize_to_u64(bytes.len()));
+    work.charge(WorkCounters {
+        bytes_hashed: path_bytes.checked_add(data_bytes).and_then(|bytes| bytes.checked_add(17))
+            .ok_or_else(counter_overflow)?,
+        items_examined: 1, ..WorkCounters::UNCHARGED
+    })?;
+    *count = count.checked_add(1).ok_or_else(counter_overflow)?;
+    hasher.update(&[u8::from(bytes.is_some())]);
+    hasher.update(&path_bytes.to_be_bytes());
+    hasher.update(path.as_bytes());
+    hasher.update(&data_bytes.to_be_bytes());
+    if let Some(bytes) = bytes { hasher.update(bytes); }
+    Ok(())
+}
+
+fn lazy_write_finish_input(
+    mut hasher: blake3::Hasher, count: u64, work: &LazyTreapWork<'_>,
+) -> Result<crate::Digest, LazyWorkspaceError> {
+    work.charge(WorkCounters { bytes_hashed: 8, ..WorkCounters::UNCHARGED })?;
+    hasher.update(&count.to_be_bytes());
+    Ok(crate::Digest::from_bytes(*hasher.finalize().as_bytes()))
+}
+
+fn lazy_write_context_with_accounting(
+    basis: LazySnapshotRef, input: crate::Digest,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<crate::Digest, LazyWorkspaceError> {
+    let hashing = WorkCounters {
+        bytes_hashed: LAZY_WRITE_CONTEXT_DOMAIN.len() as u64 + 64, ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(hashing).map_err(lazy_cursor_filesystem_error)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(LAZY_WRITE_CONTEXT_DOMAIN);
+    hasher.update(&basis.id.into_bytes());
+    hasher.update(input.as_bytes());
+    let digest = crate::Digest::from_bytes(*hasher.finalize().as_bytes());
+    accounting.record_completed(hashing).map_err(lazy_cursor_filesystem_error)?;
+    Ok(digest)
+}
+
+fn lazy_write_context(
+    basis: LazySnapshotRef, input: crate::Digest, work: &LazyTreapWork<'_>,
+) -> Result<crate::Digest, LazyWorkspaceError> {
+    match &work.meter {
+        LazyTreapMeter::Standalone { .. } => work.with_allocation_state(
+            |allocations, spent, budget, cancellation| {
+                let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                    allocations, spent, budget, cancellation,
+                );
+                lazy_write_context_with_accounting(basis, input, &mut accounting)
+            },
+        ),
+        #[cfg(not(target_arch = "wasm32"))]
+        LazyTreapMeter::NativeOriginal { original, .. } => {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, work.cancellation);
+            lazy_write_context_with_accounting(basis, input, &mut accounting)
+        }
+    }
+}
+
+enum LazyWriteGuardResult<E> {
+    Portable(crate::MeasuredResult<OperationReceipt<()>, E>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(Result<(), E>),
+}
+
+enum LazyWriteSealError<E> {
+    Owner(E),
+    Workspace(WorkspaceError),
+    Filesystem(crate::FsError),
+}
+
+impl<E> From<WorkspaceError> for LazyWriteSealError<E> {
+    fn from(error: WorkspaceError) -> Self { Self::Workspace(error) }
+}
+
+impl<E> From<crate::FsError> for LazyWriteSealError<E> {
+    fn from(error: crate::FsError) -> Self { Self::Filesystem(error) }
+}
+
+impl<E: From<LazyWorkspaceError>> LazyWriteSealError<E> {
+    fn into_owner(self) -> E {
+        match self {
+            Self::Owner(error) => error,
+            Self::Workspace(error) => E::from(LazyWorkspaceError::WorkspaceCause(error)),
+            Self::Filesystem(error) => E::from(LazyWorkspaceError::Filesystem(error)),
+        }
+    }
+}
+
+fn accept_lazy_write_receipt<T, E: From<LazyWorkspaceError>>(
+    work: &LazyTreapWork<'_>, result: crate::MeasuredResult<OperationReceipt<T>, E>,
+) -> Result<T, E> {
+    let (result, additional) = match result {
+        Ok(receipt) => (Ok(receipt.value), receipt.work),
+        Err(failure) => (Err(failure.error), *failure.work),
+    };
+    let recorded = work.accept(Ok(OperationReceipt { value: (), work: additional }));
+    match result {
+        Err(error) => Err(error),
+        Ok(value) => { recorded?; Ok(value) }
+    }
+}
+
+trait SelectedImportGuard<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
+    type Error: From<LazyWorkspaceError> + Send;
+
+    fn map_lazy(&self, error: LazyWorkspaceError, _operation: crate::OperationId) -> Self::Error {
+        error.into()
+    }
+
+    fn commit(
+        &mut self,
+        checkout: &mut crate::Checkout<A, O>,
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        accounting: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<crate::CheckoutCommitOutcome, Self::Error>> + Send;
+}
+
+struct BorrowedSelectedImportGuard<'a, F> {
+    callback: &'a mut F,
+}
+
+impl<A, O, F, Fut> SelectedImportGuard<A, O> for BorrowedSelectedImportGuard<'_, F>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    F: FnMut(WorkBudget) -> Fut + Send,
+    Fut: Future<Output = crate::FsResult<()>> + Send,
+{
+    type Error = LazyWorkspaceError;
+
+    async fn commit(
+        &mut self,
+        checkout: &mut crate::Checkout<A, O>,
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        accounting: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::CheckoutCommitOutcome, Self::Error> {
+        accounting.accept(checkout.commit_with_permit_even_if_clean_guarded(
+            operation, permit, accounting.remaining()?, cancellation, self.callback, None,
+        ).await.map_err(|failure|
+            lazy_operation_failure(failure, |error| workspace_error(error.into()))))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl From<Result<(), crate::FsError>> for ExactifyPublicationResult {
-    fn from(result: Result<(), crate::FsError>) -> Self { Self::Native(result) }
+struct OwnedNativeImportGuard<'a, F> {
+    callback: &'a mut F,
+    original: &'a crate::NativeMaterializationWork,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<A, O, F, Fut, E> SelectedImportGuard<A, O> for OwnedNativeImportGuard<'_, F>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    E: From<LazyWorkspaceError> + From<crate::FsError> + Send + 'static,
+    F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+{
+    type Error = E;
+
+    fn map_lazy(&self, error: LazyWorkspaceError, operation: crate::OperationId) -> E {
+        E::from(match error {
+            LazyWorkspaceError::OriginalSnapshotUnavailable =>
+                LazyWorkspaceError::SelectedImportIndeterminate { operation },
+            error => error,
+        })
+    }
+
+    async fn commit(
+        &mut self,
+        checkout: &mut crate::Checkout<A, O>,
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        _accounting: &LazyTreapWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::CheckoutCommitOutcome, Self::Error> {
+        checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
+            operation, permit, self.original, cancellation, self.callback, None,
+        ).await
+    }
+}
+
+trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
+    type Error: From<LazyWorkspaceError> + Send;
+
+    fn commit<D: DemandSource, S: LazyWorkspaceStore>(
+        &mut self,
+        lazy: &LazyWorkspace<A, O, D, S>,
+        transaction: crate::Transaction<A, O>,
+        permit: crate::PublicationPermit,
+        current_source_used: bool,
+        accounting: &mut ExactifyCollectorWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<crate::Generation<A, O>, Self::Error>> + Send;
+}
+
+struct BorrowedExactifyPublication<'a, F> {
+    callback: &'a mut F,
+}
+
+impl<A, O, F, Fut> ExactifyPublication<A, O> for BorrowedExactifyPublication<'_, F>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    F: FnMut(WorkBudget) -> Fut + Send,
+    Fut: Future<Output = crate::FsResult<()>> + Send,
+{
+    type Error = LazyWorkspaceError;
+
+    async fn commit<D: DemandSource, S: LazyWorkspaceStore>(
+        &mut self,
+        lazy: &LazyWorkspace<A, O, D, S>,
+        transaction: crate::Transaction<A, O>,
+        permit: crate::PublicationPermit,
+        _current_source_used: bool,
+        accounting: &mut ExactifyCollectorWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::Generation<A, O>, Self::Error> {
+        let receipt = lazy.commit_exactify_batch_guarded_with_accounting(
+            transaction, permit, accounting.remaining()?, cancellation, self.callback,
+        ).await.map_err(|error| accounting.nested_error(error))?;
+        accounting.accept(Ok(receipt))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeOwnedBuilder<'a, B> {
+    builder: &'a mut B,
+    original: &'a crate::NativeMaterializationWork,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<A, O, B, G, Fut, E> ExactifyPublication<A, O> for NativeOwnedBuilder<'_, B>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    B: FnMut(bool) -> G + Send,
+    G: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+    E: From<LazyWorkspaceError> + From<crate::FsError> + Send + 'static,
+{
+    type Error = E;
+
+    async fn commit<D: DemandSource, S: LazyWorkspaceStore>(
+        &mut self,
+        lazy: &LazyWorkspace<A, O, D, S>,
+        mut transaction: crate::Transaction<A, O>,
+        permit: crate::PublicationPermit,
+        current_source_used: bool,
+        _accounting: &mut ExactifyCollectorWork<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::Generation<A, O>, Self::Error> {
+        let frame = LazyTreapWork::native_with_work(self.original, cancellation)?;
+        in_heap_lazy_with_error(&frame, || async {
+            let mut guard = (self.builder)(current_source_used);
+            let value = transaction.commit_with_permit_guarded_with_native_work(
+                permit, self.original, cancellation, &mut guard,
+            ).await?;
+            LazyWorkspace::<A, O, D, S>::exactify_batch_commit_result(
+                value, WorkCounters::UNCHARGED, false,
+            ).map(|receipt| receipt.value).map_err(E::from)
+        }).await
+    }
 }
 
 enum ExactifyCollectorWork<'a> {
@@ -15816,12 +17352,12 @@ mod tests {
             length: u64,
             budget: WorkBudget,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Bytes> {
+        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
             let value = meter.range(&self.0, offset, length)?;
             meter.check(cancellation)?;
             meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(value)
+            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
         }
     }
 
@@ -15910,7 +17446,7 @@ mod tests {
             length: u64,
             budget: WorkBudget,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Bytes> {
+        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
             self.counts.ranges.fetch_add(1, Ordering::Relaxed);
             let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
@@ -15920,7 +17456,7 @@ mod tests {
             }
             meter.check(cancellation)?;
             meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(value)
+            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
         }
 
         async fn open_file(
@@ -15945,7 +17481,7 @@ mod tests {
             _expected: SourceVersion,
             budget: WorkBudget,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Bytes> {
+        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             let meter = SourceFixtureMeter::begin(budget, cancellation)?;
             Err(meter.failure(DemandError::InvalidRequest))
         }
@@ -15976,7 +17512,7 @@ mod tests {
 
         async fn read_range(&self, source: SourceReference, path: &NamespacePath,
             version: SourceVersion, offset: u64, length: u64, budget: WorkBudget,
-            token: &CancellationToken) -> DemandResult<Bytes> {
+            token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             self.inner.read_range(source, path, version, offset, length, budget, token).await
         }
 
@@ -15987,7 +17523,7 @@ mod tests {
         }
 
         async fn read_link(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, budget: WorkBudget, token: &CancellationToken) -> DemandResult<Bytes> {
+            version: SourceVersion, budget: WorkBudget, token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             self.inner.read_link(source, path, version, budget, token).await
         }
     }
@@ -16030,11 +17566,12 @@ mod tests {
             frozen, std::slice::from_ref(&selected), &original,
         ).await.expect("original-owned real plan");
         let before = original.receipt();
+        let guard_original = original.clone();
         let denied = root.import_selected_with_native_work_guarded(
             destination, plan, allocation, operation, crate::PublicationPermit::Unrestricted,
-            &original, &cancellation, |work| {
-                assert!(work.shares_ledger(&original));
-                async { Err(crate::FsError::MutationNotAllowed) }
+            &original, &cancellation, move |work| {
+                assert!(work.shares_ledger(&guard_original));
+                async { Err::<(), LazyWorkspaceError>(crate::FsError::MutationNotAllowed.into()) }
             },
         ).await.expect_err("actual before-CAS guard denies");
         assert!(matches!(denied, LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
@@ -16049,12 +17586,13 @@ mod tests {
         let other_resource = original.native_volume_work(finite_fixture_budget())
             .expect("same root but distinct resource allowance");
         let prefix = original.receipt();
-        let wrong_guard = AtomicUsize::new(0);
+        let wrong_guard = Arc::new(AtomicUsize::new(0));
+        let wrong_guard_observer = Arc::clone(&wrong_guard);
         let mismatch = root.import_selected_with_native_work_guarded(
             destination, wrong_plan, wrong_allocation, operation, crate::PublicationPermit::Unrestricted,
-            &other_resource, &cancellation, |_| {
-                wrong_guard.fetch_add(1, Ordering::Relaxed);
-                async { Ok(()) }
+            &other_resource, &cancellation, move |_| {
+                wrong_guard_observer.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), LazyWorkspaceError>(()) }
             },
         ).await.expect_err("root identity alone does not transfer resource custody");
         assert!(matches!(mismatch, LazyWorkspaceError::NativeLedgerMismatch));
@@ -16100,12 +17638,13 @@ mod tests {
         let (plan, allocation) = child.prepare_selected_import_with_native_work(
             frozen, std::slice::from_ref(&selected), &original,
         ).await.expect("same original paid retry plan");
-        let guards = AtomicUsize::new(0);
+        let guards = Arc::new(AtomicUsize::new(0));
+        let guard_observer = Arc::clone(&guards);
         let retry = root.import_selected_with_native_work_guarded(
             destination, plan, allocation, operation, crate::PublicationPermit::Unrestricted,
-            &original, &cancellation, |_| {
-                guards.fetch_add(1, Ordering::Relaxed);
-                async { Ok(()) }
+            &original, &cancellation, move |_| {
+                guard_observer.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), LazyWorkspaceError>(()) }
             },
         ).await.expect("exact original operation retry");
         assert_eq!(retry, snapshot);
@@ -16246,7 +17785,7 @@ mod tests {
             crate::PublicationPermit::Unrestricted, &original, &cancellation,
             |work| {
                 assert!(work.receipt().items_examined >= 3);
-                async { Ok(()) }
+                async { Ok::<(), LazyWorkspaceError>(()) }
             },
         ).await.expect("actual selected baseline and candidate");
         original.receipt().verify(budget).expect("bounded original source and SDK work");
@@ -16290,19 +17829,21 @@ mod tests {
             if mode == 2 { budget.bytes_hashed = 0; }
             let original = crate::NativeMaterializationWork::new(budget, &cancellation)
                 .expect("original bounded authority");
+            let guard_source = Arc::clone(&source);
+            let guard_cancellation = cancellation.clone();
             let result = root.exactify_snapshot_selected_at_generation_with_native_work_guarded(
                 frozen, &imported, &["/selected".to_owned()], "selected-original-denied",
                 IdempotencyKey::from_bytes([0x91; 16]), IdempotencyKey::from_bytes([0x92; 16]),
                 crate::PublicationPermit::Unrestricted, &original, &cancellation,
-                |work| {
+                move |work| {
                     if work.receipt().source_bytes_read != 0 {
                         if mode == 0 {
-                            source.invalidate_with_native_work(work).expect("actual source epoch change");
+                            guard_source.invalidate_with_native_work(work).expect("actual source epoch change");
                         } else {
-                            cancellation.cancel();
+                            guard_cancellation.cancel();
                         }
                     }
-                    async { Ok(()) }
+                    async { Ok::<(), LazyWorkspaceError>(()) }
                 },
             ).await;
             assert!(result.is_err(), "original admission or seal must deny");
@@ -16318,6 +17859,84 @@ mod tests {
             assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("unchanged companion"), before);
             assert_eq!(std::fs::read(directory.path().join("selected")).expect("source unchanged"), b"original-body");
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn original_selected_owner_guard_keeps_its_actual_typed_quota_cause() {
+        #[derive(Debug)]
+        enum OwnerCause {
+            Filesystem(crate::FsError),
+            Workspace(WorkspaceError),
+            Lazy(LazyWorkspaceError),
+            Quota(crate::NativeTreeMaterializationError),
+        }
+        impl From<crate::FsError> for OwnerCause {
+            fn from(error: crate::FsError) -> Self { Self::Filesystem(error) }
+        }
+        impl From<WorkspaceError> for OwnerCause {
+            fn from(error: WorkspaceError) -> Self { Self::Workspace(error) }
+        }
+        impl From<LazyWorkspaceError> for OwnerCause {
+            fn from(error: LazyWorkspaceError) -> Self { Self::Lazy(error) }
+        }
+
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"unread")));
+        let root = LazyWorkspace::attach(
+            &fs, "selected-owner-cause", source, MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual original workspace");
+        root.write("/selected", Bytes::from_static(b"authored")).await.expect("authored seed");
+        let frozen = root.snapshot().await.expect("actual frozen cut");
+        let imported = root.workspace().head().await.expect("immutable imported generation");
+        let cancellation = CancellationToken::new();
+        let budget = finite_fixture_budget();
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("actual bounded original work");
+        original.charge(WorkCounters { items_examined: 3, ..WorkCounters::UNCHARGED })
+            .expect("real caller prefix");
+        let denied_hash = budget.bytes_hashed.checked_add(1).expect("finite fixture bound");
+        let result = root.exactify_snapshot_selected_at_generation_with_native_work_guarded(
+            frozen, &imported, &["/selected".to_owned()], "selected-owner-denied",
+            IdempotencyKey::from_bytes([0xad; 16]), IdempotencyKey::from_bytes([0xae; 16]),
+            crate::PublicationPermit::Unrestricted, &original, &cancellation,
+            move |work| std::future::ready(work.admit(WorkCounters {
+                bytes_hashed: denied_hash, ..WorkCounters::UNCHARGED,
+            }).map_err(OwnerCause::Quota)),
+        ).await;
+        match result {
+            Err(OwnerCause::Quota(cause)) => { drop(cause); }
+            Err(OwnerCause::Filesystem(cause)) => panic!("owner cause flattened into filesystem: {cause}"),
+            Err(OwnerCause::Workspace(cause)) => panic!("owner cause flattened into workspace: {cause}"),
+            Err(OwnerCause::Lazy(cause)) => panic!("owner cause flattened into lazy engine: {cause}"),
+            Ok(_) => panic!("original owner admission must deny"),
+        }
+        assert!(original.receipt().items_examined >= 3);
+        original.receipt().verify(budget).expect("exact admitted original prefix");
+        assert_eq!(root.workspace().head().await.expect("unchanged original head").id(), imported.id());
+
+        let selected = root.namespace_path("/selected").expect("selected original grammar");
+        let (plan, allocation) = root.prepare_selected_import_with_native_work(
+            frozen, std::slice::from_ref(&selected), &original,
+        ).await.expect("actual original funded plan");
+        let prefix = original.receipt();
+        let imported_result = root.import_selected_with_native_work_guarded(
+            frozen, plan, allocation, crate::OperationId::from_bytes([0xaf; 16]),
+            crate::PublicationPermit::Unrestricted, &original, &cancellation,
+            move |work| std::future::ready(work.admit(WorkCounters {
+                bytes_hashed: denied_hash, ..WorkCounters::UNCHARGED,
+            }).map_err(OwnerCause::Quota)),
+        ).await;
+        match imported_result {
+            Err(OwnerCause::Quota(cause)) => { drop(cause); }
+            Err(OwnerCause::Filesystem(cause)) => panic!("import owner cause flattened into filesystem: {cause}"),
+            Err(OwnerCause::Workspace(cause)) => panic!("import owner cause flattened into workspace: {cause}"),
+            Err(OwnerCause::Lazy(cause)) => panic!("import owner cause flattened into lazy engine: {cause}"),
+            Ok(_) => panic!("original import owner admission must deny"),
+        }
+        assert!(original.receipt().items_examined >= prefix.items_examined);
+        original.receipt().verify(budget).expect("whole original import prefix");
+        assert_eq!(root.workspace().head().await.expect("unchanged import head").id(), imported.id());
     }
 
     #[test]
@@ -17021,8 +18640,7 @@ mod tests {
         assert_eq!(original_child.shadows, frozen.shadows);
         assert_eq!(child.workspace().read_text("/authored").await.expect("original authored view"), "original");
         assert!(matches!(child.lookup("/file.txt").await.expect("original source view"), LazyLookup::Source(_)));
-        assert_eq!(child.read_range_measured("/file.txt", 0, 8, budget, &token).await.expect("frozen source bytes").value,
-            Bytes::from_static(b"original"));
+        assert_eq!((child.read_range_measured("/file.txt", 0, 8, budget, &token).await.expect("frozen source bytes").value).as_ref(), b"original");
 
         child.remove("/file.txt").await.expect("advance committed child overlay");
         child.workspace().write_text("/authored", "child advanced").await.expect("advance child head");
@@ -17331,7 +18949,7 @@ mod tests {
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateFile {
                     path: other.clone(),
-                    bytes: Bytes::from_static(b"dirty"),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"dirty"),
                     metadata: FileMetadata::default(),
                 }],
                 WorkBudget::UNBOUNDED,
@@ -17501,7 +19119,7 @@ mod tests {
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateFile {
                     path: root.namespace_path("/new.txt").expect("new path"),
-                    bytes: Bytes::from_static(b"new"),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"new"),
                     metadata: FileMetadata::default(),
                 }],
                 WorkBudget::UNBOUNDED,
@@ -17801,7 +19419,7 @@ mod tests {
             )
             .await
             .expect("the shadowed identity's content survived");
-        assert_eq!(read.value.bytes, content);
+        assert_eq!(read.value.bytes.as_ref(), content.as_ref());
     }
 
     #[tokio::test]
@@ -17829,12 +19447,9 @@ mod tests {
         );
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            root.read_range("/deep/file.txt", 2, 3)
-                .await
-                .expect("range"),
-            Bytes::from_static(b"cde")
-        );
+        assert_eq!((root.read_range("/deep/file.txt", 2, 3)
+            .await
+            .expect("range")).as_ref(), b"cde");
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 1);
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
     }
@@ -17863,19 +19478,16 @@ mod tests {
         assert_eq!(root.state().await.expect("state after inspection"), before);
 
         source.replace(Bytes::from_static(b"after"));
-        assert_eq!(
-            root.open_source_file(
-                "/file.txt",
-                source_reference.expect("source reference"),
-                node,
-            )
-            .await
-            .expect("open pinned version")
-            .read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("read pinned version")
-            .value.bytes,
-            Bytes::from_static(b"before")
-        );
+        assert_eq!((root.open_source_file(
+            "/file.txt",
+            source_reference.expect("source reference"),
+            node,
+        )
+        .await
+        .expect("open pinned version")
+        .read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .expect("read pinned version")
+        .value.bytes).as_ref(), b"before");
 
         root.rebind_source().await.expect("rebind source");
         let LazyLookup::Source(rebound) = root.inspect("/file.txt").await.expect("reinspect")
@@ -18235,10 +19847,7 @@ mod tests {
                 "/repo", &promoted, &original, &token,
             ).await.expect("same canonical original source-directory projection"), source_id);
         }
-        assert_eq!(
-            root.read("/repo/HEAD", 64).await.expect("lazy child"),
-            Bytes::from_static(b"ref: refs/heads/main\n")
-        );
+        assert_eq!((root.read("/repo/HEAD", 64).await.expect("lazy child")).as_ref(), b"ref: refs/heads/main\n");
     }
 
     #[tokio::test]
@@ -18272,12 +19881,9 @@ mod tests {
         )
         .await
         .expect("identity-preserving write is already promoted");
-        assert_eq!(
-            root.read("/file.txt", 64)
-                .await
-                .expect("replacement remains"),
-            Bytes::from_static(b"replacement")
-        );
+        assert_eq!((root.read("/file.txt", 64)
+            .await
+            .expect("replacement remains")).as_ref(), b"replacement");
     }
 
     #[tokio::test]
@@ -18296,10 +19902,7 @@ mod tests {
         root.write("/file.txt", Bytes::from_static(b"authored"))
             .await
             .expect("write");
-        assert_eq!(
-            root.read("/file.txt", 32).await.expect("authored read"),
-            Bytes::from_static(b"authored")
-        );
+        assert_eq!((root.read("/file.txt", 32).await.expect("authored read")).as_ref(), b"authored");
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
         root.remove("/file.txt").await.expect("remove");
         assert!(matches!(
@@ -18307,6 +19910,890 @@ mod tests {
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
         ));
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn frozen_upload_batch_publishes_data_descriptor_and_receipt_in_one_actual_generation() {
+        for deny_at_seal in [false, true] {
+            let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+            let root = LazyWorkspace::attach(
+                &Fs::memory(), "frozen-whole-upload", Arc::clone(&source),
+                MemoryLazyWorkspaceStore::default(),
+            ).await.expect("actual lazy root");
+            let basis = root.snapshot().await.expect("exact captured upload basis");
+            let token = CancellationToken::new();
+            let calls = AtomicUsize::new(0);
+            let mut owner = || {
+                let index = calls.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if deny_at_seal && index == 13 { Err(LazyWorkspaceError::StaleIdentity) }
+                    else { Ok(()) }
+                }
+            };
+            let mutations = [
+                LazyWriteMutation::CreateDirectory { path: "/data" },
+                LazyWriteMutation::PutFile { path: "/file.txt", bytes: acyclic_stream::OwnedBytes::from_static(b"data") },
+                LazyWriteMutation::CreateDirectory { path: "/.system/harness-uploads" },
+                LazyWriteMutation::CreateDirectory { path: "/.system/harness-file-metadata" },
+                LazyWriteMutation::PutFile {
+                    path: "/.system/harness-file-metadata/file", bytes: acyclic_stream::OwnedBytes::from_static(b"descriptor"),
+                },
+                LazyWriteMutation::PutFile {
+                    path: "/.system/harness-uploads/receipt", bytes: acyclic_stream::OwnedBytes::from_static(b"receipt"),
+                },
+            ];
+            let result = root.write_batch_at_snapshot_guarded(
+                basis, mutations, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
+                &token, &mut owner,
+            ).await;
+            assert_eq!(calls.load(Ordering::Relaxed), if deny_at_seal { 14 } else { 16 },
+                "actual members, protected lookup, prepared companion, DATA seal and final companion CAS");
+            if deny_at_seal {
+                assert!(matches!(result.err().expect("owner denial at actual CAS").semantic_error(),
+                    LazyWorkspaceError::StaleIdentity));
+                assert_eq!(root.workspace().head().await.expect("no upload member published").id(),
+                    basis.authored_generation);
+                assert!(root.workspace().stat("/.system/harness-uploads/receipt").await.is_err());
+                assert!(root.workspace().stat("/.system/harness-file-metadata/file").await.is_err());
+            } else {
+                let (commit, proof) = result.expect("one original whole candidate");
+                let generation = match commit {
+                    TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+                    _ => panic!("actual complete upload publication"),
+                };
+                assert_eq!(proof.expect("genuine whole candidate snapshot").authored_generation, generation.id());
+                for (path, expected) in [
+                    ("/file.txt", b"data".as_slice()),
+                    ("/.system/harness-file-metadata/file", b"descriptor".as_slice()),
+                    ("/.system/harness-uploads/receipt", b"receipt".as_slice()),
+                ] {
+                    assert_eq!(generation.read(path, 64).await.expect("same physical generation").as_ref(), expected);
+                }
+                assert_eq!(root.workspace().stat("/file.txt").await.expect("original source file identity").file_id,
+                    root.source_file_id(&source.node));
+            }
+            assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn original_frozen_upload_batch_keeps_every_intrinsic_payload_on_one_candidate_and_ledger() {
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "original-whole-upload",
+            Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+            MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual root");
+        for path in ["/target", "/input", "/.system/harness-file-metadata/file", "/.system/harness-uploads/receipt"] {
+            root.write(path, Bytes::from_static(b"original")).await.expect("actual authored input");
+        }
+        let basis = root.snapshot().await.expect("fixed real root basis");
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
+            .expect("original upload resource");
+        let bytes = root.read_at_snapshot_with_work(
+            basis, "/input", 64, &original, &token,
+        ).await.expect("actual intrinsically funded source payload");
+        let mutations = [
+            LazyWriteMutation::CreateDirectory { path: "/" },
+            LazyWriteMutation::PutFile { path: "/target", bytes: bytes.clone() },
+            LazyWriteMutation::CreateDirectory { path: "/.system/harness-uploads" },
+            LazyWriteMutation::CreateDirectory { path: "/.system/harness-file-metadata" },
+            LazyWriteMutation::PutFile { path: "/.system/harness-file-metadata/file", bytes: bytes.clone() },
+            LazyWriteMutation::PutFile { path: "/.system/harness-uploads/receipt", bytes: bytes.clone() },
+        ];
+        let calls = AtomicUsize::new(0);
+        let mut owner = |_: &crate::NativeMaterializationWork| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<(), LazyWorkspaceError>(()) }
+        };
+        let (commit, proof) = root.write_batch_at_snapshot_with_native_work_guarded(
+            basis, mutations, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
+            &original, &token, &mut owner,
+        ).await.expect("same original full candidate");
+        let generation = match commit {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("one actual whole upload publication"),
+        };
+        let published = proof.expect("genuine actual final snapshot");
+        assert_eq!(published.authored_generation, generation.id());
+        assert_eq!(calls.load(Ordering::Relaxed), 15, "actual whole candidate and genuine companion settlement");
+        for path in ["/target", "/.system/harness-file-metadata/file", "/.system/harness-uploads/receipt"] {
+            let written = root.read_at_snapshot_with_work(
+                published, path, 64, &original, &token,
+            ).await.expect("all written files use same authentic snapshot and ledger");
+            assert_eq!(written.as_ref(), bytes.as_ref());
+            assert!(written.matches_meter(&original.runtime_meter_owner()));
+            drop(written);
+        }
+        drop(bytes);
+        original.receipt().verify(finite_fixture_budget()).expect("one original cumulative prefix");
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_preserves_original_source_authored_and_shadow_identity() {
+        for mode in 0..3 {
+            let mut source = CountingSource::new(Bytes::from_static(b"source"));
+            source.node.link_count = Some(2);
+            let source = Arc::new(source);
+            let root = LazyWorkspace::attach(
+                &Fs::memory(), "frozen-write-identities", Arc::clone(&source),
+                MemoryLazyWorkspaceStore::default(),
+            ).await.expect("actual lazy workspace");
+            if mode != 0 {
+                root.write("/a", Bytes::from_static(b"authored")).await.expect("author original identity");
+                if mode == 2 { root.remove("/a").await.expect("capture detached original shadow"); }
+            }
+            let lookup = root.lookup("/b").await.expect("capture exact source alias");
+            assert!(matches!((&lookup, mode),
+                (LazyLookup::Source(_), 0) | (LazyLookup::Authored { .. }, 1)
+                    | (LazyLookup::Shadow { .. }, 2)));
+            let basis = root.snapshot().await.expect("authentic freeze");
+            let reads = source.counts.ranges.load(Ordering::Relaxed);
+            let token = CancellationToken::new();
+            let calls = AtomicUsize::new(0);
+            let mut owner = || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), LazyWorkspaceError>(()) }
+            };
+            let (commit, proof) = root.write_at_snapshot_guarded(
+                basis, "/b", Bytes::from_static(b"replacement"), IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            ).await.expect("same guarded compiler");
+            let generation = match commit {
+                TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+                _ => panic!("exact original candidate must publish"),
+            };
+            let published = proof.expect("actual final snapshot proof");
+            assert_eq!(published.authored_generation, generation.id());
+            assert_ne!(published.authored_generation, basis.authored_generation);
+            assert_eq!((published.source, published.overlay, published.shadows),
+                (basis.source, basis.overlay, basis.shadows));
+            assert_eq!(root.workspace().stat("/b").await.expect("published identity").file_id,
+                root.source_file_id(&source.node));
+            assert_eq!(root.read_at_snapshot_measured(
+                published, "/b", 64, finite_fixture_budget(), &token,
+            ).await.expect("reader consumes actual final proof").value.as_ref(), b"replacement");
+            assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads,
+                "complete replacement never fetches the old source body");
+            assert!(calls.load(Ordering::Relaxed) >= 3, "mutations and actual seal use owner");
+            if mode == 1 {
+                assert_eq!(root.read("/a", 64).await.expect("other authored hardlink").as_ref(), b"replacement");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_rejects_stale_basis_and_preserves_concurrent_seal_edit() {
+        for advance_at_seal in [false, true] {
+            let root = LazyWorkspace::attach(
+                &Fs::memory(), "frozen-write-concurrent",
+                Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+                MemoryLazyWorkspaceStore::default(),
+            ).await.expect("actual workspace");
+            root.write("/target", Bytes::from_static(b"before")).await.expect("original authored target");
+            let basis = root.snapshot().await.expect("first exact capture");
+            if !advance_at_seal {
+                root.workspace().write("/concurrent", Bytes::from_static(b"kept")).await.expect("concurrent head");
+            }
+            let calls = AtomicUsize::new(0);
+            let token = CancellationToken::new();
+            let mut owner = || {
+                let index = calls.fetch_add(1, Ordering::Relaxed);
+                let root = &root;
+                async move {
+                    if advance_at_seal && index == 5 {
+                        root.workspace().write("/concurrent", Bytes::from_static(b"kept"))
+                            .await.map_err(LazyWorkspaceError::WorkspaceCause)?;
+                    }
+                    Ok::<(), LazyWorkspaceError>(())
+                }
+            };
+            let (commit, proof) = root.write_at_snapshot_guarded(
+                basis, "/target", Bytes::from_static(b"unpublished"), IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            ).await.expect("semantic stale CAS decision");
+            assert!(matches!(commit, TransactionCommit::Conflict { .. }));
+            assert!(proof.is_err());
+            assert_eq!(root.read("/target", 64).await.expect("original target").as_ref(), b"before");
+            assert_eq!(root.workspace().read("/concurrent", 64).await.expect("concurrent edit retained").as_ref(), b"kept");
+            if advance_at_seal {
+                assert!(calls.load(Ordering::Relaxed) >= 3, "owner runs at real canonical seal");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_original_key_recovers_only_the_exact_authenticated_basis() {
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "frozen-write-original-key", Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual workspace");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("original target");
+        let basis = root.snapshot().await.expect("first authentic freeze");
+        let key = IdempotencyKey::new();
+        let token = CancellationToken::new();
+        let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
+        let (first, proof) = root.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("actual original publication");
+        let original_generation = match first {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
+            _ => panic!("original publication"),
+        };
+        proof.expect("genuine first final snapshot");
+        let (recovered, proof) = root.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("same original candidate reconstructs lost ACK");
+        assert!(matches!(&recovered, TransactionCommit::AlreadyCommitted(generation)
+            if generation.id() == original_generation));
+        assert_eq!(proof.expect("recovered exact roots").authored_generation, original_generation);
+        for (path, payload) in [
+            ("/target", Bytes::from_static(b"different")),
+            ("/different-path", Bytes::from_static(b"published")),
+        ] {
+            let (actual, proof) = root.write_at_snapshot_guarded(
+                basis, path, payload, key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            ).await.expect("actual original operation is not absence on mismatched input");
+            assert!(matches!(&actual, TransactionCommit::AlreadyCommitted(generation)
+                if generation.id() == original_generation));
+            assert!(matches!(proof.expect_err("full bytes and path bind the original candidate").semantic_error(),
+                LazyWorkspaceError::WriteInputConflict { operation } if *operation == key.operation_id()));
+        }
+        let mut denied_owner = || async {
+            Err::<(), LazyWorkspaceError>(LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed))
+        };
+        let uninspected = std::iter::from_fn(|| -> Option<LazyWriteMutation<'static>> {
+            panic!("a foreign owner must not inspect or consume the protected candidate");
+        });
+        let denied = root.original_write_snapshot_guarded(
+            basis, uninspected, key, &token, &mut denied_owner,
+        ).await.err().expect("actual owner denies before protected lookup");
+        assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
+        let absent_input = std::iter::from_fn(|| -> Option<LazyWriteMutation<'static>> {
+            panic!("an authentic absent original must leave the caller's staging input untouched");
+        });
+        assert!(root.original_write_snapshot_guarded(
+            basis, absent_input, IdempotencyKey::new(), &token, &mut owner,
+        ).await.expect("authenticated absent original").is_none());
+        source.invalidate();
+        root.rebind_source_measured(finite_fixture_budget(), &token).await.expect("actual changed source binding");
+        let other_basis = root.snapshot().await.expect("authentic but different source freeze");
+        assert_ne!(other_basis.source, basis.source);
+        let (rejected, proof) = root.write_at_snapshot_guarded(
+            other_basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("canonical original-operation mismatch decision");
+        assert!(matches!(&rejected, TransactionCommit::AlreadyCommitted(generation)
+            if generation.id() == original_generation));
+        assert!(matches!(proof.expect_err("different immutable source must not replay").semantic_error(),
+            LazyWorkspaceError::WriteInputConflict { operation } if *operation == key.operation_id()));
+        assert_eq!(root.workspace().head().await.expect("original publication retained").id(), original_generation);
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_rejects_forged_snapshot_and_changed_original_source_before_mutation() {
+        for change_source in [false, true] {
+            let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+            let root = LazyWorkspace::attach(
+                &Fs::memory(), "frozen-write-original-proof", Arc::clone(&source),
+                MemoryLazyWorkspaceStore::default(),
+            ).await.expect("actual source binding");
+            let original = root.snapshot().await.expect("genuine original capture");
+            let mut supplied = original;
+            if change_source { source.invalidate(); }
+            else { supplied.source.epoch = supplied.source.epoch.saturating_add(1); }
+            let calls = AtomicUsize::new(0);
+            let token = CancellationToken::new();
+            let mut owner = || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), LazyWorkspaceError>(()) }
+            };
+            root.write_at_snapshot_guarded(
+                supplied, "/file.txt", Bytes::from_static(b"unpublished"), IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted, &token, &mut owner,
+            ).await.err().expect("original snapshot identity is not caller-minted authority");
+            assert_eq!(calls.load(Ordering::Relaxed), 1, "actual owner authorizes protected inspection, never a mutation");
+            assert_eq!(root.workspace().head().await.expect("unchanged original authored head").id(),
+                original.authored_generation);
+            assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_owner_denial_at_cas_cannot_publish_prepared_content() {
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "frozen-write-owner", Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual workspace");
+        let basis = root.snapshot().await.expect("authentic initial basis");
+        let calls = AtomicUsize::new(0);
+        let token = CancellationToken::new();
+        let mut owner = || {
+            let index = calls.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if index == 6 { Err(LazyWorkspaceError::StaleIdentity) }
+                else { Ok(()) }
+            }
+        };
+        let failure = root.write_at_snapshot_guarded(
+            basis, "/file.txt", Bytes::from_static(b"not-published"), IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.err().expect("actual publication owner denial");
+        assert!(matches!(failure.semantic_error(), LazyWorkspaceError::StaleIdentity));
+        assert_eq!(calls.load(Ordering::Relaxed), 7, "original lookup, parents/write/identity, companion and actual DATA CAS");
+        assert_eq!(root.workspace().head().await.expect("unchanged authoritative head").id(), basis.authored_generation);
+        assert_eq!(root.snapshot().await.expect("unchanged exact companion"), basis);
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_postpublish_companion_failure_retains_real_generation_and_cause() {
+        #[derive(Clone, Default)]
+        struct ProofFailureStore {
+            actual: MemoryLazyWorkspaceStore,
+            armed_reads: Arc<AtomicUsize>,
+        }
+        impl LazyWorkspaceStore for ProofFailureStore {
+            type Error = LazyWorkspaceError;
+            async fn load_lazy_workspace(&self, id: WorkspaceId) -> Result<Option<LazyWorkspaceState>, Self::Error> {
+                self.actual.load_lazy_workspace(id).await
+            }
+            async fn load_lazy_workspace_measured(
+                &self, id: WorkspaceId, budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<Option<LazyWorkspaceState>>, LazyWorkspaceError> {
+                let actual = self.actual.load_lazy_workspace_measured(id, budget, token).await?;
+                let reads = self.armed_reads.load(Ordering::Relaxed);
+                if reads != 0 && self.armed_reads.fetch_add(1, Ordering::Relaxed) == 3 {
+                    return Err(LazyWorkspaceError::Concurrent.with_prior_work(actual.work));
+                }
+                Ok(actual)
+            }
+            async fn compare_and_swap_lazy_workspace(
+                &self, id: WorkspaceId, revision: u64, value: LazyWorkspaceState,
+            ) -> Result<bool, Self::Error> {
+                self.actual.compare_and_swap_lazy_workspace(id, revision, value).await
+            }
+            async fn compare_and_swap_lazy_workspace_measured(
+                &self, id: WorkspaceId, revision: u64, value: LazyWorkspaceState,
+                budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
+                self.actual.compare_and_swap_lazy_workspace_measured(id, revision, value, budget, token).await
+            }
+            async fn load_lazy_overlay(&self, id: LazyOverlayId) -> Result<Option<LazyOverlay>, Self::Error> {
+                self.actual.load_lazy_overlay(id).await
+            }
+            async fn load_lazy_overlay_measured(
+                &self, id: LazyOverlayId, budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<Option<LazyOverlay>>, LazyWorkspaceError> {
+                self.actual.load_lazy_overlay_measured(id, budget, token).await
+            }
+            async fn put_lazy_overlay(&self, id: LazyOverlayId, value: LazyOverlay) -> Result<(), Self::Error> {
+                self.actual.put_lazy_overlay(id, value).await
+            }
+            async fn put_lazy_overlay_measured(
+                &self, id: LazyOverlayId, value: LazyOverlay, budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<()>, LazyWorkspaceError> {
+                self.actual.put_lazy_overlay_measured(id, value, budget, token).await
+            }
+            async fn load_lazy_shadow(&self, id: LazyShadowId) -> Result<Option<LazyShadow>, Self::Error> {
+                self.actual.load_lazy_shadow(id).await
+            }
+            async fn load_lazy_shadow_measured(
+                &self, id: LazyShadowId, budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<Option<LazyShadow>>, LazyWorkspaceError> {
+                self.actual.load_lazy_shadow_measured(id, budget, token).await
+            }
+            async fn put_lazy_shadow(&self, id: LazyShadowId, value: LazyShadow) -> Result<(), Self::Error> {
+                self.actual.put_lazy_shadow(id, value).await
+            }
+            async fn put_lazy_shadow_measured(
+                &self, id: LazyShadowId, value: LazyShadow, budget: WorkBudget, token: &CancellationToken,
+            ) -> Result<OperationReceipt<()>, LazyWorkspaceError> {
+                self.actual.put_lazy_shadow_measured(id, value, budget, token).await
+            }
+        }
+        let store = ProofFailureStore::default();
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "frozen-write-postpublish",
+            Arc::new(CountingSource::new(Bytes::from_static(b"source"))), store.clone(),
+        ).await.expect("actual lazy companion");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("original target");
+        let basis = root.snapshot().await.expect("actual capture");
+        let key = IdempotencyKey::new();
+        let calls = AtomicUsize::new(0);
+        let token = CancellationToken::new();
+        let mut owner = || {
+            let index = calls.fetch_add(1, Ordering::Relaxed);
+            if index == 5 { store.armed_reads.store(1, Ordering::Relaxed); }
+            async { Ok::<(), LazyWorkspaceError>(()) }
+        };
+        let (commit, proof) = root.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("published DATA must not be erased by proof failure");
+        let generation = match commit {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("actual CAS has already published"),
+        };
+        assert!(matches!(proof.expect_err("postpublish proof genuinely unavailable").semantic_error(),
+            LazyWorkspaceError::Concurrent));
+        assert_eq!(root.workspace().head().await.expect("actual physical publication").id(), generation.id());
+        assert_ne!(generation.id(), basis.authored_generation);
+        assert_eq!(generation.read("/target", 64).await.expect("actual committed bytes").as_ref(), b"published");
+        assert_eq!(root.workspace().operation_generation(key).await
+            .expect("authentic original operation").expect("durable ACK recovery").id(), generation.id());
+        let pending = store.actual.load_lazy_workspace(root.workspace().id()).await
+            .expect("real prepared companion").expect("existing binding").pending_write
+            .expect("lost companion ACK retains original source evidence");
+        assert_eq!(pending.operation, key.operation_id());
+        assert_eq!(pending.basis, basis);
+        store.armed_reads.store(0, Ordering::Relaxed);
+        let workspace = root.workspace().clone();
+        let source = Arc::clone(&root.source);
+        drop(root);
+        let reopened = LazyWorkspace::open(workspace, Arc::clone(&source), store.clone()).await
+            .expect("cold original producer reopens the same companion and authority");
+        reopened.workspace().write("/concurrent", Bytes::from_static(b"preserved")).await
+            .expect("later actual authored edit");
+        source.invalidate();
+        reopened.rebind_source_measured(finite_fixture_budget(), &token).await
+            .expect("actual later source epoch");
+        let current = store.actual.load_lazy_workspace(reopened.workspace().id()).await
+            .expect("later real companion").expect("binding");
+        let mut recovery_owner = || async { Ok::<(), LazyWorkspaceError>(()) };
+        let (original, proof) = reopened.original_write_snapshot_guarded(
+            basis, std::iter::once(LazyWriteMutation::PutFile {
+                path: "/target", bytes: acyclic_stream::OwnedBytes::from_static(b"published"),
+            }), key, &token, &mut recovery_owner,
+        ).await.expect("authenticate original authority before current-root comparison")
+            .expect("actual original DATA exists");
+        let recovered = proof.expect("genuine original pending companion finalization");
+        assert_eq!(original.id(), generation.id());
+        assert_eq!(recovered.authored_generation, generation.id());
+        assert_eq!((recovered.source, recovered.overlay, recovered.shadows),
+            (basis.source, basis.overlay, basis.shadows));
+        let settled = store.actual.load_lazy_workspace(reopened.workspace().id()).await
+            .expect("actual companion CAS").expect("binding");
+        assert!(settled.pending_write.is_none());
+        assert_eq!((settled.source, settled.overlay, settled.shadows),
+            (current.source, current.overlay, current.shadows), "settlement cannot overwrite concurrent roots");
+        assert_eq!(reopened.workspace().read("/concurrent", 64).await
+            .expect("concurrent DATA remains").as_ref(), b"preserved");
+        let head = reopened.workspace().head().await.expect("later head").id();
+        let (ack, proof) = reopened.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut recovery_owner,
+        ).await.expect("warm original ACK never restages the stale source");
+        assert!(matches!(&ack, TransactionCommit::AlreadyCommitted(actual) if actual.id() == original.id()));
+        assert_eq!(proof.expect("exact stored final snapshot"), recovered);
+        assert_eq!(reopened.workspace().head().await.expect("no retry publication").id(), head);
+    }
+
+    #[tokio::test]
+    async fn original_write_metadata_codec_preserves_exact_context_and_all_historical_permit_forms() {
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "original-write-codec",
+            Arc::new(CountingSource::new(Bytes::from_static(b"source"))), MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual captured SDK context");
+        let basis = root.snapshot().await.expect("genuine source and immutable roots");
+        let operation = IdempotencyKey::new().operation_id();
+        let permits = [
+            (crate::PublicationPermit::Unrestricted, 333),
+            (crate::PublicationPermit::Lease {
+                authority_id: [1; 16], workspace_id: basis.workspace_id.into_bytes(),
+                lease_id: [2; 16], expires_at_millis: 123,
+            }, 389),
+            (crate::PublicationPermit::Reservation {
+                operation_id: [3; 16], gate_tail: 7,
+                expected: crate::Head {
+                    epoch: crate::Epoch::new(3).expect("valid historical scalar"),
+                    sequence: crate::Sequence::new(4), digest: basis.authored_generation.digest(),
+                },
+            }, 405),
+        ];
+        let token = CancellationToken::new();
+        let work = LazyTreapWork::new(finite_fixture_budget(), &token);
+        for (permit, expected_len) in permits {
+            let scope = TreapAllocationScope::new(&work);
+            let prepared = PendingLazyWrite {
+                operation, basis, input: crate::Digest::from_bytes([5; 32]),
+                config: root.workspace().volume_config(), permit,
+            };
+            let bytes = lazy_write_original_bytes(prepared, &work).expect("fund before encoding and control promotion");
+            assert_eq!(bytes.len(), expected_len);
+            assert!(bytes.len() <= LAZY_WRITE_ORIGINAL_MAX_BYTES);
+            let decode = |raw: &[u8], expected| work.with_allocation_state(
+                |allocations, spent, budget, cancellation| {
+                    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                        allocations, spent, budget, cancellation,
+                    );
+                    lazy_write_decode_original_with_accounting(raw, expected, &mut accounting)
+                },
+            );
+            assert_eq!(decode(bytes.as_ref(), operation).expect("exact canonical fixed decoder"), prepared);
+            assert!(matches!(decode(bytes.as_ref(), IdempotencyKey::new().operation_id()).expect_err("operation is exact").semantic_error(),
+                LazyWorkspaceError::WriteInputConflict { .. }));
+            let mut wrong_snapshot = bytes.as_ref().to_vec();
+            wrong_snapshot[LAZY_WRITE_ORIGINAL_DOMAIN.len() + 2 + 16] ^= 1;
+            assert!(matches!(decode(&wrong_snapshot, operation).expect_err("snapshot ID is genuine captured evidence").semantic_error(),
+                LazyWorkspaceError::WriteInputConflict { .. }));
+            let mut trailing = bytes.as_ref().to_vec();
+            trailing.push(0);
+            assert!(decode(&trailing, operation).is_err(), "strict framing rejects trailing or over-bound input");
+            drop(trailing);
+            drop(wrong_snapshot);
+            drop(bytes);
+            drop(scope);
+        }
+    }
+
+    #[tokio::test]
+    async fn original_whole_write_recovers_after_a_later_frozen_write_replaces_latest_hint() {
+        fn original_mutations() -> [LazyWriteMutation<'static>; 6] {
+            [
+                LazyWriteMutation::CreateDirectory { path: "/bundle" },
+                LazyWriteMutation::PutFile { path: "/bundle/data", bytes: acyclic_stream::OwnedBytes::from_static(b"data") },
+                LazyWriteMutation::PutFile { path: "/bundle/descriptor", bytes: acyclic_stream::OwnedBytes::from_static(b"descriptor") },
+                LazyWriteMutation::PutFile { path: "/bundle/receipt", bytes: acyclic_stream::OwnedBytes::from_static(b"receipt") },
+                LazyWriteMutation::PutFile { path: "/target", bytes: acyclic_stream::OwnedBytes::from_static(b"first") },
+                LazyWriteMutation::PutFile { path: "/bundle/extra", bytes: acyclic_stream::OwnedBytes::from_static(b"extra") },
+            ]
+        }
+        let simulation = crate::simulation::Simulation::default();
+        let (authority, objects) = simulation.stores();
+        let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(&fs, "historical-frozen-whole-write", Arc::clone(&source), store.clone())
+            .await.expect("original SDK stores");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("preimage");
+        let basis = root.snapshot().await.expect("authentic first basis");
+        let token = CancellationToken::new();
+        let first_key = IdempotencyKey::new();
+        let second_key = IdempotencyKey::new();
+        let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
+        let (first, first_proof) = root.write_batch_at_snapshot_guarded(
+            basis, original_mutations(), first_key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("one real six-member DATA publication");
+        let first = match first {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("first candidate must publish"),
+        };
+        let first_snapshot = first_proof.expect("actual captured first final roots");
+        let (second, second_proof) = root.write_at_snapshot_guarded(
+            first_snapshot, "/target", Bytes::from_static(b"second"), second_key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("later real frozen writer");
+        let second = match second {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("second candidate must publish"),
+        };
+        second_proof.expect("genuine later final snapshot");
+        let latest = store.load_lazy_workspace(root.workspace().id()).await.expect("same companion").expect("binding");
+        assert_eq!(latest.completed_write.expect("single latest hint").prepared.operation, second_key.operation_id());
+        assert!(latest.pending_write.is_none());
+        let workspace = root.workspace().clone();
+        drop(root);
+        let reopened = LazyWorkspace::open(workspace, Arc::clone(&source), store.clone()).await
+            .expect("cold original producer, without any operation registry");
+        source.invalidate();
+        reopened.rebind_source_measured(finite_fixture_budget(), &token).await.expect("later genuine source epoch");
+        let current = store.load_lazy_workspace(reopened.workspace().id()).await.expect("current companion").expect("binding");
+        let appends = simulation.trace().expect("actual trace").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
+        let (original, proof) = reopened.original_write_snapshot_guarded(
+            basis, original_mutations(), first_key, &token, &mut owner,
+        ).await.expect("protected original DATA lookup").expect("original exists");
+        assert_eq!(original.id(), first.id());
+        assert_eq!(proof.expect("immutable original DATA C survives replacement"), first_snapshot);
+        assert_ne!(original.id(), second.id(), "the current generation is not adopted");
+        assert_eq!(original.read("/bundle/receipt", 64).await.expect("original receipt").as_ref(), b"receipt");
+        let (replayed, proof) = reopened.write_batch_at_snapshot_guarded(
+            basis, original_mutations(), first_key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("whole-candidate replay never restages the old basis");
+        assert!(matches!(&replayed, TransactionCommit::AlreadyCommitted(generation) if generation.id() == first.id()));
+        assert_eq!(proof.expect("exact old captured snapshot"), first_snapshot);
+        let mut changed = original_mutations();
+        changed[3] = LazyWriteMutation::PutFile {
+            path: "/bundle/receipt", bytes: acyclic_stream::OwnedBytes::from_static(b"wrong receipt"),
+        };
+        let (original, proof) = reopened.original_write_snapshot_guarded(
+            basis, changed, first_key, &token, &mut owner,
+        ).await.expect("a known original is never absence").expect("durable original");
+        assert_eq!(original.id(), first.id());
+        assert!(matches!(proof.expect_err("every whole-candidate member is bound").semantic_error(),
+            LazyWorkspaceError::WriteInputConflict { operation } if *operation == first_key.operation_id()));
+        let other_basis = reopened.snapshot().await.expect("genuine later source and authored roots");
+        let uninspected = std::iter::from_fn(|| -> Option<LazyWriteMutation<'static>> {
+            panic!("mismatched captured source must be rejected before input inspection");
+        });
+        let (original, proof) = reopened.original_write_snapshot_guarded(
+            other_basis, uninspected, first_key, &token, &mut owner,
+        ).await.expect("retain actual original on source mismatch").expect("original exists");
+        assert_eq!(original.id(), first.id());
+        assert!(matches!(proof.expect_err("other source is not original authority").semantic_error(),
+            LazyWorkspaceError::WriteInputConflict { operation } if *operation == first_key.operation_id()));
+        let after = store.load_lazy_workspace(reopened.workspace().id()).await.expect("unchanged current companion").expect("binding");
+        assert_eq!((after.revision, after.source, after.overlay, after.shadows, after.completed_write, after.pending_write),
+            (current.revision, current.source, current.overlay, current.shadows, current.completed_write, current.pending_write));
+        assert_eq!(reopened.workspace().head().await.expect("later head retained").id(), second.id());
+        assert_eq!(simulation.trace().expect("after genuine recovery").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_original_write_recovers_immutable_data_evidence_after_latest_hint_replacement() {
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(&Fs::memory(), "native-historical-original", Arc::clone(&source), store.clone())
+            .await.expect("same stock SDK");
+        root.write("/input", Bytes::from_static(b"funded")).await.expect("actual input");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("preimage");
+        let basis = root.snapshot().await.expect("actual source snapshot");
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token).expect("original ledger");
+        let bytes = root.read_at_snapshot_with_work(basis, "/input", 64, &original, &token).await.expect("intrinsic input");
+        let first_key = IdempotencyKey::new();
+        let second_key = IdempotencyKey::new();
+        let mut owner = |work: &crate::NativeMaterializationWork| {
+            assert!(work.shares_ledger(&original));
+            async { Ok::<(), LazyWorkspaceError>(()) }
+        };
+        let (first, proof) = root.write_at_snapshot_with_native_work_guarded(
+            basis, "/target", bytes.clone(), first_key, crate::PublicationPermit::Unrestricted,
+            &original, &token, &mut owner,
+        ).await.expect("native original DATA");
+        let first = match first {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("first native publication"),
+        };
+        let first_snapshot = proof.expect("genuine first snapshot");
+        let (_, proof) = root.write_at_snapshot_with_native_work_guarded(
+            first_snapshot, "/next", bytes.clone(), second_key, crate::PublicationPermit::Unrestricted,
+            &original, &token, &mut owner,
+        ).await.expect("later native frozen DATA");
+        proof.expect("later genuine proof");
+        let current = store.load_lazy_workspace(root.workspace().id()).await.expect("actual companion").expect("binding");
+        assert_eq!(current.completed_write.expect("later latest hint").prepared.operation, second_key.operation_id());
+        let workspace = root.workspace().clone();
+        drop(root);
+        let reopened = LazyWorkspace::open(workspace, source, store.clone()).await.expect("cold same engine");
+        let before = original.receipt();
+        let (recovered, proof) = reopened.original_write_snapshot_with_native_work_guarded(
+            basis, std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: bytes.clone() }),
+            first_key, &original, &token, &mut owner,
+        ).await.expect("same original native callbacks and borrowed DATA C").expect("durable first operation");
+        assert_eq!(recovered.id(), first.id());
+        assert_eq!(proof.expect("genuine historical proof"), first_snapshot);
+        assert!(original.receipt().bytes_hashed > before.bytes_hashed, "real immutable envelope and whole input were hashed");
+        let after = store.load_lazy_workspace(reopened.workspace().id()).await.expect("unchanged companion").expect("binding");
+        assert_eq!((after.revision, after.completed_write, after.pending_write),
+            (current.revision, current.completed_write, current.pending_write));
+        assert_eq!(reopened.workspace().read("/next", 64).await.expect("later edit preserved").as_ref(), b"funded");
+    }
+
+    #[tokio::test]
+    async fn frozen_writer_actual_lost_data_ack_reopens_without_relaunching_old_source() {
+        let simulation = crate::simulation::Simulation::default();
+        let (authority, objects) = simulation.stores();
+        let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(
+            &fs, "actual-lost-write-ack", Arc::clone(&source), store.clone(),
+        ).await.expect("same canonical simulated stock stores");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("preimage");
+        let basis = root.snapshot().await.expect("original authentic source capture");
+        let key = IdempotencyKey::new();
+        let token = CancellationToken::new();
+        simulation.schedule_next(
+            crate::simulation::SimulationOperation::AuthorityAppend,
+            crate::simulation::SimulationFault::AmbiguousAuthorityAppend,
+        ).expect("genuine postappend lost acknowledgement");
+        let mut owner = || async { Ok::<(), LazyWorkspaceError>(()) };
+        root.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.err().expect("the real DATA append succeeds but its ACK is lost");
+        let original = root.workspace().operation_generation(key).await
+            .expect("protected original authority lookup").expect("DATA actually durable");
+        assert_eq!(original.read("/target", 64).await.expect("actual published bytes").as_ref(), b"published");
+        let pending = store.load_lazy_workspace(root.workspace().id()).await
+            .expect("same companion").expect("binding").pending_write.expect("original prepared evidence");
+        assert_eq!(pending.operation, key.operation_id());
+        let workspace = root.workspace().clone();
+        drop(root);
+        let reopened = LazyWorkspace::open(workspace, Arc::clone(&source), store.clone()).await
+            .expect("cold actual SDK producer");
+        reopened.workspace().write("/concurrent", Bytes::from_static(b"later")).await
+            .expect("independent later publication");
+        source.invalidate();
+        reopened.rebind_source_measured(finite_fixture_budget(), &token).await
+            .expect("actual current source changes");
+        let current = reopened.workspace().head().await.expect("later head").id();
+        let appends = simulation.trace().expect("actual bounded trace").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
+        let (commit, proof) = reopened.write_at_snapshot_guarded(
+            basis, "/target", Bytes::from_static(b"published"), key,
+            crate::PublicationPermit::Unrestricted, &token, &mut owner,
+        ).await.expect("same original candidate reconciles before stale-basis staging");
+        assert!(matches!(&commit, TransactionCommit::AlreadyCommitted(generation) if generation.id() == original.id()));
+        assert_eq!(proof.expect("real original companion settlement").authored_generation, original.id());
+        assert_eq!(reopened.workspace().head().await.expect("never publish another batch").id(), current);
+        assert_eq!(simulation.trace().expect("trace after recovery").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
+        assert_eq!(reopened.workspace().read("/concurrent", 64).await.expect("later data preserved").as_ref(), b"later");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn original_writer_postdata_owner_denial_keeps_real_generation_and_pending_custody() {
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "postdata-owner-denial", Arc::clone(&source), store.clone(),
+        ).await.expect("actual stock SDK root");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("authored target");
+        root.write("/input", Bytes::from_static(b"published")).await.expect("real source bytes");
+        let basis = root.snapshot().await.expect("actual source capture");
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
+            .expect("genuine original ledger");
+        let bytes = root.read_at_snapshot_with_work(basis, "/input", 64, &original, &token).await
+            .expect("SDK intrinsic input before writer allocation");
+        let key = IdempotencyKey::new();
+        let calls = AtomicUsize::new(0);
+        let mut owner = |work: &crate::NativeMaterializationWork| {
+            assert!(work.shares_ledger(&original));
+            let index = calls.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if index == 7 { Err(LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)) }
+                else { Ok(()) }
+            }
+        };
+        let (commit, proof) = root.write_at_snapshot_with_native_work_guarded(
+            basis, "/target", bytes.clone(), key, crate::PublicationPermit::Unrestricted,
+            &original, &token, &mut owner,
+        ).await.expect("known DATA generation survives a genuine postpublication owner denial");
+        let generation = match commit {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("actual canonical DATA published"),
+        };
+        assert!(matches!(proof.expect_err("actual companion owner denies").semantic_error(),
+            LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
+        assert_eq!(calls.load(Ordering::Relaxed), 8);
+        let pending = store.load_lazy_workspace(root.workspace().id()).await
+            .expect("real companion").expect("binding").pending_write.expect("actual pending witness");
+        assert_eq!(pending.basis, basis);
+        let before = original.receipt();
+        let mut recovery_owner = |_: &crate::NativeMaterializationWork| async { Ok::<(), LazyWorkspaceError>(()) };
+        let (actual, proof) = root.original_write_snapshot_with_native_work_guarded(
+            basis, std::iter::once(LazyWriteMutation::PutFile { path: "/target", bytes: bytes.clone() }),
+            key, &original, &token, &mut recovery_owner,
+        ).await.expect("same original owner recovery").expect("actual original DATA");
+        assert_eq!(actual.id(), generation.id());
+        assert_eq!(proof.expect("genuine companion settlement").authored_generation, generation.id());
+        assert!(original.receipt().bytes_hashed > before.bytes_hashed);
+        assert!(store.load_lazy_workspace(root.workspace().id()).await.expect("settled").expect("binding").pending_write.is_none());
+        assert_eq!(generation.read("/target", 64).await.expect("actual bytes preserved").as_ref(), b"published");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn original_frozen_writer_uses_intrinsic_input_and_returns_actual_publication_proof() {
+        let root = LazyWorkspace::attach(
+            &Fs::memory(), "original-write-proof",
+            Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+            MemoryLazyWorkspaceStore::default(),
+        ).await.expect("actual workspace");
+        root.write("/target", Bytes::from_static(b"before")).await.expect("authored target");
+        root.write("/input", Bytes::from_static(b"replacement")).await.expect("actual input source");
+        let basis = root.snapshot().await.expect("first authentic snapshot");
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
+            .expect("original native admission");
+        let bytes = root.read_at_snapshot_with_work(
+            basis, "/input", 64, &original, &token,
+        ).await.expect("genuine intrinsically funded input");
+        assert!(bytes.matches_meter(&original.runtime_meter_owner()));
+        let calls = AtomicUsize::new(0);
+        let mut owner = |_: &crate::NativeMaterializationWork| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<(), LazyWorkspaceError>(()) }
+        };
+        let (commit, proof) = root.write_at_snapshot_with_native_work_guarded(
+            basis, "/target", bytes, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
+            &original, &token, &mut owner,
+        ).await.expect("original native writer on same engine");
+        let generation = match commit {
+            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+            _ => panic!("actual original publication"),
+        };
+        let published = proof.expect("genuine final snapshot");
+        assert_eq!(published.authored_generation, generation.id());
+        assert_eq!((published.source, published.overlay, published.shadows),
+            (basis.source, basis.overlay, basis.shadows));
+        let bytes = root.read_at_snapshot_with_work(
+            published, "/target", 64, &original, &token,
+        ).await.expect("original reader receives genuine written proof");
+        assert_eq!(bytes.as_ref(), b"replacement");
+        drop(bytes);
+        assert!(calls.load(Ordering::Relaxed) >= 3);
+        original.receipt().verify(finite_fixture_budget()).expect("original total work retained");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn original_frozen_writer_denies_quota_cancellation_and_foreign_input_before_effect() {
+        for mode in 0..3 {
+            let root = LazyWorkspace::attach(
+                &Fs::memory(), "original-write-denial",
+                Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+                MemoryLazyWorkspaceStore::default(),
+            ).await.expect("actual workspace");
+            root.write("/target", Bytes::from_static(b"before")).await.expect("target");
+            let basis = root.snapshot().await.expect("authentic basis");
+            let token = CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
+                .expect("original admission");
+            let bytes = root.read_at_snapshot_with_work(
+                basis, "/target", 64, &original, &token,
+            ).await.expect("actual funded bytes");
+            let view = if mode == 2 {
+                crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
+                    .expect("genuinely different input ledger")
+            } else {
+                let mut quota = finite_fixture_budget();
+                if mode == 0 { quota.allocation_operations = 0; }
+                original.native_volume_work(quota).expect("same-original resource view")
+            };
+            if mode == 1 { token.cancel(); }
+            let retained_input = bytes.clone();
+            let before = original.receipt();
+            let calls = AtomicUsize::new(0);
+            let mut owner = |_: &crate::NativeMaterializationWork| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<(), LazyWorkspaceError>(()) }
+            };
+            let failure = root.write_at_snapshot_with_native_work_guarded(
+                basis, "/target", bytes, IdempotencyKey::new(), crate::PublicationPermit::Unrestricted,
+                &view, &token, &mut owner,
+            ).await.err().expect("original native preeffect denial");
+            if mode == 2 {
+                assert!(matches!(failure.semantic_error(), LazyWorkspaceError::NativeLedgerMismatch));
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            assert_eq!(original.receipt(), before, "no fabricated native receipt or rebill");
+            assert_eq!(root.workspace().head().await.expect("unchanged head").id(), basis.authored_generation);
+            assert_eq!(root.read("/target", 64).await.expect("target retained").as_ref(), b"before");
+            drop(retained_input);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -18331,20 +20818,29 @@ mod tests {
         let token = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
             .expect("original state");
-        let (bytes, metadata) = root.read_at_snapshot_with_work(
+        let bytes = root.read_at_snapshot_with_work(
             snapshot, "/authored", 64, &original, &token,
         ).await.expect("actual frozen original body");
         assert_eq!(bytes.as_ref(), b"original");
-        assert_eq!(metadata.bytes(), 0, "physical lookup and reader metadata already dropped");
-        drop(metadata);
-        assert_eq!(bytes.as_ref(), b"original", "intrinsic byte custody outlives metadata");
+        assert!(bytes.matches_meter(&original.runtime_meter_owner()),
+            "completed bytes retain their actual original allocation owner");
+        let alias = bytes.clone();
+        let empty = bytes.slice(0..0);
+        let retained = original.native_read_meter().with_original_leaf(|work| work.live_allocation_bytes());
         drop(bytes);
-        let (target, metadata) = root.read_link_at_snapshot_with_work(
+        assert_eq!(alias.as_ref(), b"original");
+        assert!(empty.is_empty());
+        assert_eq!(original.native_read_meter().with_original_leaf(|work| work.live_allocation_bytes()), retained);
+        drop(alias);
+        assert_eq!(original.native_read_meter().with_original_leaf(|work| work.live_allocation_bytes()), retained,
+            "even an empty final view keeps the original byte allocation");
+        drop(empty);
+        assert!(original.native_read_meter().with_original_leaf(|work| work.live_allocation_bytes()) < retained);
+        let target = root.read_link_at_snapshot_with_work(
             snapshot, "/link", 9, &original, &token,
         ).await.expect("exact frozen original opaque target");
         assert_eq!(target.as_ref(), b"../opaque");
         drop(target);
-        drop(metadata);
         let (lookup, metadata) = root.lookup_at_snapshot_with_work(
             snapshot, "/authored", &original, &token,
         ).await.expect("actual frozen original authored lookup");
@@ -19837,14 +22333,11 @@ mod tests {
             .await
             .expect("exactify historical snapshot");
 
-        assert_eq!(
-            exact
-                .value
-                .read("/file.txt", 32)
-                .await
-                .expect("unresolved file from live epoch"),
-            Bytes::from_static(b"changed")
-        );
+        assert_eq!((exact
+            .value
+            .read("/file.txt", 32)
+            .await
+            .expect("unresolved file from live epoch")).as_ref(), b"changed");
     }
 
     #[tokio::test]
@@ -19875,14 +22368,11 @@ mod tests {
             .await
             .expect("exactify pinned observation");
 
-        assert_eq!(
-            exact
-                .value
-                .read("/file.txt", 32)
-                .await
-                .expect("observed file from pinned epoch"),
-            Bytes::from_static(b"source")
-        );
+        assert_eq!((exact
+            .value
+            .read("/file.txt", 32)
+            .await
+            .expect("observed file from pinned epoch")).as_ref(), b"source");
     }
 
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -19912,20 +22402,14 @@ mod tests {
         )
         .await
         .expect("attach");
-        assert_eq!(
-            root.read("/file.txt", 64).await.expect("initial read"),
-            Bytes::from_static(b"before")
-        );
+        assert_eq!((root.read("/file.txt", 64).await.expect("initial read")).as_ref(), b"before");
         let before = root.snapshot().await.expect("snapshot before change");
 
         std::fs::write(&path, b"after").expect("external write");
         source.invalidate();
         root.rebind_source().await.expect("rebind source");
 
-        assert_eq!(
-            root.read("/file.txt", 64).await.expect("refreshed read"),
-            Bytes::from_static(b"after")
-        );
+        assert_eq!((root.read("/file.txt", 64).await.expect("refreshed read")).as_ref(), b"after");
         assert_ne!(
             root.snapshot().await.expect("snapshot after change"),
             before
@@ -19968,14 +22452,11 @@ mod tests {
             .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .expect("exact capture");
-        assert_eq!(
-            exact
-                .value
-                .read("/nested/b.txt", 16)
-                .await
-                .expect("captured file"),
-            Bytes::from_static(b"beta")
-        );
+        assert_eq!((exact
+            .value
+            .read("/nested/b.txt", 16)
+            .await
+            .expect("captured file")).as_ref(), b"beta");
         assert_eq!(exact.work.source_entries_visited, 3);
         assert_eq!(
             exact.work.source_bytes_read, 9,
@@ -20053,14 +22534,11 @@ mod tests {
             )
             .await
             .expect("capture hot subtree");
-        assert_eq!(
-            exact
-                .value
-                .read("/hot/file.txt", 16)
-                .await
-                .expect("hot content"),
-            Bytes::from_static(b"hot")
-        );
+        assert_eq!((exact
+            .value
+            .read("/hot/file.txt", 16)
+            .await
+            .expect("hot content")).as_ref(), b"hot");
         #[cfg(feature = "native-mount")]
         {
             let staged = tempfile::tempdir().expect("empty native stage");
@@ -20132,14 +22610,11 @@ mod tests {
             .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .expect("exactify Windows source into portable authored workspace");
-        assert_eq!(
-            exact
-                .value
-                .read("/café.txt", 16)
-                .await
-                .expect("captured file"),
-            Bytes::from_static(b"source")
-        );
+        assert_eq!((exact
+            .value
+            .read("/café.txt", 16)
+            .await
+            .expect("captured file")).as_ref(), b"source");
     }
 
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -20432,13 +22907,10 @@ mod tests {
         .await
         .expect("recover source removal");
         assert_eq!(reopened.state().await.expect("state").overlay, tombstone);
-        assert_eq!(
-            reopened
-                .read("/file.txt", 64)
-                .await
-                .expect("authored replacement"),
-            Bytes::from_static(b"authored")
-        );
+        assert_eq!((reopened
+            .read("/file.txt", 64)
+            .await
+            .expect("authored replacement")).as_ref(), b"authored");
         reopened.remove("/file.txt").await.expect("remove authored");
         assert!(matches!(
             reopened.stat("/file.txt").await,

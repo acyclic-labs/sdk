@@ -514,23 +514,33 @@ fn fuse_open_file(packet: (Arc<dyn MountOpenFile>, u64), work: &super::NativeMou
     fuse_open_file_admission(packet, work).map_err(Into::into)
 }
 
-/// Copies one SDK-borrowed input into the exact source packet, transferring
-/// its full original allocation guard after the physical bytes.
+/// Copies one SDK-borrowed input into the exact source packet, keeping its
+/// full original allocation guard inseparable from every physical byte alias.
 fn fuse_source_chunk(bytes: &[u8], work: &super::NativeMountMeterWork)
     -> Result<crate::kernel::OwnedSourceChunk, FuseRequestError>
 {
     let length = bytes.len() as u64;
     fuse_copy_admit(length, work)?;
-    let mut allocation = work.native_materialization_work().claim(length)
-        .map_err(NativeMountError::from)?;
+    let original = work.native_materialization_work();
+    let mut allocation = original.claim(length).map_err(NativeMountError::from)?;
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
     allocation.reconcile_capacity(buffer.capacity() as u64).map_err(NativeMountError::from)?;
     buffer.extend_from_slice(bytes);
-    let owned = Bytes::from(buffer);
     fuse_copy_record(length, work)?;
     let logical_owned_bytes = allocation.bytes();
-    Ok(crate::kernel::OwnedSourceChunk::intrinsic(owned, logical_owned_bytes, Some(allocation)))
+    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
+        buffer, allocation, original.runtime_meter_owner(),
+    ).map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            NativeMountError::from(original.runtime_error(error))
+        }
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+        | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            unreachable!("guarded vector conversion only fails original admission")
+        }
+    })?;
+    Ok(crate::kernel::OwnedSourceChunk::intrinsic(owned, logical_owned_bytes))
 }
 
 /// Names the source was seen binding to the node each is paired with, after
@@ -973,9 +983,8 @@ impl DeferredOpenFile {
     fn discard_packet(packet: crate::kernel::OwnedSourceChunk, work: &super::NativeMountMeterWork)
         -> Result<(), MountSourceError>
     {
-        let (bytes, owned_bytes, intrinsic, allocation) = packet.into_owned_parts();
+        let (bytes, owned_bytes, intrinsic) = packet.into_owned_parts();
         drop(bytes);
-        drop(allocation);
         if intrinsic { return Ok(()); }
         work.meter().lock().release(owned_bytes)
             .map_err(|error| MountSourceError::from(super::NativeMountStartupAdmissionError::from(error)))
@@ -988,11 +997,11 @@ impl MountOpenFile for DeferredOpenFile {
         self.file_unmetered()?.lookup()
     }
 
-    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+    fn read_range(&self, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
         self.file_unmetered()?.read_range(offset, length)
     }
 
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
         self.file_unmetered()?.read_up_to(offset, maximum_bytes)
     }
 
@@ -1025,7 +1034,7 @@ impl MountOpenFile for DeferredOpenFile {
         self.file_unmetered()?.set_attributes(metadata, logical_bytes)
     }
 
-    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError> {
         self.file_unmetered()?.read_attribute(name)
     }
 
@@ -3136,6 +3145,13 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             }
             if let MountSourceError::WorkspaceCause(error) = error.semantic_error() {
                 return super::native_workspace_failure_is_fatal(error);
+            }
+            if let MountSourceError::WorkspacePrefixFailure { source, accounting } = error.semantic_error() {
+                return super::native_workspace_failure_is_fatal(source)
+                    || super::native_workspace_failure_is_fatal(accounting);
+            }
+            if matches!(error.semantic_error(), MountSourceError::NativeCallbackDenied { .. }) {
+                return false;
             }
             if let MountSourceError::NativeWorkspaceCause(error) = error.semantic_error() {
                 return super::native_workspace_failure_is_fatal(&error.source);
@@ -8842,7 +8858,7 @@ mod tests {
         ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
             self.inner.detach_file(path)
         }
-        fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError> {
+        fn read_link(&self, path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
             self.inner.read_link(path)
         }
         fn read_link_with_work(
@@ -8855,7 +8871,7 @@ mod tests {
             path: &MountPath,
             offset: u64,
             length: u32,
-        ) -> Result<Bytes, MountSourceError> {
+        ) -> Result<acyclic_stream::OwnedBytes, MountSourceError> {
             self.inner.read_range(path, offset, length)
         }
         fn read_range_with_work(
@@ -8929,7 +8945,7 @@ mod tests {
             &self,
             path: &MountPath,
             name: &[u8],
-        ) -> Result<Option<Bytes>, MountSourceError> {
+        ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError> {
             self.record_read(path);
             self.inner.read_attribute(path, name)
         }

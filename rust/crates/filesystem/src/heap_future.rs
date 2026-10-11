@@ -74,6 +74,21 @@ where
     F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
     E: From<crate::WorkError>,
 {
+    in_heap_measured_with_error(create, budget, cancellation, cancelled, observer, E::from).await
+}
+
+/// Maps internal admission errors through the same SDK error as the operation.
+pub(crate) async fn in_heap_measured_with_error<F, T, E>(
+    create: impl FnOnce(crate::WorkBudget) -> F,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+    cancelled: E,
+    observer: Option<HeapFutureObserver<'_>>,
+    map_work: impl Fn(crate::WorkError) -> E,
+) -> crate::MeasuredResult<crate::OperationReceipt<T>, E>
+where
+    F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
+{
     let mut work = crate::WorkCounters::default();
     if cancellation.check().is_err() {
         return Err(crate::OperationFailure::new(cancelled, work));
@@ -81,44 +96,49 @@ where
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     let standing = match observer {
         Some(observer) => observer(HeapFutureEvent::BeforeFrame { bytes, budget })
-            .map_err(|error| crate::OperationFailure::before_work(error.into()))?,
+            .map_err(|error| crate::OperationFailure::before_work(map_work(error)))?,
         None => 0,
     };
     let mut frame_budget = budget;
     frame_budget.peak_allocation_bytes = frame_budget.peak_allocation_bytes.checked_sub(standing)
-        .ok_or_else(|| crate::OperationFailure::before_work(crate::WorkError::BudgetExceeded {
+        .ok_or_else(|| crate::OperationFailure::before_work(map_work(crate::WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes", observed: standing, maximum: budget.peak_allocation_bytes,
-        }.into()))?;
+        })))?;
     work.charge_allocation(u64::from(bytes != 0), bytes, &frame_budget)
-        .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+        .map_err(|error| crate::OperationFailure::new(map_work(error), work))?;
     if let Some(observer) = observer {
         observer(HeapFutureEvent::Admitted(work))
-            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
+            .map_err(|error| crate::OperationFailure::before_work(map_work(error)))?;
     }
     // Declared before all fallible bookkeeping and the box so admission retires
     // on errors and unwinding, after the whole future has been destroyed.
     let frame = HeapFutureRelease { observer, bytes };
     work.peak_allocation_bytes = work.peak_allocation_bytes.checked_add(standing)
-        .ok_or_else(|| crate::OperationFailure::new(crate::WorkError::Overflow.into(), work))?;
+        .ok_or_else(|| crate::OperationFailure::new(map_work(crate::WorkError::Overflow), work))?;
     let mut remaining = work.remaining(budget)
-        .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
+        .map_err(|error| crate::OperationFailure::new(map_work(error), work))?;
     // The existing cache leaf reserves its own backing. Only this new frame
     // is delegated here, otherwise the very same cache would be charged twice.
     remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(bytes)
-        .ok_or_else(|| crate::OperationFailure::new(crate::WorkError::Overflow.into(), work))?;
+        .ok_or_else(|| crate::OperationFailure::new(map_work(crate::WorkError::Overflow), work))?;
     let mut future = in_heap(move || create(remaining));
     let result = future.as_mut().await;
     drop(future);
     drop(frame);
-    let (value, nested) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err(failure) => (Err(failure.error), *failure.work),
-    };
-    work = work.with_backend(nested, bytes)
-        .map_err(|error| crate::OperationFailure::new(error.into(), work))?;
-    work.verify(budget).map_err(|error| crate::OperationFailure::new(error.into(), work))?;
-    value.map(|value| crate::OperationReceipt { value, work })
-        .map_err(|error| crate::OperationFailure::new(error, work))
+    match result {
+        Err(mut failure) => {
+            // Ordinary failures already own their receipt. Retain that same
+            // allocation and the whole caller error while joining frame work.
+            *failure.work = work.with_backend(*failure.work, bytes).unwrap_or(work);
+            Err(failure)
+        }
+        Ok(receipt) => {
+            work = work.with_backend(receipt.work, bytes)
+                .map_err(|error| crate::OperationFailure::new(map_work(error), work))?;
+            work.verify(budget).map_err(|error| crate::OperationFailure::new(map_work(error), work))?;
+            Ok(crate::OperationReceipt { value: receipt.value, work })
+        }
+    }
 }
 
 #[cfg(test)]

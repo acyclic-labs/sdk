@@ -168,7 +168,7 @@ impl<T> RetainedBuffer<T> {
 impl RetainedBuffer<crate::kernel::OwnedSourceChunk> {
     fn source_chunk(packet: crate::kernel::OwnedSourceChunk, projection: Projection<'_>) -> Result<Self, NativeMountError> {
         if packet.is_intrinsic() {
-            // The chunk's actual bytes drop before its canonical intrinsic guard.
+            // OwnedBytes keeps the original guard through native completion.
             return Ok(Self { value: Some(packet), custody: projection.custody.clone(), bytes: 0, native_allocation: None, source_ownership: None });
         }
         let bytes = packet.logical_owned_bytes;
@@ -3443,9 +3443,9 @@ fn staging_path(root: &std::path::Path) -> PathBuf {
     root.with_file_name(format!(".{name}.acyclic-staging"))
 }
 
-/// Move the canonical packet and its original capacity proof into the same
-/// ordered native operation. The actual closure drops the bytes before its
-/// outside proof even if its observer is cancelled or unwinds after admission.
+/// Move the canonical packet into the same ordered native operation.
+/// OwnedBytes keeps its original allocation custody inseparable from the data,
+/// including cancellation or unwinding after admission.
 fn write_source_chunk(
     projection: Projection<'_>, file: &acyclic_native_runtime::NativeFile,
     offset: u64, packet: crate::kernel::OwnedSourceChunk,
@@ -4452,6 +4452,8 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
         MountSourceError::NativeWork(error) => materialization_hresult(error),
         MountSourceError::WorkspaceCause(error) => workspace_hresult(error),
+        MountSourceError::WorkspacePrefixFailure { source, .. } => workspace_hresult(source),
+        MountSourceError::NativeCallbackDenied { .. } => HRESULT::from_win32(5),
         MountSourceError::NativeWorkspaceCause(error) => workspace_hresult(&error.source),
         MountSourceError::Filesystem(error) => filesystem_hresult(error),
         MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
@@ -6201,6 +6203,9 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
         let ordinary = match source.semantic_error() {
             MountSourceError::NotFound => true,
             MountSourceError::WorkspaceCause(cause) => !workspace_failure_is_fatal(cause),
+            MountSourceError::WorkspacePrefixFailure { source, accounting } =>
+                !workspace_failure_is_fatal(source) && !workspace_failure_is_fatal(accounting),
+            MountSourceError::NativeCallbackDenied { .. } => true,
             MountSourceError::NativeWorkspaceCause(cause) => !workspace_failure_is_fatal(&cause.source),
             MountSourceError::Filesystem(cause) => !filesystem_failure_is_fatal(cause),
             MountSourceError::NativeText { .. } | MountSourceError::NativeStaticText { .. } => true,
@@ -6248,6 +6253,9 @@ fn callback_requires_permanent_fence(error: &NativeMountError) -> bool {
         NativeMountError::Source(error) => match error.semantic_error() {
             MountSourceError::NativeWork(error) => super::native_materialization_failure_is_fatal(error),
             MountSourceError::WorkspaceCause(error) => workspace_failure_is_fatal(error),
+            MountSourceError::WorkspacePrefixFailure { source, accounting } =>
+                workspace_failure_is_fatal(source) || workspace_failure_is_fatal(accounting),
+            MountSourceError::NativeCallbackDenied { .. } => false,
             MountSourceError::NativeWorkspaceCause(error) => workspace_failure_is_fatal(&error.source),
             MountSourceError::Filesystem(error) => filesystem_failure_is_fatal(error),
             MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate

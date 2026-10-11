@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::OwnedBytes;
 
 #[test]
 fn object_kinds_digests_and_read_views_are_canonical() {
@@ -34,7 +35,7 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         object_digest(ObjectKind::Blob, b"other")
     );
     let read = ObjectRead {
-        bytes: Bytes::from_static(b"view"),
+        bytes: OwnedBytes::from_static(b"view"),
         retention: ObjectReadRetention::Owned { logical_bytes: 4 },
     };
     assert_eq!(&*read, b"view");
@@ -46,7 +47,7 @@ fn object_kinds_digests_and_read_views_are_canonical() {
 fn shared_backend_handles_forward_without_semantic_wrappers()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = Arc::new(crate::MemoryObjectStore::default());
-    let bytes = Bytes::from_static(b"shared-object");
+    let bytes = OwnedBytes::from_static(b"shared-object");
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
@@ -58,7 +59,7 @@ fn shared_backend_handles_forward_without_semantic_wrappers()
         u64::try_from(bytes.len())?,
         WorkBudget::UNBOUNDED,
     )?;
-    assert_eq!(read.value.bytes, bytes);
+    assert_eq!(read.value.bytes.as_ref(), bytes.as_ref());
     assert!(ObjectStore::contains(&objects, object_id, WorkBudget::UNBOUNDED,)?.value);
     let batch = ObjectStore::read_many(
         &objects,
@@ -69,7 +70,7 @@ fn shared_backend_handles_forward_without_semantic_wrappers()
         WorkBudget::UNBOUNDED,
     )?;
     assert_eq!(batch.value.len(), 1);
-    assert_eq!(batch.value[0].bytes, bytes);
+    assert_eq!(batch.value[0].bytes.as_ref(), bytes.as_ref());
 
     let authority = Arc::new(crate::MemoryAuthorityStore::default());
     let authority_id = AuthorityId::from_bytes([9; 16]);

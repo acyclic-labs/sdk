@@ -9,7 +9,6 @@ use crate::foundation::usize_to_u64;
 use crate::FsError;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
-use bytes::Bytes;
 use thiserror::Error;
 
 /// Complete bounded request for one regular-file byte range.
@@ -32,7 +31,7 @@ pub struct FileRangeRequest {
 pub struct FileRangeRead {
     /// Exact requested bytes, with holes and allocated zeros represented as zero.
     /// Native reads retain original allocation custody through every byte alias.
-    pub bytes: Bytes,
+    pub bytes: acyclic_stream::OwnedBytes,
     /// Actual controlled output-buffer capacity retained by `bytes`.
     pub logical_owned_bytes: u64,
     /// Accounting-context snapshot of completed page, blob, copy, allocation, and output work.
@@ -225,22 +224,21 @@ pub(crate) fn release_read_allocation(
     }
 }
 
-pub(crate) fn owned_read_bytes(owner: ReadOwned<Vec<u8>>) -> Result<Bytes, FsError> {
-    if owner.value.capacity() == 0 { drop(owner); return Ok(Bytes::new()); }
+pub(crate) fn owned_read_bytes(owner: ReadOwned<Vec<u8>>) -> Result<acyclic_stream::OwnedBytes, FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if let KernelOwnedAllocation::NativeOriginal(custody) = &owner.custody {
-        struct Owner {
-            bytes: Vec<u8>,
-            _custody: KernelOwnedAllocation,
-            _control: crate::NativeAllocation,
-        }
-        impl AsRef<[u8]> for Owner { fn as_ref(&self) -> &[u8] { &self.bytes } }
-        // A refused control claim drops this complete ReadOwned: data first,
-        // original guard last. No guard is detached during the fallible claim.
-        let control = custody.work().claim(super::allocation::bytes_owner_control_bytes::<Owner>()?)?;
-        return Ok(Bytes::from_owner(Owner { bytes: owner.value, _custody: owner.custody, _control: control }));
+        let original = custody.work().clone();
+        return acyclic_stream::OwnedBytes::from_vec_with_guard(
+            owner.value, owner.custody, original.runtime_meter_owner(),
+        ).map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                crate::NativeTreeMaterializationError::InvalidLayout.into()
+            }
+        });
     }
-    Ok(Bytes::from(owner.value))
+    Ok(owner.value.into())
 }
 
 pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
@@ -451,6 +449,14 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
             ReadAllocationStep::Copied(bytes) => {
                 self.accounting.record_completed(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED })?;
             }
+            ReadAllocationStep::BeforeHash(bytes) => {
+                self.accounting.check()?;
+                self.accounting.admit(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED })?;
+            }
+            ReadAllocationStep::Hashed(bytes) => {
+                self.accounting.record_completed(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED })?;
+                self.accounting.check()?;
+            }
             ReadAllocationStep::BeforeItem => {
                 self.accounting.check()?;
                 self.accounting.admit(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
@@ -539,6 +545,16 @@ pub(crate) fn observe_read_decode_step(
         ReadAllocationStep::Copied(bytes) => {
             *accounting.work = accounting.work.checked_add(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED }).map_err(FsError::from)?;
             accounting.work.verify(accounting.budget).map_err(FsError::from)?;
+        }
+        ReadAllocationStep::BeforeHash(bytes) => {
+            accounting.cancellation.check().map_err(FsError::from)?;
+            accounting.work.admit(&WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
+                &accounting.budget).map_err(FsError::from)?;
+        }
+        ReadAllocationStep::Hashed(bytes) => {
+            *accounting.work = accounting.work.checked_add(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(FsError::from)?;
+            accounting.work.verify(accounting.budget).map_err(FsError::from)?;
+            accounting.cancellation.check().map_err(FsError::from)?;
         }
         ReadAllocationStep::BeforeItem => {
             accounting.cancellation.check().map_err(FsError::from)?;

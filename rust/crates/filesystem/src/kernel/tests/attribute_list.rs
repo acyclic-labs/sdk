@@ -6,7 +6,7 @@ use crate::kernel::{
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use crate::{CachedObjectStore, ObjectCacheOptions};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
@@ -35,7 +35,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

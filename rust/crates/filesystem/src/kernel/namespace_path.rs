@@ -924,6 +924,13 @@ impl<'a, 'b> NamespacePathAccounting<'a, 'b> {
                 ReadAllocationStep::Copied(bytes) => self.accounting.record_completed(
                     WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED },
                 ),
+                ReadAllocationStep::BeforeHash(bytes) => {
+                    self.accounting.check()?;
+                    self.accounting.admit(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED })
+                }
+                ReadAllocationStep::Hashed(bytes) => self.accounting.record_completed(
+                    WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
+                ),
                 ReadAllocationStep::BeforeItem => self.accounting.admit(
                     WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
                 ),
@@ -1012,6 +1019,14 @@ pub(super) fn observe_path_ledger(
                     ..WorkCounters::default() }, &budget).map_err(NamespacePathError::Work),
             ReadAllocationStep::Copied(bytes) => {
                 work.try_add_assign(&WorkCounters { bytes_copied: bytes,
+                    ..WorkCounters::default() }).map_err(NamespacePathError::Work)?;
+                work.verify_ref(&budget).map_err(NamespacePathError::Work)
+            }
+            ReadAllocationStep::BeforeHash(bytes) =>
+                work.admit(&WorkCounters { bytes_hashed: bytes,
+                    ..WorkCounters::default() }, &budget).map_err(NamespacePathError::Work),
+            ReadAllocationStep::Hashed(bytes) => {
+                work.try_add_assign(&WorkCounters { bytes_hashed: bytes,
                     ..WorkCounters::default() }).map_err(NamespacePathError::Work)?;
                 work.verify_ref(&budget).map_err(NamespacePathError::Work)
             }

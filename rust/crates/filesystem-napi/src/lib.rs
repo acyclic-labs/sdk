@@ -4265,7 +4265,7 @@ impl NativeFs {
             .inner
             .import_object(
                 decode_object_id(&object_id)?,
-                bytes::Bytes::from(bytes.to_vec()),
+                bytes.to_vec(),
                 boundary_budget(),
                 &self.cancellation,
             )
@@ -4338,7 +4338,7 @@ impl NativeFs {
         let manifest = decode_export_manifest(&manifest)?;
         let objects = objects
             .into_iter()
-            .map(|object| bytes::Bytes::from(object.to_vec()))
+            .map(|object| object.to_vec().into())
             .collect::<Vec<_>>();
         let receipt = self
             .inner

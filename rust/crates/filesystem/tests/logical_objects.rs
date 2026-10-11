@@ -6,11 +6,11 @@ use acyclic_fs::storage::{
 };
 use acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore, WorkBudget};
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 
 fn write(bytes: &'static [u8]) -> ObjectWrite {
-    let bytes = Bytes::from_static(bytes);
+    let bytes = OwnedBytes::from_static(bytes);
     ObjectWrite {
         object_id: ObjectId {
             kind: ObjectKind::BlobChunk,
@@ -140,7 +140,7 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
             .is_err()
     );
     let mut invalid = write(b"data");
-    invalid.bytes = Bytes::from_static(b"bad");
+    invalid.bytes = OwnedBytes::from_static(b"bad");
     assert!(matches!(
         store
             .put_many(&[invalid], WorkBudget::UNBOUNDED, &cancel)
@@ -190,7 +190,7 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
                 object_key: key.clone(),
                 ..Default::default()
             },
-            Bytes::from_static(b"fake"),
+            OwnedBytes::from_static(b"fake"),
         )
         .await?;
     assert!(matches!(

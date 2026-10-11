@@ -5,7 +5,7 @@ use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{AttributeChild, AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
@@ -38,7 +38,7 @@ fn put(
     let id = attribute_page_id(page, maximum_items)?;
     store.put(
         id,
-        Bytes::from(encode_attribute_page(page, maximum_items)?),
+        OwnedBytes::from(encode_attribute_page(page, maximum_items)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

@@ -13,7 +13,7 @@ use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeLimits,
 };
 use crate::storage::{ObjectId, ObjectKind, ObjectStore, object_digest};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 
 struct Fixture {
@@ -63,7 +63,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    ObjectStore::put(store, object, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 
@@ -2654,7 +2654,7 @@ impl AsyncObjectStore for NoGenerationCalls {
     -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::storage::ObjectStoreError> {
         panic!("denied generation entered provider cache");
     }
-    async fn put(&self, _: ObjectId, _: Bytes, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<()> {
+    async fn put(&self, _: ObjectId, _: OwnedBytes, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<()> {
         panic!("denied generation entered ordinary write");
     }
     async fn read(&self, _: ObjectId, _: u64, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {

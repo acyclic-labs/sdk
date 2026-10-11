@@ -8,7 +8,6 @@ use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStore, ObjectStoreError,
     object_digest,
 };
-use bytes::Bytes;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -77,7 +76,7 @@ pub fn build_checkpoint<S: ObjectStore>(
         .remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     let receipt = store
-        .put(object, Bytes::from(encoded), remaining)
+        .put(object, encoded.into(), remaining)
         .map_err(|failure| failure.map_with_prior_work(prospective, Into::into))?;
     work = prospective
         .checked_add(receipt.work)
@@ -240,7 +239,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
             request, &base.0, request.merge_parent, WorkCounters::default(), accounting.remaining()?,
         ).map_err(|failure| crate::FsError::from(failure.error))?;
         accounting.charge(prospective)?;
-        let receipt = store.put(object, Bytes::from(encoded), accounting.remaining()?, cancellation).await;
+        let receipt = store.put(object, encoded.into(), accounting.remaining()?, cancellation).await;
         let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         accounting.charge(spent)?;
         receipt.map_err(|failure| crate::FsError::from(failure.error))?;

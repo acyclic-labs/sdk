@@ -50,7 +50,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    store.put(object, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 

@@ -89,13 +89,14 @@ struct NativeResourceState {
     budget: crate::WorkBudget,
     pending: crate::WorkCounters,
     live: u64,
+    reserved_allocation_bytes: u64,
     poisoned: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 pub(crate) enum NativeResourceCredit {
-    Items, ReturnedItems, Copy, ReadOperations, WriteOperations, DurabilityOperations, ReadBytes, WriteBytes,
+    Items, ReturnedItems, Copy, ReadOperations, WriteOperations, DurabilityOperations, ReadBytes, WriteBytes, AllocationOperations,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,6 +111,7 @@ impl NativeResourceCredit {
             Self::DurabilityOperations => &mut work.durability_operations,
             Self::ReadBytes => &mut work.source_bytes_read,
             Self::WriteBytes => &mut work.output_bytes,
+            Self::AllocationOperations => &mut work.allocation_operations,
         }
     }
 
@@ -195,10 +197,14 @@ impl NativeResourceAllowance {
         Ok(delta)
     }
 
+    fn admission_delta(state: &NativeResourceState, delta: crate::WorkCounters, bytes: u64) -> Result<crate::WorkCounters, crate::DemandError> {
+        Self::local_delta(state, delta, bytes.checked_add(state.reserved_allocation_bytes).ok_or(crate::WorkError::Overflow)?)
+    }
+
     pub(crate) fn admit(&self, delta: crate::WorkCounters, bytes: u64) -> Result<(), crate::DemandError> {
         if let Some(parent) = &self.parent { parent.admit(delta, bytes)?; }
         let state = self.lock()?;
-        state.work.admit(&Self::local_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
         Ok(())
     }
 
@@ -217,7 +223,7 @@ impl NativeResourceAllowance {
     fn own_admission<T>(&self, delta: crate::WorkCounters, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut state = self.lock()?;
         let local = Self::local_delta(&state, delta, bytes)?;
-        state.work.admit(&local, &state.effective_budget()?)?;
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
         let value = operation()?;
         state.work.try_add_assign(&local)?;
         state.live += bytes;
@@ -266,10 +272,76 @@ impl NativeResourceAllowance {
     pub(crate) fn remaining(&self) -> Result<crate::WorkBudget, crate::DemandError> {
         let state = self.lock()?;
         let mut remaining = state.work.remaining(state.effective_budget()?)?;
-        remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(state.live).ok_or(crate::WorkError::Overflow)?;
+        remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
+            .checked_sub(state.live).and_then(|bytes| bytes.checked_sub(state.reserved_allocation_bytes)).ok_or(crate::WorkError::Overflow)?;
         drop(state);
         if let Some(parent) = &self.parent { remaining = remaining.intersect_budget(parent.remaining()?); }
         Ok(remaining)
+    }
+
+    pub(crate) fn reserve_allocation<T>(&self, bytes: u64, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        let mut operation = Some(operation);
+        self.reserve_allocation_chain(bytes, &mut || operation.take().expect("one original allocation reservation")())
+    }
+
+    fn reserve_allocation_chain<T>(&self, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        if let Some(parent) = &self.parent {
+            return parent.reserve_allocation_chain(bytes, &mut || self.own_reserve_allocation(bytes, operation));
+        }
+        self.own_reserve_allocation(bytes, operation)
+    }
+
+    fn own_reserve_allocation<T>(&self, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        let mut state = self.lock()?;
+        let delta = NativeResourceCredit::AllocationOperations.delta(1);
+        state.work.admit(&Self::admission_delta(&state, delta, bytes)?, &state.effective_budget()?)?;
+        let pending = state.pending.checked_add(delta)?;
+        let reserved = state.reserved_allocation_bytes.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+        let value = operation()?;
+        state.pending = pending;
+        state.reserved_allocation_bytes = reserved;
+        Ok(value)
+    }
+
+    pub(crate) fn cancel_reserved_allocation<T>(&self, bytes: u64, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        let mut operation = Some(operation);
+        self.settle_allocation_chain(bytes, false, &mut || operation.take().expect("one unused original allocation refund")())
+    }
+
+    pub(crate) fn record_reserved_allocation<T>(&self, bytes: u64, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        let mut operation = Some(operation);
+        self.settle_allocation_chain(bytes, true, &mut || operation.take().expect("one accepted original allocator attempt")())
+    }
+
+    fn settle_allocation_chain<T>(&self, bytes: u64, record: bool, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        if let Some(parent) = &self.parent {
+            return parent.settle_allocation_chain(bytes, record, &mut || self.own_settle_allocation(bytes, record, operation));
+        }
+        self.own_settle_allocation(bytes, record, operation)
+    }
+
+    fn own_settle_allocation<T>(&self, bytes: u64, record: bool, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => { let mut state = poisoned.into_inner(); state.poisoned = true; state }
+        };
+        if record && state.poisoned { return Err(crate::DemandError::OriginalWorkPoisoned); }
+        let delta = NativeResourceCredit::AllocationOperations.delta(1);
+        let pending = delta.remaining(state.pending)?;
+        let reserved = state.reserved_allocation_bytes.checked_sub(bytes).ok_or(crate::WorkError::Overflow)?;
+        let (live, work) = if record {
+            let live = state.live.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
+            let work = state.work.checked_add(Self::local_delta(&state, delta, bytes)?)?;
+            (live, work)
+        } else { (state.live, state.work) };
+        // Root credit validation and this complete resource chain commit in one
+        // fixed leaf. There is no fresh cancellation/quota admission on drain.
+        let value = operation()?;
+        state.pending = pending;
+        state.reserved_allocation_bytes = reserved;
+        state.live = live;
+        state.work = work;
+        Ok(value)
     }
 
     pub(crate) fn reserve_credit<T>(&self, kind: NativeResourceCredit, count: u64, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
@@ -421,6 +493,20 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
         self.with_io(|work| work.claim_native_owned(bytes, u64::from(bytes != 0), &None))
+    }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.with_io(|work| work.reserve_native_allocation(bytes))
+    }
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        self.with_original_leaf(|work| {
+            if let Err(error) = work.cancel_reserved_native_allocation(bytes) {
+                work.record_native_io_failure(error);
+                work.poison_native_original_work();
+            }
+        });
+    }
+    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.with_io(|work| work.record_reserved_native_allocation(bytes))
     }
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
         self.with_original_leaf(|work| work.record_native_io_failure(crate::DemandError::Allocation(error)))
@@ -657,6 +743,25 @@ pub enum NativeOwnedRootStatus {
     Released(crate::NativeRootIdentity),
 }
 
+/// Parent progress retained in the same allocation packet, never a write grant.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeOwnedRootParentStatus {
+    /// No lookup or creation has completed for this parent.
+    Pending,
+    /// An existing shared ancestor was observed, not adopted for disposal.
+    BorrowedObserved(crate::NativeRootIdentity),
+    /// This packet's actual creation and release acknowledgements.
+    Owned(NativeOwnedRootStatus),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeOwnedRootParent {
+    relative: PathBuf,
+    status: NativeOwnedRootParentStatus,
+    held: Option<cap_std::fs::Dir>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeOwnedRootRole {
     relative: PathBuf,
@@ -677,6 +782,7 @@ pub struct NativeOwnedRootAllocation {
     root: NativeHostPrivateStateRoot,
     base_identity: crate::NativeRootIdentity,
     roles: [NativeOwnedRootRole; 4],
+    parents: Vec<NativeOwnedRootParent>,
     original: NativeMaterializationWork,
     _allocation: NativeAllocation,
 }
@@ -709,8 +815,9 @@ impl NativeOwnedRootAllocation {
             if path.as_os_str().is_empty() { return Err(NativeTreeMaterializationError::InvalidLayout); }
         }
         work.charge(crate::WorkCounters { items_examined: 4, ..crate::WorkCounters::UNCHARGED })?;
-        if relative[0].parent() != Some(Path::new(""))
-            || relative[1].parent() != Some(relative[0])
+        let common = relative[0].parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        if common.as_os_str().is_empty() || relative[1].parent() != Some(common)
+            || relative[0] == relative[1]
             || relative[2].parent() != Some(relative[1])
             || relative[3].parent() != Some(relative[1])
             || relative[2] == relative[3]
@@ -728,9 +835,42 @@ impl NativeOwnedRootAllocation {
             }
             roles[index].relative = path;
         }
+        let mut count = 0_usize;
+        for _ in common.components() {
+            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+            count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        }
+        let mut parents = Vec::new();
+        let bytes = count.checked_mul(std::mem::size_of::<NativeOwnedRootParent>()).ok_or(crate::WorkError::Overflow)?;
+        let mut storage = work.claim(u64::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?)?;
+        let reserved = parents.try_reserve_exact(count);
+        let actual = parents.capacity().checked_mul(std::mem::size_of::<NativeOwnedRootParent>()).ok_or(crate::WorkError::Overflow)?;
+        let reconciled = storage.reconcile_capacity(u64::try_from(actual).map_err(|_| crate::WorkError::Overflow)?);
+        if let Err(error) = reserved.map_err(NativeTreeMaterializationError::AllocationFailed).and(reconciled) {
+            drop(parents);
+            drop(storage);
+            return Err(error);
+        }
+        if let Err(error) = allocation.absorb(&mut storage) {
+            drop(parents);
+            drop(storage);
+            return Err(error);
+        }
+        for depth in 0..count {
+            let visited = count - depth;
+            work.charge(crate::WorkCounters { items_examined: visited as u64, ..crate::WorkCounters::UNCHARGED })?;
+            let prefix = common.ancestors().nth(visited - 1).expect("the measured normal parent prefix exists");
+            let (path, mut custody) = crate::native_host::clone_path_with_work(prefix, &mut &*work)?;
+            if let Err(error) = allocation.absorb(&mut custody) {
+                drop(path);
+                drop(custody);
+                return Err(error);
+            }
+            parents.push(NativeOwnedRootParent { relative: path, status: NativeOwnedRootParentStatus::Pending, held: None });
+        }
         Ok(Self {
             operation, root: root.clone(), base_identity: root.inner.root().identity(),
-            roles, original: work.clone(), _allocation: allocation,
+            roles, parents, original: work.clone(), _allocation: allocation,
         })
     }
 
@@ -754,10 +894,26 @@ impl NativeOwnedRootAllocation {
         self.roles.get(index).map(|role| role.status)
     }
 
+    /// Number of pre-funded parent slots; no parent creation is implicit.
+    #[must_use]
+    pub fn parent_count(&self) -> usize { self.parents.len() }
+
+    /// Original owned parent path, borrowed without allocating.
+    #[must_use]
+    pub fn parent_relative_path(&self, index: usize) -> Option<&Path> {
+        self.parents.get(index).map(|parent| parent.relative.as_path())
+    }
+
+    /// Reports shared observations distinctly from this packet's creations.
+    #[must_use]
+    pub fn parent_status(&self, index: usize) -> Option<NativeOwnedRootParentStatus> {
+        self.parents.get(index).map(|parent| parent.status)
+    }
+
     /// Returns all four already-observed identities without a resnapshot.
     #[must_use]
     pub fn known_identities(&self) -> Option<[crate::NativeRootIdentity; 4]> {
-        let known = |index| match self.roles[index].status {
+        let known = |index: usize| match self.roles[index].status {
             NativeOwnedRootStatus::Known(identity) => Some(identity), _ => None,
         };
         Some([known(0)?, known(1)?, known(2)?, known(3)?])
@@ -771,6 +927,98 @@ impl NativeOwnedRootAllocation {
         let actual = self.root.inner.root().identity();
         if actual != self.base_identity {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected: self.base_identity, actual });
+        }
+        Ok(())
+    }
+
+    fn parent_identity(&self, index: usize) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
+        match self.parents[index].status {
+            NativeOwnedRootParentStatus::BorrowedObserved(identity)
+            | NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(identity)) => Ok(identity),
+            _ => Err(NativeTreeMaterializationError::IndeterminatePreparation),
+        }
+    }
+
+    fn validate_parent_bindings(&self, work: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
+        for parent in &self.parents {
+            let expected = match parent.status {
+                NativeOwnedRootParentStatus::BorrowedObserved(identity)
+                | NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(identity)) => identity,
+                NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity) =>
+                    return Err(NativeTreeMaterializationError::IndeterminatePreparation),
+                _ => continue,
+            };
+            let held = native_owned_relative_parent(self.root.inner.root(), &parent.relative, work)?;
+            let actual = crate::native_host::directory_identity_materialization_measured(&held, work)?;
+            if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }); }
+        }
+        Ok(())
+    }
+
+    fn validate_unowned_roles(&self, work: &NativeMaterializationWork) -> Result<(), NativeTreeMaterializationError> {
+        for role in &self.roles {
+            if !matches!(role.status, NativeOwnedRootStatus::Known(_))
+                && work.state_path_exists_with_native_work(&self.root, &role.relative)?
+            { return Err(NativeTreeMaterializationError::IndeterminatePreparation); }
+        }
+        Ok(())
+    }
+
+    async fn create_parents_guarded<F, Fut, E>(
+        &mut self, work: &NativeMaterializationWork, before_action: &mut F,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Fut + Send, Fut: Future<Output = Result<(), E>> + Send,
+        E: From<NativeTreeMaterializationError>,
+    {
+        for index in 0..self.parents.len() {
+            match self.parents[index].status {
+                NativeOwnedRootParentStatus::Pending => {}
+                NativeOwnedRootParentStatus::BorrowedObserved(_)
+                | NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(_)) => continue,
+                _ => return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()),
+            }
+            before_action().await?;
+            self.validate_work(work).map_err(E::from)?;
+            self.validate_parent_bindings(work).map_err(E::from)?;
+            let parent_path = self.parents[index].relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+            let parent = native_owned_relative_parent(self.root.inner.root(), parent_path, work)?;
+            let expected = if index == 0 { self.base_identity } else { self.parent_identity(index - 1)? };
+            let actual = crate::native_host::directory_identity_materialization_measured(&parent, work)?;
+            if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }.into()); }
+            let shared = index + 1 < self.parents.len();
+            let NativeOwnedRootParent { relative, status, held } = &mut self.parents[index];
+            let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
+            if shared {
+                match crate::native_host::open_builtin_directory_with_work(&parent, leaf, false, &mut &*work) {
+                    Ok(directory) => {
+                        let identity = crate::native_host::directory_identity_materialization_measured(&directory, work)?;
+                        if identity.device != self.base_identity.device { return Err(NativeTreeMaterializationError::InvalidLayout.into()); }
+                        *held = Some(directory);
+                        *status = NativeOwnedRootParentStatus::BorrowedObserved(identity);
+                        continue;
+                    }
+                    Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            let created = crate::native_host::create_new_directory_held_acknowledged_with_work(&parent, leaf, &mut &*work, || {
+                *status = NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity);
+            });
+            let directory = match created {
+                Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()),
+                result => result?,
+            };
+            *held = Some(directory);
+            let identity = crate::native_host::directory_identity_materialization_measured(
+                held.as_ref().expect("actual acknowledged parent handle"), work,
+            )?;
+            *status = NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(identity));
+            before_action().await?;
+            self.validate_work(work).map_err(E::from)?;
+            self.validate_parent_bindings(work).map_err(E::from)?;
+            crate::native_host::sync_directory_held_with_work(&parent, &mut &*work)?;
         }
         Ok(())
     }
@@ -796,16 +1044,17 @@ impl NativeOwnedRootAllocation {
                 _ => NativeTreeMaterializationError::InvalidLayout,
             }.into());
         }
-        let parent_index = match index { 0 => None, 1 => Some(0), 2 | 3 => Some(1), _ => return Err(NativeTreeMaterializationError::InvalidLayout.into()) };
-        let expected_parent = match parent_index {
-            None => self.base_identity,
-            Some(parent) => match self.roles[parent].status {
+        self.create_parents_guarded(work, &mut before_action).await?;
+        let expected_parent = match index {
+            0 | 1 => self.parent_identity(self.parents.len() - 1)?,
+            2 | 3 => match self.roles[1].status {
                 NativeOwnedRootStatus::Known(identity) => identity,
                 _ => return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()),
             },
         };
         before_action().await?;
         self.validate_work(work).map_err(E::from)?;
+        self.validate_parent_bindings(work).map_err(E::from)?;
         let relative = &self.roles[index].relative;
         let parent = native_owned_relative_parent(
             self.root.inner.root(), relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, work,
@@ -846,31 +1095,48 @@ impl NativeOwnedRootAllocation {
         E: From<NativeTreeMaterializationError>,
     {
         self.validate_work(work).map_err(E::from)?;
-        if self.roles.iter().any(|role| role.status == NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity) {
+        if self.roles.iter().any(|role| role.status == NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity)
+            || self.parents.iter().any(|parent| parent.status == NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity)) {
             return Err(NativeTreeMaterializationError::IndeterminatePreparation.into());
         }
         before_action().await?;
         self.validate_work(work).map_err(E::from)?;
-        // Never wipe an unowned/replaced managed role via its known ancestor.
-        for role in &self.roles {
-            if !matches!(role.status, NativeOwnedRootStatus::Known(_))
-                && work.state_path_exists_with_native_work(&self.root, &role.relative)?
-            { return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()); }
-        }
+        self.validate_parent_bindings(work).map_err(E::from)?;
+        self.validate_unowned_roles(work).map_err(E::from)?;
         for index in (0..4).rev() {
             let NativeOwnedRootStatus::Known(identity) = self.roles[index].status else { continue; };
             work.release_owned_directory_held_guarded(
                 self.root.inner.root(), &self.roles[index].relative, identity,
-                &mut before_action, |_| {
+                &mut before_action, |work| {
                     let actual = self.root.inner.root().identity();
                     if actual != self.base_identity {
                         return Err(NativeTreeMaterializationError::AllocationChanged { expected: self.base_identity, actual });
                     }
+                    self.validate_parent_bindings(work)?;
+                    self.validate_unowned_roles(work)?;
                     Ok(())
                 },
             ).await?;
             self.roles[index].held.take();
             self.roles[index].status = NativeOwnedRootStatus::Released(identity);
+        }
+        // An ancestor may be shared even when we created it first. Only empty
+        // exact known parents are removed; arbitrary descendants are never wiped.
+        for index in (0..self.parents.len()).rev() {
+            let NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(identity)) = self.parents[index].status else { continue; };
+            before_action().await?;
+            self.validate_work(work).map_err(E::from)?;
+            self.validate_parent_bindings(work).map_err(E::from)?;
+            self.validate_unowned_roles(work).map_err(E::from)?;
+            let NativeOwnedRootParent { relative, status, held } = &mut self.parents[index];
+            let parent = native_owned_relative_parent(self.root.inner.root(), relative.parent().ok_or(NativeTreeMaterializationError::InvalidLayout)?, work)?;
+            let leaf = Path::new(relative.file_name().ok_or(NativeTreeMaterializationError::InvalidLayout)?);
+            let actual = crate::native_host::entry_identity_with_work(&parent, leaf, &mut &*work)?
+                .ok_or_else(|| NativeTreeMaterializationError::Io(std::io::ErrorKind::NotFound.into()))?;
+            if actual != identity { return Err(NativeTreeMaterializationError::AllocationChanged { expected: identity, actual }.into()); }
+            held.take();
+            crate::native_host::remove_empty_directory_held_with_work(&parent, leaf, &mut &*work)?;
+            *status = NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Released(identity));
         }
         Ok(())
     }
@@ -1198,7 +1464,7 @@ impl NativeMaterializationWork {
         let resource = std::sync::Arc::new_cyclic(|self_ref| NativeResourceAllowance {
             state: std::sync::Mutex::new(NativeResourceState {
                 work: crate::WorkCounters::UNCHARGED, budget,
-                pending: crate::WorkCounters::UNCHARGED, live: 0, poisoned: false,
+                pending: crate::WorkCounters::UNCHARGED, live: 0, reserved_allocation_bytes: 0, poisoned: false,
             }),
             self_ref: self_ref.clone(),
             parent: self.resource.clone(),
@@ -2164,7 +2430,7 @@ impl NativeMaterializationWork {
     pub async fn read_working_file_guarded<E, F, Fut>(
         &self, root: &Path, expected: crate::NativeRootIdentity, relative: &Path,
         maximum_bytes: usize, mut guard: F,
-    ) -> Result<(Vec<u8>, NativeAllocation), E>
+    ) -> Result<acyclic_stream::OwnedBytes, E>
     where
         E: From<NativeTreeMaterializationError>,
         F: FnMut() -> Fut,
@@ -2209,9 +2475,9 @@ impl NativeMaterializationWork {
         let preimage_stamp = if let Some(expected_digest) = expected_sha256 {
             let stamp = crate::native_host::stat_file_with_work(&held.file, &mut &*self).map_err(E::from)?;
             let preimage = self.read_builtin_held(&held, Self::MAXIMUM_BUILTIN_BYTES, &mut guard).await?;
-            self.charge(crate::WorkCounters { bytes_hashed: preimage.0.len() as u64,
+            self.charge(crate::WorkCounters { bytes_hashed: preimage.len() as u64,
                 ..crate::WorkCounters::UNCHARGED }).map_err(E::from)?;
-            let actual: [u8; 32] = Sha256::digest(&preimage.0).into();
+            let actual: [u8; 32] = Sha256::digest(&preimage).into();
             drop(preimage);
             if actual != expected_digest {
                 return Err(E::from(NativeTreeMaterializationError::PreimageConflict));
@@ -2292,7 +2558,7 @@ impl NativeMaterializationWork {
         &self, scope: crate::native_mount::OwnedNativeMountOriginalWorkScope,
         root: &Path, expected: crate::NativeRootIdentity, relative: &Path,
         maximum_bytes: usize, guard: F,
-    ) -> Result<(Vec<u8>, NativeAllocation), E>
+    ) -> Result<acyclic_stream::OwnedBytes, E>
     where
         E: From<NativeTreeMaterializationError>,
         F: FnMut() -> Fut,
@@ -2406,7 +2672,7 @@ impl NativeMaterializationWork {
 
     async fn read_builtin_held<E, F, Fut>(
         &self, held: &NativeBuiltinFile<'_>, maximum_bytes: usize, guard: &mut F,
-    ) -> Result<(Vec<u8>, NativeAllocation), E>
+    ) -> Result<acyclic_stream::OwnedBytes, E>
     where
         E: From<NativeTreeMaterializationError>,
         F: FnMut() -> Fut,
@@ -2421,19 +2687,29 @@ impl NativeMaterializationWork {
             }));
         }
         let capacity = before.len() as usize;
-        let initialized = crate::WorkCounters { bytes_copied: capacity as u64, ..crate::WorkCounters::UNCHARGED };
-        self.admit(initialized).map_err(E::from)?;
         let mut custody = self.claim(capacity as u64).map_err(E::from)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed).map_err(E::from)?;
         custody.resize_retained(bytes.capacity() as u64).map_err(E::from)?;
-        bytes.resize(capacity, 0);
+        let initialized = crate::WorkCounters {
+            bytes_copied: bytes.capacity() as u64, ..crate::WorkCounters::UNCHARGED
+        };
+        self.admit(initialized).map_err(E::from)?;
+        bytes.resize(bytes.capacity(), 0);
         self.spent(initialized).map_err(E::from)?;
+        // All shared storage controls are accepted before the first content
+        // read. The held-leaf loop only fills this fixed initialized storage;
+        // freezing its actual prefix cannot allocate or renew admission.
+        let mut bytes = acyclic_stream::PreparedOwnedBytes::new(
+            bytes, custody, self.runtime_meter_owner(),
+        ).map_err(|failure| E::from(self.runtime_error(failure.into_error())))?;
         let mut filled = 0;
-        while filled < bytes.len() {
+        while filled < capacity {
             guard().await?;
             held.validate(self).map_err(E::from)?;
-            let attempted = crate::native_host::read_builtin_file(&held.file, &mut bytes[filled..], self);
+            let attempted = crate::native_host::read_builtin_file(
+                &held.file, &mut bytes.writable()[filled..capacity], self,
+            );
             let checked = guard().await;
             let count = match attempted {
                 Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
@@ -2467,9 +2743,11 @@ impl NativeMaterializationWork {
                 NativeTreeMaterializationError::ExternalMutation,
             ).map_err(E::from)?));
         }
-        bytes.truncate(filled);
         guard().await?;
-        Ok((bytes, custody))
+        bytes.freeze(filled).map_err(|bytes| {
+            drop(bytes);
+            E::from(NativeTreeMaterializationError::InvalidLayout)
+        })
     }
 
     /// Creates or opens a service-owned relative directory through the actual
@@ -2669,6 +2947,22 @@ impl NativeWorkReservation {
     /// Returns this token's still-owned additive credit, not fresh allowance.
     #[must_use]
     pub const fn remaining_work(&self) -> crate::WorkCounters { self.remaining }
+
+    /// Loans only this token's already-withheld visits to the existing item
+    /// escrow. Root and resource allowance remain withheld throughout the
+    /// transfer; no allocation, admission, or cancellation replacement occurs.
+    pub(crate) fn partition_items(
+        &mut self, count: u64,
+    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
+        let remaining = self.remaining.items_examined.checked_sub(count)
+            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+        {
+            let mut state = self.meter.state();
+            state.partition_native_work_items(count).map_err(native_materialization_work_error)?;
+        }
+        self.remaining.items_examined = remaining;
+        Ok(NativeItemReservation { meter: self.meter.clone(), remaining: count })
+    }
 
     /// Records a real completed prefix, consuming only its owned credit.
     /// Actual counters remain recordable after late root/local cancellation;
@@ -9221,15 +9515,21 @@ mod tests {
         budget.source_bytes_read = binary.len() as u64;
         let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original work");
         let identity = work.root_identity(temporary.path()).expect("original held root witness");
-        let (bytes, custody) = work.read_working_file_guarded(temporary.path(), identity, Path::new("file"),
+        let bytes = work.read_working_file_guarded(temporary.path(), identity, Path::new("file"),
             binary.len(), || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("whole binary read");
-        assert_eq!(bytes, binary);
-        assert_eq!(custody.bytes(), bytes.capacity() as u64);
-        assert!(custody.shares_ledger(&work.retain_owned(0).expect("same original ledger")));
+        assert_eq!(bytes.as_ref(), binary);
+        let capacity = bytes.retained_capacity().expect("actual prepared vector capacity") as u64;
+        assert!(bytes.matches_meter(&work.runtime_meter_owner()));
         assert_eq!(work.receipt().source_bytes_read, binary.len() as u64);
-        assert!(work.live_allocation_bytes() >= NativeMaterializationWork::accounting_state_bytes() + bytes.capacity() as u64);
+        assert!(work.live_allocation_bytes() >= NativeMaterializationWork::accounting_state_bytes() + capacity);
+        let alias = bytes.clone();
+        let empty = alias.slice(0..0);
+        let retained = work.live_allocation_bytes();
         drop(bytes);
-        drop(custody);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), retained);
+        assert!(empty.is_empty());
+        drop(empty);
         assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
         let failure = work.read_working_file_guarded(temporary.path(), identity, Path::new("file"),
             binary.len() - 1, || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect_err("no truncated prefix");
@@ -9353,10 +9653,7 @@ mod tests {
             let failed = if writing {
                 work.write_working_file_guarded(temporary.path(), identity, Path::new("file"), "changed", false, None, guard).await
             } else {
-                work.read_working_file_guarded(temporary.path(), identity, Path::new("file"), 32, guard).await.map(|(bytes, custody)| {
-                    drop(bytes);
-                    drop(custody);
-                })
+                work.read_working_file_guarded(temporary.path(), identity, Path::new("file"), 32, guard).await.map(drop)
             }.expect_err("late cancellation cannot acknowledge success");
             assert!(matches!(failed, NativeTreeMaterializationError::Cancelled));
             let actual = work.receipt();
@@ -9690,6 +9987,187 @@ mod tests {
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
         work.receipt().verify(budget).expect("one original finite receipt");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_runtime_allocation_credit_withholds_global_quota_without_actual_work() {
+        use acyclic_native_runtime::ReadAllocation;
+        let mut budget = finite_native_budget();
+        budget.allocation_operations = 2; // Original state, then one accepted allocation.
+        budget.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes() + 64;
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let meter = work.runtime_meter_owner();
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        meter.reserve_allocation(64).expect("future control credit");
+        assert_eq!(work.receipt(), before, "reservation is not an allocator attempt or peak");
+        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.remaining().expect("withheld quota").allocation_operations, 0);
+        assert_eq!(work.remaining().expect("withheld memory").peak_allocation_bytes, 0);
+        let denial = ReadAllocation::new(&meter, 1).err().expect("another allocator cannot take reserved quota");
+        assert!(matches!(work.runtime_error(denial), NativeTreeMaterializationError::Work(_)));
+        assert_eq!(work.receipt(), before);
+        meter.cancel_reserved_allocation(64);
+        assert_eq!(work.receipt(), before, "unused credit never resets actual work");
+        assert_eq!(work.remaining().expect("unused credit refund").allocation_operations, 1);
+        assert_eq!(work.remaining().expect("unused capacity refund").peak_allocation_bytes, 64);
+        let actual_guard = ReadAllocation::new(&meter, 1).expect("refunded genuine allocation");
+        let actual = Box::new([7_u8; 1]);
+        assert_eq!(*actual, [7]);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations + 1);
+        drop(actual);
+        drop(actual_guard);
+        assert_eq!(work.live_allocation_bytes(), live);
+        work.receipt().verify(budget).expect("original truthful allocation prefix");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_runtime_allocation_credit_respects_zero_and_pending_resource_quota() {
+        use acyclic_native_runtime::ReadAllocation;
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let zero = work.native_volume_work(crate::WorkBudget {
+            allocation_operations: 0, ..budget
+        }).expect("zero allocator resource");
+        let before = work.receipt();
+        let zero_meter = zero.runtime_meter_owner();
+        let error = zero_meter.reserve_allocation(64).expect_err("deny before encoder or allocator");
+        assert!(matches!(zero.runtime_error(error), NativeTreeMaterializationError::Work(_)));
+        assert_eq!(work.receipt(), before);
+        let scope = work.native_volume_work(crate::WorkBudget {
+            allocation_operations: 2, peak_allocation_bytes: 64, ..budget
+        }).expect("actual local capacity");
+        let meter = scope.runtime_meter_owner();
+        let before = work.receipt();
+        meter.reserve_allocation(64).expect("one resource credit");
+        assert_eq!(work.receipt(), before);
+        assert_eq!(scope.remaining().expect("local withheld memory").peak_allocation_bytes, 0);
+        let denied = ReadAllocation::new(&meter, 1).err().expect("pending live capacity blocks another allocator even with spare op");
+        assert!(matches!(scope.runtime_error(denied), NativeTreeMaterializationError::Work(_)));
+        assert_eq!(work.receipt(), before);
+        meter.cancel_reserved_allocation(64);
+        assert_eq!(scope.remaining().expect("local unused refund").peak_allocation_bytes, 64);
+        let actual_guard = ReadAllocation::new(&meter, 64).expect("same original resource after refund");
+        let actual = Box::new([11_u8; 64]);
+        assert_eq!(actual[63], 11);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations + 1);
+        drop(actual);
+        drop(actual_guard);
+        assert_eq!(scope.remaining().expect("physical retirement").peak_allocation_bytes, 64);
+        work.receipt().verify(budget).expect("full original and resource receipts");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_runtime_unused_ready_allocation_refunds_after_physical_eof() {
+        use std::io::Read as _;
+        use acyclic_native_runtime::{ReadAllocationReservation, NativeByteReservation, NativeOperationKind, NativeOperationReservation};
+        let file = tempfile::tempfile().expect("actual empty native file");
+        let mut file = file;
+        let mut budget = finite_native_budget();
+        budget.backend_read_operations = 1;
+        budget.source_bytes_read = 1;
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let meter = work.runtime_meter_owner();
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        let ready = ReadAllocationReservation::new(&meter, 64).expect("before transport");
+        let mut operation = NativeOperationReservation::new(work.runtime_meter(), NativeOperationKind::Read, 1).expect("actual read");
+        let mut transfer = NativeByteReservation::new(work.runtime_meter(), NativeOperationKind::Read, 1).expect("bounded transfer");
+        let mut byte = [0_u8; 1];
+        let (read, recorded) = operation.attempt(|| file.read(&mut byte));
+        recorded.expect("real empty read begun");
+        let count = read.expect("real EOF");
+        assert_eq!(count, 0);
+        transfer.record(count).expect("no transferred body");
+        drop(ready); // EOF produced no Ready Box, so only the unused credit refunds.
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(work.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations + 1);
+        assert_eq!(work.receipt().source_bytes_read, 0);
+        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.remaining().expect("unused control quota").allocation_operations, before.remaining(budget).expect("prior allowance").allocation_operations);
+        work.receipt().verify(budget).expect("actual EOF with no fictitious allocation");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_runtime_accepted_ready_allocation_survives_cancellation_and_last_alias_drop() {
+        use acyclic_native_runtime::{ReadAllocation, ReadAllocationReservation};
+        struct ReadyOwner {
+            payload: Box<[u8; 64]>,
+            _payload_guard: ReadAllocation,
+            _metadata_guard: ReadAllocation,
+        }
+        let budget = finite_native_budget();
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original root");
+        let metadata = std::mem::size_of::<ReadyOwner>() as u64;
+        let scope = work.native_volume_work(crate::WorkBudget {
+            allocation_operations: 2, peak_allocation_bytes: 64 + metadata, ..budget
+        }).expect("original source resource");
+        let meter = scope.runtime_meter_owner();
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        let payload = ReadAllocationReservation::new(&meter, 64).expect("accepted payload credit");
+        let owner = ReadAllocationReservation::new(&meter, metadata).expect("accepted known alias metadata");
+        assert_eq!(work.receipt(), before);
+        cancellation.cancel();
+        assert!(meter.check().is_err(), "fresh admission really is cancelled");
+        let payload_guard = payload.allocate().expect("accepted drain does not re-admit cancellation");
+        let payload = Box::new([19_u8; 64]);
+        let metadata_guard = owner.allocate().expect("accepted alias control does not top up quota");
+        let ready = std::sync::Arc::new(ReadyOwner { payload, _payload_guard: payload_guard, _metadata_guard: metadata_guard });
+        let alias = std::sync::Arc::clone(&ready); // Actual alias creation allocates nothing.
+        assert_eq!(alias.payload[63], 19);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations + 2);
+        assert_eq!(work.live_allocation_bytes(), live + 64 + metadata);
+        let resource = scope.resource_allowance().expect("actual original resource");
+        {
+            let state = resource.lock().expect("resource accounting");
+            assert_eq!(state.work.allocation_operations, 2);
+            assert_eq!(state.work.peak_allocation_bytes, 64 + metadata);
+            assert_eq!(state.reserved_allocation_bytes, 0);
+            assert_eq!(state.pending.allocation_operations, 0);
+        }
+        drop(ready);
+        assert_eq!(work.live_allocation_bytes(), live + 64 + metadata, "remaining alias retains both actual owners");
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), live, "actual data drops before its original guard");
+        assert_eq!(resource.lock().expect("actual resource retirement").live, 0);
+        work.receipt().verify(budget).expect("actual accepted allocation prefix");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_runtime_ready_allocation_failure_preserves_its_original_credit() {
+        use acyclic_native_runtime::ReadAllocationReservation;
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let scope = work.native_volume_work(budget).expect("original resource");
+        let meter = scope.runtime_meter_owner();
+        let before = work.receipt();
+        let ready = ReadAllocationReservation::new(&meter, 64).expect("accepted credit");
+        let error = meter.record_reserved_allocation(65).expect_err("a mismatched caller cannot consume the smaller credit");
+        assert!(matches!(scope.runtime_error(error), NativeTreeMaterializationError::Work(_)));
+        assert_eq!(work.receipt(), before);
+        let resource = scope.resource_allowance().expect("actual source resource");
+        {
+            let state = resource.lock().expect("unchanged credit");
+            assert_eq!(state.reserved_allocation_bytes, 64);
+            assert_eq!(state.pending.allocation_operations, 1);
+            assert_eq!(state.live, 0);
+        }
+        let guard = ready.allocate().expect("exact original credit is still usable");
+        let actual = Box::new([23_u8; 64]);
+        assert_eq!(actual[0], 23);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations + 1);
+        drop(actual);
+        drop(guard);
+        assert_eq!(resource.lock().expect("last owner retired").live, 0);
+        work.receipt().verify(budget).expect("failure did not counterfeit work or reset credit");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -10366,6 +10844,84 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn native_cleanup_item_loan_preserves_original_family_after_cancellation() {
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = finite_native_budget();
+        budget.items_examined = 3;
+        let root = NativeMaterializationWork::new(budget, &cancellation).expect("original root");
+        let scope = root.native_volume_work(crate::WorkBudget {
+            items_examined: 2, ..budget
+        }).expect("original source resource");
+        let meter = scope.runtime_meter_owner();
+        let baseline = root.live_allocation_bytes();
+        let payload_guard = acyclic_native_runtime::ReadAllocation::new(&meter, 8)
+            .expect("actual retained source payload allocation");
+        let payload = Box::new([17_u8; 8]);
+        let before = root.receipt();
+        let mut accepted = scope.reserve_work(crate::WorkCounters {
+            items_examined: 2, ..crate::WorkCounters::UNCHARGED
+        }).expect("withhold actual future retirement visits before cancellation");
+        assert!(accepted.matches_work(&scope));
+        assert!(!accepted.matches_work(&root), "resource attribution cannot be changed");
+        assert_eq!(scope.remaining().expect("withheld resource").items_examined, 0);
+        cancellation.cancel();
+        assert!(scope.charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).is_err(), "ordinary work still observes original cancellation");
+        let mut visits = accepted.partition_items(1).expect("loan already-owned visit");
+        assert_eq!(root.receipt(), before, "transfer is not work or an allocation");
+        assert_eq!(accepted.remaining_work().items_examined, 1);
+        assert_eq!(root.state().remaining().expect("unchanged original withholding").items_examined, 1);
+        assert_eq!(scope.resource.as_ref().expect("original resource").remaining()
+            .expect("resource accounting").items_examined, 0);
+        drop(accepted);
+        assert_eq!(root.state().remaining().expect("only parent unused visit refunded").items_examined, 2,
+            "dropping the parent cannot refund its still-owned child loan");
+        visits.consume(1).expect("actual retained payload visit uses birth credit");
+        assert_eq!(payload[0], 17);
+        drop(payload);
+        drop(payload_guard);
+        drop(visits);
+        assert_eq!(root.live_allocation_bytes(), baseline, "physical payload retires on its own original ledger");
+        assert_eq!(root.receipt().items_examined, before.items_examined + 1);
+        assert_eq!(root.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(root.state().remaining().expect("original accounting remainder").items_examined, 2);
+        assert_eq!(scope.resource.as_ref().expect("original resource").remaining()
+            .expect("resource accounting remainder").items_examined, 1);
+        root.receipt().verify(budget).expect("only actual retirement work recorded");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_cleanup_item_loan_denial_cannot_steal_another_original_credit() {
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = finite_native_budget();
+        budget.items_examined = 3;
+        let root = NativeMaterializationWork::new(budget, &cancellation).expect("original root");
+        let mut first = root.reserve_work(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).expect("first separately-owned credit");
+        let second = root.reserve_work(crate::WorkCounters {
+            items_examined: 2, ..crate::WorkCounters::UNCHARGED
+        }).expect("second separately-owned credit");
+        let before = root.receipt();
+        assert!(first.partition_items(2).is_err());
+        assert_eq!(first.remaining_work().items_examined, 1);
+        assert_eq!(second.remaining_work().items_examined, 2);
+        assert_eq!(root.state().remaining().expect("all separately owned credits remain withheld").items_examined, 0);
+        assert_eq!(root.receipt(), before);
+        cancellation.cancel();
+        let visits = first.partition_items(1).expect("exact owned partition after cancellation");
+        drop(first);
+        drop(visits);
+        assert_eq!(root.state().remaining().expect("unused partition refund").items_examined, 1);
+        drop(second);
+        assert_eq!(root.state().remaining().expect("only unused credits refunded").items_examined, 3);
+        assert_eq!(root.receipt(), before, "unused cleanup never reports synthetic visits");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn native_metadata_image_is_fixed_and_rejects_noncanonical_payloads() {
         let desired = NativeMetadataImage { readonly: true, posix_mode: Some(0o40555), windows_attributes: Some(0x21) };
         let image = native_metadata_bytes(&desired);
@@ -10878,27 +11434,27 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original");
         let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("trusted bootstrap");
-        let paths = [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")];
+        let paths = [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")];
         let operation = OperationId::from_bytes([73; 16]);
         let baseline = work.live_allocation_bytes();
         let mut packet = NativeOwnedRootAllocation::new_with_native_work(operation, &root, paths, &work).expect("packet before create");
         assert_eq!(packet.operation_id(), operation);
         assert!(work.live_allocation_bytes() > baseline);
-        assert!(!temporary.path().join("native").exists());
+        assert!(!temporary.path().join("task").exists());
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let denied = packet.create_into_guarded(0, &work, || std::future::ready(
-            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { Ok(()) }
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 3 { Ok(()) }
             else { Err(NativeTreeMaterializationError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))) }
         )).await.expect_err("post-create current write guard denied");
         assert!(matches!(denied, NativeTreeMaterializationError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied));
         let Some(NativeOwnedRootStatus::Known(identity)) = packet.status(0) else { panic!("actual known creation retained"); };
-        assert_eq!(work.root_identity(&temporary.path().join("native")).expect("physical observation"), identity);
+        assert_eq!(work.root_identity(&temporary.path().join("task/view")).expect("physical observation"), identity);
         assert_eq!(packet.status(1), Some(NativeOwnedRootStatus::Pending));
         assert!(packet.known_identities().is_none());
         packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
             .await.expect("dispose only same known root");
         assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::Released(identity)));
-        assert!(!temporary.path().join("native").exists());
+        assert!(!temporary.path().join("task").exists());
         drop(packet);
         assert_eq!(work.live_allocation_bytes(), baseline);
         work.receipt().verify(budget).expect("actual original prefix");
@@ -10913,7 +11469,7 @@ mod tests {
         let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
         let mut packet = NativeOwnedRootAllocation::new_with_native_work(
             OperationId::from_bytes([74; 16]), &root,
-            [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")], &work,
+            [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")], &work,
         ).expect("preclaimed packet");
         let before = work.receipt();
         // Clone the held service dir and query that actual parent's identity;
@@ -10924,15 +11480,17 @@ mod tests {
         let error = packet.create_into_guarded(0, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
             .await.expect_err("child open denied after real mkdir");
         assert!(matches!(error, NativeTreeMaterializationError::Work(_)));
-        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity));
-        assert!(temporary.path().join("native").is_dir(), "actual mkdir is never lost with its later error");
+        let unknown = NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity);
+        assert_eq!(packet.parent_status(0), Some(unknown));
+        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::Pending));
+        assert!(temporary.path().join("task").is_dir(), "actual parent mkdir is never lost with its later error");
         assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations + 2);
         assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations + 1);
         work.native_read_meter().with_original_leaf(|original| original.restore_budget(budget));
         assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
             Err(NativeTreeMaterializationError::IndeterminatePreparation)));
-        assert_eq!(packet.status(0), Some(NativeOwnedRootStatus::CreationAcknowledgedUnknownIdentity));
-        assert!(temporary.path().join("native").is_dir(), "unknown identity is never adopted for cleanup");
+        assert_eq!(packet.parent_status(0), Some(unknown));
+        assert!(temporary.path().join("task").is_dir(), "unknown identity is never adopted for cleanup");
         work.receipt().verify(budget).expect("real acknowledged prefix");
     }
 
@@ -10945,29 +11503,174 @@ mod tests {
         let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
         let mut packet = NativeOwnedRootAllocation::new_with_native_work(
             OperationId::from_bytes([75; 16]), &root,
-            [Path::new("native"), Path::new("native/op"), Path::new("native/op/target"), Path::new("native/op/backup")], &work,
+            [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")], &work,
         ).expect("fixed roles");
         for index in 0..4 {
             packet.create_into_guarded(index, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
                 .await.expect("actual new role");
         }
         let identities = packet.known_identities().expect("four actual held observations");
-        std::fs::rename(temporary.path().join("native/op/backup"), temporary.path().join("native/op/original-backup")).expect("replace binding");
-        std::fs::create_dir(temporary.path().join("native/op/backup")).expect("unowned replacement");
-        std::fs::write(temporary.path().join("native/op/backup/user"), b"unowned").expect("replacement data");
+        std::fs::rename(temporary.path().join("task/preparation/backup"), temporary.path().join("task/preparation/original-backup")).expect("replace binding");
+        std::fs::create_dir(temporary.path().join("task/preparation/backup")).expect("unowned replacement");
+        std::fs::write(temporary.path().join("task/preparation/backup/user"), b"unowned").expect("replacement data");
         assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
             Err(NativeTreeMaterializationError::AllocationChanged { expected, .. }) if expected == identities[3]));
-        assert_eq!(std::fs::read(temporary.path().join("native/op/backup/user")).expect("unowned remains"), b"unowned");
+        assert_eq!(std::fs::read(temporary.path().join("task/preparation/backup/user")).expect("unowned remains"), b"unowned");
         assert_eq!(packet.known_identities(), Some(identities));
-        std::fs::remove_dir_all(temporary.path().join("native/op/backup")).expect("remove fixture replacement");
-        std::fs::rename(temporary.path().join("native/op/original-backup"), temporary.path().join("native/op/backup")).expect("restore actual original");
+        std::fs::remove_dir_all(temporary.path().join("task/preparation/backup")).expect("remove fixture replacement");
+        std::fs::rename(temporary.path().join("task/preparation/original-backup"), temporary.path().join("task/preparation/backup")).expect("restore actual original");
         packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(())))
             .await.expect("original identities release deepest first");
         for (index, identity) in identities.into_iter().enumerate() {
             assert_eq!(packet.status(index), Some(NativeOwnedRootStatus::Released(identity)));
         }
-        assert!(!temporary.path().join("native").exists());
+        assert!(!temporary.path().join("task").exists());
         work.receipt().verify(budget).expect("actual original work");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_ctor_denial_and_current_guard_have_no_creation_effects() {
+        let temporary = tempfile::tempdir().expect("trusted service");
+        let budget = finite_native_budget();
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        let paths = [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")];
+        let before = work.receipt();
+        work.native_read_meter().with_original_leaf(|original| {
+            original.budget.peak_live_allocated_bytes = original.live_allocation_bytes();
+        });
+        assert!(matches!(NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([76; 16]), &root, paths, &work),
+            Err(NativeTreeMaterializationError::Work(_))));
+        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+        assert!(!temporary.path().join("task").exists());
+        work.native_read_meter().with_original_leaf(|original| original.restore_budget(budget));
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([76; 16]), &root, paths, &work).expect("funded packet");
+        let before_guard = work.receipt();
+        assert!(matches!(packet.create_into_guarded(0, &work, || std::future::ready(Err::<(), _>(
+            NativeTreeMaterializationError::Io(std::io::ErrorKind::PermissionDenied.into())))).await,
+            Err(NativeTreeMaterializationError::Io(_))));
+        assert_eq!(work.receipt().backend_read_operations, before_guard.backend_read_operations);
+        assert_eq!(work.receipt().backend_write_operations, before_guard.backend_write_operations);
+        assert_eq!(packet.parent_status(0), Some(NativeOwnedRootParentStatus::Pending));
+        cancellation.cancel();
+        assert!(matches!(NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([77; 16]), &root, paths, &work),
+            Err(NativeTreeMaterializationError::Cancelled)));
+        assert!(!temporary.path().join("task").exists());
+        work.receipt().verify(budget).expect("exact no-create prefix");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_cancellation_after_create_retains_known_role_and_parent() {
+        let temporary = tempfile::tempdir().expect("trusted service");
+        let budget = finite_native_budget();
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([78; 16]), &root,
+            [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")], &work).expect("packet");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        assert!(matches!(packet.create_into_guarded(0, &work, || {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 3 { cancellation.cancel(); }
+            std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))
+        }).await, Err(NativeTreeMaterializationError::Cancelled)));
+        assert!(matches!(packet.parent_status(0), Some(NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(_)))));
+        assert!(matches!(packet.status(0), Some(NativeOwnedRootStatus::Known(_))));
+        assert!(temporary.path().join("task/view").is_dir());
+        let before_release = work.receipt();
+        assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
+            Err(NativeTreeMaterializationError::Cancelled)));
+        assert_eq!(work.receipt(), before_release);
+        assert!(temporary.path().join("task/view").is_dir());
+        work.receipt().verify(budget).expect("actual cancellation prefix");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_partial_release_fences_reappeared_role_before_next_effect() {
+        let temporary = tempfile::tempdir().expect("trusted root");
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([79; 16]), &root,
+            [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")], &work).expect("packet");
+        for index in 0..4 { packet.create_into_guarded(index, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await.expect("new role"); }
+        let known = packet.known_identities().expect("actual original identities");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        assert!(matches!(packet.release_guarded(&work, || {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                std::fs::create_dir(temporary.path().join("task/preparation/backup")).expect("reappeared unowned role");
+                std::fs::write(temporary.path().join("task/preparation/backup/user"), b"never wipe").expect("new user's payload");
+            }
+            std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))
+        }).await, Err(NativeTreeMaterializationError::IndeterminatePreparation)));
+        assert_eq!(packet.status(3), Some(NativeOwnedRootStatus::Released(known[3])));
+        assert_eq!(packet.status(2), Some(NativeOwnedRootStatus::Known(known[2])));
+        assert_eq!(std::fs::read(temporary.path().join("task/preparation/backup/user")).expect("unowned survives"), b"never wipe");
+        assert!(temporary.path().join("task/preparation/target").is_dir());
+        std::fs::remove_dir_all(temporary.path().join("task/preparation/backup")).expect("remove only fixture replacement");
+        packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await.expect("resume same known packet");
+        assert!(!temporary.path().join("task").exists());
+        work.receipt().verify(budget).expect("actual partial and resumed work");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn owned_root_packet_shared_ancestors_are_borrowed_and_new_parents_are_empty_only() {
+        let temporary = tempfile::tempdir().expect("real Pi geometry");
+        let budget = finite_native_budget();
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let root = NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(temporary.path(), &work).expect("bootstrap");
+        work.create_directories_with_native_work(&root, Path::new("sessions/root")).expect("service session registration");
+        let paths = [Path::new("sessions/root/agents/task/view"), Path::new("sessions/root/agents/task/preparation"),
+            Path::new("sessions/root/agents/task/preparation/target"), Path::new("sessions/root/agents/task/preparation/backup")];
+        let mut packet = NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([80; 16]), &root, paths, &work).expect("bounded four-parent packet");
+        assert_eq!(packet.parent_count(), 4);
+        for index in 0..4 { packet.create_into_guarded(index, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await.expect("canonical siblings"); }
+        assert!(matches!(packet.parent_status(0), Some(NativeOwnedRootParentStatus::BorrowedObserved(_))));
+        assert!(matches!(packet.parent_status(1), Some(NativeOwnedRootParentStatus::BorrowedObserved(_))));
+        assert!(matches!(packet.parent_status(2), Some(NativeOwnedRootParentStatus::Owned(NativeOwnedRootStatus::Known(_)))));
+        std::fs::create_dir(temporary.path().join("sessions/root/agents/other-task")).expect("concurrently used shared ancestor");
+        std::fs::write(temporary.path().join("sessions/root/agents/other-task/user"), b"unowned").expect("another task");
+        assert!(matches!(packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
+            Err(NativeTreeMaterializationError::Io(_))));
+        assert!(!temporary.path().join("sessions/root/agents/task").exists());
+        assert_eq!(std::fs::read(temporary.path().join("sessions/root/agents/other-task/user")).expect("empty-only disposal"), b"unowned");
+        assert!(temporary.path().join("sessions/root").is_dir(), "borrowed registration never released");
+        std::fs::remove_dir_all(temporary.path().join("sessions/root/agents/other-task")).expect("fixture removal");
+        packet.release_guarded(&work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await.expect("resume empty-only shared parent");
+        assert!(!temporary.path().join("sessions/root/agents").exists());
+        assert!(temporary.path().join("sessions/root").is_dir());
+        let mut fresh = NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([81; 16]), &root, paths, &work).expect("another candidate");
+        work.create_directories_with_native_work(&root, Path::new("sessions/root/agents/task")).expect("preexisting unknown task");
+        std::fs::write(temporary.path().join("sessions/root/agents/task/user"), b"not adopted").expect("unknown original task contents");
+        assert!(matches!(fresh.create_into_guarded(0, &work, || std::future::ready(Ok::<_, NativeTreeMaterializationError>(()))).await,
+            Err(NativeTreeMaterializationError::IndeterminatePreparation)));
+        assert_eq!(fresh.parent_status(3), Some(NativeOwnedRootParentStatus::Pending));
+        assert_eq!(std::fs::read(temporary.path().join("sessions/root/agents/task/user")).expect("unknown task untouched"), b"not adopted");
+        work.receipt().verify(budget).expect("truthful same producer work");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn original_native_path_clone_denies_copy_before_effect_but_keeps_allocation_prefix() {
+        let mut budget = finite_native_budget();
+        budget.bytes_copied = 0;
+        let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new()).expect("original");
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        assert!(matches!(crate::native_host::clone_path_with_work(Path::new("opaque-native-parent"), &mut &work),
+            Err(NativeTreeMaterializationError::Work(_))));
+        let after = work.receipt();
+        assert_eq!(after.bytes_copied, 0);
+        assert!(after.allocation_operations > before.allocation_operations, "the actual reserve precedes the atomic copy boundary");
+        assert_eq!(after.backend_read_operations, before.backend_read_operations);
+        assert_eq!(after.backend_write_operations, before.backend_write_operations);
+        assert_eq!(work.live_allocation_bytes(), live, "actual temporary buffer dropped before its claim");
+        after.verify(budget).expect("truthful original allocation/no-copy prefix");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -13,7 +13,6 @@ use crate::performance::{WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
-use bytes::Bytes;
 use std::marker::PhantomData;
 use std::ops::Range;
 use thiserror::Error;
@@ -774,7 +773,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
             ..WorkCounters::UNCHARGED
         };
         self.accounting.admit(hashing)?;
-        let hashed = HashedObject::new(F::kind(), Bytes::from(std::mem::take(&mut encoded.value)));
+        let hashed = HashedObject::new(F::kind(), std::mem::take(&mut encoded.value).into());
         let object = hashed.object_id();
         self.accounting.charge(hashing)?;
         self.accounting.charge(PAGE_WRITE)?;

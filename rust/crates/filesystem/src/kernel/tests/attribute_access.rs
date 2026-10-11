@@ -4,7 +4,7 @@ use crate::kernel::{AttributeClass, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn name(byte: u8) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
@@ -33,7 +33,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -211,7 +211,7 @@ fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
     ));
     assert_eq!(failure.work.page_reads, 1);
 
-    let malformed = Bytes::from_static(b"not a canonical attribute page");
+    let malformed = OwnedBytes::from_static(b"not a canonical attribute page");
     let malformed_id = ObjectId {
         kind: ObjectKind::AttributePage,
         digest: object_digest(ObjectKind::AttributePage, &malformed),

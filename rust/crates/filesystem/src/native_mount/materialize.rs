@@ -2298,12 +2298,17 @@ where
             let file = create_file(host_root, host_path, receipt)?;
             generation_completed_action(before_effect, receipt).await?;
             let length = data.as_bytes().len();
-            receipt.allocate(length)?;
-            receipt.measured(|work| work.charge(WorkCounters {
-                bytes_copied: length as u64, ..WorkCounters::UNCHARGED
-            }))?;
-            let bytes = Bytes::copy_from_slice(data.as_bytes());
-            let written = write_generation_bytes(&file, 0, bytes, length, receipt, before_effect).await?;
+            let original = receipt.custody.work().clone();
+            let (bytes, allocation) = receipt.custody_result(original.copy_bytes(data.as_bytes()))?;
+            let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
+                bytes, allocation, original.runtime_meter_owner(),
+            ).map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+            });
+            let bytes = receipt.custody_result(bytes)?;
+            let written = write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;
             if mode == MaterializeMode::DurableOutput {
                 sync_generation_file(&file, receipt, before_effect).await?;
             }
@@ -2438,7 +2443,7 @@ where
 async fn write_generation_bytes<E, F, Fut>(
     file: &acyclic_native_runtime::NativeFile,
     offset: u64,
-    bytes: Bytes,
+    bytes: acyclic_stream::OwnedBytes,
     owned_bytes: usize,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
@@ -2652,7 +2657,7 @@ fn queue_zero_writes(
     while remaining != 0 {
         let count = remaining.min(chunk_bytes) as usize;
         receipt.push(writes, GenerationWrite {
-            offset: position, bytes: Bytes::from_static(&ZERO_BYTES[..count]), owned_bytes: 0,
+            offset: position, bytes: acyclic_stream::OwnedBytes::from_static(&ZERO_BYTES[..count]), owned_bytes: 0,
         })?;
         position = position.checked_add(count as u64).ok_or_else(|| {
             GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work)
@@ -2664,7 +2669,7 @@ fn queue_zero_writes(
 
 struct GenerationWrite {
     offset: u64,
-    bytes: Bytes,
+    bytes: acyclic_stream::OwnedBytes,
     owned_bytes: usize,
 }
 
@@ -2800,7 +2805,7 @@ async fn generation_blocking<T: Send + 'static>(
 async fn apply_host_attributes_offloaded(
     host_root: &GenerationRoot,
     host_path: &GenerationPath,
-    attributes: Vec<(Vec<u8>, Bytes)>,
+    attributes: Vec<(Vec<u8>, acyclic_stream::OwnedBytes)>,
     retained: usize,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), GenerationFailure> {
@@ -3058,7 +3063,7 @@ mod windows_name_tests {
         let resize = receipt.runtime_result(native.set_len_bounded_async(1024 * 1024, meter))?;
         receipt.runtime_result(resize.await)?;
         let mut ordinary_control = None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>;
-        write_generation_bytes(&native, 1024 * 1024 - 4, Bytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await?;
+        write_generation_bytes(&native, 1024 * 1024 - 4, acyclic_stream::OwnedBytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await?;
         sync_generation_file(&native, &mut receipt, &mut ordinary_control).await?;
         let path = Path::new("sparse-control.bin");
         let bytes = std::fs::read(directory.path().join(path))?;
@@ -3094,7 +3099,7 @@ mod windows_name_tests {
 
 fn create_symlink_measured(
     host_root: &HostRoot,
-    target: &Bytes,
+    target: &acyclic_stream::OwnedBytes,
     destination: &GenerationHostPath,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), GenerationFailure> {

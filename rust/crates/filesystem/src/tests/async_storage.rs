@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::OwnedBytes;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{AuthorityStoreError, ObjectKind, ObjectStoreError, object_digest};
@@ -25,7 +26,7 @@ impl AsyncObjectStore for ScriptedAsyncObjectStore {
     fn put(
         &self,
         _object_id: ObjectId,
-        _bytes: Bytes,
+        _bytes: OwnedBytes,
         _budget: WorkBudget,
         _cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> {
@@ -44,7 +45,7 @@ impl AsyncObjectStore for ScriptedAsyncObjectStore {
                 cancellation.cancel();
                 Ok(crate::storage::ObjectReceipt {
                     value: ObjectRead {
-                        bytes: Bytes::from_static(b"owned"),
+                        bytes: OwnedBytes::from_static(b"owned"),
                         retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 5 },
                     },
                     work: crate::performance::WorkCounters {
@@ -191,8 +192,8 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let objects = MemoryObjectStore::default();
-    let first_bytes = Bytes::from_static(b"first");
-    let second_bytes = Bytes::from_static(b"second");
+    let first_bytes = OwnedBytes::from_static(b"first");
+    let second_bytes = OwnedBytes::from_static(b"second");
     let first = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
@@ -237,8 +238,8 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
         ))
         .ok_or("object read blocked")??
         .value
-        .bytes,
-        first_bytes
+        .bytes.as_ref(),
+        first_bytes.as_ref()
     );
     let requests = [
         ObjectReadRequest {
@@ -454,7 +455,7 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
         poll_ready(AsyncObjectStore::put(
             &objects,
             object_id,
-            Bytes::from_static(b"cancelled"),
+            OwnedBytes::from_static(b"cancelled"),
             WorkBudget::UNBOUNDED,
             &cancelled,
         ))

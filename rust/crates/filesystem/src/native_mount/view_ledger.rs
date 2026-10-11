@@ -657,6 +657,16 @@ pub(crate) struct ViewLedger {
     _native_allocation: Option<crate::NativeAllocation>,
 }
 
+/// Owns the actual observer backing, accepted completion credit, and the
+/// canonical node slot until a synchronous body edit commits or aborts.
+/// No await may occur while this permit holds the node map's write lock.
+pub(super) struct PreparedNativeNodeChange<'a> {
+    ledger: &'a ViewLedger,
+    slot: PreparedChangeMapSlot<'a>,
+    observers: ViewRecordBuffer<Arc<dyn ViewObserver>>,
+    completion: crate::materializer::NativeWorkReservation,
+}
+
 /// Invocation-local ownership of backing buffers allocated by this ledger.
 /// The canonical allocation ledger remains in `DemandWork`.
 #[derive(Default)]
@@ -1086,11 +1096,66 @@ impl ViewLedger {
         self.notify_recorded(change, observers, position, result, &mut work)
     }
 
+    /// Admits everything a node notification needs before its caller changes
+    /// the body. Preparing may grow the canonical backing, but records no
+    /// position, folds no history, and invokes no observer.
+    pub(super) fn prepare_node_change_with_native_work(
+        &self, file_id: FileId, original: &crate::NativeMaterializationWork,
+    ) -> Result<PreparedNativeNodeChange<'_>, super::MountSourceError> {
+        let mut work = original.clone();
+        let observers = self.prepare_record_observers(&mut work, false)?;
+        record_items(&mut work, 1)?;
+        let slot = self.nodes.prepare_slot_measured(
+            key_of(&file_id), &mut work, &mut ViewLedgerAdmission::default(), AdmittedMap::Nodes, true,
+        )?;
+        let items_examined = (observers.len() as u64).checked_add(slot.terminal_items() as u64)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+        let completion = original.reserve_work(crate::WorkCounters {
+            items_examined,
+            bytes_copied: slot.terminal_copied()?,
+            ..crate::WorkCounters::UNCHARGED
+        }).map_err(super::MountSourceError::NativeWork)?;
+        Ok(PreparedNativeNodeChange { ledger: self, slot, observers, completion })
+    }
+
+    /// Finishes an accepted synchronous node change without quota or
+    /// cancellation readmission. Even an unexpected accounting failure must
+    /// not erase the real node change or skip its observers.
+    pub(super) fn record_node_change_prepared(
+        &self, prepared: PreparedNativeNodeChange<'_>,
+    ) -> Result<(), super::MountSourceError> {
+        let PreparedNativeNodeChange { ledger, slot, observers, mut completion } = prepared;
+        assert!(std::ptr::eq(self, ledger), "original prepared node ledger");
+        let terminal = crate::WorkCounters {
+            items_examined: slot.terminal_items() as u64,
+            bytes_copied: slot.terminal_copied().expect("accepted node copy width"),
+            ..crate::WorkCounters::UNCHARGED
+        };
+        let position = ViewStamp::next();
+        slot.record(position);
+        // The slot guard retires before callbacks: observers may query nodes.
+        position.record_in(&self.latest);
+        let mut result = completion.record_completed(terminal)
+            .map_err(super::MountSourceError::NativeWork);
+        let notified = notify_recorded_observers(false, &observers, position, || {
+            let visited = completion.record_completed(crate::WorkCounters {
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
+            }).map_err(super::MountSourceError::NativeWork);
+            if result.is_ok() { result = visited; }
+        });
+        drop(observers);
+        drop(completion);
+        if let Err(panic) = notified { std::panic::resume_unwind(panic); }
+        result
+    }
+
     fn notify_recorded<W: ViewRecordAccounting>(
         &self, change: &ViewChange<'_>, observers: ViewRecordBuffer<Arc<dyn ViewObserver>>,
         position: ViewStamp, result: Result<(), super::MountSourceError>, work: &mut W,
     ) -> Result<(), super::MountSourceError> {
-        let notified = notify_recorded_observers(change, &observers, position);
+        let notified = notify_recorded_observers(
+            matches!(change, ViewChange::Unconfirmed), &observers, position, || {},
+        );
         let released = observers.retire(work);
         if let Err(panic) = notified { std::panic::resume_unwind(panic); }
         result.and(released)
@@ -1124,7 +1189,9 @@ impl ViewLedger {
         }
         let (observers, position, result) =
             carrier.with_work(|work| self.prepare_record_measured(change, work, owned))?;
-        let notified = notify_recorded_observers(change, &observers, position);
+        let notified = notify_recorded_observers(
+            matches!(change, ViewChange::Unconfirmed), &observers, position, || {},
+        );
         let bytes = observers.retire_physical();
         let released = carrier.with_work(|work|
             work.release(bytes).map_err(super::lazy::mount_demand_error));
@@ -1132,16 +1199,10 @@ impl ViewLedger {
         result.and(released)
     }
 
-    fn prepare_record_measured<W: ViewRecordAccounting>(
-        &self,
-        change: &ViewChange<'_>,
-        work: &mut W,
-        owned: &mut ViewLedgerAdmission,
-    ) -> Result<(
-        ViewRecordBuffer<Arc<dyn ViewObserver>>, ViewStamp, Result<(), super::MountSourceError>,
-    ), super::MountSourceError> {
-        if let Some(ordinary) = work.ordinary() { owned.reconcile(self, ordinary)?; }
-        let observers = loop {
+    fn prepare_record_observers<W: ViewRecordAccounting>(
+        &self, work: &mut W, include_delivery_visits: bool,
+    ) -> Result<ViewRecordBuffer<Arc<dyn ViewObserver>>, super::MountSourceError> {
+        loop {
             let live = {
                 let entries = self.observers.0.lock().unwrap_or_else(PoisonError::into_inner);
                 let mut live = 0_usize;
@@ -1154,8 +1215,8 @@ impl ViewLedger {
                 }
                 live
             };
-            // Only scalar admission locks the root; the reserve holds no hub
-            // or SDK lock. Registration can grow while that reserve executes.
+            // Scalar admission and allocation hold neither the hub nor an SDK
+            // lock. Registration may grow before the collection reacquires it.
             let mut observers = record_buffer::<Arc<dyn ViewObserver>, _>(live, work)?;
             let collected = {
                 let entries = self.observers.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1164,22 +1225,40 @@ impl ViewLedger {
                         record_items(work, 1)?;
                         if let Some(observer) = observer.observer.upgrade() {
                             if observers.len() == observers.capacity() { return Ok(false); }
+                            if !include_delivery_visits {
+                                work.record_charge(crate::WorkCounters {
+                                    bytes_copied: std::mem::size_of::<Arc<dyn ViewObserver>>() as u64,
+                                    ..crate::WorkCounters::UNCHARGED
+                                })?;
+                            }
                             observers.push(observer);
                         }
                     }
-                    record_items(work, observers.len())?;
+                    if include_delivery_visits { record_items(work, observers.len())?; }
                     Ok(true)
                 })()
             };
             match collected {
-                Ok(true) => break observers,
+                Ok(true) => return Ok(observers),
                 Ok(false) => observers.retire(work)?,
                 Err(error) => {
                     let _ = observers.retire(work);
                     return Err(error);
                 }
             }
-        };
+        }
+    }
+
+    fn prepare_record_measured<W: ViewRecordAccounting>(
+        &self,
+        change: &ViewChange<'_>,
+        work: &mut W,
+        owned: &mut ViewLedgerAdmission,
+    ) -> Result<(
+        ViewRecordBuffer<Arc<dyn ViewObserver>>, ViewStamp, Result<(), super::MountSourceError>,
+    ), super::MountSourceError> {
+        if let Some(ordinary) = work.ordinary() { owned.reconcile(self, ordinary)?; }
+        let observers = self.prepare_record_observers(work, true)?;
         let position = ViewStamp::next();
         let result = (|| {
             match change {
@@ -1435,6 +1514,41 @@ struct ChangePositions {
     native_allocation: Option<crate::NativeAllocation>,
 }
 
+/// A slot in the same canonical map, held stable across a synchronous edit.
+struct PreparedChangeMapSlot<'a> {
+    positions: std::sync::RwLockWriteGuard<'a, ChangePositions>,
+    index: usize,
+    key: u64,
+    previous: Option<u64>,
+    fold: bool,
+}
+
+impl PreparedChangeMapSlot<'_> {
+    fn terminal_items(&self) -> usize {
+        if self.fold { self.positions.slots.len() } else { 0 }
+    }
+
+    fn terminal_copied(&self) -> Result<u64, super::MountSourceError> {
+        let stores = self.terminal_items().checked_add(1)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+        stores.checked_mul(std::mem::size_of::<Option<(u64, u64)>>())
+            .map(|bytes| bytes as u64)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
+    }
+
+    fn record(self, position: ViewStamp) {
+        let Self { mut positions, index, key, previous, fold } = self;
+        if fold {
+            positions.floor = positions.slots.iter().flatten()
+                .fold(positions.floor, |floor, (_, at)| floor.max(*at));
+            positions.slots.fill(None);
+            positions.length = 0;
+        }
+        positions.slots[index] = Some((key, previous.unwrap_or(0).max(position.0)));
+        if previous.is_none() { positions.length += 1; }
+    }
+}
+
 impl ChangePositions {
     fn get(&self, key: u64) -> Option<u64> {
         self.get_visiting(key, || Ok::<(), std::convert::Infallible>(()))
@@ -1466,12 +1580,14 @@ impl ChangePositions {
 }
 
 fn notify_recorded_observers(
-    change: &ViewChange<'_>, observers: &[Arc<dyn ViewObserver>], position: ViewStamp,
+    unconfirmed: bool, observers: &[Arc<dyn ViewObserver>], position: ViewStamp,
+    mut visit: impl FnMut(),
 ) -> std::thread::Result<()> {
     let origin = ViewOrigin::current();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for observer in observers {
-            if matches!(change, ViewChange::Unconfirmed) {
+            visit();
+            if unconfirmed {
                 observer.view_unconfirmed(position);
             } else {
                 observer.view_changed(position, origin);
@@ -1587,6 +1703,14 @@ impl ChangeMap {
         &self, key: u64, position: ViewStamp, work: &mut W,
         owned: &mut ViewLedgerAdmission, kind: AdmittedMap,
     ) -> Result<(), super::MountSourceError> {
+        self.prepare_slot_measured(key, work, owned, kind, false)?.record(position);
+        Ok(())
+    }
+
+    fn prepare_slot_measured<W: ViewRecordAccounting>(
+        &self, key: u64, work: &mut W,
+        owned: &mut ViewLedgerAdmission, kind: AdmittedMap, defer_fold: bool,
+    ) -> Result<PreparedChangeMapSlot<'_>, super::MountSourceError> {
         use super::lazy::mount_demand_error;
         loop {
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
@@ -1605,19 +1729,18 @@ impl ChangeMap {
                     record_items(work, 1)?;
                     match positions.slots.get(index).copied().flatten() {
                         Some((stored, at)) if stored == key => {
-                            *positions.slots.get_mut(index).ok_or(super::MountSourceError::Stale)? =
-                                Some((key, at.max(position.0)));
-                            return Ok(());
+                            return Ok(PreparedChangeMapSlot {
+                                positions, index, key, previous: Some(at), fold: false,
+                            });
                         }
                         Some(_) => index = (index + 1) & mask,
                         None => {
                             if positions.length < MAXIMUM_TRACKED_KEYS
                                 && (positions.length + 1) * 2 <= positions.slots.len()
                             {
-                                *positions.slots.get_mut(index).ok_or(super::MountSourceError::Stale)? =
-                                    Some((key, position.0));
-                                positions.length += 1;
-                                return Ok(());
+                                return Ok(PreparedChangeMapSlot {
+                                    positions, index, key, previous: None, fold: false,
+                                });
                             }
                             break;
                         }
@@ -1625,6 +1748,12 @@ impl ChangeMap {
                 }
             }
             if positions.length == MAXIMUM_TRACKED_KEYS {
+                if defer_fold {
+                    let index = key as usize & (positions.slots.len() - 1);
+                    return Ok(PreparedChangeMapSlot {
+                        positions, index, key, previous: None, fold: true,
+                    });
+                }
                 record_items(work, positions.slots.len())?;
                 positions.floor = positions.slots.iter().flatten()
                     .fold(positions.floor, |floor, (_, at)| floor.max(*at));
@@ -1654,6 +1783,13 @@ impl ChangeMap {
                     return Err(error);
                 }
             };
+            if defer_fold {
+                work.record_charge(crate::WorkCounters {
+                    bytes_copied: count.checked_mul(std::mem::size_of::<Option<(u64, u64)>>())
+                        .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
+                    ..crate::WorkCounters::UNCHARGED
+                })?;
+            }
             replacement.resize(count, None);
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
             if positions.allocation_generation != old_generation {
@@ -1937,6 +2073,329 @@ mod tests {
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn native_node_preadmission_denial_and_early_cancellation_leave_body_untouched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Default)]
+        struct Counted(std::sync::atomic::AtomicU64);
+        impl ViewObserver for Counted {
+            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let observer_bytes = std::mem::size_of::<Arc<dyn ViewObserver>>() as u64;
+        let slot_bytes = std::mem::size_of::<Option<(u64, u64)>>() as u64;
+        let cases = [
+            (crate::WorkBudget { items_examined: 0, ..crate::WorkBudget::UNBOUNDED }, Some("items_examined")),
+            (crate::WorkBudget { bytes_copied: 0, ..crate::WorkBudget::UNBOUNDED }, Some("bytes_copied")),
+            (crate::WorkBudget { allocation_operations: 0, ..crate::WorkBudget::UNBOUNDED }, Some("allocation_operations")),
+            (crate::WorkBudget { peak_allocation_bytes: 0, ..crate::WorkBudget::UNBOUNDED }, Some("peak_allocation_bytes")),
+            (crate::WorkBudget { bytes_copied: observer_bytes + slot_bytes - 1, ..crate::WorkBudget::UNBOUNDED }, Some("bytes_copied")),
+            (crate::WorkBudget { items_examined: 4, ..crate::WorkBudget::UNBOUNDED }, Some("items_examined")),
+            (crate::WorkBudget::UNBOUNDED, None),
+        ];
+        for (budget, counter) in cases {
+            let ledger = ViewLedger::new();
+            let file = FileId::from_bytes([112; 16]);
+            ledger.record(&ViewChange::Node(file));
+            let before = ledger.stamp();
+            let counted = Arc::new(Counted::default());
+            let observer: Arc<dyn ViewObserver> = counted.clone();
+            ledger.observe(Arc::downgrade(&observer))?;
+            let cancellation = crate::CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED, &cancellation,
+            ).map_err(|(error, _)| error)?;
+            let work = original.native_volume_work(budget)?;
+            let baseline = original.live_allocation_bytes();
+            if counter.is_none() { cancellation.cancel(); }
+            let mut body = *b"old!";
+            let changed = (|| {
+                let prepared = ledger.prepare_node_change_with_native_work(file, &work)?;
+                body.copy_from_slice(b"new!");
+                ledger.record_node_change_prepared(prepared)
+            })();
+            let error = changed.err().ok_or("denied node preparation accepted")?;
+            match counter {
+                Some(expected) => assert!(matches!(error,
+                    super::super::MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::Work(
+                            crate::WorkError::BudgetExceeded { counter, .. },
+                        ),
+                    ) if counter == expected)),
+                None => assert!(matches!(error,
+                    super::super::MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::Cancelled,
+                    ))),
+            }
+            assert_eq!(&body, b"old!");
+            assert_eq!(ledger.stamp(), before);
+            assert!(ledger.node_unchanged_since(file, before));
+            assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_native_node_credit_survives_alias_contention_and_late_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Observed {
+            ledger: std::sync::Weak<ViewLedger>,
+            file: FileId,
+            before: ViewStamp,
+            origin: ViewOrigin,
+            body: Arc<std::sync::atomic::AtomicU64>,
+            calls: std::sync::atomic::AtomicU64,
+        }
+        impl ViewObserver for Observed {
+            fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
+                let ledger = self.ledger.upgrade().expect("live source");
+                assert_eq!(self.body.load(std::sync::atomic::Ordering::Acquire), 42);
+                assert_eq!(origin, self.origin);
+                assert_eq!(position, ledger.stamp());
+                assert!(!ledger.node_unchanged_since(self.file, self.before),
+                    "the node lock must retire before a reentrant observer query");
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let controller = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).map_err(|(error, _)| error)?.receipt();
+        let observer_bytes = std::mem::size_of::<Arc<dyn ViewObserver>>() as u64;
+        let slot_bytes = std::mem::size_of::<Option<(u64, u64)>>() as u64;
+        let local_budget = crate::WorkBudget {
+            items_examined: 5,
+            bytes_copied: observer_bytes + slot_bytes,
+            allocation_operations: 1,
+            peak_allocation_bytes: observer_bytes,
+            ..crate::WorkBudget::UNBOUNDED
+        };
+        for scoped in [false, true] {
+            let ledger = Arc::new(ViewLedger::new());
+            let file = FileId::from_bytes([113; 16]);
+            ledger.record(&ViewChange::Node(file));
+            let before = ledger.stamp();
+            let origin = ViewOrigin::new();
+            let body = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let observed = Arc::new(Observed {
+                ledger: Arc::downgrade(&ledger), file, before, origin, body: body.clone(),
+                calls: std::sync::atomic::AtomicU64::new(0),
+            });
+            let observer: Arc<dyn ViewObserver> = observed.clone();
+            ledger.observe(Arc::downgrade(&observer))?;
+            let cancellation = crate::CancellationToken::new();
+            let root_budget = if scoped { crate::WorkBudget::UNBOUNDED } else {
+                crate::WorkBudget {
+                    items_examined: controller.items_examined + local_budget.items_examined,
+                    bytes_copied: controller.bytes_copied + local_budget.bytes_copied,
+                    allocation_operations: controller.allocation_operations + local_budget.allocation_operations,
+                    peak_allocation_bytes: controller.peak_allocation_bytes + local_budget.peak_allocation_bytes,
+                    ..crate::WorkBudget::UNBOUNDED
+                }
+            };
+            let original = crate::NativeMaterializationWork::new(
+                root_budget, &cancellation,
+            ).map_err(|(error, _)| error)?;
+            let work = if scoped { original.native_volume_work(local_budget)? } else { original.clone() };
+            let baseline = original.live_allocation_bytes();
+            let prepared = ledger.prepare_node_change_with_native_work(file, &work)?;
+            let prefix = original.receipt();
+            assert_eq!(ledger.stamp(), before);
+            assert_eq!(observed.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+            assert_eq!(work.remaining()?.items_examined, 0);
+            assert_eq!(work.remaining()?.bytes_copied, 0);
+            assert!(work.charge(crate::WorkCounters {
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
+            }).is_err(), "aliases cannot spend accepted callback credit");
+            assert!(work.reserve_work(crate::WorkCounters {
+                bytes_copied: 1, ..crate::WorkCounters::UNCHARGED
+            }).is_err(), "aliases cannot spend accepted slot copy credit");
+            body.store(42, std::sync::atomic::Ordering::Release);
+            cancellation.cancel();
+            {
+                let _origin = origin.enter();
+                ledger.record_node_change_prepared(prepared)?;
+            }
+            assert_eq!(observed.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(original.receipt().items_examined, prefix.items_examined + 1);
+            assert_eq!(original.receipt().bytes_copied, prefix.bytes_copied + slot_bytes);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert!(!ledger.node_unchanged_since(file, before));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn aborting_native_node_permit_releases_only_physically_retired_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Observer;
+        impl ViewObserver for Observer {
+            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) { panic!("aborted node notified"); }
+        }
+        let ledger = ViewLedger::new();
+        let observer: Arc<dyn ViewObserver> = Arc::new(Observer);
+        let weak = Arc::downgrade(&observer);
+        ledger.observe(weak.clone())?;
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let file = FileId::from_bytes([114; 16]);
+        let before = ledger.stamp();
+        let prepared = ledger.prepare_node_change_with_native_work(file, &original)?;
+        let prefix = original.receipt();
+        let map_bytes = (prepared.slot.positions.slots.capacity()
+            * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
+        let observer_bytes = (prepared.observers.capacity()
+            * std::mem::size_of::<Arc<dyn ViewObserver>>()) as u64;
+        assert_eq!(original.live_allocation_bytes(), baseline + map_bytes + observer_bytes);
+        drop(observer);
+        assert!(weak.upgrade().is_some(), "prepared synchronous delivery owns its real observer");
+        cancellation.cancel();
+        let aborted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _prepared = prepared;
+            panic!("body edit aborted before mutation");
+        }));
+        assert!(aborted.is_err());
+        assert!(weak.upgrade().is_none());
+        assert_eq!(ledger.stamp(), before);
+        assert!(ledger.node_unchanged_since(file, before));
+        assert_eq!(original.receipt(), prefix, "unused completion credit is not spent work");
+        assert_eq!(original.live_allocation_bytes(), baseline + map_bytes,
+            "the installed canonical backing remains physically live after abort");
+        drop(ledger);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn panicking_native_node_observer_does_not_lose_node_or_backing_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Observer;
+        impl ViewObserver for Observer {
+            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) { panic!("observer failure"); }
+        }
+        let ledger = ViewLedger::new();
+        let observer: Arc<dyn ViewObserver> = Arc::new(Observer);
+        let weak = Arc::downgrade(&observer);
+        ledger.observe(weak.clone())?;
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let file = FileId::from_bytes([115; 16]);
+        let before = ledger.stamp();
+        let prepared = ledger.prepare_node_change_with_native_work(file, &original)?;
+        let prefix = original.receipt();
+        let map_bytes = (prepared.slot.positions.slots.capacity()
+            * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
+        drop(observer);
+        cancellation.cancel();
+        let notified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+            ledger.record_node_change_prepared(prepared)));
+        assert!(notified.is_err());
+        assert!(!ledger.node_unchanged_since(file, before));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(original.receipt().items_examined, prefix.items_examined + 1);
+        assert_eq!(original.live_allocation_bytes(), baseline + map_bytes);
+        drop(ledger);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_native_node_serializes_concurrent_canonical_map_growth()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ledger = ViewLedger::new();
+        let file = FileId::from_bytes([116; 16]);
+        let before = ledger.stamp();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let prepared = ledger.prepare_node_change_with_native_work(file, &original)?;
+        assert!(ledger.nodes.0.try_write().is_err(), "the accepted physical slot is stable");
+        std::thread::scope(|scope| -> Result<(), super::super::MountSourceError> {
+            let (started, ready) = std::sync::mpsc::channel();
+            let ledger = &ledger;
+            let joined = scope.spawn(move || {
+                started.send(()).expect("waiting recorder");
+                for byte in 1..=20 {
+                    ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])));
+                }
+            });
+            ready.recv().expect("concurrent recorder started");
+            ledger.record_node_change_prepared(prepared)?;
+            joined.join().expect("canonical recorder succeeds");
+            Ok(())
+        })?;
+        assert!(!ledger.node_unchanged_since(file, before));
+        for byte in 1..=20 {
+            assert!(!ledger.node_unchanged_since(FileId::from_bytes([byte; 16]), before));
+        }
+        assert_eq!(ledger.nodes.0.read().expect("canonical map").length, 21);
+        assert_eq!(original.live_allocation_bytes(), baseline,
+            "ordinary growth physically retires the exact native backing");
+        Ok(())
+    }
+
+    #[test]
+    fn native_node_fold_is_deferred_and_uses_accepted_real_scan_and_copy_credit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ledger = ViewLedger::new();
+        let mut seed = super::unbounded_view_work();
+        let mut owned = ViewLedgerAdmission::default();
+        for key in 0..MAXIMUM_TRACKED_KEYS as u64 {
+            let position = ViewStamp::next();
+            ledger.nodes.record_measured(key, position, &mut seed, &mut owned, super::AdmittedMap::Nodes)?;
+            position.record_in(&ledger.latest);
+        }
+        let count = MAXIMUM_TRACKED_KEYS * 2;
+        let file = (0..=u8::MAX).map(|byte| FileId::from_bytes([byte; 16]))
+            .find(|file| super::key_of(file) as usize & (count - 1) >= MAXIMUM_TRACKED_KEYS)
+            .ok_or("no unused direct probe for the full canonical map")?;
+        let before = ledger.stamp();
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(error, _)| error)?;
+        let aborted = ledger.prepare_node_change_with_native_work(file, &original)?;
+        assert!(aborted.slot.fold);
+        assert_eq!(aborted.slot.positions.floor, 0);
+        assert_eq!(aborted.slot.positions.length, MAXIMUM_TRACKED_KEYS);
+        drop(aborted);
+        assert_eq!(ledger.nodes.0.read().expect("unfolded map").floor, 0);
+        assert_eq!(ledger.stamp(), before);
+        let work = original.native_volume_work(crate::WorkBudget {
+            items_examined: count as u64 + 2,
+            bytes_copied: ((count + 1) * std::mem::size_of::<Option<(u64, u64)>>()) as u64,
+            allocation_operations: 0,
+            peak_allocation_bytes: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        })?;
+        let baseline = original.live_allocation_bytes();
+        let prepared = ledger.prepare_node_change_with_native_work(file, &work)?;
+        let prefix = original.receipt();
+        assert_eq!(work.remaining()?.items_examined, 0);
+        assert_eq!(work.remaining()?.bytes_copied, 0);
+        assert_eq!(prepared.slot.positions.floor, 0);
+        cancellation.cancel();
+        ledger.record_node_change_prepared(prepared)?;
+        let positions = ledger.nodes.0.read().expect("terminal folded map");
+        assert_eq!(positions.length, 1);
+        assert_eq!(positions.floor, before.0);
+        assert_eq!(positions.get(super::key_of(&file)), Some(ledger.stamp().0));
+        assert_eq!(original.receipt().items_examined, prefix.items_examined + count as u64);
+        assert_eq!(original.receipt().bytes_copied, prefix.bytes_copied
+            + ((count + 1) * std::mem::size_of::<Option<(u64, u64)>>()) as u64);
+        assert_eq!(original.live_allocation_bytes(), baseline,
+            "a borrowed canonical map is not adopted into native allocation custody");
+        Ok(())
+    }
 
     #[test]
     fn prepared_publication_uses_final_liveness_and_releases_borrowed_registration()

@@ -22,9 +22,9 @@ fn ready<T>(future: impl Future<Output = T>) -> Result<T, &'static str> {
     }
 }
 
-fn fixture() -> (GenerationExportManifest, [Bytes; 2]) {
-    let chunk = Bytes::from_static(b"transfer-chunk");
-    let root_body = Bytes::from_static(b"transfer-root");
+fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
+    let chunk = acyclic_stream::OwnedBytes::from_static(b"transfer-chunk");
+    let root_body = acyclic_stream::OwnedBytes::from_static(b"transfer-root");
     let chunk_id = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &chunk),
@@ -72,7 +72,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, object_id, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    ObjectStore::put(store, object_id, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(object_id)
 }
 
@@ -160,7 +160,7 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     assert_eq!(first.value.first_object, TransferCursor::START);
     assert_eq!(first.value.next, Some(TransferCursor::new(1)));
     assert_eq!(first.value.objects.len(), 1);
-    assert_eq!(first.value.objects[0].bytes, bodies[0]);
+    assert_eq!(first.value.objects[0].bytes.as_ref(), bodies[0].as_ref());
     assert_eq!(first.work.backend_read_operations, 1);
     assert!(first.work.peak_allocation_bytes > 0);
 
@@ -195,7 +195,7 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         &cancellation,
     ))??;
     assert_eq!(second.value.next, None);
-    assert_eq!(second.value.objects[0].bytes, bodies[1]);
+    assert_eq!(second.value.objects[0].bytes.as_ref(), bodies[1].as_ref());
     ready(import_generation_batch_async(
         &destination,
         &manifest,
@@ -212,7 +212,7 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
             manifest.config.limits.maximum_object_bytes,
             WorkBudget::UNBOUNDED,
         )?;
-        assert_eq!(read.value.bytes, body);
+        assert_eq!(read.value.bytes.as_ref(), body.as_ref());
     }
     Ok(())
 }
@@ -259,7 +259,7 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         &store,
         &manifest,
         TransferCursor::START,
-        &[Bytes::from_static(b"ignored")],
+        &[acyclic_stream::OwnedBytes::from_static(b"ignored")],
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -362,7 +362,7 @@ fn import_rejects_every_noncanonical_page_before_backend_work()
     for (cursor, bodies, maximum_objects, expected) in [
         (
             TransferCursor::START,
-            Vec::<Bytes>::new(),
+            Vec::<acyclic_stream::OwnedBytes>::new(),
             1,
             GenerationTransferError::EmptyBatch,
         ),

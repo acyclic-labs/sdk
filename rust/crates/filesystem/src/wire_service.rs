@@ -1293,7 +1293,7 @@ where
             self.filesystem
                 .import_object(
                     object,
-                    Bytes::from(chunk.contents),
+                    chunk.contents,
                     crate::WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )

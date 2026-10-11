@@ -4,7 +4,7 @@ use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -59,7 +59,7 @@ pub enum AppendOutcome {
 /// Ordinary SDK callers use [`PublicationPermit::Unrestricted`]. Managed
 /// operation windows issue lease permits whose gate is checked in the same
 /// storage transaction as the generation append.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PublicationPermit {
     /// No operation-window admission is required.
     Unrestricted,
@@ -534,25 +534,14 @@ pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HashedObject {
     object_id: ObjectId,
-    bytes: Bytes,
+    bytes: acyclic_stream::OwnedBytes,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-struct NativeImmutablePayload {
-    bytes: Vec<u8>,
-    _allocation: crate::materializer::NativeAllocation,
-    _control: crate::materializer::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl AsRef<[u8]> for NativeImmutablePayload {
-    fn as_ref(&self) -> &[u8] { &self.bytes }
-}
 
 impl HashedObject {
     /// Hashes `bytes` as one object of `kind`.
     #[must_use]
-    pub fn new(kind: ObjectKind, bytes: Bytes) -> Self {
+    pub fn new(kind: ObjectKind, bytes: acyclic_stream::OwnedBytes) -> Self {
         Self {
             object_id: ObjectId {
                 kind,
@@ -566,7 +555,7 @@ impl HashedObject {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         kind: ObjectKind,
-        bytes: Bytes,
+        bytes: acyclic_stream::OwnedBytes,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
@@ -587,9 +576,10 @@ impl HashedObject {
 
     /// Transfers a guarded vector into the physical immutable byte owner.
     ///
-    /// Errors leave both caller-owned inputs unchanged, including on a
-    /// different-ledger guard or denied owner allocation. Every byte alias
-    /// retains the original vector capacity until the final alias is dropped.
+    /// Validation failures leave caller inputs unchanged. After the actual
+    /// vector/guard transfer, constructor denial physically drops that failed
+    /// payload before returning its original cause; every successful alias
+    /// retains the original vector capacity until its final drop.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_vec(
         kind: ObjectKind,
@@ -610,23 +600,27 @@ impl HashedObject {
             ..WorkCounters::default()
         };
         work.admit(hash)?;
-        let control = work.claim(std::mem::size_of::<NativeImmutablePayload>() as u64)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
         work.record_admitted(hash)?;
         work.admit(WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
-        let payload = NativeImmutablePayload {
-            bytes: std::mem::take(bytes),
-            _allocation: payload_allocation,
-            _control: control,
-        };
-        Ok(Self { object_id, bytes: Bytes::from_owner(payload) })
+        let payload_original = payload_allocation.work().clone();
+        let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
+            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter_owner(),
+        ).map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout)
+            }
+        })?;
+        Ok(Self { object_id, bytes })
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    pub(crate) fn verify(object_id: ObjectId, bytes: Bytes) -> Option<Self> {
+    pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
         (object_digest(object_id.kind, &bytes) == object_id.digest)
             .then_some(Self { object_id, bytes })
     }
@@ -645,13 +639,13 @@ impl HashedObject {
 
     /// The canonical bytes.
     #[must_use]
-    pub const fn bytes(&self) -> &Bytes {
+    pub const fn bytes(&self) -> &acyclic_stream::OwnedBytes {
         &self.bytes
     }
 
     /// Releases the identity and bytes.
     #[must_use]
-    pub fn into_parts(self) -> (ObjectId, Bytes) {
+    pub fn into_parts(self) -> (ObjectId, acyclic_stream::OwnedBytes) {
         (self.object_id, self.bytes)
     }
 }
@@ -693,7 +687,7 @@ pub enum ObjectReadRetention {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectRead {
     /// Complete canonical object bytes.
-    pub bytes: Bytes,
+    pub bytes: OwnedBytes,
     /// Whether those bytes are a shared view or an owned returned buffer.
     pub retention: ObjectReadRetention,
 }
@@ -713,7 +707,7 @@ pub struct ObjectWrite {
     /// Exact typed immutable identity.
     pub object_id: ObjectId,
     /// Canonical bytes authenticated by `object_id`.
-    pub bytes: Bytes,
+    pub bytes: OwnedBytes,
 }
 
 impl std::ops::Deref for ObjectRead {
@@ -741,7 +735,7 @@ pub trait ObjectStore: Send + Sync {
     /// # Errors
     ///
     /// Returns a typed error for digest mismatch or storage failure.
-    fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget) -> ObjectResult<()>;
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()>;
 
     /// Admits an ordered bounded group through one backend batch operation.
     ///
@@ -812,7 +806,7 @@ pub trait ObjectStore: Send + Sync {
 }
 
 impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
-    fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget) -> ObjectResult<()> {
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         (**self).put(object_id, bytes, budget)
     }
 
@@ -924,7 +918,13 @@ pub enum ObjectStoreError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Native(#[from] crate::materializer::NativeTreeMaterializationError),
+    /// The original Objects failure, including every acknowledged prefix and
+    /// intrinsically owned diagnostic or failed request packet.
+    #[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
+    #[error(transparent)]
+    NativeObjects(#[from] acyclic_objects::v1::NativeObjectsError),
     /// The logical Objects provider returned its canonical typed category.
+    #[cfg(feature = "distributed")]
     #[error(transparent)]
     LogicalObjects(#[from] acyclic_objects::v1::Error),
 }

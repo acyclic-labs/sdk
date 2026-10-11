@@ -1,6 +1,7 @@
 //! Zero-copy logical range clone over immutable sparse extents.
 
 use super::DecodeLimits;
+use super::extent_mutation::ExtentMutationError;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind};

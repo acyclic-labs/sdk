@@ -40,6 +40,14 @@ treap state. A checkpoint may report cancellation or budget failure after durabl
 CAS; reconciliation retains all measured work and resumes the same WAL, not a
 replacement journal.
 
+Ordinary transactions expose `commit_with_permit_guarded` for asynchronous owner
+checks and `commit_with_permit_measured_guarded` for checks returning an ordinary
+work receipt. Both use the existing closure preparation and authority seal, including
+stale retries that perform publication. Caller errors remain whole typed values;
+failed callback work joins the SDK preparation prefix. Already-committed retries
+do not perform a new CAS or demand a new owner seal. Neither route creates a native
+ledger; native publication retains its distinct original-work accounting.
+
 Initialize `acyclic_native_runtime::initialize_native_io_services()` and, when
 mounting, `acyclic_fs::initialize_native_mount_services()` during explicit startup,
 before supplying producer budgets. These initialize the existing native and callback
@@ -54,8 +62,31 @@ Native demand pages retain immutable entries and the original cursor until
 `SourcePagePublication::accept` succeeds. Consumers reserve the publication's
 reported cleanup work before projecting entries; abort or drop restores the original
 cursor, including an unpublished first page. Publication is not authority.
-Owned native blob chunks report actual retained buffer capacity separately from
-visible byte length. Canonical ROOT, TREE, TABLE and ATTR encoders use the same
+Source chunks, immutable objects and file-read payloads use `acyclic_stream::OwnedBytes`.
+Native clones and slices, including empty views, keep the original allocation
+custody inseparable from their bytes until final physical drop. Source packets
+report actual retained buffer capacity separately from visible length; static
+and opaque ordinary storage do not imply owned capacity. Native snapshot byte reads
+retire request metadata before returning `OwnedBytes`; separately returned lookup
+or file-reference guards cover only actual metadata, never detached byte custody.
+Pending native creations keep the existing mutable batching engine. Buffer growth
+and copy-on-write admit the new actual backing before replacement; a prepared
+node-change permit reserves the existing ledger slot and observer work before
+the held body is edited. Terminal recording commits the accepted slot even after
+late cancellation, and releases the node lock before observer callbacks.
+`GroupedChange::CreateFile` carries `OwnedBytes`: promotion transfers the original
+body allocation guard, so restored pending and backend aliases share custody
+until their last physical drop. A rejected promotion preserves the original
+mutable vector and guard without resetting already reached allocation attempts.
+Ordinary write/resize calls on a funded pending body borrow its same original
+meter, resource allowance and cancellation token; only genuinely ordinary
+unfunded bodies keep the ordinary path. The stored alias is accounting custody,
+not a new namespace or task permission.
+Native demand reads, source link packets and native blob-source fallback reads
+prepare byte storage and carrier controls on the original meter before physical
+I/O. Freezing the completed prefix allocates and copies nothing; link packet
+reads share the ordinary host syscall engine without a post-read target copy.
+Canonical ROOT, TREE, TABLE and ATTR encoders use the same
 engine for ordinary and measured calls, admitting encoding allocations and work
 before construction. Necessary short-frame future boxes likewise admit their actual
 compiled size and preserve nested failure work, rather than using a fixed estimate
@@ -161,7 +192,15 @@ Original native accounting holds its shared lock only for admission, completed
 counters and custody bookkeeping. Allocation, serialization, physical I/O and
 observer callbacks run outside that lock. Native transaction frontdoors feed
 the same canonical authored-mutation compiler with the actual input custody;
-immutable borrowed `Bytes` are not adopted as new allocations.
+immutable borrowed `OwnedBytes` are not adopted as new allocations.
+
+Lazy publication retains its original basis, source, overlay, shadows, configuration,
+candidate and permit in the same authenticated canonical DATA record. Pending and
+completed companion fields are latest-operation hints, not historical authority.
+Exact retries after later publications validate that original evidence and the
+current owner at the actual CAS boundary. A legacy record without the evidence
+retains its genuine generation and reports snapshot uncertainty; it never adopts
+the current head or manufactures an absent source.
 
 Host-private state I/O requires `NativeHostPrivateStateRoot`, opened explicitly
 by trusted configured-service bootstrap under its existing creation authority.

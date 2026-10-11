@@ -58,13 +58,13 @@ fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn std::
     };
     store.put(
         object_id,
-        Bytes::from_static(b"abcdef"),
+        OwnedBytes::from_static(b"abcdef"),
         WorkBudget::UNBOUNDED,
     )?;
     assert_eq!(
         store.read(object_id, 6, WorkBudget::UNBOUNDED)?.value,
         ObjectRead {
-            bytes: Bytes::from_static(b"abcdef"),
+            bytes: OwnedBytes::from_static(b"abcdef"),
             retention: ObjectReadRetention::Shared,
         }
     );
@@ -90,8 +90,8 @@ fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"second"),
     };
-    store.put(first, Bytes::from_static(b"first"), WorkBudget::UNBOUNDED)?;
-    store.put(second, Bytes::from_static(b"second"), WorkBudget::UNBOUNDED)?;
+    store.put(first, OwnedBytes::from_static(b"first"), WorkBudget::UNBOUNDED)?;
+    store.put(second, OwnedBytes::from_static(b"second"), WorkBudget::UNBOUNDED)?;
     let receipt = store.read_many(
         &[
             crate::storage::ObjectReadRequest {
@@ -116,9 +116,9 @@ fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
             .map(|value| value.bytes.clone())
             .collect::<Vec<_>>(),
         vec![
-            Bytes::from_static(b"second"),
-            Bytes::from_static(b"first"),
-            Bytes::from_static(b"second"),
+            OwnedBytes::from_static(b"second"),
+            OwnedBytes::from_static(b"first"),
+            OwnedBytes::from_static(b"second"),
         ]
     );
     assert_eq!(receipt.work.backend_read_operations, 1);
@@ -144,13 +144,13 @@ fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
     };
     store.put(
         object_id,
-        Bytes::from_static(b"authentic"),
+        OwnedBytes::from_static(b"authentic"),
         WorkBudget::UNBOUNDED,
     )?;
     let mut state = store.objects.write().map_err(|_| "memory object lock poisoned")?;
     let index = state.objects.binary_search_by_key(&object_id, |(id, _)| *id)
         .map_err(|_| "resident object is missing")?;
-    state.objects[index].1 = Bytes::from_static(b"corrupted");
+    state.objects[index].1 = OwnedBytes::from_static(b"corrupted");
     drop(state);
     assert!(matches!(
         store.read(object_id, 64, WorkBudget::UNBOUNDED),
@@ -498,7 +498,7 @@ fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     assert!(matches!(
         store.put(
             object_id,
-            Bytes::from_static(b"oversized"),
+            OwnedBytes::from_static(b"oversized"),
             WorkBudget::UNBOUNDED,
         ),
         Err(ObjectFailure {
@@ -509,7 +509,7 @@ fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     assert!(matches!(
         store.put(
             object_id,
-            Bytes::from_static(b"nope"),
+            OwnedBytes::from_static(b"nope"),
             WorkBudget::UNBOUNDED,
         ),
         Err(ObjectFailure {
@@ -527,12 +527,12 @@ fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     ));
     store.put(
         object_id,
-        Bytes::from_static(b"data"),
+        OwnedBytes::from_static(b"data"),
         WorkBudget::UNBOUNDED,
     )?;
     store.put(
         object_id,
-        Bytes::from_static(b"data"),
+        OwnedBytes::from_static(b"data"),
         WorkBudget::UNBOUNDED,
     )?;
     assert!(matches!(
@@ -721,17 +721,17 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
         .objects
         .write()
         .map_err(|_| "object lock poisoned")?
-        .insert(object_id, Bytes::from_static(b"corrupt"));
+        .objects.push((object_id, OwnedBytes::from_static(b"corrupt")));
     let failure = objects
         .put(
             object_id,
-            Bytes::from_static(b"authentic"),
+            OwnedBytes::from_static(b"authentic"),
             WorkBudget::UNBOUNDED,
         )
         .err()
         .ok_or("conflicting existing object unexpectedly succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Corrupt));
-    assert_eq!(failure.work.object_bytes_written, 9);
+    assert_eq!(failure.work.object_bytes_written, 0);
     Ok(())
 }
 
@@ -817,7 +817,7 @@ fn poisoned_memory_locks_reject_every_surface_with_exact_work()
         std::panic::resume_unwind(Box::new("poison object lock"));
     }));
     assert!(poisoned.is_err());
-    let bytes = Bytes::from_static(b"object");
+    let bytes = OwnedBytes::from_static(b"object");
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, &bytes),
@@ -1085,7 +1085,7 @@ fn original_object_put_denies_table_allocation_before_backend_write()
     let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let before = work.receipt();
     let store = MemoryObjectStore::default();
-    let object = crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, Bytes::from_static(b"body"));
+    let object = crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     let result = ImmediateObjectStore::put_hashed_with_native_work(
         &store, object.clone(), &work, &cancellation,
     );
@@ -1114,7 +1114,7 @@ fn original_direct_object_put_records_real_hash_and_rejects_digest_before_mutati
     };
     let before = work.receipt();
     assert!(matches!(ImmediateObjectStore::put_with_native_work(
-        &store, id, Bytes::from_static(b"nope"), &work, &cancellation,
+        &store, id, OwnedBytes::from_static(b"nope"), &work, &cancellation,
     ), Err(ObjectStoreError::DigestMismatch)));
     let rejected = work.receipt();
     assert_eq!(rejected.bytes_hashed - before.bytes_hashed, 4 + OBJECT_DIGEST_ENVELOPE_BYTES);
@@ -1122,7 +1122,7 @@ fn original_direct_object_put_records_real_hash_and_rejects_digest_before_mutati
     assert_eq!(rejected.object_bytes_written, 0);
     assert_eq!(rejected.allocation_operations, before.allocation_operations);
     ImmediateObjectStore::put_with_native_work(
-        &store, id, Bytes::from_static(b"body"), &work, &cancellation,
+        &store, id, OwnedBytes::from_static(b"body"), &work, &cancellation,
     )?;
     let admitted = work.receipt();
     assert_eq!(admitted.bytes_hashed - rejected.bytes_hashed, 4 + OBJECT_DIGEST_ENVELOPE_BYTES);
@@ -1131,7 +1131,7 @@ fn original_direct_object_put_records_real_hash_and_rejects_digest_before_mutati
     assert_eq!(admitted.allocation_operations, before.allocation_operations + 1);
     let table = store.objects.read().map_err(|_| "object table lock poisoned")?;
     assert_eq!(table.table_custody.as_ref().ok_or("native table guard is missing")?.bytes(),
-        (table.objects.capacity() * size_of::<(ObjectId, Bytes)>()) as u64);
+        (table.objects.capacity() * size_of::<(ObjectId, OwnedBytes)>()) as u64);
     drop(table);
     assert_eq!(ObjectStore::read(&store, id, 4, WorkBudget::UNBOUNDED)?.value.bytes.as_ref(), b"body");
     Ok(())
@@ -1168,6 +1168,36 @@ fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     assert_eq!(work.receipt().object_bytes_written, 4);
     let body_live = work.live_allocation_bytes();
     let view = ObjectStore::read(&*store, id, 4, WorkBudget::UNBOUNDED)?.value;
+    let reader = NativeMaterializationWork::new(native_object_budget(), &cancellation)
+        .map_err(|(error, _)| error)?;
+    let reader_before = reader.receipt();
+    let native_view = ObjectStore::read_with_native_work(&*store, id, 4, &reader, &cancellation)?;
+    assert_eq!(reader.receipt().allocation_operations, reader_before.allocation_operations);
+    assert_eq!(work.live_allocation_bytes(), body_live);
+    assert_eq!(native_view.read().bytes.as_ptr(), view.bytes.as_ptr());
+    let alias_before = work.receipt();
+    let alias = native_view.read().bytes.clone();
+    assert_eq!(work.receipt(), alias_before);
+    assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
+    // A duplicate ordinary input leaves the original resident carrier intact.
+    ObjectStore::put(&*store, id, OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED)?;
+    assert_eq!(work.live_allocation_bytes(), body_live);
+    drop(native_view);
+    // Table growth moves the carrier without replacing its payload controls.
+    let second = crate::storage::HashedObject::new(
+        crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"second"),
+    );
+    ImmediateObjectStore::put_hashed_with_native_work(&*store, second, &work, &cancellation)?;
+    let resident = ObjectStore::read(&*store, id, 4, WorkBudget::UNBOUNDED)?.value;
+    assert_eq!(resident.bytes.as_ptr(), alias.as_ptr());
+    drop(resident);
+    // Removing the map's alias cannot release custody retained by either read.
+    let mut state = store.objects.write().map_err(|_| "object table lock poisoned")?;
+    let index = state.objects.binary_search_by_key(&id, |(id, _)| *id)
+        .map_err(|_| "resident object is missing")?;
+    drop(state.objects.remove(index));
+    drop(state);
+    assert!(work.live_allocation_bytes() > baseline);
     ImmediateObjectStore::flush_before_publish_with_native_work(
         &store, crate::async_storage::PublicationScope::Everything,
         &work, &cancellation,
@@ -1176,7 +1206,7 @@ fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     assert!(work.live_allocation_bytes() < body_live);
     assert!(work.live_allocation_bytes() > baseline);
     assert_eq!(view.bytes.as_ref(), b"body");
-    let alias = view.bytes.clone();
+    assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
     drop(view);
     assert!(work.live_allocation_bytes() > baseline);
     drop(alias);
@@ -1258,12 +1288,12 @@ fn original_object_batch_records_actual_hash_and_partial_mutation_prefix()
     ).map_err(|(error, _)| error)?;
     let mut writes = [
         ObjectWrite {
-            object_id: crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, Bytes::from_static(b"x")).object_id(),
-            bytes: Bytes::from_static(b"x"),
+            object_id: crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"x")).object_id(),
+            bytes: OwnedBytes::from_static(b"x"),
         },
         ObjectWrite {
-            object_id: crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, Bytes::from_static(b"y")).object_id(),
-            bytes: Bytes::from_static(b"y"),
+            object_id: crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"y")).object_id(),
+            bytes: OwnedBytes::from_static(b"y"),
         },
     ];
     writes.sort_by_key(|write| std::cmp::Reverse(write.object_id));
@@ -1295,7 +1325,7 @@ fn original_object_read_batch_is_one_call_and_retains_only_output_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::materializer::NativeMaterializationWork;
     let store = MemoryObjectStore::default();
-    let object = crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, Bytes::from_static(b"body"));
+    let object = crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     store.put(object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED)?;
     let cancellation = crate::CancellationToken::new();
     let work = NativeMaterializationWork::new(native_object_budget(), &cancellation).map_err(|(error, _)| error)?;
@@ -1541,12 +1571,16 @@ fn original_owner_failure_wins_after_planning_outside_every_lock()
     let cancellation = crate::CancellationToken::new();
     let work = NativeMaterializationWork::new(native_authority_budget(), &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut calls = 0;
-    let mut guard = |original: NativeMaterializationWork| {
-        calls += 1;
-        assert!(original.shares_ledger(&work));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback_calls = calls.clone();
+    let callback_work = work.clone();
+    let callback_store = store.clone();
+    let callback_cancellation = cancellation.clone();
+    let mut guard = move |original: &NativeMaterializationWork| {
+        callback_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(original.shares_ledger(&callback_work));
         let actual = crate::async_storage::ImmediateAuthorityStore::head_with_native_work(
-            store.as_ref(), id, &original, &cancellation,
+            callback_store.as_ref(), id, original, &callback_cancellation,
         ).expect("owner callback must hold no provider or root lock");
         assert_eq!(actual, head);
         original.charge(WorkCounters { items_examined: 5, ..WorkCounters::default() })
@@ -1556,7 +1590,7 @@ fn original_owner_failure_wins_after_planning_outside_every_lock()
     assert!(matches!(immediate_mutation_ready(AsyncAuthorityStore::compare_and_append_guarded_with_native_owner(
         &store, native_mutation_request(id, head), &work, &cancellation, &mut guard,
     ))?, Err(OriginalMutationOwnerFailure::Owner(0xa7))));
-    assert_eq!(calls, 1);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(AuthorityStore::head(store.as_ref(), id, WorkBudget::UNBOUNDED)?.value, head);
     let prefix = work.receipt();
     assert!(prefix.bytes_hashed > 0);
@@ -1584,9 +1618,11 @@ fn original_owner_revalidates_head_permit_and_cancellation_at_publication()
     let supplied = crate::CancellationToken::new();
     let work = NativeMaterializationWork::new(native_authority_budget(), &root)
         .map_err(|(error, _)| error)?;
-    let mut guard = |original: NativeMaterializationWork| {
+    let callback_store = store.clone();
+    let callback_supplied = supplied.clone();
+    let mut guard = move |original: &NativeMaterializationWork| {
         let result = crate::async_storage::ImmediateAuthorityStore::fence_with_native_work(
-            store.as_ref(), id, head, &original, &supplied,
+            callback_store.as_ref(), id, head, original, &callback_supplied,
         ).map(|_| ());
         std::future::ready(result)
     };
@@ -1602,18 +1638,20 @@ fn original_owner_revalidates_head_permit_and_cancellation_at_publication()
         operation_id: *request.commit.operation_id.as_bytes(), gate_tail: 7, expected: actual,
     };
     let prefix = work.receipt();
-    let mut called = false;
-    let mut forbidden = |_: NativeMaterializationWork| {
-        called = true;
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_called = called.clone();
+    let mut forbidden = move |_: &NativeMaterializationWork| {
+        callback_called.store(true, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Ok::<(), AuthorityStoreError>(()))
     };
     assert!(matches!(immediate_mutation_ready(AsyncAuthorityStore::compare_and_append_guarded_with_native_owner(
         &store, request, &work, &supplied, &mut forbidden,
     ))?, Err(AuthorityStoreError::RejectedStatic(_))));
-    assert!(!called);
+    assert!(!called.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(work.receipt(), prefix);
-    let mut cancel = |_: NativeMaterializationWork| {
-        supplied.cancel();
+    let callback_supplied = supplied.clone();
+    let mut cancel = move |_: &NativeMaterializationWork| {
+        callback_supplied.cancel();
         std::future::ready(Ok::<(), AuthorityStoreError>(()))
     };
     assert!(matches!(immediate_mutation_ready(AsyncAuthorityStore::compare_and_append_guarded_with_native_owner(
@@ -1711,15 +1749,16 @@ fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinary_fall
     assert!(matches!(immediate_mutation_ready(AsyncAuthorityStore::compare_and_append_guarded_with_native_work(
         &store, request.clone(), &work, &cancellation,
     ))?, Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    let mut called = false;
-    let mut guard = |_: NativeMaterializationWork| {
-        called = true;
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_called = called.clone();
+    let mut guard = move |_: &NativeMaterializationWork| {
+        callback_called.store(true, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Ok::<(), AuthorityStoreError>(()))
     };
     assert!(matches!(immediate_mutation_ready(AsyncAuthorityStore::compare_and_append_guarded_with_native_owner(
         &store, request.clone(), &work, &cancellation, &mut guard,
     ))?, Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    assert!(!called);
+    assert!(!called.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(work.receipt(), prefix);
     assert!(matches!(AuthorityStore::head(store.as_ref(), id, WorkBudget::UNBOUNDED),
         Err(AuthorityFailure { error: AuthorityStoreError::Missing, .. })));

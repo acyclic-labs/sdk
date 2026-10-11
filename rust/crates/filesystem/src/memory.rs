@@ -12,6 +12,7 @@ use crate::storage::{
     ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
 use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::sync::{Mutex, RwLock};
@@ -793,25 +794,27 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn commit_workspace_fork_guarded_with_native_work<'a, F, Fut>(
+    async fn commit_workspace_fork_guarded_with_native_work<'a, E, F, Fut>(
         &self, fork: crate::WorkspaceForkCommit, permit: crate::PublicationPermit,
         original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<crate::WorkspaceForkOutcome, crate::FsError>
-    where F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), crate::FsError>> + Send {
+    ) -> Result<crate::WorkspaceForkOutcome, E>
+    where E: From<crate::FsError> + Send + 'static,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static {
         crate::async_storage::commit_workspace_fork_in_steps_guarded_with_native_work(
             self, fork, permit, original, cancellation, guard,
         ).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_guarded_with_native_work<'a, F, Fut>(
+    async fn create_authority_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, epoch: Epoch,
         original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<CreateAuthorityOutcome, crate::FsError>
-    where F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), crate::FsError>> + Send {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
+    ) -> Result<CreateAuthorityOutcome, E>
+    where E: From<crate::FsError> + Send + 'static,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static {
+        let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(crate::FsError::from)?;
         loop {
             let plan = self.plan_create(authority, &mut accounting).map_err(|failure| crate::FsError::from(failure.error))?;
             accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
@@ -825,21 +828,22 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_with_first_record_guarded_with_native_work<'a, F, Fut>(
+    async fn create_authority_with_first_record_guarded_with_native_work<'a, E, F, Fut>(
         &self, authority: AuthorityId, commit: ProposedCommit,
         original: &'a crate::NativeMaterializationWork, cancellation: &crate::CancellationToken, guard: &mut F,
-    ) -> Result<bool, crate::FsError>
-    where F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), crate::FsError>> + Send {
-        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
+    ) -> Result<bool, E>
+    where E: From<crate::FsError> + Send + 'static,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static {
+        let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(crate::FsError::from)?;
         loop {
             let plan = self.plan_first_record(authority, &commit, &mut accounting)
                 .map_err(|failure| crate::FsError::from(failure.error))?;
-            if !matches!(&plan, MemoryFirstRecordPlan::Resolved(false)) {
-                accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
-                guard(original).await?;
-                accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
-            }
+            // The state can change while the callback yields, including to a
+            // matching retained first record. Seal every publication attempt.
+            accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
+            guard(original).await?;
+            accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
             if let Some(value) = self.publish_first_record(authority, &commit, plan, &mut accounting)
                 .map_err(|failure| crate::FsError::from(failure.error))? {
                 return Ok(value);
@@ -931,15 +935,15 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         cancellation: &crate::CancellationToken, guard: &mut F,
     ) -> Result<(AppendOutcome, crate::NativeAllocation), E>
     where
-        F: FnMut(crate::NativeMaterializationWork) -> Fut + Send,
-        Fut: Future<Output = Result<(), E>> + Send,
-        E: From<AuthorityStoreError> + Send,
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<AuthorityStoreError> + Send + 'static,
     {
         let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(E::from)?;
         let plan = self.plan_append(&request, &mut accounting).map_err(|failure| E::from(failure.error))?;
         // The complete original root is aliased, never replaced or reduced.
         // Every store and ledger loan above ended before calling the owner.
-        guard(original.clone()).await?;
+        guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|failure| E::from(failure.error))?;
         let allocation = original.claim_allocation(0, 0)
@@ -1283,6 +1287,10 @@ fn bounded_page_bounds(
 }
 
 /// Deterministic immutable-object store.
+///
+/// Payloads retain their intrinsic byte custody. Shared reads clone the same
+/// carrier without allocating controls or adopting ordinary storage into native
+/// quotas; table capacity is accounted separately to the original writer.
 pub struct MemoryObjectStore {
     maximum_object_bytes: u64,
     objects: RwLock<MemoryObjectState>,
@@ -1290,7 +1298,7 @@ pub struct MemoryObjectStore {
 
 // The backing vector is destroyed before its original capacity guard.
 struct MemoryObjectState {
-    objects: Vec<(ObjectId, Bytes)>,
+    objects: Vec<(ObjectId, OwnedBytes)>,
     #[cfg(not(target_arch = "wasm32"))]
     table_custody: Option<crate::materializer::NativeAllocation>,
 }
@@ -1304,7 +1312,7 @@ impl MemoryObjectState {
         }
     }
 
-    fn get(&self, id: &ObjectId) -> Option<&Bytes> {
+    fn get(&self, id: &ObjectId) -> Option<&OwnedBytes> {
         self.objects.binary_search_by_key(id, |(id, _)| *id)
             .ok().map(|index| &self.objects[index].1)
     }
@@ -1447,7 +1455,7 @@ impl MemoryObjectStore {
         let mut replacement = None;
         if needed > state.objects.capacity() {
             let capacity = needed.max(state.objects.capacity().checked_mul(2).ok_or(crate::WorkError::Overflow)?);
-            let requested = capacity.checked_mul(size_of::<(ObjectId, Bytes)>())
+            let requested = capacity.checked_mul(size_of::<(ObjectId, OwnedBytes)>())
                 .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
             let allocation = WorkCounters {
                 allocation_operations: 1, peak_allocation_bytes: requested,
@@ -1464,7 +1472,7 @@ impl MemoryObjectStore {
             // Declare after the guard so allocator failure frees the backing first.
             let mut table = Vec::new();
             table.try_reserve_exact(capacity).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-            let actual = table.capacity().checked_mul(size_of::<(ObjectId, Bytes)>())
+            let actual = table.capacity().checked_mul(size_of::<(ObjectId, OwnedBytes)>())
                 .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(custody) = &mut replacement_custody { custody.resize_retained(actual)?; }
@@ -1479,7 +1487,7 @@ impl MemoryObjectStore {
         };
         let copy = WorkCounters {
             bytes_copied: if replacement.is_some() {
-                state.objects.len().checked_mul(size_of::<(ObjectId, Bytes)>())
+                state.objects.len().checked_mul(size_of::<(ObjectId, OwnedBytes)>())
                     .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?
             } else { 0 },
             ..WorkCounters::default()
@@ -1497,7 +1505,7 @@ impl MemoryObjectStore {
         for entry in writes {
             if let Err(index) = state.objects.binary_search_by_key(&entry.object_id, |(id, _)| *id) {
                 let shift = state.objects.len().checked_sub(index)
-                    .and_then(|count| count.checked_mul(size_of::<(ObjectId, Bytes)>()))
+                    .and_then(|count| count.checked_mul(size_of::<(ObjectId, OwnedBytes)>()))
                     .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
                 let copied = WorkCounters { bytes_copied: shift, ..WorkCounters::default() };
                 let written = WorkCounters {
@@ -1616,7 +1624,7 @@ impl Default for MemoryObjectStore {
 }
 
 impl ObjectStore for MemoryObjectStore {
-    fn put(&self, object_id: ObjectId, bytes: Bytes, budget: WorkBudget) -> ObjectResult<()> {
+    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         let mut accounting = MemoryObjectAccounting::portable(budget);
         let result = self.put_admitted(&[ObjectWrite { object_id, bytes }], false, &mut accounting);
         result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
@@ -1734,7 +1742,7 @@ impl ObjectStore for MemoryObjectStore {
 impl crate::async_storage::ImmediateObjectStore for MemoryObjectStore {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: Bytes,
+        &self, object_id: ObjectId, bytes: OwnedBytes,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(), ObjectStoreError> {

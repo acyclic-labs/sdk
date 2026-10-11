@@ -21,7 +21,7 @@ use crate::demand::{NativeDemandReadMeter, native_demand_error};
 use crate::demand::DemandWork;
 use crate::native_host::NativeHostWork as _;
 use crate::kernel::{FileMetadata, MetadataField};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fs::Metadata;
@@ -2933,8 +2933,8 @@ impl<K: Ord, V> DarwinMap<K, V> {
     }
 }
 
-/// Scratch still owned by this request; `into_chunk` moves its original
-/// allocation claim to the source engine's existing content packet.
+/// Scratch still owned by this request; source bytes retain their original
+/// allocation claim inside the canonical carrier through every alias.
 struct DarwinTransient<T> {
     value: Option<T>,
     meter: Arc<NativeDemandReadMeter>,
@@ -2985,12 +2985,12 @@ impl DarwinTransient<Vec<u8>> {
     }
 }
 
-impl DarwinTransient<Bytes> {
+impl DarwinTransient<OwnedBytes> {
     fn into_chunk(mut self) -> crate::kernel::OwnedSourceChunk {
         let bytes = self.value.take().expect("native request bytes");
         let logical_owned_bytes = std::mem::take(&mut self.bytes);
         if self.intrinsic {
-            crate::kernel::OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes, self.allocation.take())
+            crate::kernel::OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes)
         } else {
             crate::kernel::OwnedSourceChunk::claimed(bytes, logical_owned_bytes)
         }
@@ -3156,15 +3156,15 @@ impl DarwinCallbackWork<'_> {
         }
     }
 
-    fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> Result<DarwinTransient<Bytes>, i32> {
-        let (bytes, logical_owned_bytes, intrinsic, allocation) = chunk.into_owned_parts();
-        Ok(DarwinTransient { value: Some(bytes), meter: Arc::clone(self.native.meter()), bytes: logical_owned_bytes, intrinsic, allocation })
+    fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> Result<DarwinTransient<OwnedBytes>, i32> {
+        let (bytes, logical_owned_bytes, intrinsic) = chunk.into_owned_parts();
+        Ok(DarwinTransient { value: Some(bytes), meter: Arc::clone(self.native.meter()), bytes: logical_owned_bytes, intrinsic, allocation: None })
     }
 
-    fn copy_bytes(&self, bytes: &[u8]) -> Result<DarwinTransient<Bytes>, i32> {
+    fn copy_bytes(&self, bytes: &[u8]) -> Result<DarwinTransient<OwnedBytes>, i32> {
         if bytes.is_empty() {
             self.check()?;
-            return Ok(DarwinTransient { value: Some(Bytes::new()), meter: Arc::clone(self.native.meter()), bytes: 0, intrinsic: false, allocation: None });
+            return Ok(DarwinTransient { value: Some(OwnedBytes::new()), meter: Arc::clone(self.native.meter()), bytes: 0, intrinsic: false, allocation: None });
         }
         let delta = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
         let materialization = self.native.native_materialization_work();
@@ -3176,7 +3176,18 @@ impl DarwinCallbackWork<'_> {
         value.extend_from_slice(bytes);
         materialization.record_admitted(delta).map_err(|error| self.native_error(error.into()))?;
         let retained = allocation.bytes();
-        Ok(DarwinTransient { value: Some(Bytes::from(value)), meter: Arc::clone(self.native.meter()), bytes: retained, intrinsic: true, allocation: Some(allocation) })
+        let value = OwnedBytes::from_vec_with_guard(
+            value, allocation, materialization.runtime_meter_owner(),
+        ).map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                self.native_error(materialization.runtime_error(error).into())
+            }
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                unreachable!("guarded vector conversion only fails original admission")
+            }
+        })?;
+        Ok(DarwinTransient { value: Some(value), meter: Arc::clone(self.native.meter()), bytes: retained, intrinsic: true, allocation: None })
     }
 
     fn retained_file(&self, file: (Arc<dyn MountOpenFile>, u64)) -> Result<DarwinSourceFile, i32> {
@@ -3258,6 +3269,8 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
+        MountSourceError::WorkspacePrefixFailure { source, .. } => super::native_workspace_errno(source),
+        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
         MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
             super::native_source_text_errno(*kind),
@@ -3304,6 +3317,10 @@ fn darwin_handler_is_fatal(error: &NativeMountError) -> bool {
             match error.semantic_error() {
                 MountSourceError::NativeWork(error) => super::native_materialization_failure_is_fatal(error),
                 MountSourceError::WorkspaceCause(error) => super::native_workspace_failure_is_fatal(error),
+                MountSourceError::WorkspacePrefixFailure { source, accounting } =>
+                    super::native_workspace_failure_is_fatal(source)
+                        || super::native_workspace_failure_is_fatal(accounting),
+                MountSourceError::NativeCallbackDenied { .. } => false,
                 MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_failure_is_fatal(&error.source),
                 MountSourceError::Cancelled | MountSourceError::Work(_)
                 | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate

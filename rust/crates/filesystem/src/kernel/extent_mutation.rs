@@ -19,7 +19,6 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
-use bytes::Bytes;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -954,7 +953,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     };
     accounting.admit(hashing)?;
     let Owned { value, allocation, bytes } = encoded;
-    let hashed = HashedObject::new(kind, Bytes::from(value));
+    let hashed = HashedObject::new(kind, value.into());
     accounting.charge(hashing)?;
     accounting.charge(WorkCounters { page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED })?;
     let object = hashed.object_id();

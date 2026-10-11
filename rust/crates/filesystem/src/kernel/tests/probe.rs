@@ -8,7 +8,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectStore, object_digest};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
@@ -35,7 +35,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, id, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    ObjectStore::put(store, id, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(id)
 }
 
@@ -1308,7 +1308,7 @@ struct PanicProbeStore<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsyncObjectStore for PanicProbeStore<'_> {
     async fn put(
-        &self, object: ObjectId, bytes: Bytes, budget: WorkBudget, cancellation: &CancellationToken,
+        &self, object: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<()> {
         AsyncObjectStore::put(&self.store, object, bytes, budget, cancellation).await
     }

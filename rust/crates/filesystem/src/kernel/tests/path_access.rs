@@ -12,7 +12,7 @@ use crate::storage::{
     ObjectFailure, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore,
     ObjectStoreError, object_digest,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// A direct provider fixture has no enclosing query ledger. Its callbacks must
@@ -109,7 +109,7 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    ObjectStore::put(store, object, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 
@@ -122,7 +122,7 @@ impl AsyncObjectStore for CancellingStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -183,7 +183,7 @@ impl AsyncObjectStore for OwnedRetentionStore {
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
+        bytes: OwnedBytes,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
@@ -240,7 +240,7 @@ impl AsyncObjectStore for OwnedRetentionStore {
             .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
         Ok(ObjectReceipt {
             value: ObjectRead {
-                bytes: Bytes::copy_from_slice(&receipt.value.bytes),
+                bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
                 retention: ObjectReadRetention::Owned { logical_bytes },
             },
             work,
@@ -1017,7 +1017,7 @@ fn failed_cached_backend_work_includes_simultaneous_resident_peak() {
 fn operation_cache_preserves_backend_failures_resident_peak_and_poison_recovery()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
-    let cached_bytes = Bytes::from_static(b"retained-owned-cache-entry");
+    let cached_bytes = OwnedBytes::from_static(b"retained-owned-cache-entry");
     let cached = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &cached_bytes),
@@ -1049,7 +1049,7 @@ fn operation_cache_preserves_backend_failures_resident_peak_and_poison_recovery(
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([252; 32]),
     };
-    let write_bytes = Bytes::from_static(b"rejected-write");
+    let write_bytes = OwnedBytes::from_static(b"rejected-write");
     let write_id = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &write_bytes),
@@ -1122,7 +1122,7 @@ fn operation_cache_preserves_backend_failures_resident_peak_and_poison_recovery(
 fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let bytes = Bytes::from_static(b"authenticated cache payload");
+    let bytes = OwnedBytes::from_static(b"authenticated cache payload");
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
@@ -1211,7 +1211,7 @@ fn operation_cache_forwards_writes_and_uncached_presence_probes_exactly()
     let store = MemoryObjectStore::default();
     let (cache, setup) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
-    let bytes = Bytes::from_static(b"cache-forwarded-object");
+    let bytes = OwnedBytes::from_static(b"cache-forwarded-object");
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
@@ -1427,8 +1427,8 @@ fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
 fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first_bytes = Bytes::from_static(b"first");
-    let second_bytes = Bytes::from_static(b"second");
+    let first_bytes = OwnedBytes::from_static(b"first");
+    let second_bytes = OwnedBytes::from_static(b"second");
     let first = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &first_bytes),
@@ -2119,7 +2119,7 @@ fn observer_cache_admits_only_actual_initial_slots_and_growth_before_reservation
     assert_eq!(setup.allocation_operations, 1, "unallocated future tables spend nothing");
     assert_eq!(setup.peak_allocation_bytes, initial_bytes);
     assert_eq!(custody.pending_data_work(), setup);
-    let bytes = Bytes::from_static(b"retained-shared-cache-value");
+    let bytes = OwnedBytes::from_static(b"retained-shared-cache-value");
     let cancellation = CancellationToken::new();
     for index in 0..INITIAL_CACHE_SLOTS / 2 {
         let id = ObjectId {
