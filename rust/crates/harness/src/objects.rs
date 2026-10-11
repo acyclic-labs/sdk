@@ -500,8 +500,8 @@ impl ForkSeedVerifier for ObjectContentStore {
         })
     }
 
-    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move { self.read_exact(manifest).await })
+    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+        Box::pin(async move { self.read_exact(manifest).await.map(acyclic_stream::OwnedBytes::from) })
     }
 
     fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {

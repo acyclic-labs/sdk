@@ -25,6 +25,12 @@ On browser WASM builds, `BrowserStream::open(name, limits)` binds that same Rust
 
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow polls durable state every 100 ms while consumed, so killing a publisher before any wakeup cannot hide its committed records. Dropping the cursor ends that polling. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
+Browser append preflight borrows the same canonical command wire as native
+persistence. Checked encoded length rejects the command bound before encoding
+or opening an IndexedDB transaction; encoding allocation failure reports
+capacity without accepting a mutation. Browser clock, replay, transaction and
+lost-ack semantics are unchanged.
+
 `MemoryStream` and `LocalStream` retain retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.
 
 Native `MemoryStream` and `LocalStream` operations use the existing provider
