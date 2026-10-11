@@ -20,6 +20,9 @@ pub struct JsonBounds {
     /// Values and map keys visited, including replaced duplicate values.
     pub maximum_items: u64,
     /// Zero-based nesting depth. Bounded entry points support at most 256.
+    /// Selected Value decoding includes simultaneously live ancestor containers
+    /// across nested RawValue parsers, not each parser's reset local counter or
+    /// only the final tree depth. This is not an exact Rust-stack byte bound.
     pub maximum_depth: u32,
 }
 

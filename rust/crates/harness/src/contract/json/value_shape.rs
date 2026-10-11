@@ -410,6 +410,10 @@ impl ValueInspector {
         Selection { node, scope }
     }
     fn item(&mut self, layer: usize, scope: Scope) {
+        // Global zero-based logical ancestry: a nested Raw from_str starts a
+        // fresh serde counter, but its outer map/array visitors remain live.
+        // Child layers therefore keep their parent's active frames, rather
+        // than laundering aggregate depth through a local-parser reset.
         let depth = self.frame_len;
         if let Some(stats) = self.stats(scope) {
             stats.depth = stats.depth.max(depth);

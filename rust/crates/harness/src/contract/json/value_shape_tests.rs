@@ -682,6 +682,21 @@ mod native {
             assert!(!admitted);
             assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
         }
+        // Both serde parsers have local depth one; the parent raw-map visitor
+        // remains live while the nested array visits its scalar, global depth
+        // two. The finite bound deliberately covers this cumulative ancestry.
+        let document = raw_document("[0]");
+        let original: Value = serde_json::from_slice(document.as_bytes()).unwrap();
+        assert_eq!(original, serde_json::json!([0]));
+        let mut admitted = false;
+        let failure = decode(document.as_bytes(), JsonBounds { maximum_depth: 1, ..LIMITS }, &mut |event| {
+            admitted |= matches!(event, JsonCodecCharge::Admission { .. });
+            Ok(())
+        }).unwrap_err();
+        assert!(!admitted, "local parser counter resets must not bypass the global boundary");
+        assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
+        let decoded = decode(document.as_bytes(), JsonBounds { maximum_depth: 2, ..LIMITS }, &mut |_| Ok(())).unwrap();
+        assert_eq!(decoded, original, "at the cumulative boundary original Value semantics are unchanged");
     }
 
     #[test]
