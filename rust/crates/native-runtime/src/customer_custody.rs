@@ -240,6 +240,8 @@ impl RestoredCustomerLeaf {
     /// Origin, environment, account and public key cannot change. The old pair is not
     /// deleted implicitly: persist the new public tuple, then explicitly delete the old
     /// handle when the namespaces differ. Failed new writes preserve the original pair.
+    /// Retrying a lost acknowledgement returns an identical existing pair's actual
+    /// generation without rewriting it; a different destination pair is never replaced.
     pub fn recertify(&self, new_namespace: CustomerCustodyNamespace, birth: &str, certificate: &str) -> Result<Self, CustodyError> {
         if new_namespace.origin != self.namespace.origin
             || new_namespace.environment != self.namespace.environment
@@ -255,6 +257,20 @@ impl RestoredCustomerLeaf {
         let _second = if first != second { Some(lock::NamespaceLock::acquire(second)?) } else { None };
         let mut record = self.current()?;
         new_namespace.bind(&record.key.verifying_key(), birth, certificate)?;
+        if self.namespace.name == new_namespace.name {
+            return Ok(Self { namespace: new_namespace, generation: record.generation, public_key: self.public_key });
+        }
+        match read_record(&new_namespace) {
+            Ok(existing) => {
+                // Ignore namespace/generation headers; compare the exact seed and SQL pair.
+                if existing.bytes[72..] != record.bytes[72..] {
+                    return Err(CustodyError::Stale);
+                }
+                return Ok(Self { namespace: new_namespace, generation: existing.generation, public_key: self.public_key });
+            }
+            Err(CustodyError::NotFound) => (),
+            Err(error) => return Err(error),
+        }
         let mut generation = [0u8; 32];
         getrandom::fill(&mut generation).map_err(|_| CustodyError::Unavailable)?;
         // Reuse the zeroizing record buffer; the private seed/session never leave Rust.
@@ -278,10 +294,17 @@ impl RestoredCustomerLeaf {
 
     /// Explicit local custody deletion. Server revocation is a separate authenticated
     /// operation; a failed or stale deletion never removes a newer login's credential.
+    /// Physical absence is idempotent, but an existing newer generation is never deleted.
     pub fn delete(&self) -> Result<(), CustodyError> {
         let _lock = lock::NamespaceLock::acquire(&self.namespace.name)?;
-        let _record = self.current()?;
-        platform::delete(&self.namespace.name)
+        match self.current() {
+            Ok(_record) => match platform::delete(&self.namespace.name) {
+                Ok(()) | Err(CustodyError::NotFound) => Ok(()),
+                Err(error) => Err(error),
+            },
+            Err(CustodyError::NotFound) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 

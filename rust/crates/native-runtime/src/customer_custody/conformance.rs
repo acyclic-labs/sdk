@@ -197,8 +197,8 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
     server.verify(&renewed_bearer, &account, &public, &renewed_key_id, jti, false, false, true);
     let current_renewed = renewed.recertify(renewed_namespace.clone(), &renewed_fixture.birth,
         &renewed_fixture.certificate).expect("same-namespace renewal does not deadlock");
-    assert!(matches!(renewed.with_sql_session(|_| ()), Err(CustodyError::Stale)));
-    assert!(matches!(renewed.delete(), Err(CustodyError::Stale)));
+    assert!(renewed.generation == current_renewed.generation);
+    renewed.with_sql_session(|_| ()).expect("same-namespace retry preserves the actual existing generation");
     restored.delete().expect("explicit original deletion after new tuple is available");
     assert!(matches!(restored.with_sql_session(|_| ()), Err(CustodyError::NotFound)));
     assert!(matches!(restored.recertify(renewed_namespace.clone(), &renewed_fixture.birth,
@@ -231,4 +231,130 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
     assert!(matches!(RestoredCustomerLeaf::open(namespace), Err(CustodyError::NotFound)));
     assert!(matches!(RestoredCustomerLeaf::open(renewed_namespace), Err(CustodyError::NotFound)));
     assert!(matches!(RestoredCustomerLeaf::open(short_namespace), Err(CustodyError::NotFound)));
+}
+
+/// Lost acknowledgements use actual OS entries and actual server certificates, never
+/// a mock store, cached private snapshot, or fabricated missing-entry result.
+#[test]
+#[ignore = "requires a real OS vault and source-bound Cloud customer-holder-fixture executable"]
+fn real_os_recertification_lost_acknowledgement_and_foreign_replacement() {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("actual OS random source");
+    nonce[6] = (nonce[6] & 0x0f) | 0x40;
+    nonce[8] = (nonce[8] & 0x3f) | 0x80;
+    let mut hex = String::with_capacity(32);
+    for byte in nonce { write!(hex, "{byte:02x}").expect("public namespace hex"); }
+    let account = format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]);
+    let key_id = format!("lost-ack-old-{hex}");
+    let new_key_id = format!("lost-ack-new-{hex}");
+    let jti = "native-custody-lost-ack";
+    let origin = "https://custody-lost-ack.invalid";
+    let original_namespace = CustomerCustodyNamespace::new(origin, "staging", &account, &key_id).expect("original namespace");
+    let destination = CustomerCustodyNamespace::new(origin, "staging", &account, &new_key_id).expect("renewed namespace");
+    let _original_cleanup = Cleanup(original_namespace.clone());
+    let _destination_cleanup = Cleanup(destination.clone());
+    let mut server = ServerFixture::start();
+    let pending = PendingCustomerLeaf::generate().expect("own leaf");
+    let public = URL_SAFE_NO_PAD.encode(pending.public_key());
+    let original_fixture = server.issue(&account, &public, &key_id, jti, 30);
+    let renewed_fixture = server.issue(&account, &public, &new_key_id, jti, 30);
+    let original = pending.commit(original_namespace.clone(), &original_fixture.birth,
+        &original_fixture.certificate, Zeroizing::new("lost-ack-original-sql-session".into()))
+        .expect("actual original pair commit");
+    let acknowledged = original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("first real recertification");
+    let actual_generation = acknowledged.generation;
+    drop(acknowledged); // The durable write succeeded, but the caller lost its reply.
+    let reopened = RestoredCustomerLeaf::open(destination.clone()).expect("reopen after lost acknowledgement");
+    let retry = original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("retry from the same original handle");
+    assert!(retry.generation == actual_generation && reopened.generation == actual_generation);
+    reopened.with_sql_session(|session| assert!(session == "lost-ack-original-sql-session"))
+        .expect("retry did not rewrite the entry or invalidate an existing destination handle");
+    let bearer = retry.mint(&renewed_fixture.birth, &renewed_fixture.certificate, jti, &ActualClock, 60)
+        .expect("real restored holder after retry");
+    server.verify(&bearer, &account, &public, &new_key_id, jti, false, false, true);
+    let same_namespace = retry.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("same-namespace acknowledgement retry");
+    assert!(same_namespace.generation == actual_generation);
+    retry.with_sql_session(|_| ()).expect("same namespace retained its actual generation");
+
+    // A different SQL session is a different pair even when the private leaf is identical.
+    let key = {
+        let _lock = lock::NamespaceLock::acquire(&original_namespace.name).expect("original namespace lock");
+        original.current().expect("actual original restored key").key
+    };
+    let changed_session = PendingCustomerLeaf { key }.commit(destination.clone(),
+        &renewed_fixture.birth, &renewed_fixture.certificate,
+        Zeroizing::new("lost-ack-replacement-sql-session".into())).expect("real same-leaf session replacement");
+    assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::Stale)));
+    changed_session.with_sql_session(|session| assert!(session == "lost-ack-replacement-sql-session"))
+        .expect("retry did not overwrite a different destination pair");
+    assert!(matches!(retry.delete(), Err(CustodyError::Stale)));
+
+    // Simulate a foreign writer at the actual vault boundary using the same private
+    // pair writer as production. This claims no certificate authorization for that key.
+    let foreign = PendingCustomerLeaf::generate().expect("foreign leaf");
+    let foreign_public = foreign.public_key();
+    let foreign_handle = foreign.store_pair(destination.clone(),
+        Zeroizing::new("lost-ack-foreign-sql-session".into())).expect("actual foreign OS replacement");
+    assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::Stale)));
+    assert!(matches!(changed_session.delete(), Err(CustodyError::Stale)));
+    let observed_foreign = RestoredCustomerLeaf::open(destination.clone()).expect("foreign entry remains");
+    assert!(observed_foreign.public_key() == foreign_public);
+    observed_foreign.with_sql_session(|session| assert!(session == "lost-ack-foreign-sql-session"))
+        .expect("stale destination deletion did not remove the foreign pair");
+    assert!(matches!(observed_foreign.mint(&renewed_fixture.birth, &renewed_fixture.certificate,
+        jti, &ActualClock, 60), Err(CustodyError::Holder(AccountHolderError::Scope))));
+    foreign_handle.delete().expect("actual foreign entry deletion");
+    foreign_handle.delete().expect("lost delete acknowledgement is idempotent only after physical absence");
+    assert!(matches!(RestoredCustomerLeaf::open(destination.clone()), Err(CustodyError::NotFound)));
+    let recreated = original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("only true OS absence permits recreation");
+    let recreated_bearer = recreated.mint(&renewed_fixture.birth, &renewed_fixture.certificate, jti, &ActualClock, 60)
+        .expect("actual recreated holder");
+    server.verify(&recreated_bearer, &account, &public, &new_key_id, jti, false, false, true);
+
+    // A corrupt existing entry is not absence and must not be overwritten by retry.
+    {
+        let _lock = lock::NamespaceLock::acquire(&destination.name).expect("destination lock");
+        let mut damaged = platform::read(&destination.name).expect("actual destination bytes");
+        damaged[0] ^= 1;
+        platform::write(&destination.name, &damaged).expect("actual isolated corrupted entry");
+    }
+    assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::Corrupt)));
+    assert!(matches!(recreated.delete(), Err(CustodyError::Corrupt)));
+    assert!(matches!(RestoredCustomerLeaf::open(destination.clone()), Err(CustodyError::Corrupt)));
+    {
+        let _lock = lock::NamespaceLock::acquire(&destination.name).expect("destination lock");
+        platform::delete(&destination.name).expect("remove only the isolated corrupt test entry");
+    }
+    let current = original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate).expect("recreate after explicit physical corrupt-entry removal");
+
+    // Check the original generation before considering even an identical destination.
+    let source_replacement = PendingCustomerLeaf::generate().expect("foreign original replacement")
+        .store_pair(original_namespace.clone(), Zeroizing::new("lost-ack-foreign-original-session".into()))
+        .expect("actual original namespace replacement");
+    assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::Stale)));
+    assert!(matches!(original.delete(), Err(CustodyError::Stale)));
+    source_replacement.with_sql_session(|session| assert!(session == "lost-ack-foreign-original-session"))
+        .expect("stale original delete did not remove the replacement");
+    source_replacement.delete().expect("remove actual original replacement");
+    original.delete().expect("physically absent original deletion is idempotent");
+    assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
+        &renewed_fixture.certificate), Err(CustodyError::NotFound)));
+    current.with_sql_session(|session| assert!(session == "lost-ack-original-sql-session"))
+        .expect("absent original never triggers a cached-snapshot overwrite");
+    let current_bearer = current.mint(&renewed_fixture.birth, &renewed_fixture.certificate, jti, &ActualClock, 60)
+        .expect("destination remains usable after refused stale retries");
+    server.verify(&current_bearer, &account, &public, &new_key_id, jti, false, false, true);
+    current.delete().expect("actual destination deletion");
+    current.delete().expect("lost destination delete acknowledgement is idempotent");
+    assert!(matches!(RestoredCustomerLeaf::open(original_namespace), Err(CustodyError::NotFound)));
+    assert!(matches!(RestoredCustomerLeaf::open(destination), Err(CustodyError::NotFound)));
 }
