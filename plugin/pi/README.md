@@ -205,6 +205,10 @@ Root stock command outputs bind to that original created scratch only after
 canonical successful-creation and original binding-ACK verification under the
 current task owner. The output signer retains the context's narrowed grants;
 it never exposes the bootstrap journal writer.
+The finite Root driver recovers the original reservation before discovery and
+keeps its lease/attempt custody through the worker result. Checked native command
+futures retain the original shared context instead of cloning or retrofitting
+ordinary contexts. Root output binding precedes every scoped control adapter.
 Opaque original scratch-allocation evidence is separate from native disposal
 authority. Releasing SDK-owned scratch additionally requires its original owned
 preparation, current fenced write grant and drained effects; never project or
@@ -234,6 +238,12 @@ Root allocation schemas serialize borrowed, fixed wire descriptors through this
 same bounded encoder; the native path does not first build an unguarded JSON
 schema. Binding validation compares retained full volume identities and borrowed
 root keys without allocating a second identity index.
+The native conversation binder consumes the protected issuer's original
+authority, scope and metadata custody without cloning the scope. It resolves
+the original binding event through the SDK's authenticated atomic operation
+index, including archived events, then replays the same prior revision and
+guarded command for its original ACK. Cold observation never installs that ACK
+in a current owner's binding cache.
 
 Imported-file evidence retains its original SDK allocation guard through the
 existing service actor, response channel and bounded RPC encoder. Encoding

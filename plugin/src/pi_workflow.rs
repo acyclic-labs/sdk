@@ -2,7 +2,6 @@
 
 use super::*;
 use acyclic_harness::{
-    TaskId,
     conversation::FileRef,
     distributed::{WorkPull, Worker},
     filesystem::{FilesystemHost, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
@@ -31,7 +30,6 @@ pub(crate) struct PiWorkflowHost<'a> {
     selected_controls: Option<&'a dyn TaskCommandHost>,
     builtin_controls: Option<&'a dyn TaskCommandHost>,
     work: std::sync::OnceLock<acyclic_fs::NativeMaterializationWork>,
-    invocation_cancellation: std::sync::OnceLock<CancellationToken>,
 }
 
 impl<'a> PiWorkflowHost<'a> {
@@ -47,7 +45,7 @@ impl<'a> PiWorkflowHost<'a> {
             root_provider: tokio::sync::Mutex::new(None),
             fork_controls: None, selected_controls: None, builtin_controls: None,
             work: std::sync::OnceLock::new(),
-            invocation_cancellation: std::sync::OnceLock::new() }
+        }
     }
 
     pub(crate) fn with_controls(
@@ -64,7 +62,6 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     pub(crate) fn with_work(mut self, work: acyclic_fs::NativeMaterializationWork) -> Self {
-        self.invocation_cancellation = std::sync::OnceLock::from(work.cancellation().clone());
         self.work = std::sync::OnceLock::from(work);
         self
     }
@@ -76,25 +73,6 @@ impl<'a> PiWorkflowHost<'a> {
         })
     }
 
-    fn accept<T>(
-        &self, result: pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<T>>,
-    ) -> acyclic_harness::Result<T> {
-        let work = self.work()?;
-        match result {
-            Ok(receipt) => {
-                work.spent(receipt.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-                Ok(receipt.value)
-            }
-            Err((error, prefix)) => {
-                work.spent(prefix).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-                Err(error)
-            }
-        }
-    }
-
-    pub(crate) fn invocation_cancellation(&self) -> CancellationToken {
-        self.invocation_cancellation.get_or_init(CancellationToken::new).clone()
-    }
 
     fn scoped_control_host(&self, kind: &str) -> Option<&dyn TaskCommandHost> {
         match kind {
@@ -106,25 +84,61 @@ impl<'a> PiWorkflowHost<'a> {
         }
     }
 
-    pub(crate) async fn drive_root(&self) -> acyclic_harness::Result<Option<TaskWorkerAttempt>> {
+    pub(crate) async fn drive_root(
+        &self,
+    ) -> acyclic_harness::Result<(Option<TaskWorkerAttempt>, acyclic_fs::NativeAllocation)> {
+        let work = self.work()?;
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
-            return Err(acyclic_harness::Error::Invalid("Pi driver requires its original admitted root".to_owned()));
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi driver requires its original admitted root",
+            });
         };
-        // Recover the original reservation first. Pulling new work on an
-        // uncertain retained lease would lose its effect/attempt ownership.
-        pi_recovery::authenticate_pi_task(
+        let admitted = pi_recovery::authenticate_pi_task_with_native_work(
             &self.runtime.runtime, binding,
-            pi_recovery::PiTaskOrigin::Root(&pi_root::PiRootIntent::from_state(self.retained)
-                .map_err(acyclic_harness::Error::Invalid)?),
+            pi_recovery::PiTaskOrigin::RootState(self.retained), work,
         ).await?;
+        drop(admitted.0);
+        drop(admitted.1);
+        // Recovery precedes discovery: an uncertain retained reservation is
+        // never replaced with a new pull or a new effect/attempt identity.
         let host = self.runtime.runtime.task_host();
-        match host.recover_work(binding.task_id).await? {
-            WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } =>
-                Ok(Some(self.runtime.runtime.resume_task(lease, self, 8).await)),
-            WorkPull::Idle => self.runtime.runtime.run_operation(&Worker {
-                id: format!("pi-native:{}", self.resources.instance_id),
-                available: ResourceSnapshot::default(), labels: BTreeMap::new(),
-            }, binding.task_id, self, 8).await,
+        let mut recovered_custody;
+        let recovered;
+        (recovered, recovered_custody) =
+            host.recover_work_with_native_work(binding.task_id, work).await?;
+        match recovered {
+            WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
+                let mut attempt_custody;
+                let attempt;
+                (attempt, attempt_custody) = self.runtime.runtime
+                    .resume_task_with_native_work(lease, self, 8, work).await?;
+                if let Err(cause) = attempt_custody.absorb(&mut recovered_custody) {
+                    drop(attempt);
+                    drop(attempt_custody);
+                    drop(recovered_custody);
+                    return Err(acyclic_harness::Error::NativeWork { cause, custody: None });
+                }
+                Ok((Some(attempt), attempt_custody))
+            }
+            WorkPull::Idle => {
+                drop(recovered_custody);
+                let worker_custody;
+                let worker;
+                let (id, custody) = guarded_cli_text(
+                    &["pi-native:", &self.resources.instance_id], work,
+                )?;
+                worker_custody = custody;
+                worker = Worker {
+                    id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                };
+                let result = self.runtime.runtime.run_operation_with_native_work(
+                    &worker, binding.task_id, self, 8, work,
+                ).await;
+                drop(worker);
+                drop(worker_custody);
+                result
+            }
         }
     }
 
@@ -215,21 +229,45 @@ impl<'a> PiWorkflowHost<'a> {
         if let Some(reply) = self.checkpoint_control_reply(checkpoint, operation)? {
             return Ok(Some(reply));
         }
-        let Some(suspension) = host.workflow_suspension(task).await? else {
+        let suspension_custody;
+        let suspension;
+        (suspension, suspension_custody) = host
+            .workflow_suspension_with_native_work(task, self.work()?).await?;
+        let Some(suspension) = suspension else {
             return Err(acyclic_harness::Error::Indeterminate(operation));
         };
         if let Some(waiting) = suspension.waiting_command {
             if waiting != operation {
-                return Err(acyclic_harness::Error::Conflict("Pi Root is awaiting a different original command".to_owned()));
+                return Err(acyclic_harness::Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Conflict,
+                    reason: "Pi Root is awaiting a different original command",
+                });
             }
             if !wake_pending { return Ok(None); }
-            host.wake_command(task, suspension.revision, waiting).await?;
-        } else {
-            host.resume_workflow(task, suspension.revision, input,
-                acyclic_harness::IdempotencyKey::new(format!("acyclic.pi/control/{task}/{operation}"))
-                    ?,
+            host.wake_command_with_native_work(
+                task, suspension.revision, waiting, self.work()?,
             ).await?;
+        } else {
+            let mut task_text = [0; uuid::fmt::Hyphenated::LENGTH];
+            let mut operation_text = [0; uuid::fmt::Hyphenated::LENGTH];
+            let task_id = uuid::Uuid::from_bytes(task.into_bytes());
+            let operation_id = uuid::Uuid::from_bytes(operation.into_bytes());
+            let key_custody;
+            let key;
+            (key, key_custody) = guarded_cli_text(&[
+                "acyclic.pi/control/",
+                task_id.hyphenated().encode_lower(&mut task_text),
+                "/",
+                operation_id.hyphenated().encode_lower(&mut operation_text),
+            ], self.work()?)?;
+            host.resume_workflow_with_native_work(
+                task, suspension.revision, input,
+                acyclic_harness::IdempotencyKey::new(key)?, self.work()?,
+            ).await?;
+            drop(key_custody);
         }
+        drop(suspension);
+        drop(suspension_custody);
         self.drive_root().await?;
         let checkpoint = self.runtime.runtime
             .observe_workflow_checkpoint_with_native_work(task, self.work()?)
@@ -240,67 +278,122 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_control_context(
-        &self, context: TaskContext, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
         protected: pi_owner::PiOwnerConfig,
-    ) -> acyclic_harness::Result<TaskContext> {
-        let task = protected.policy().root_task;
-        if context.durable_task_id() != Some(task) {
-            return Err(acyclic_harness::Error::Unauthorized("Pi Root controls require their original Root context".to_owned()));
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
+        if context.context().durable_task_id() != Some(protected.policy().root_task) {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi Root controls require their original Root context",
+            });
         }
-        let host = self.runtime.runtime.task_host();
-        let admission = host.observe_admission(task).await?;
-        let input: pi_task::PiTaskInput = serde_json::from_value(admission.input)
-            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        let pi_task::PiTaskExecution::Host { root, .. } = input.execution else {
-            return Err(acyclic_harness::Error::Unauthorized("Pi Root output binding has no original host admission".to_owned()));
-        };
-        let original = pi_root_inputs::PiRootRequest { binding: input.binding, root };
-        let owner = host.journal_owner(task, fence.clone()).await?;
-        self.accept(pi_root_provider::bind_root_output_context(
-            context, &owner, protected, self.resources.clone(), self.filesystem.clone(),
-            self.stream.clone(), &original, self.work()?
-                .remaining().map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?,
-            self.invocation_cancellation.get_or_init(CancellationToken::new),
-        ).await)
+        let (preparation, owner) =
+            pi_root_inputs::PiRootPreparation::load_native_from_state_for_dispatch(
+                self.directory, &self.runtime, &self.filesystem, self.retained,
+                fence, Arc::clone(&context), work,
+            ).await?;
+        pi_root_provider::bind_root_output_context_with_native_work(
+            context, &owner, protected, self.resources.clone(),
+            self.filesystem.clone(), self.stream.clone(), preparation.request(), work,
+        ).await
     }
 
     async fn root_effects(
-        &self, task: TaskId, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
         command: &WorkflowCommand, payload: &Value,
+        owner: pi_owner::PiOwnerConfig,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<acyclic_harness::effect_host::ConversationEffectHost<LocalStream>>> {
-        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-        self.runtime.verify_owner(&owner)?;
-        let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
-            return Err(acyclic_harness::Error::Unauthorized("Pi root binding missing".to_owned()));
-        };
-        if task != binding.task_id || task != owner.policy().root_task {
-            return Err(acyclic_harness::Error::Unauthorized("Pi root effect belongs to another task".to_owned()));
+        if context.context().durable_task_id() != Some(owner.policy().root_task) {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi root effect belongs to another task",
+            });
         }
-        let request = pi_root_inputs::PiRootRequest {
-            binding: binding.as_ref().clone(),
-            root: pi_root::PiRootIntent::from_state(self.retained)
-                .map_err(acyclic_harness::Error::Unauthorized)?,
-        };
-        let preparation = pi_root_inputs::PiRootPreparation::load(
-            self.directory, &self.runtime, &self.filesystem, &request, self.work()?,
-        ).await?;
-        if preparation.command() != command || serde_json::to_value(preparation.plan())
-            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))? != *payload
-        {
-            return Err(acyclic_harness::Error::Conflict("Pi root command differs from original admission".to_owned()));
-        }
-        let journal_owner = self.runtime.runtime.task_host().journal_owner(task, fence).await?;
-        let provider = pi_root_provider::root_provider(
-            owner.clone(), self.resources.clone(), self.filesystem.clone(), self.stream.clone(),
-            preparation, journal_owner, self.work()?
-                .remaining().map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?,
-            self.invocation_cancellation(),
+        let (preparation, journal_owner) =
+            pi_root_inputs::PiRootPreparation::load_native_from_state_for_dispatch(
+                self.directory, &self.runtime, &self.filesystem, self.retained,
+                fence, Arc::clone(&context), work,
+            ).await?;
+        let expected = pi_root_provider::guarded_pi_value(
+            preparation.plan(), MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work,
         )?;
-        let effects = Arc::new(owner.root_effects(
-            self.stream.clone(), self.filesystem.clone(), provider.clone(),
-        )?);
+        let matches = preparation.command() == command && expected.0 == *payload;
+        drop(expected.0);
+        drop(expected.1);
+        if !matches {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi root command differs from original admission",
+            });
+        }
+        let journal_owner = journal_owner.into_native_shared(work)?;
+        let content = context.content_residency_verifier_with_native_work(
+            Arc::clone(&journal_owner), work,
+        )?;
+        let effect_custody;
+        let effect_authority;
+        (effect_authority, effect_custody) = owner.effect_authority_with_native_work(work)?;
+        let provider = pi_root_provider::root_provider(
+            owner, self.resources.clone(), self.filesystem.clone(), self.stream.clone(),
+            preparation, journal_owner, context, work.clone(),
+        )?;
+        let effects = pi_owner::root_effects_with_native_work(
+            self.stream.clone(), effect_authority, effect_custody,
+            content, provider.clone(), work,
+        )?;
         *self.root_provider.lock().await = Some(provider);
         Ok(effects)
+    }
+
+    async fn dispatch_native(
+        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        command: WorkflowCommand, payload: Value,
+        work: &acyclic_fs::NativeMaterializationWork, reconcile: bool,
+    ) -> acyclic_harness::Result<TaskCommandProgress> {
+        let task = context.context().durable_task_id().ok_or(
+            acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi command has no original task",
+            },
+        )?;
+        let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
+        self.runtime.verify_owner(&owner)?;
+        if task == owner.policy().root_task
+            && command.operation_id == pi_root_inputs::preparation_operation(task)
+        {
+            let effects = self.root_effects(
+                Arc::clone(&context), fence.clone(), &command, &payload, owner, work,
+            ).await?;
+            let commands = self.runtime.runtime.commands().with_effects(effects);
+            return if reconcile {
+                commands.reconcile_with_native_work(context, fence, command, payload, work)?.await
+            } else {
+                commands.execute_with_native_work(context, fence, command, payload, work)?.await
+            };
+        }
+        // Root's private output must be bound from its actual successful
+        // creator proof before any scoped adapter can stage a reply. Children
+        // already carry the SDK's sealed created-scratch output binding.
+        let context = if task == owner.policy().root_task {
+            self.root_control_context(context, fence.clone(), owner, work).await?
+        } else {
+            context
+        };
+        if let Some(controls) = self.scoped_control_host(&command.kind) {
+            if reconcile {
+                controls.reconcile_with_native_work(context, fence, command, payload, work)?.await
+            } else {
+                controls.execute_with_native_work(context, fence, command, payload, work)?.await
+            }
+        } else if reconcile {
+            self.runtime.runtime.commands()
+                .reconcile_with_native_work(context, fence, command, payload, work)?.await
+        } else {
+            self.runtime.runtime.commands()
+                .execute_with_native_work(context, fence, command, payload, work)?.await
+        }
     }
 }
 
@@ -309,23 +402,10 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
         &'a self, context: TaskContext, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
     ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<TaskCommandProgress>> {
+        // This required ordinary SPI remains ordinary. Pi's finite driver calls
+        // the checked native SPI below, never retrofits an unguarded context.
         Box::pin(async move {
-            let task = context.durable_task_id().ok_or_else(||
-                acyclic_harness::Error::Unauthorized("Pi command has no original task".to_owned()))?;
-            let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-            self.runtime.verify_owner(&owner)?;
-            if task == owner.policy().root_task && command.operation_id ==
-                pi_root_inputs::preparation_operation(task)
-            {
-                let effects = self.root_effects(task, fence.clone(), &command, &payload).await?;
-                self.runtime.runtime.commands().with_effects(effects)
-                    .execute(context, fence, command, payload).await
-            } else if let Some(controls) = self.scoped_control_host(&command.kind) {
-                controls.execute(context, fence, command, payload).await
-            } else {
-                let context = self.root_control_context(context, &fence, owner).await?;
-                self.runtime.runtime.commands().execute(context, fence, command, payload).await
-            }
+            self.runtime.runtime.commands().execute(context, fence, command, payload).await
         })
     }
 
@@ -334,22 +414,27 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
         command: WorkflowCommand, payload: Value,
     ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<TaskCommandProgress>> {
         Box::pin(async move {
-            let task = context.durable_task_id().ok_or_else(||
-                acyclic_harness::Error::Unauthorized("Pi reconciliation has no original task".to_owned()))?;
-            let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-            self.runtime.verify_owner(&owner)?;
-            if task == owner.policy().root_task &&
-                command.operation_id == pi_root_inputs::preparation_operation(task)
-            {
-                let effects = self.root_effects(task, fence.clone(), &command, &payload).await?;
-                self.runtime.runtime.commands().with_effects(effects)
-                    .reconcile(context, fence, command, payload).await
-            } else if let Some(controls) = self.scoped_control_host(&command.kind) {
-                controls.reconcile(context, fence, command, payload).await
-            } else {
-                let context = self.root_control_context(context, &fence, owner).await?;
-                self.runtime.runtime.commands().reconcile(context, fence, command, payload).await
-            }
+            self.runtime.runtime.commands().reconcile(context, fence, command, payload).await
+        })
+    }
+
+    fn execute_with_native_work<'a>(
+        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        command: WorkflowCommand, payload: Value,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
+        acyclic_harness::NativeFutureBundle::new(work, || {
+            self.dispatch_native(context, fence, command, payload, work, false)
+        })
+    }
+
+    fn reconcile_with_native_work<'a>(
+        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        command: WorkflowCommand, payload: Value,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
+        acyclic_harness::NativeFutureBundle::new(work, || {
+            self.dispatch_native(context, fence, command, payload, work, true)
         })
     }
 }
