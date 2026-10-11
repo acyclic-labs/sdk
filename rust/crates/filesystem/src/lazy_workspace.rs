@@ -4954,13 +4954,70 @@ where
 
     /// Captures the actual logical identity on the caller's original native scope.
     ///
-    /// The returned guard is transferred from the actual decoded state phase.
+    /// Fixed snapshot data escapes; decoded state and its guard retire together.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn snapshot_with_native_work(
         &self, original: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(LazySnapshotRef, crate::materializer::NativeAllocation), LazyWorkspaceError> {
+    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
+        self.snapshot_with_native_work_policy(original, true).await
+    }
+
+    /// Captures genuine current SDK snapshot data without rebinding a source or
+    /// mutating its companion. The caller authorizes current READ separately.
+    ///
+    /// The actual generation, decoding profile and full cut are fixed data.
+    /// Decoded-state custody retires with that state, not with the caller's
+    /// separately funded output buffer. Errors retain intrinsic payload custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn publication_snapshot_with_native_work(
+        &self, original: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<NativePublicationSnapshot, LazyWorkspaceError> {
+        let snapshot = self.snapshot_with_native_work_policy(original, false).await?;
+        original.admit(WorkCounters::UNCHARGED)?;
+        if self.source.reference() != snapshot.source { return Err(LazyWorkspaceError::StaleSource); }
+        let copied = WorkCounters {
+            bytes_copied: std::mem::size_of::<NativePublicationSnapshot>() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        original.admit(copied)?;
+        let qualification = NativePublicationSnapshot::unchanged(
+            NativeSnapshotContext::Lazy(LazyPublicationCut {
+                workspace_id: snapshot.workspace_id, config: self.workspace.volume_config(),
+                source: snapshot.source, overlay: snapshot.overlay, shadows: snapshot.shadows,
+            }),
+            snapshot.authored_generation,
+        );
+        original.spent(copied)?;
+        original.admit(WorkCounters::UNCHARGED)?;
+        if self.source.reference() != snapshot.source { return Err(LazyWorkspaceError::StaleSource); }
+        Ok(qualification)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn snapshot_with_native_work_policy(
+        &self, original: &crate::materializer::NativeMaterializationWork, rebind_source: bool,
+    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let cancellation = original.cancellation();
-        let owned = self.state_with_native_work(original, cancellation).await?;
+        let owned = if rebind_source {
+            self.state_with_native_work(original, cancellation).await?
+        } else {
+            cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+            original.native_read_meter().with_original_leaf(|work|
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+            let owned = self.store.load_lazy_workspace_with_native_work(self.workspace.id(), original)
+                .await?.ok_or(LazyWorkspaceError::StaleSource)?;
+            let state = owned.as_state();
+            state.require_ready_fork()?;
+            if state.schema_version != LAZY_STATE_SCHEMA || state.workspace_id != self.workspace.id()
+                || state.source != self.source.reference()
+            {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            if state.pending_remove.is_some() || state.pending_write.is_some() {
+                return Err(LazyWorkspaceError::Concurrent);
+            }
+            owned
+        };
         let head = self.workspace.head_with_native_work(
             original, cancellation,
         ).await.map_err(native_workspace_error_pair)?;
@@ -4972,16 +5029,17 @@ where
                 + head.id().digest().as_bytes().len() + state.source.identity.len()
                 + state.source.epoch.to_le_bytes().len() + state.overlay.into_bytes().len()
                 + state.shadows.into_bytes().len()) as u64,
+            bytes_copied: std::mem::size_of::<LazySnapshotRef>() as u64,
             ..WorkCounters::UNCHARGED
         }))?;
         let snapshot = LazySnapshotRef::new(
             self.workspace.id(), head.id(), state.source, state.overlay, state.shadows,
         );
         original.native_read_meter().with_original_leaf(|work| work.check())?;
+        if self.source.reference() != state.source { return Err(LazyWorkspaceError::StaleSource); }
         drop(head);
-        let (state, custody) = owned.into_parts();
-        drop(state);
-        Ok((snapshot, custody))
+        drop(owned);
+        Ok(snapshot)
     }
 
     /// Loads the constant-size durable source/lineage binding.
@@ -5277,7 +5335,7 @@ where
                             .map_err(|failure| lazy_operation_failure(failure, |error| error)))?,
                     #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } =>
-                        self.snapshot_with_native_work(original).await?.0,
+                        self.snapshot_with_native_work(original).await?,
                 }
             };
             match &meter.meter {
@@ -13660,13 +13718,8 @@ where
                     .map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             ),
             #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                let (snapshot, allocation) = self.snapshot_with_native_work(
-                    original,
-                ).await?;
-                drop(allocation);
-                Ok(snapshot)
-            }
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                self.snapshot_with_native_work(original).await,
         }
     }
 
@@ -24043,5 +24096,52 @@ mod tests {
             "changed live source cannot replace the genuinely prepared original epoch");
         assert_eq!(store.load_lazy_workspace(root.workspace().id()).await.expect("still actual state").expect("binding").revision,
             state.revision, "cut capture never writes or settles a companion");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn readonly_native_qualification_uses_actual_sdk_capture_without_source_rebind_or_publication() {
+        let simulation = crate::simulation::Simulation::default();
+        let (authority, objects) = simulation.stores();
+        let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(&fs, "readonly-native-qualified", Arc::clone(&source), store.clone())
+            .await.expect("actual SDK source and companion");
+        root.write("/authored", Bytes::from_static(b"actual")).await.expect("real authored identity");
+        let basis = root.snapshot().await.expect("genuine current immutable snapshot");
+        let before = store.load_lazy_workspace(root.workspace().id()).await.expect("actual companion").expect("binding");
+        let appends = simulation.trace().expect("real trace").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token).expect("current READ scope");
+        let qualification = root.publication_snapshot_with_native_work(&original).await
+            .expect("real readonly SDK qualification");
+        assert_eq!(qualification.operation(), None, "a readonly capture does not invent DATA");
+        assert_eq!(qualification.snapshot().generation(), basis.authored_generation);
+        assert_eq!(qualification.snapshot().workspace_id(), root.workspace().id());
+        assert_eq!(qualification.snapshot().volume_config(), root.workspace().volume_config());
+        assert_eq!(qualification.snapshot().lazy_snapshot_with_native_work(&original, &token).expect("same pure SDK projection"),
+            Some(basis), "logical snapshot identity is retained, never used as a generation");
+        let retained = original.receipt().retained_allocation_bytes;
+        let repeated = root.publication_snapshot_with_native_work(&original).await.expect("same actual readonly capture");
+        assert_eq!(repeated, qualification);
+        assert_eq!(original.receipt().retained_allocation_bytes, retained,
+            "fixed output retains no retired decoded-state guard or phantom heap allocation");
+        let after = store.load_lazy_workspace(root.workspace().id()).await.expect("unchanged companion").expect("binding");
+        assert_eq!((after.revision, after.source, after.overlay, after.shadows),
+            (before.revision, before.source, before.overlay, before.shadows));
+        source.invalidate();
+        assert!(matches!(root.publication_snapshot_with_native_work(&original).await
+            .expect_err("readonly capture cannot rebind a newer source").semantic_error(), LazyWorkspaceError::StaleSource));
+        let stale = store.load_lazy_workspace(root.workspace().id()).await.expect("still untouched companion").expect("binding");
+        assert_eq!((stale.revision, stale.source, stale.overlay, stale.shadows),
+            (before.revision, before.source, before.overlay, before.shadows));
+        assert_eq!(simulation.trace().expect("after actual readonly captures").into_iter()
+            .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
+        let ordinary = root.snapshot_with_native_work(&original).await.expect("existing ordinary capture still rebinds");
+        assert_eq!(ordinary.source, source.reference());
+        let rebound = store.load_lazy_workspace(root.workspace().id()).await.expect("ordinary existing behavior").expect("binding");
+        assert!(rebound.revision > before.revision);
     }
 }

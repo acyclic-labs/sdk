@@ -3815,6 +3815,21 @@ where
         ).await
     }
 
+    pub(crate) async fn publication_snapshot_with_native_work(
+        &self, original: &super::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::NativePublicationSnapshot,
+        (MountSourceError, Option<MountSourceError>)>
+    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+        let (_, qualified) = self.snapshot_with_carrier_policy(
+            super::adapter::NativeDemandCarrier::Native(original), cancellation,
+            MountPublicationObservation::Qualified,
+        ).await?;
+        qualified.ok_or((MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::MissingCustody,
+        ), None))
+    }
+
     pub(crate) async fn validate_snapshot_with_native_work(
         &self, frozen: crate::LazySnapshotRef, original: &crate::NativeMaterializationWork,
     ) -> Result<(), LazyWorkspaceError>
@@ -3836,29 +3851,41 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::LazySnapshotRef, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut work = MountSyncWork::new(&self.authored, carrier)?;
-        work.check().map_err(mount_demand_error)?;
-        let _mutation = self.source_view.write_stable_with_carrier(
-            None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
-        ).await?.into_mutation_phase();
-        {
-            let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-            work.items(1)?;
-            if !removals.paths.is_empty() || removals.publication.is_some() {
-                return Err(MountSourceError::Stale);
-            }
-        }
-        let detached = {
-            let identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            let mut detached = work.owned_vec(identities.len())?;
-            for (_, entry) in identities.iter() {
-                work.items(1)?;
-                if !entry.ready || entry.pending.is_some() { return Err(MountSourceError::Stale); }
-                detached.push((Arc::clone(&entry.file), entry.published_epoch));
-            }
-            detached
-        };
+        self.snapshot_with_carrier_policy(
+            carrier, cancellation, MountPublicationObservation::Ordinary,
+        ).await.map(|(snapshot, _)| snapshot).map_err(|(primary, _)| primary)
+    }
+
+    async fn snapshot_with_carrier_policy(
+        &self, carrier: super::adapter::NativeDemandCarrier<'_>,
+        cancellation: &crate::CancellationToken, policy: MountPublicationObservation,
+    ) -> Result<(crate::LazySnapshotRef, Option<crate::NativePublicationSnapshot>),
+        (MountSourceError, Option<MountSourceError>)>
+    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+        let mut work = MountSyncWork::new(&self.authored, carrier)
+            .map_err(|primary| (primary, None))?;
         let result = async {
+            work.check().map_err(mount_demand_error)?;
+            let _mutation = self.source_view.write_stable_with_carrier(
+                None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
+            ).await?.into_mutation_phase();
+            {
+                let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
+                work.items(1)?;
+                if !removals.paths.is_empty() || removals.publication.is_some() {
+                    return Err(MountSourceError::Stale);
+                }
+            }
+            let detached = {
+                let identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
+                let mut detached = work.owned_vec(identities.len())?;
+                for (_, entry) in identities.iter() {
+                    work.items(1)?;
+                    if !entry.ready || entry.pending.is_some() { return Err(MountSourceError::Stale); }
+                    detached.push((Arc::clone(&entry.file), entry.published_epoch));
+                }
+                detached
+            };
             for (file, published) in &detached.value {
                 work.items(1)?;
                 if file.snapshot_with_carrier(&mut work.meter, cancellation).await?.2 != *published {
@@ -3872,12 +3899,27 @@ where
             }
             let generation = checkout.generation_id();
             drop(checkout);
+            let mut qualified = None;
             let snapshot = if let Some(original) = work.meter.original_native_work() {
-                let (snapshot, custody) = self.lazy.snapshot_with_native_work(&original)
-                    .await.map_err(native_lazy_error)?;
-                drop(custody);
-                snapshot
+                if policy == MountPublicationObservation::Qualified {
+                    let publication = self.lazy.publication_snapshot_with_native_work(&original)
+                        .await.map_err(native_lazy_error)?;
+                    let snapshot = publication.snapshot()
+                        .lazy_snapshot_with_native_work(&original, cancellation)
+                        .map_err(mount_engine_error)?
+                        .ok_or(MountSourceError::Indeterminate)?;
+                    qualified = Some(publication);
+                    snapshot
+                } else {
+                    self.lazy.snapshot_with_native_work(&original)
+                        .await.map_err(native_lazy_error)?
+                }
             } else {
+                if policy == MountPublicationObservation::Qualified {
+                    return Err(MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::MissingCustody,
+                    ));
+                }
                 let prior_live = work.with_work(|meter| meter.live_allocation_bytes());
                 let receipt = self.lazy.snapshot_measured(
                     work.remaining().map_err(mount_demand_error)?, cancellation,
@@ -3891,11 +3933,24 @@ where
                 || snapshot.authored_generation != generation {
                 return Err(MountSourceError::Stale);
             }
-            Ok(snapshot)
+            Ok((snapshot, qualified))
         }.await;
-        drop(detached);
-        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
-        result
+        // Failed ordinary queries already carry their completed prefix. Native
+        // qualification reconciles even failure and returns both typed causes.
+        let accounting = if policy == MountPublicationObservation::Qualified || result.is_ok() {
+            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)
+        } else {
+            Ok(())
+        };
+        match (result, accounting) {
+            (Ok(snapshot), Ok(())) => Ok(snapshot),
+            (Ok(snapshot), Err(error)) => {
+                drop(snapshot);
+                Err((error, None))
+            }
+            (Err(primary), Ok(())) => Err((primary, None)),
+            (Err(primary), Err(accounting)) => Err((primary, Some(accounting))),
+        }
     }
 
     /// Publishes pending authored writes.
@@ -11191,6 +11246,85 @@ mod tests {
         budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
     ) -> Result<crate::NativeMaterializationWork, crate::NativeTreeMaterializationError> {
         crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(error, _)| error)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mounted_readonly_qualification_preserves_actual_cut_and_rejects_dirty_or_stale_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::{CheckoutMode, GenerationSelector};
+        use crate::native_mount::{MountPublication, SharedCheckout};
+        use crate::{Fs, LazyWorkspaceStore, MemoryLazyWorkspaceStore};
+
+        for mutation in 0..3 {
+            let source_root = tempfile::tempdir()?;
+            std::fs::write(source_root.path().join("file"), b"original")?;
+            let demand = Arc::new(native_source(source_root.path()).await?);
+            let store = MemoryLazyWorkspaceStore::default();
+            let lazy = Arc::new(LazyWorkspace::attach(
+                &Fs::memory(), &format!("mounted-readonly-{mutation}"),
+                Arc::clone(&demand), store.clone(),
+            ).await?);
+            let checkout = lazy.workspace().engine_checkout(
+                GenerationSelector::Head, CheckoutMode::tracking_transaction(),
+            ).await?;
+            let config = checkout.volume_config();
+            let authored = Arc::new(CheckoutMountSource::new(
+                Arc::new(SharedCheckout::with_publication(checkout, MountPublication::Manual)),
+                config,
+            )?);
+            let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+            let basis = lazy.snapshot().await?;
+            let before = store.load_lazy_workspace(lazy.workspace().id()).await?
+                .ok_or("missing original companion")?;
+            let caller = crate::CancellationToken::new();
+            let original = native_control_work(finite_content_budget(), &caller)?;
+            let native = original.native_mount_work();
+            let live_before = original.receipt().retained_allocation_bytes;
+            let publication = view.publication_snapshot_with_native_work(&native, &caller)
+                .await.map_err(|(primary, _)| primary)?;
+            assert_eq!(publication.operation(), None, "READ must not manufacture a DATA operation");
+            assert_eq!(publication.snapshot().workspace_id(), lazy.workspace().id());
+            assert_eq!(publication.snapshot().volume_config(), config);
+            assert_eq!(publication.snapshot().generation(), basis.authored_generation);
+            assert_eq!(publication.snapshot().lazy_snapshot_with_native_work(&original, &caller)?, Some(basis));
+            assert_eq!(original.receipt().retained_allocation_bytes, live_before,
+                "fixed qualification cannot retain already-dropped decoded companion data");
+            let work = original.receipt();
+            assert_eq!(work.authority_records_appended, 0);
+            assert_eq!(work.backend_write_operations, 0);
+            assert_eq!(work.durability_operations, 0);
+            assert_eq!(work.object_bytes_written, 0);
+            assert_eq!(work.page_writes, 0);
+            let after = store.load_lazy_workspace(lazy.workspace().id()).await?
+                .ok_or("missing readonly companion")?;
+            assert_eq!((after.revision, after.source, after.overlay, after.shadows),
+                (before.revision, before.source, before.overlay, before.shadows));
+
+            match mutation {
+                0 => { view.create_directory(&mounted(&["pending"]), FileMetadata::default())?; }
+                1 => {
+                    let path = mounted(&["file"]);
+                    let held = view.open_file(&path)?;
+                    view.remove(&path, Some(held.lookup()?.node.file_id))?;
+                    held.write_range(0, Bytes::from_static(b"detached"))?;
+                }
+                _ => { demand.invalidate(); }
+            }
+            let stopped_snapshot = view.publication_snapshot_with_native_work(&native, &caller).await
+                .expect_err("pending directories, detached writes and changed source epochs are not readonly checkpoints");
+            assert!(matches!(stopped_snapshot, (MountSourceError::Stale, None)));
+            let unchanged = store.load_lazy_workspace(lazy.workspace().id()).await?
+                .ok_or("companion disappeared after readonly rejection")?;
+            assert_eq!((unchanged.revision, unchanged.source, unchanged.overlay, unchanged.shadows),
+                (before.revision, before.source, before.overlay, before.shadows),
+                "a rejected READ cannot rebind or write the companion");
+            assert_eq!(lazy.workspace().head().await?.id(), basis.authored_generation);
+            let work = original.receipt();
+            assert_eq!(work.authority_records_appended, 0);
+            assert_eq!(work.backend_write_operations, 0);
+            assert_eq!(work.durability_operations, 0);
+        }
+        Ok(())
     }
     struct PublicationLifetimeGuard {
         lifetime: crate::CancellationToken,

@@ -92,6 +92,11 @@ pub struct LazyMount<A, O, D, S> {
     // Caller-owned container capacity retires only after the mounted payload.
     payload_custody: Option<crate::NativeAllocation>,
 }
+enum MountedSnapshotCapture {
+    Original(crate::LazySnapshotRef),
+    Qualified(crate::NativePublicationSnapshot),
+}
+
 
 /// SDK-owned capture and publication boundary for a pinned native directory.
 ///
@@ -398,16 +403,16 @@ where
         let work = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, work)| (MountLifecycleError::Materialization(error), work))?;
         let result = self.verify_unchanged_with_work(&work.native_mount_work(), cancellation).await;
-        result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
+        result.map(|_| crate::OperationReceipt { value: (), work: work.receipt() })
             .map_err(|error| (error, work.receipt()))
     }
 
-    /// Checks the complete baseline and pending mutations without a new meter.
+    /// Verifies the complete admitted baseline and returns its genuine immutable SDK qualification.
     pub async fn verify_unchanged_with_work(
         &self,
         work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<(), MountLifecycleError> {
+    ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
         self.capture_host_subtree_with_work(&MountPath::root(), work, cancellation).await?;
         let pending = self.source.shared_checkout().lock_with_carrier(
             &mut super::adapter::NativeDemandCarrier::Native(work),
@@ -419,7 +424,12 @@ where
             ));
         }
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        Ok(())
+        Ok(crate::NativePublicationSnapshot::unchanged(
+            crate::lazy_workspace::NativeSnapshotContext::Authored {
+                workspace_id: self.workspace.id(), config: self.workspace.volume_config(),
+            },
+            self.expected_generation,
+        ))
     }
 }
 
@@ -1061,13 +1071,53 @@ where
         native_work: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::LazySnapshotRef, MountLifecycleError> {
+        self.snapshot_with_work_policy(native_work, cancellation, false).await
+            .map(|capture| match capture {
+                MountedSnapshotCapture::Original(snapshot) => snapshot,
+                MountedSnapshotCapture::Qualified(..) => unreachable!("ordinary snapshot policy"),
+            }).map_err(|(cause, _)| cause)
+    }
+
+    /// Verifies the existing mounted namespace and captures genuine readonly
+    /// SDK qualification without source rebinding or publication.
+    ///
+    /// Fixed snapshot data escapes; decoded state and its custody retire together.
+    /// Both an original source failure and a reconciliation failure are retained.
+    pub async fn publication_snapshot_with_work(
+        &self,
+        native_work: &super::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::NativePublicationSnapshot,
+        (MountLifecycleError, Option<MountSourceError>)> {
+        self.snapshot_with_work_policy(native_work, cancellation, true).await
+            .map(|capture| match capture {
+                MountedSnapshotCapture::Qualified(snapshot) => snapshot,
+                MountedSnapshotCapture::Original(_) => unreachable!("qualified snapshot policy"),
+            })
+    }
+
+    async fn snapshot_with_work_policy(
+        &self,
+        native_work: &super::NativeMountMeterWork,
+        cancellation: &crate::CancellationToken,
+        qualify_readonly: bool,
+    ) -> Result<MountedSnapshotCapture, (MountLifecycleError, Option<MountSourceError>)> {
         let result = async {
             native_work.meter().with_original_leaf(|work| work.check())
-                .map_err(native_demand_lifecycle_error)?;
-            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))?;
-            with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))?;
-            self.source.snapshot_with_native_work(native_work, cancellation)
-                .await.map_err(MountLifecycleError::Source)
+                .map_err(|cause| (native_demand_lifecycle_error(cause), None))?;
+            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+                .map_err(|cause| (cause, None))?;
+            with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
+                .map_err(|cause| (cause, None))?;
+            if qualify_readonly {
+                let snapshot = self.source.publication_snapshot_with_native_work(native_work, cancellation)
+                    .await.map_err(|(cause, accounting)| (MountLifecycleError::Source(cause), accounting))?;
+                Ok(MountedSnapshotCapture::Qualified(snapshot))
+            } else {
+                self.source.snapshot_with_native_work(native_work, cancellation)
+                    .await.map(MountedSnapshotCapture::Original)
+                    .map_err(|cause| (MountLifecycleError::Source(cause), None))
+            }
         }.await;
         if result.is_err() { self.retain_failed_session(); }
         result
