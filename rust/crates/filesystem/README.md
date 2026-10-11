@@ -158,4 +158,21 @@ observer callbacks run outside that lock. Native transaction frontdoors feed
 the same canonical authored-mutation compiler with the actual input custody;
 immutable borrowed `Bytes` are not adopted as new allocations.
 
+Host-private state I/O requires `NativeHostPrivateStateRoot`, opened explicitly
+by trusted configured-service bootstrap under its existing creation authority.
+An arbitrary path, readonly project proof or native accounting token cannot
+substitute for that held directory owner. State reads, existence queries,
+directory creation and writable opens use validated relative names and the same
+original accounting context. Private owner publication retains existing Unix
+owner/mode/link checks (and Windows regular/reparse checks), exclusive temporary
+creation, no-replace held rename and prepaid temporary cleanup. It never removes
+the published destination after an uncertain acknowledgement.
+
+Native journal completion keeps the original protected Preparing packet.
+Its durable work is a known lower bound; physical mutation before its next CAS,
+or a lost CAS acknowledgement, remains an incomplete original operation rather
+than a fabricated exact cold receipt. A quota reservation is accounting custody,
+not permission to append after cancellation; an accepted owner window is a
+separate required authorization.
+
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
