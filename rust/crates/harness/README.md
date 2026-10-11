@@ -133,6 +133,15 @@ recovery; it never reloads sources or transforms. New projections require new
 admissions. A custom loop must finish each tool exchange before requesting the
 next model step or publishing a child prefix.
 
+Native stock execution borrows the originally issued task context and uses the
+same response, compaction, tool, interaction and prefix-recovery engines. Its
+configured tool scope remains attenuated; a work budget never grants authority.
+Native executor/provider companions return an admitted `NativeFutureBundle`
+before constructing their future. Custom providers without audited native
+companions reject before their callbacks. SDK request copies use direct typed
+field recipes and retain logical metadata/buffer custody through payload drop;
+opaque provider internals and physical allocator/RSS overhead are not measured.
+
 Stock output-token budgets are caller-controlled: Rust exposes
 `StockExecutor::with_max_output_tokens`, and TypeScript exposes
 `HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when
