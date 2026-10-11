@@ -414,7 +414,7 @@ impl ResumableMachine for RecursiveToolMachine {
     fn identity_with_native_work<'a>(&'a self, work: &acyclic_fs::NativeMaterializationWork) -> Result<&'a MachineIdentity> {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }).map_err(Error::from)?;
         Ok(&self.identity)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -931,12 +931,6 @@ pub(super) fn check_source_command_with_native_work(command: &WorkflowCommand, i
     work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
     let io = super::PreparationIo::from_native_work(work)?;
     check_source_command_engine(command, intent, Some(&io))
-}
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn validate_merge_receipt_with_native_work(plan: &RecursiveMergeToolPlan, receipt: &ProjectMergeReceipt,
-    work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-    let io = super::PreparationIo::from_native_work(work)?;
-    validate_merge_receipt_engine(plan, receipt, Some(&io))
 }
 
 /// The caller combines this small retry-key custody with the owned input allocation before passing both values to the native session step.
@@ -2047,7 +2041,7 @@ impl ToolProjection for RecursiveProjection {
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })
+            .map_err(Error::from)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

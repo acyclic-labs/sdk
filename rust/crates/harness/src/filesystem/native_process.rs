@@ -395,7 +395,7 @@ struct NativeReceiptCodecSlot {
 impl NativeReceiptCodecSlot {
     fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         let custody = work.claim(std::mem::size_of::<NativeReceiptCodecCause>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(Self {
             source: Box::new(NativeReceiptCodecCause { cause: None, _custody: None }),
             custody,
@@ -510,10 +510,6 @@ impl<P> NativeProcessProvider<P>
 where
     P: StreamProvider + 'static,
 {
-    /// Borrows the immutable plan retained for this original native operation.
-    pub fn original_plan(&self) -> &TaskEffectPlan {
-        &self.plan
-    }
 
     /// Original one-shot task-effect attempt selected by the existing effect engine.
     #[must_use]
@@ -717,7 +713,7 @@ where
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
         let custody = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         finite_binding::absorb_shared(&self._custody, custody)?;
         Ok(Arc::new(self))
     }
@@ -756,7 +752,7 @@ where
     ) -> Result<bool> {
         self.require_work_family(work)?;
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(kind == NATIVE_PROCESS_EFFECT_KIND && guarantee == EffectGuarantee::AtMostOnce)
     }
     fn linearizable_reconciliation(&self) -> bool {
@@ -796,7 +792,7 @@ where
         })?;
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let payload = finite_dispatch::dispatch_payload(request, Some(work))
             .map_err(finite_dispatch::root_error)?;
         crate::NativeFutureBundle::new(work, || async move {
@@ -958,7 +954,7 @@ fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
     let mut path = String::new();
     path.try_reserve_exact("harness/v2/native-process/".len() + 36)
         .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     write!(&mut path, "harness/v2/native-process/{attempt}")
         .map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason: "native receipt path formatting failed",

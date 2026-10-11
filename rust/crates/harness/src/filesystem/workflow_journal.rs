@@ -775,17 +775,6 @@ where
         Ok((revision, matched))
     }
 
-    pub(crate) async fn verified_history_with_io(
-        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
-        io: Option<&PreparationIo>,
-    ) -> Result<(u64, Option<WorkflowRecord>)> {
-        match io {
-            None => self.verified_history(admission, operation_id).await,
-            Some(io) => self.finite_verified_history(admission, operation_id, None, false, io)
-                .await.map(|(revision, matched, _)| (revision, matched)),
-        }
-    }
-
     async fn finite_verified_history(
         &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
         candidate: Option<&WorkflowRecord>, require_next: bool, io: &PreparationIo,
@@ -879,17 +868,6 @@ where
         crate::workflow::validate_workflow_next_with_io(
             checkpoint, terminal, &identities.reserved, &identities.keys, record, Some(io),
         )
-    }
-
-    pub(crate) async fn cached_preflight_with_io(
-        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        let Some(io) = io else { return self.cached_preflight(admission, record); };
-        let (_, _, ready) = self.finite_verified_history(
-            admission, record.operation_id, Some(record), true, io,
-        ).await?;
-        Ok(ready)
     }
 
     pub(crate) fn advance_cached_with_io(

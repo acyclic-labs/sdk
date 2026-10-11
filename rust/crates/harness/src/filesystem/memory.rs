@@ -430,10 +430,10 @@ impl LocalListFilesTool {
                 reason: "list_files cache ownership overflow",
             })?;
         cached.custody.resize_retained(retained)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }).map_err(Error::from)?;
         observed.insert(invocation.operation_id, ListFilesObservation {
             admission_digest: digest,
             result: cached.result,
@@ -614,11 +614,11 @@ impl ToolExecutor for LocalListFilesTool {
                         reason: "list_files observation ownership overflow",
                     })?;
                     output.custody.resize_retained(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        .map_err(Error::from)?;
                     Ok((Some(output.result), output.custody))
                 }
                 None => Ok((None, work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?)),
+                    .map_err(Error::from)?)),
             }
         })
     }
@@ -631,7 +631,7 @@ impl ToolProjection for LocalListFilesTool {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         Ok(())
     }
 
@@ -1339,11 +1339,11 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let constructor_allocations = work.receipt().allocation_operations;
-        let baseline = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
+        let baseline = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
         storage.publisher.supports_native_stage(&work)?;
         assert_eq!(work.receipt().backend_write_operations, 0);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?
+        assert_eq!(work.remaining().map_err(Error::from)?
             .peak_allocation_bytes, baseline);
         struct OrdinaryOnlyPublisher {
             volume: VolumeRef,
@@ -1387,23 +1387,23 @@ mod tests {
             operation, "native.json", b"original", "application/json", "original.json", &work,
         )?.await?;
         assert_eq!(file_hold.bytes(), file.logical_owned_bytes()?);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline - file_hold.bytes());
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline - file_hold.bytes());
         assert!(work.receipt().backend_write_operations > 0);
-        let staged_allowance = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
+        let staged_allowance = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
         let (bytes, bytes_hold) = storage.content_verifier.read_with_native_work(&file, 1024, &work)?.await?;
         assert_eq!(bytes, b"original");
         assert_eq!(bytes_hold.bytes(), bytes.capacity() as u64);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
         assert!(work.receipt().backend_read_operations > 0);
         drop(bytes);
         drop(bytes_hold);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance);
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance);
         assert!(storage.publisher.stage_once_with_native_work(
             operation, "native.json", b"original", "text/plain", "changed", &work,
         )?.await.is_err());
         drop(file);
         drop(file_hold);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline);
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline);
 
         cancellation.cancel();
         assert!(matches!(storage.publisher.stage_once_with_native_work(
@@ -1626,7 +1626,7 @@ mod tests {
         let bytes = producer_io.encode_json(&serde_json::Value::Null, 1024, true)?;
         drop(producer_io);
         let (metadata, incoming) = producing.display("source carrier metadata")
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let held = producing.live_allocation_bytes() - producer_baseline;
         let error = match receiver_io.absorb_native_custody(incoming) {
             Err(error) => error,

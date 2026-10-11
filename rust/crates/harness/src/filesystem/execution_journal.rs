@@ -442,15 +442,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         let io = PreparationIo::from_native_work(work)?;
         let mut body = work.retain_owned(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         self._native_metadata.as_mut().expect("original funded metadata checked")
             .absorb(&mut body)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(body) })?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Arc::new(self))
     }
-
-
 
     fn require_operation(&self, operation: OperationId) -> Result<()> {
         self.require_operation_with_io(operation, None)
@@ -1470,20 +1468,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         .await
     }
 
-    /// Resolves the original conversation ticket under the borrowed responder proof and native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn resolve_interaction_with_native_work<'a>(
-        &'a self, id: InteractionId, response: &'a InteractionResponse, responder: &'a Scope,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.resolve_interaction_with_io(id, response, responder, Some(&io)).await
-        })
-    }
-
     #[allow(clippy::too_many_lines, reason = "one ordered interaction resolution transaction")]
     async fn resolve_interaction_with_io(
         &self, id: InteractionId, response: &InteractionResponse, responder: &Scope,
@@ -1912,12 +1896,6 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Ok(result)
     }
 
-    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
-    where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-    {
-        self.verify_event_refs_with_io(event, None).await
-    }
-
     async fn verify_event_refs_with_io(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<Option<ModelEvent>>
     where
         P: StreamProvider,
@@ -2214,7 +2192,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         Ok(true)
     }
 
@@ -2250,7 +2228,7 @@ where
         &'a self, operation_id: OperationId, idempotency_key: &'a str, bytes: &'a [u8],
         media_type: &'static str, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native staging requires an original dispatch owner",
@@ -2273,7 +2251,7 @@ where
         &'a self, operation_id: OperationId, idempotency_key: &'a str,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original staged-payload observation requires a task-owned journal",

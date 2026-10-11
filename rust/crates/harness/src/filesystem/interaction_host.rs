@@ -75,9 +75,6 @@ impl PreparationRecord for InteractionResponse {
 }
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O> {
-    pub(super) fn verify_responder_scope(&self, id: InteractionId, scope: &Scope) -> Result<()> {
-        self.verify_responder_scope_with_io(id, scope, None)
-    }
 
     pub(super) fn verify_responder_scope_with_io(
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
@@ -280,16 +277,6 @@ where
         let retained = io.owned_bytes()?;
         interaction_host._native_metadata = Some(io.into_native_custody(retained)?);
         Ok(interaction_host)
-    }
-
-    /// Stages the exact JSON request before admission; a staged orphan is reclaimable.
-    pub async fn stage_request(
-        &self,
-        id: InteractionId,
-        request: &Interaction,
-        deadline_unix_ms: Option<u64>,
-    ) -> Result<InteractionTicket> {
-        self.stage_request_with_io(id, request, deadline_unix_ms, None).await
     }
 
     pub(crate) async fn stage_request_with_io(
@@ -699,11 +686,6 @@ where
         Ok(Some(request))
     }
 
-    /// Resolves only the currently admitted answer under the owner's read grant.
-    pub async fn read_answer(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_answer_with_io(id, None).await
-    }
-
     pub(crate) async fn read_answer_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<u8>>> {
@@ -721,11 +703,6 @@ where
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(bytes))
-    }
-
-    /// Reads the admitted approval decision artifact, when one was recorded.
-    pub async fn read_decision_detail(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_decision_detail_with_io(id, None).await
     }
 
     pub(crate) async fn read_decision_detail_with_io(

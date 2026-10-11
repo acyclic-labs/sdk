@@ -70,18 +70,6 @@ impl NativePublicationSlot {
     }
 }
 
-struct NativeCaptureBuffers {
-    buffers: Option<[Vec<u8>; 3]>,
-    scopes: Option<NativeProcessNamespaceScopes>,
-    custody: Option<NativeAllocation>,
-}
-
-impl NativeCaptureBuffers {
-    fn into_parts(self) -> (Option<[Vec<u8>; 3]>, Option<NativeProcessNamespaceScopes>, Option<NativeAllocation>) {
-        (self.buffers, self.scopes, self.custody)
-    }
-}
-
 struct NativeCaptureTask<F> {
     callback: F,
     _custody: Option<NativeAllocation>,
@@ -427,9 +415,9 @@ async fn capture<P: StreamProvider + 'static>(
     let original = original.cloned();
     let cancellation = cancellation.clone();
     let runtime = tokio::runtime::Handle::current();
-    let inputs = NativeCaptureBuffers { buffers, scopes, custody };
+    let inputs = (buffers, scopes, custody);
     let (output, original_failure, custody) = spawn_capture(move || {
-        let (buffers, scopes, custody) = inputs.into_parts();
+        let (buffers, scopes, custody) = inputs;
         let mut custody = custody;
         let mut scopes = scopes;
         let mut buffers = buffers;

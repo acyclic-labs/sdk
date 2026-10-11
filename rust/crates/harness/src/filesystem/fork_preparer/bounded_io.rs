@@ -85,7 +85,7 @@ impl<'a> TrustedDecodeReservation<'a> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.io.original_native_work() {
             self.native = Some(work.retain_owned(bytes)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+                .map_err(Error::from)?);
             return Ok(());
         }
         self.scoped = Some(self.io.reserve_decode(bytes)?);
@@ -366,8 +366,8 @@ impl PreparationIo {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let custody = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
+        let custody = work.retain_owned(0).map_err(Error::from)?;
         Ok(Self {
             ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody) },
             cancellation: work.cancellation().clone(),
@@ -437,7 +437,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Native { custody, .. } => custody.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .split_off(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
+                .split_off(bytes).map_err(Error::from),
             PreparationLedger::Owned { .. } => Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
             }),
@@ -516,7 +516,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.preflight_workspace(next).map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.admit(next).map_err(Error::from),
         }
     }
 
@@ -575,7 +575,7 @@ impl PreparationIo {
             PreparationLedger::Native { custody, .. } => {
                 let mut guard = custody.lock().map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?;
                 let live = guard.bytes().checked_add(bytes).ok_or_else(|| Error::Invalid("native preparation ownership overflow".into()))?;
-                guard.resize_retained(live).map_err(|cause| Error::NativeWork { cause, custody: None })
+                guard.resize_retained(live).map_err(Error::from)
             }
         }
     }
@@ -599,7 +599,7 @@ impl PreparationIo {
             }
             #[cfg(not(target_arch = "wasm32"))]
             PreparationLedger::Native { custody, .. } => custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .release(bytes).map_err(|cause| Error::NativeWork { cause, custody: None }),
+                .release(bytes).map_err(Error::from),
         }
     }
 
@@ -627,7 +627,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.remaining_workspace().map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.remaining().map_err(Error::from),
         }
     }
 
@@ -662,7 +662,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { budget, .. } => self.receipt().verify(*budget).map_err(|error| Error::Invalid(error.to_string())),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.remaining().map(|_| ()).map_err(Error::from),
         }
     }
 
@@ -670,7 +670,7 @@ impl PreparationIo {
         match &self.ledger {
             PreparationLedger::Owned { .. } => self.spent_workspace(next).map_err(Error::from),
             #[cfg(not(target_arch = "wasm32"))]
-            PreparationLedger::Native { work, .. } => work.spent(next).map_err(|cause| Error::NativeWork { cause, custody: None }),
+            PreparationLedger::Native { work, .. } => work.spent(next).map_err(Error::from),
         }
     }
 
@@ -1097,64 +1097,6 @@ impl PreparationIo {
         reservation.finish(result)
     }
 
-    /// Preserves the consuming `serde_json::from_value` protocol.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn value_decode_owned<T: UploadRecord>(
-        &self, value: serde_json::Value, allocation: acyclic_fs::NativeAllocation,
-        code: crate::wire::ErrorCode,
-    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        let mut input = (value, allocation);
-        let work = self.original_native_work()
-            .ok_or_else(|| self.invalid("owned Value decoding requires original work"))?;
-        if !work.shares_ledger(input.1.work()) {
-            return Err(self.invalid("owned Value belongs to a different work ledger"));
-        }
-        let bounds = crate::contract::JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: self.remaining()?.items_examined,
-            maximum_depth: 128,
-        };
-        let shape = crate::contract::json_owned_value_shape_bounded(
-            &input.0, bounds, T::json_value_schema(),
-            &mut |next| self.codec_charge(next, false),
-        ).map_err(|error| decode_allowance_with_code(error, Some(code)))?;
-        let nodes = shape.lexical_items().checked_add(shape.virtual_items())
-            .ok_or_else(|| decode_allowance_error("owned Value item count overflow", Some(code)))?;
-        let additional = crate::contract::json_owned_value_conversion_additional_bytes(shape)
-            .map_err(|error| decode_allowance_with_code(error, Some(code)))?;
-        let content_copy_bytes = match T::json_value_schema() {
-            crate::contract::JsonValueSchema::ModelContent
-            | crate::contract::JsonValueSchema::Context
-            | crate::contract::JsonValueSchema::ResponseProjection
-            | crate::contract::JsonValueSchema::ModelRequest => shape.input_bytes().checked_mul(2)
-                .ok_or_else(|| decode_allowance_error("owned Content string reservation overflow", Some(code)))?,
-            _ => 0,
-        };
-        let allowance = nodes.checked_mul(preparation_slot_bytes::<T>())
-            .and_then(|bytes| bytes.checked_mul(8))
-            .and_then(|bytes| bytes.checked_add(additional))
-            .and_then(|bytes| bytes.checked_add(content_copy_bytes))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
-            .ok_or_else(|| decode_allowance_error("owned Value reservation overflow", Some(code)))?;
-        let mut reservation = TrustedDecodeReservation::new(self);
-        let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
-            shape, T::diagnostic_label_bytes(), Some(code),
-        )?;
-        reservation.reserve_typed(allowance, diagnostics, Some(code))?;
-        let result = serde_json::from_value(input.0)
-            .map_err(|source| Error::NativeDecode { code, source, custody: None });
-        let mut output = reservation.finish(result)?.into_native_parts()?;
-        if let Err(cause) = output.1.absorb(&mut input.1) {
-            return Err(Error::NativeWork { cause, custody: Some(input.1) });
-        }
-        let actual = (std::mem::size_of::<T>() as u64)
-            .checked_add(output.0.logical_owned_bytes()?)
-            .ok_or_else(|| decode_allowance_error("owned typed Value ownership overflow", Some(code)))?;
-        output.1.substitute(actual)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(output)
-    }
-
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
         match next {
             crate::contract::JsonCodecCharge::Retain { bytes } => {
@@ -1323,11 +1265,11 @@ pub(in crate::filesystem) fn clone_bytes(bytes: &[u8], io: Option<&PreparationIo
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.and_then(PreparationIo::original_native_work) {
         original.admit(copied)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let mut output = vector(bytes.len(), io)?;
         output.extend_from_slice(bytes);
         original.spent(copied)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         return source_bytes_from_vec(output, io);
     }
     let mut output = vector(bytes.len(), io)?;
@@ -1405,10 +1347,10 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
                     ..WorkCounters::UNCHARGED
                 };
                 original.admit(hash)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 let operation = super::super::filesystem_key(key);
                 original.spent(hash)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 return workspace.operation_generation_with_native_work(
                     operation, original, &io.cancellation,
                 ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
@@ -1452,28 +1394,28 @@ pub(in crate::filesystem) fn volume_storage_name(
             ..WorkCounters::UNCHARGED
         };
         original.admit(hash)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let digest = blake3::hash(&encoded);
         original.spent(hash)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let mut custody = original.claim(72)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let mut name = String::new();
         name.try_reserve_exact(72).map_err(|source| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(source),
             custody: None,
         })?;
         custody.reconcile_capacity(name.capacity() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let copy = WorkCounters {
             bytes_copied: 72, bytes_encoded: 64, ..WorkCounters::UNCHARGED
         };
         original.admit(copy)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         name.push_str("harness-");
         name.push_str(digest.to_hex().as_str());
         original.spent(copy)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         io.absorb_native_custody(custody)?;
         return Ok(name);
     }
@@ -1498,7 +1440,7 @@ pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         if reference.as_resource().provider() != &host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -1528,7 +1470,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         if reference.as_resource().provider() != &host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -1610,9 +1552,9 @@ pub(in crate::filesystem) async fn create_guarded<A: AsyncAuthorityStore, O: Asy
         })?);
         guard.verify_creation_with_native_work(original)?.await?;
         let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
-        original.admit(hashing).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        original.admit(hashing).map_err(Error::from)?;
         let operation = acyclic_fs::OperationId::from_bytes(super::super::filesystem_key(key).into_bytes());
-        original.spent(hashing).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        original.spent(hashing).map_err(Error::from)?;
         let lifecycle = if host.filesystem.capabilities().durable {
             acyclic_fs::Lifecycle::Durable
         } else {
@@ -1652,12 +1594,12 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             bytes_hashed: key.as_str().len() as u64, ..WorkCounters::UNCHARGED
         };
         original.admit(hash_work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let operation = acyclic_fs::OperationId::from_bytes(
             super::super::filesystem_key(key).into_bytes(),
         );
         original.spent(hash_work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         host.filesystem.create_workspace_with_operation_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle),
             operation, original, &io.cancellation,
@@ -1936,10 +1878,10 @@ where
             bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
         };
         original.admit(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let operation = super::super::filesystem_key(key);
         original.spent(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let mut transaction = workspace.begin_pinned_transaction_with_native_work(
             &pinned, operation, original, &io.cancellation,
         ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
@@ -2145,10 +2087,10 @@ async fn fork_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
         };
         original.admit(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let creation = super::super::filesystem_key(key);
         original.spent(hashing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let options = acyclic_fs::ForkOptions::from_generation(pinned, creation);
         let options = match paths {
             Some(paths) => options.inherit_paths(paths),

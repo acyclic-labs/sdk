@@ -804,16 +804,6 @@ where
         }
     }
 
-    /// Checks only a retained passive wait.
-    pub(super) async fn wait_ready(
-        &self,
-        context: &TaskContext,
-        command: &WorkflowCommand,
-        payload: Value,
-    ) -> Result<bool> {
-        self.wait_ready_observed(context, command, payload, None).await
-    }
-
     pub(super) async fn wait_ready_observed(
         &self,
         context: &TaskContext,
@@ -1212,7 +1202,6 @@ where
         }
     }
 
-
     async fn model_command(
         &self,
         task: TaskId,
@@ -1461,16 +1450,6 @@ fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
     serde_json::to_value(value)
         .map(TaskCommandProgress::Ready)
         .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
-}
-
-pub(super) fn received_mail_copy_operation(task: TaskId, receive: OperationId) -> OperationId {
-    let mut digest = blake3::Hasher::new();
-    digest.update(b"harness/v2/received-mail-copy\0");
-    digest.update(&task.into_bytes());
-    digest.update(&receive.into_bytes());
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(identity)
 }
 
 fn child_operation(task: TaskId, command: OperationId) -> OperationId {

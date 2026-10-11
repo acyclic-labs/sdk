@@ -314,7 +314,7 @@ fn decode_conflict_inner(
     };
     #[cfg(not(target_arch = "wasm32"))]
     let mut custody = work.map(|work| work.retain_owned(std::mem::size_of::<MergeConflict>() as u64))
-        .transpose().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .transpose().map_err(Error::from)?;
     #[cfg(target_arch = "wasm32")]
     let custody = None;
     let (tag, rest) = key.split_first()
@@ -338,9 +338,9 @@ fn decode_conflict_inner(
             let name = if let Some(work) = work {
                 work.charge(acyclic_fs::WorkCounters { items_examined: 1,
                     ..acyclic_fs::WorkCounters::default() })
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 let (copied, mut allocation) = work.copy_bytes(name)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error|
                     Error::NativeFilesystem {
                         source: acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
@@ -348,7 +348,7 @@ fn decode_conflict_inner(
                         custody: None,
                     })?;
                 custody.as_mut().expect("native header custody").absorb(&mut allocation)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    .map_err(Error::from)?;
                 name
             } else {
                 LogicalName::new(encoding, name.to_vec(), u32::MAX)

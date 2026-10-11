@@ -191,14 +191,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNativeSource<A, O> {
-    /// Retains the actual source handle without copying its backend or stores.
-    pub fn from_lazy<D: DemandSource + 'static, S: LazyWorkspaceStore>(
-        lazy: Arc<LazyWorkspace<A, O, D, S>>,
-    ) -> Self
-    {
-        Self { backing: Arc::new(RetainedRootLazy { lazy,
-            #[cfg(not(target_arch = "wasm32"))] _custody: None }) }
-    }
 
     /// Funds the concrete adapter before allocation on the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
@@ -206,9 +198,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
         lazy: Arc<LazyWorkspace<A, O, D, S>>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let custody = work.claim_allocation(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64, 0)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(Self { backing: Arc::new(RetainedRootLazy { lazy, _custody: Some(custody) }) })
     }
 
@@ -281,16 +273,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         })
     }
 
-    /// Binds the actual original lazy namespace; no descriptor creates a binding.
-    pub fn with_native_source(mut self, project: VolumeRef, lazy: FsRootNativeSource<A, O>) -> Result<Self> {
-        project.validate()?;
-        if project.class() != VolumeClass::Project || project.provider() != &self.host.provider {
-            return Err(Error::Unauthorized("native source is not this provider's project".into()));
-        }
-        self.native = Some((project, lazy));
-        Ok(self)
-    }
-
     /// Copies the configured service owner on this original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
@@ -302,7 +284,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut owner_custody;
         let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let owner = io.clone_authority(owner)?;
         owner_custody = io.into_custody();
         custody.absorb(&mut owner_custody).map_err(|cause| Error::NativeWork {
@@ -313,44 +295,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         })
     }
 
-    /// Binds and copies only the actual configured project identity, keeping custody on the same ledger as the native configured owner/root.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_native_source_with_native_work(
-        mut self, project: &VolumeRef, lazy: FsRootNativeSource<A, O>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        project.validate_with_native_work(work)?;
-        if project.class() != VolumeClass::Project || project.provider() != &self.host.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native source is not this provider's project",
-            });
-        }
-        if !lazy.matches_native_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Root lazy source belongs to another original native ledger" });
-        }
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native source configuration belongs to another allocation context",
-            });
-        }
-        let mut project_custody;
-        let copied = project.clone_with_native_work(work)?;
-        project_custody = copied.1;
-        let project = copied.0;
-        let custody = self._native_custody.as_mut().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "native source configuration is missing its admitted custody",
-        })?;
-        custody.absorb(&mut project_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(project_custody),
-        })?;
-        self.native = Some((project, lazy));
-        Ok(self)
-    }
-
     /// Shares the paid policy; stdlib Arc backing is not SDK payload.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
@@ -359,21 +303,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
                 reason: "Root source policy belongs to another native ledger" });
         }
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(Arc::new(self))
-    }
-
-    /// Moves the configured creator's opaque protected Root association into this policy.
-    pub fn with_bootstrap_source(
-        mut self, proof: Arc<super::fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<Self> {
-        if proof.owner != self.owner || proof.root != self.graph_root
-            || proof.request.volume.class() != VolumeClass::Project || !Arc::ptr_eq(&proof.host, &self.host)
-        {
-            return Err(Error::Unauthorized("Root bootstrap proof differs from this configured service".into()));
-        }
-        self.bootstrap = Some(proof);
-        Ok(self)
     }
 
     /// Transfers only an already admitted Arc handle; all original record and Project payload remains guarded by the authentic creator token.
@@ -405,21 +336,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
                 .and_then(|proof| proof.native_source.as_ref()))
     }
 
-    fn bootstrap_selection(
-        &self, context: &RootProjectSourceContext<'_>, snapshot: &ProjectSourceSnapshot,
-    ) -> bool {
-        context.created_project_authenticated || self.bootstrap.as_ref().is_some_and(|bootstrap| {
-            context.source.parent.is_none() && context.source.task_id() == self.graph_root
-                && snapshot.project == bootstrap.request.volume
-                && generation_identity(&snapshot.generation) == Some(bootstrap.selected_generation)
-                && snapshot.native_snapshot == bootstrap.request().native_snapshot
-                && match (&snapshot.native_snapshot, bootstrap.native_snapshot) {
-                    (None, None) => true,
-                    (Some(value), Some(expected)) => LazySnapshotRef::deserialize(value).ok() == Some(expected),
-                    _ => false,
-                }
-        })
-    }
 }
 
 impl<A, O> RootProjectSourceProvider for FsRootProjectSourceProvider<A, O>
