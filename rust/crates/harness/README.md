@@ -142,6 +142,8 @@ companions reject before their callbacks. SDK request copies use direct typed
 field recipes and retain logical metadata/buffer custody through payload drop.
 Closed model-content copies and validators share the original history observer
 for finite owned/native work; copies transfer only their produced deep-storage claim.
+Selected history ranges and their sparse conversation views use that same
+original observer, without an encoded-copy workspace or post-hoc range receipt.
 Opaque provider internals and physical allocator/RSS overhead are not measured.
 
 Stock output-token budgets are caller-controlled: Rust exposes

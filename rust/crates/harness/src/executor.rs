@@ -3902,12 +3902,11 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             let records = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => {
-                    let receipt = history.conversation_range_measured(cursor, after_sequence,
-                        through_sequence, range_limits, io.remaining()?, &io.cancellation).await;
-                    let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-                    let value = io.receive_content(receipt)?;
-                    io.retain_owned(held)?;
-                    _records_hold = Some(io.guard_owned(held)?);
+                    let before = io.owned_bytes()?;
+                    let mut observer = io.history_io();
+                    let value = history.conversation_range_with_work(cursor, after_sequence,
+                        through_sequence, range_limits, &mut Some(&mut observer)).await?;
+                    _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
                     value
                 }
                 _ => {
@@ -3917,7 +3916,18 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
                 }
             };
             #[cfg(feature = "filesystem")]
-            { _view_workspace = io.map(|io| reserve_preparation_workspace(&records, io)).transpose()?; }
+            if let Some(io) = io {
+                let before = io.owned_bytes()?;
+                let mut observer = io.history_io();
+                let (view, _) = crate::conversation::ConversationState::selected_view_with_work(
+                    records, &mut Some(&mut observer))?;
+                _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
+                view
+            } else {
+                _view_workspace = None;
+                crate::conversation::ConversationState::selected_view(records)?
+            }
+            #[cfg(not(feature = "filesystem"))]
             crate::conversation::ConversationState::selected_view(records)?
         }
     };
