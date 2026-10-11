@@ -3560,6 +3560,33 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )
     }
 
+    /// Reads only the original owner's current cancellation flag.
+    pub async fn cancellation_requested(&self, task: TaskId) -> Result<bool> {
+        self.cancellation_requested_with_work(task, &mut None).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn cancellation_requested_with_native_work(
+        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        crate::store::history::HistoryIo::retain_owned(&mut io, std::mem::size_of::<bool>() as u64)?;
+        self.cancellation_requested_with_work(task, &mut Some(&mut io)).await
+    }
+
+    async fn cancellation_requested_with_work(
+        &self, task: TaskId, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh_with_work(work).await?;
+        let operation = coordinator.observe_operation_ref_with_work(
+            &self.owner, &self.owner_scope, &self.verifier,
+            OperationId::from_bytes(task.into_bytes()), work,
+        )?;
+        Ok(operation.cancellation_requested)
+    }
+
     /// Cancels only when the original admitted absolute deadline has elapsed.
     /// A supplied fence must still own the exact reservation; uncertain effects
     /// and their original reservation remain available for reconciliation.
