@@ -1207,6 +1207,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_local_store_reopens_original_receipt_generation_policy_and_preimages() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        let sdk_root = directory.path().join("sdk-store");
+        let receipt_root = directory.path().join("native-state");
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("original"), b"cold original bytes")?;
+        std::fs::write(source.join(".env"), b"excluded native secret")?;
+        let cancellation = CancellationToken::new();
+        let operation = OperationId::new();
+        let (archive, generation, preimages, policy_fingerprint, root_identity) = {
+            let fs = crate::Fs::local(crate::LocalOptions::new(&sdk_root)).await?;
+            let workspace = fs.create_workspace("archive-cold-original").await?;
+            let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
+            let root = Arc::new(HostRoot::open(&source)?);
+            let options = CaptureOptions { source_root: source.clone(), expected_root_identity: root.identity(), maximum_paths: 8, maximum_extent_spans: 8 };
+            let policy = CapturePolicy::excluding(vec![path(".env", checkout.volume_config())?])?;
+            let store = LocalCoreStateStore::new(&receipt_root);
+            let captured = capture_native_directory_archive(&mut checkout, root, &options, &policy, operation, PublicationPermit::Unrestricted, &store, WorkBudget::UNBOUNDED, &cancellation).await?;
+            (captured.archive, captured.capture.original_generation(), captured.capture.retained_preimages(), policy.fingerprint(), captured.capture.root_identity())
+        };
+        std::fs::write(source.join("original"), b"later physical bytes must not be captured")?;
+        let store = LocalCoreStateStore::new(&receipt_root);
+        let restored = restore_native_directory_capture(&store, operation).await?;
+        assert_eq!(restored.original_generation(), generation);
+        assert_eq!(restored.root_identity(), root_identity);
+        assert_eq!(restored.capture_policy().fingerprint(), policy_fingerprint);
+        assert_eq!(restored.original_preimages(), preimages.as_ref());
+        let fs = crate::Fs::local(crate::LocalOptions::new(&sdk_root)).await?;
+        let workspace = fs.open_workspace("archive-cold-original").await?;
+        let mut checkout = workspace.checkout(GenerationSelector::Exact(generation), CheckoutMode::tracking_transaction()).await?;
+        let config = checkout.volume_config();
+        let original = checkout.snapshot_reader().read_file_range(&path("original", config)?, ByteRange { offset: 0, length: 19 }, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_eq!(original.bytes.as_ref(), b"cold original bytes");
+        replace_captured_native_directory_archive(&mut checkout, &restored, archive.reader(), WorkBudget::UNBOUNDED, &cancellation).await?;
+        assert!(!checkout.has_pending_mutations());
+        assert_eq!(std::fs::read(source.join("original"))?, b"later physical bytes must not be captured");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn unchanged_desired_archive_retains_ids_metadata_and_unrelated_physical_writer() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let source = directory.path().join("source");
