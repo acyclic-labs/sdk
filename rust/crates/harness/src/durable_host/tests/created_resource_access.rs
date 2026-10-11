@@ -412,6 +412,16 @@ impl CreationFixture {
     }
 
     pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
+        // Resource IO has finished before publication. Record that genuine
+        // coordinator completion, rather than treating a provider receipt or
+        // a still-running preparation as permission to consume its allocation.
+        let preparation = TaskId::from_bytes([83; 16]);
+        let current = self.host.observe_task(preparation).await?;
+        if current.phase == crate::scheduler::OperationPhase::Running {
+            let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
+            self.host.settle_task(preparation, (&reservation).into(),
+                Outcome::Succeeded(serde_json::json!({"prepared":true}))).await?;
+        }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
             self.start_next(*task).await?;
@@ -1341,5 +1351,330 @@ async fn original_read_source_cannot_become_native_directory_execution_owner() -
     drop(context);
     drop(custody);
     assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_admission_moves_paid_json_and_retains_exact_typed_metadata() -> Result<()> {
+    use crate::store::history::HistoryIo as _;
+    let fixture = CreationFixture::new().await?;
+    let request = fixture.sandbox_request()?;
+    let bytes = crate::contract::canonical_json_bytes(&request.child.canonical_payload())?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).expect("finite original admission ledger");
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let (value, source_held) = io.decode_json_value(&bytes)?;
+    let input_text = value["input"]["action"].as_str().expect("actual fixture action").as_ptr();
+    let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(
+        value, &mut Some(&mut io),
+    )?;
+    assert!(admission == request.child);
+    assert_eq!(admission.input["action"].as_str().expect("moved fixture action").as_ptr(), input_text);
+    let retained = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+        .checked_add(admission.logical_owned_bytes()?).expect("finite admission extent");
+    io.release_owned(source_held.checked_add(added).expect("paid source and typed slots")
+        .checked_sub(retained).expect("producer-funded actual admission"))?;
+    let custody = io.take_native_custody(retained)?;
+    assert_eq!(custody.bytes(), retained);
+    assert!(custody.matches_work(&work));
+    assert!(work.receipt().allocation_operations > 1);
+    drop(admission);
+    drop(custody);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_admission_exhaustion_precedes_source_io_and_preserves_old_ack() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let operation = OperationId::from_bytes(fixture.root.into_bytes());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = creation_control_budget();
+    budget.allocation_operations = 1;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .expect("only the original ledger allocation");
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let before = work.receipt();
+    assert!(matches!(fixture.host.admission_with_work(operation, &mut Some(&mut io)).await,
+        Err(Error::NativeWork { .. })));
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    let retained = fixture.host.admission(operation).await?;
+    assert_eq!(retained.operation_id, operation);
+    assert_eq!(retained.parent, None);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let operation = OperationId::from_bytes(fixture.root.into_bytes());
+    let declaration = fixture.host.retained_declaration(operation).await?
+        .expect("original acknowledged declaration");
+    let original = declaration.state;
+    let descriptor = crate::conversation::FileDescriptor::new(
+        *original.descriptor().sha256(), original.descriptor().byte_length(), "text/plain",
+    )?;
+    let reference = FileRef::new(
+        original.volume().clone(), original.path(), original.version(), descriptor, original.display_name(),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).expect("original native metadata ledger");
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    assert!(matches!(fixture.host.read_json_with_work(&reference, &mut Some(&mut io)).await,
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+    assert_eq!(work.receipt().backend_read_operations, 0);
+    assert_eq!(work.receipt().bytes_hashed, 0);
+    assert_eq!(fixture.host.admission(operation).await?.operation_id, operation);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_fixture_scope(
+    fixture: &CreationFixture, operation: OperationId,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(TaskAdmissionRecord, RuntimeScope, acyclic_fs::NativeAllocation)> {
+    let mut io = crate::store::history::native_work_io(work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let admission = fixture.host.admission_with_work(operation, &mut Some(&mut io)).await?;
+    let (scope, scope_held) = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await?;
+    let record_held = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+        .checked_add(admission.logical_owned_bytes()?).expect("exact retained fixture record");
+    let custody = io.take_native_custody(record_held.checked_add(scope_held)
+        .expect("record and scope retain separate exact allowances"))?;
+    assert!(custody.matches_work(work));
+    Ok((admission, scope, custody))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_original_root_child_grandchild_keep_exact_created_source() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let created = fixture.create_filesystem_child().await?;
+    fixture.admit_child(created.request.child.clone()).await?;
+    let child = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
+    let read = created.private.capability(VolumeOperation::Read)?;
+    let write = created.private.capability(VolumeOperation::Write)?;
+    let mut descendant = created.request.child.clone();
+    descendant.operation_id = OperationId::from_bytes([97; 16]);
+    descendant.parent = Some(child);
+    descendant.grants = Capabilities::new([read.clone()]);
+    descendant.limits.file_bytes = 1_024;
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(child).await? else {
+        return Err(Error::NotFound("native created parent lease".into()));
+    };
+    fixture.host.admit_owned(descendant.clone(), (&lease.reservation).into()).await?;
+    fixture.start_next(TaskId::from_bytes([97; 16])).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+    let live = work.live_allocation_bytes();
+    let root = native_fixture_scope(&fixture, OperationId::from_bytes(fixture.root.into_bytes()), &work).await?;
+    assert!(root.0.parent.is_none());
+    assert!(root.0.resource_proofs.is_empty());
+    assert!(root.1.current_created_agent_with_native_work(&work)?.is_none());
+    assert!(!root.1.grants().contains(&read));
+    assert!(root.2.matches_work(&work));
+    let current = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await?;
+    assert!(current.0 == created.request.child);
+    assert_eq!(current.1.current_created_agent_with_native_work(&work)?, Some(created.seed.child_agent));
+    assert_eq!(current.1.current_created_authority_with_native_work(&work)?, Some(&created.seed.child));
+    assert_eq!(current.1.current_created_private_volume_with_native_work(&work)?, Some(&created.private));
+    assert!(current.1.grants().contains(&write));
+    let inherited = native_fixture_scope(&fixture, descendant.operation_id, &work).await?;
+    assert!(inherited.0 == descendant);
+    assert_eq!(inherited.1.current_created_agent_with_native_work(&work)?, Some(created.seed.child_agent));
+    assert_eq!(inherited.1.current_created_authority_with_native_work(&work)?, Some(&created.seed.child));
+    assert!(inherited.1.grants().contains(&read));
+    assert!(!inherited.1.grants().contains(&write));
+    let readonly = current.1.narrow_with_native_work(
+        Capabilities::new_with_native_work([read.as_str()], &work)?, current.1.limits(), &work,
+    )?;
+    assert!(!readonly.0.grants().contains(&write));
+    assert!(readonly.0.narrow_with_native_work(
+        Capabilities::new_with_native_work([write.as_str()], &work)?, readonly.0.limits(), &work,
+    ).is_err());
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    fixture.host.validate_parent_scope_with_work(Some(child), &readonly.0, &mut Some(&mut io)).await?;
+    drop(io);
+    drop(readonly);
+    drop(inherited);
+    drop(current);
+    drop(root);
+    assert_eq!(work.live_allocation_bytes(), live);
+    assert!(work.receipt().backend_read_operations > 0);
+    assert!(work.receipt().bytes_hashed > 0);
+    assert!(!fixture.root_scope.grants().contains(&write));
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let created = fixture.create_filesystem_child().await?;
+    fixture.admit_child(created.request.child.clone()).await?;
+    // The real retained source supplies the valid proof. Only caller-owned
+    // requested metadata is changed; the provider/declaration are never mocked.
+    for change in 0..4 {
+        let mut admission = created.request.child.clone();
+        match change {
+            0 => admission.resource_proofs[0].provider = ProviderRef::new("created-controls", "filesystem", "foreign")?,
+            1 => admission.resource_proofs[0].evidence = workspace_ref(fixture.filesystem_provider.clone(), "foreign-evidence")?.as_resource().clone(),
+            2 => admission.resource_proofs[0].preparation = TaskId::from_bytes([85; 16]),
+            _ => admission.parent = None,
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+        let input_custody = work.retain_owned(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::history::native_work_io(&work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let result = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await;
+        assert!(result.is_err());
+        assert!(result.as_ref().err().unwrap().is_native_failure());
+        drop(result);
+        drop(io);
+        drop(admission);
+        drop(input_custody);
+        assert!(fixture.host.admission(OperationId::from_bytes(fixture.root.into_bytes())).await?.parent.is_none());
+    }
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let admission = fixture.host.read_retained_admission_with_work(created.request.child.operation_id, &mut Some(&mut io)).await?;
+    let mut visited = Vec::new();
+    CoordinatorTaskHost::<MemoryStream>::reserve_proof_slots(&mut visited, &mut Some(&mut io))?;
+    visited.push(admission.operation_id);
+    let prefix = work.receipt();
+    let error = fixture.host.verify_created_access_with_work(&admission, &mut visited, &mut Some(&mut io)).await;
+    assert!(matches!(error, Err(Error::NativeBoundary { .. })));
+    assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
+    drop(error);
+    drop(visited);
+    drop(admission);
+    drop(io);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_stock_source_provenance_and_cancelled_preparation_are_not_authority() -> Result<()> {
+    for change in 0..5 {
+        let fixture = CreationFixture::new().await?;
+        let created = fixture.create_filesystem_child().await?;
+        fixture.admit_child(created.request.child.clone()).await?;
+        let claim = workspace_ref(fixture.filesystem_provider.clone(),
+            &format!("fork-allocation-{}", created.private.storage_name()?))?;
+        let bytes = fixture.filesystem.read(&claim, None, "/claim.json", 65_536).await?;
+        let mut source: Value = crate::contract::json_from_slice(&bytes)?;
+        match change {
+            0 => source["task_origin"]["owner"]["id"] = serde_json::json!("foreign-owner"),
+            1 => source["task_origin"]["preparation_task"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),
+            2 => source["task_origin"]["intended_child"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),
+            3 => source["task_origin"]["request_digest"] = serde_json::to_value([0u8; 32]).unwrap(),
+            _ => source["task_origin"]["admission_digest"] = serde_json::to_value([0u8; 32]).unwrap(),
+        }
+        fixture.filesystem.apply(&claim, None, &[WorkspaceMutation::PutFile {
+            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&source)?,
+        }], &IdempotencyKey::new("native-corrupt-source-provenance")?).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+        let live = work.live_allocation_bytes();
+        let error = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await;
+        assert!(error.is_err());
+        assert!(error.as_ref().err().unwrap().is_native_failure());
+        assert!(work.receipt().backend_read_operations > 0);
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), live);
+        assert!(fixture.host.admission(OperationId::from_bytes(fixture.root.into_bytes())).await?.parent.is_none());
+    }
+    let fixture = CreationFixture::new().await?;
+    let created = fixture.create_filesystem_child().await?;
+    // Physical allocation remains real, but its genuine source task never
+    // completed and is now cancelled in the authoritative coordinator.
+    fixture.host.cancel(TaskId::from_bytes([83; 16])).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let error = fixture.host.authenticated_scope_with_work(&created.request.child, &mut Some(&mut io)).await;
+    assert!(matches!(error, Err(Error::NativeBoundary { code: ErrorCode::Unauthorized, .. })));
+    drop(error);
+    drop(io);
+    assert!(fixture.host.admission(OperationId::from_bytes(fixture.root.into_bytes())).await?.parent.is_none());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_owned_admission_scalar_cause_keeps_original_preclaimed_guard() -> Result<()> {
+    use crate::store::history::HistoryIo as _;
+    let fixture = CreationFixture::new().await?;
+    let request = fixture.sandbox_request()?;
+    let mut value = request.child.canonical_value();
+    value["resource_proofs"][0]["resource"]["kind"] = serde_json::json!("foreign-kind");
+    let bytes = crate::contract::canonical_json_bytes(&value)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
+    let live = work.live_allocation_bytes();
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let (owned, _) = io.decode_json_value(&bytes)?;
+    let error = TaskAdmissionRecord::from_canonical_value_counted_with_work(owned, &mut Some(&mut io)).err()
+        .expect("genuine ResourceKind visitor must reject the changed scalar");
+    assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
+        if custody.matches_work(&work)));
+    assert!(error.is_native_failure());
+    drop(io);
+    assert!(work.live_allocation_bytes() > live);
+    drop(error);
+    assert_eq!(work.live_allocation_bytes(), live);
+    assert!(fixture.host.admission(OperationId::from_bytes(fixture.root.into_bytes())).await?.parent.is_none());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let operation = OperationId::from_bytes(fixture.root.into_bytes());
+    let mut declaration = fixture.host.retained_declaration(operation).await?
+        .expect("genuine previously acknowledged root");
+    let foreign = crate::core::AuthorityIssuer::new(
+        "created-controls-foreign", [93; 32], fixture.host.owner.clone(),
+    );
+    declaration.owner_scope = foreign.root("foreign-declaration",
+        Capabilities::new(["operation:declare", "operation:observe"]));
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
+        .expect("original finite scope authentication ledger");
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let before = work.receipt();
+    let denial = fixture.host.read_declared_admission_with_work(
+        &declaration, &mut Some(&mut io),
+    ).await;
+    assert!(denial.is_err());
+    assert!(denial.as_ref().err().expect("foreign original Scope MAC").is_native_failure());
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    drop(denial);
+    drop(io);
+    let (root, custody) = fixture.host.admission_with_native_work(operation, &work).await?;
+    assert_eq!(custody.bytes(), std::mem::size_of::<TaskAdmissionRecord>() as u64
+        + root.logical_owned_bytes()?);
+    assert!(custody.matches_work(&work));
+    assert_eq!(root.parent, None);
+    assert!(root.resource_proofs.is_empty());
     Ok(())
 }

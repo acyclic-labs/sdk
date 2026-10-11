@@ -5246,6 +5246,30 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(admission)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn admission_with_native_work(
+        &self, operation_id: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let admission = self.admission_with_work(operation_id, &mut Some(&mut io)).await?;
+        let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+            .checked_add(admission.logical_owned_bytes()?).ok_or(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+                custody: None,
+            })?;
+        let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
+        if !custody.matches_work(work) {
+            drop(admission);
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(custody),
+            });
+        }
+        Ok((admission, custody))
+    }
+
 
     async fn validate_parent_scope(
         &self,

@@ -1839,6 +1839,58 @@ impl TaskAdmissionRecord {
         task_id_for_admission(self.operation_id)
     }
 
+    /// Concrete admission payload ownership; allocator-node backing is excluded.
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let overflow = || {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            { Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "task admission ownership overflows",
+            } }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+            { Error::Invalid("task admission ownership overflows".into()) }
+        };
+        let component = |identity: &ComponentIdentity| -> Result<u64> {
+            (identity.name.capacity() as u64).checked_add(identity.version.capacity() as u64)
+                .ok_or_else(overflow)
+        };
+        let slots = self.resource_proofs.capacity()
+            .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
+            .ok_or_else(overflow)? as u64;
+        let mut owned = slots.checked_add(component(&self.task)?)
+            .and_then(|bytes| bytes.checked_add(self.machine.name.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(self.machine.version.capacity() as u64))
+            .ok_or_else(overflow)?;
+        for value in [&self.input, &self.input_schema, &self.output_schema] {
+            owned = owned.checked_add(crate::contract::json_value_logical_owned_bytes(value)?)
+                .ok_or_else(overflow)?;
+        }
+        owned = owned.checked_add(self.grants.logical_owned_bytes()?).ok_or_else(overflow)?;
+        for proof in &self.resource_proofs {
+            for bytes in [proof.provider.logical_owned_bytes()?,
+                proof.resource.logical_owned_bytes()?, proof.evidence.logical_owned_bytes()?]
+            {
+                owned = owned.checked_add(bytes).ok_or_else(overflow)?;
+            }
+        }
+        if let Some(policy) = &self.policy {
+            owned = owned.checked_add(component(policy)?).ok_or_else(overflow)?;
+        }
+        if let Some(extensions) = &self.extensions {
+            owned = owned.checked_add(extensions.logical_owned_bytes()?).ok_or_else(overflow)?;
+        }
+        if let Some(execution) = &self.execution {
+            let build = execution.build.as_resource().logical_owned_bytes()?;
+            owned = owned.checked_add(component(&execution.provider)?)
+                .and_then(|bytes| bytes.checked_add(build)).ok_or_else(overflow)?;
+            if let Some(environment) = &execution.environment {
+                owned = owned.checked_add(environment.as_resource().logical_owned_bytes()?)
+                    .ok_or_else(overflow)?;
+            }
+        }
+        Ok(owned)
+    }
+
     /// Constructs and validates an exact admission envelope from the fields
     /// supplied by an SDK boundary. Identity derivation and all invariants are
     /// deliberately owned here so native and WASM callers share one path.
@@ -1912,27 +1964,41 @@ impl TaskAdmissionRecord {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        validate_identity(&self.task.name, &self.task.version)?;
-        validate_component_label(&self.machine.name, "machine name")?;
-        validate_component_label(&self.machine.version, "machine version")?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = work.as_deref().and_then(|io| io.original_native_work()).cloned();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if native.is_some() {
+            if [&self.task.name, &self.task.version, &self.machine.name, &self.machine.version]
+                .into_iter().any(|label| !crate::contract::is_valid_component_label(label))
+                || self.task.name.contains('@') || self.task.version.contains('@')
+            {
+                return Err(admission_contract_error(work, "task or machine identity is invalid"));
+            }
+        } else {
+            validate_identity(&self.task.name, &self.task.version)?;
+            validate_component_label(&self.machine.name, "machine name")?;
+            validate_component_label(&self.machine.version, "machine version")?;
+        }
+        #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+        {
+            validate_identity(&self.task.name, &self.task.version)?;
+            validate_component_label(&self.machine.name, "machine name")?;
+            validate_component_label(&self.machine.version, "machine version")?;
+        }
         if self.task.digest == [0; 32]
             || self.machine.digest == [0; 32]
             || self.machine.name != self.task.name
             || self.machine.version != self.task.version
         {
-            return Err(Error::Invalid(
-                "task and machine identities disagree".into(),
-            ));
+            return Err(admission_contract_error(work, "task and machine identities disagree"));
         }
         if !self.resource_proofs.is_empty() && self.parent.is_none() {
-            return Err(Error::Invalid(
-                "resource-derived admission requires a parent".into(),
-            ));
+            return Err(admission_contract_error(work, "resource-derived admission requires a parent"));
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
-            proof.validate()?;
+            proof.validate_with_work(quota.work())?;
             let bytes = crate::store::history::canonical_bytes_with_work(
                 &proof.resource, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
             )?;
@@ -1941,28 +2007,65 @@ impl TaskAdmissionRecord {
             if let Some(io) = quota.work().as_deref_mut() { io.retain_owned(slot)?; }
             quota.adopt(slot)?;
             if !created.insert(bytes) {
-                return Err(Error::Invalid(
-                    "task admission repeats a created resource proof".into(),
-                ));
+                return Err(admission_contract_error(quota.work(), "task admission repeats a created resource proof"));
             }
         }
         validate_task_schemas_with_work(&self.input_schema, &self.output_schema, true, quota.work())?;
         crate::contract::validate_json_schema_value_with_work(
             &self.input_schema, &self.input, "task input", quota.work(),
         )?;
-        self.limits.validate()?;
-        self.run_limits.validate()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = &native {
+            RuntimeScope::validate_limits_with_native_work(&self.limits, native)?;
+            RuntimeScope::validate_run_limits_with_native_work(&self.run_limits, native)?;
+        } else {
+            self.limits.validate()?;
+            self.run_limits.validate()?;
+        }
+        #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+        {
+            self.limits.validate()?;
+            self.run_limits.validate()?;
+        }
         if let Some(policy) = &self.policy {
-            validate_component_label(&policy.name, "policy name")?;
-            validate_component_label(&policy.version, "policy version")?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native.is_some() {
+                if !crate::contract::is_valid_component_label(&policy.name)
+                    || !crate::contract::is_valid_component_label(&policy.version)
+                {
+                    return Err(admission_contract_error(quota.work(), "policy identity is invalid"));
+                }
+            } else {
+                validate_component_label(&policy.name, "policy name")?;
+                validate_component_label(&policy.version, "policy version")?;
+            }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
+            {
+                validate_component_label(&policy.name, "policy name")?;
+                validate_component_label(&policy.version, "policy version")?;
+            }
             if policy.digest == [0; 32] {
-                return Err(Error::Invalid("policy digest is empty".into()));
+                return Err(admission_contract_error(quota.work(), "policy digest is empty"));
             }
         }
         if let Some(extensions) = &self.extensions {
-            extensions.validate()?;
+            extensions.validate_with_work(quota.work())?;
         }
         if let Some(execution) = &self.execution {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native.is_some() {
+                if !crate::contract::is_valid_component_label(&execution.provider.name)
+                    || !crate::contract::is_valid_component_label(&execution.provider.version)
+                    || execution.provider.digest == [0; 32] || execution.readiness_revision == [0; 32]
+                {
+                    return Err(admission_contract_error(quota.work(), "execution qualification is invalid"));
+                }
+                execution.build.as_resource().validate_with_work(quota.work())?;
+                if let Some(environment) = &execution.environment {
+                    environment.as_resource().validate_with_work(quota.work())?;
+                }
+            } else { execution.validate()?; }
+            #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
             execution.validate()?;
         }
         Ok(())
@@ -1970,6 +2073,18 @@ impl TaskAdmissionRecord {
 
     pub(crate) fn canonical_payload(&self) -> impl Serialize + '_ {
         CanonicalTaskAdmission {contract:"harness.task-admission.v2",admission:self}
+    }
+
+    pub(crate) fn canonical_digest_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let bytes = crate::store::history::canonical_bytes_with_work(
+            &self.canonical_payload(), acyclic_stream::MAX_RECORD_BYTES as u64, custody.work(),
+        )?;
+        custody.adopt(bytes.capacity() as u64)?;
+        if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+        Ok(*blake3::hash(&bytes).as_bytes())
     }
 
     /// Ref-only v2 envelope retained by the owner outside event history.
@@ -2002,6 +2117,12 @@ impl TaskAdmissionRecord {
     pub(crate) fn from_canonical_value_with_work(
         value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
+        Self::from_canonical_value_counted_with_work(value, work).map(|(admission, _)| admission)
+    }
+
+    pub(crate) fn from_canonical_value_counted_with_work(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
             &value, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
@@ -2015,19 +2136,7 @@ impl TaskAdmissionRecord {
         if !matches!(fields.remove("contract"), Some(Value::String(contract)) if contract == "harness.task-admission.v2") {
             return Err(admission_contract_error(quota.work(), "unsupported task admission contract"));
         }
-        let decoded = serde_json::from_value(body);
-        let admission: Self = match decoded {
-            Ok(admission) => admission,
-            Err(source) => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if quota.work().as_ref().is_some_and(|io| io.original_native_work().is_some()) {
-                    return Err(Error::NativeDecode {
-                        code: crate::wire::ErrorCode::Invalid, source, custody: None,
-                    });
-                }
-                return Err(Error::Invalid(source.to_string()));
-            }
-        };
+        let (admission, added) = Self::from_owned_body_with_work(body, quota.work())?;
         admission.validate_with_work(quota.work())?;
         let expected = crate::store::history::canonical_bytes_with_work(
             &admission.canonical_payload(), acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
@@ -2036,7 +2145,290 @@ impl TaskAdmissionRecord {
         if expected != canonical {
             return Err(admission_contract_error(quota.work(), "task admission is not canonical v2"));
         }
-        Ok(admission)
+        Ok((admission, added))
+    }
+
+    /// Consumes the original paid JSON tree. Only new typed containers grow.
+    pub(crate) fn from_owned_body_with_work(
+        body: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, std::mem::size_of::<Self>() as u64)?;
+            // Inspect the actual closed admission schema before consuming its
+            // paid tree. The three Value fields move intact; only the explicit
+            // typed/key/proof containers below require destination growth.
+            crate::contract::json_owned_value_shape_bounded(
+                &body, crate::contract::JsonBounds {
+                    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                    maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
+                }, crate::contract::JsonValueSchema::TaskAdmissionRecord,
+                &mut |charge| quota.work().as_deref_mut()
+                    .expect("native admission schema observer").codec_charge(charge),
+            )?;
+            let mut fields = Self::owned_fields(body, quota.work())?;
+            let operation_id = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "operation_id", quota.work())?, quota.work(),
+            )?;
+            let task = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "task", quota.work())?, quota.work(),
+            )?;
+            let machine = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "machine", quota.work())?, quota.work(),
+            )?;
+            let input = Self::take_owned_field(&mut fields, "input", quota.work())?;
+            let input_schema = Self::take_owned_field(&mut fields, "input_schema", quota.work())?;
+            let output_schema = Self::take_owned_field(&mut fields, "output_schema", quota.work())?;
+            let parent = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "parent", quota.work())?, quota.work(),
+            )?;
+            let proof_values = Self::owned_array(
+                Self::take_owned_field(&mut fields, "resource_proofs", quota.work())?, quota.work(),
+            )?;
+            let mut resource_proofs = Vec::new();
+            let slots = Self::reserve_owned_slots(&mut resource_proofs, proof_values.len(), quota.work())?;
+            quota.adopt(slots)?;
+            for value in proof_values {
+                let (proof, slots) = Self::decode_owned_proof(value, quota.work())?;
+                quota.adopt(slots)?;
+                resource_proofs.push(proof);
+            }
+            let grant_values = Self::owned_array(
+                Self::take_owned_field(&mut fields, "grants", quota.work())?, quota.work(),
+            )?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: grant_values.len() as u64 })?;
+            }
+            if grant_values.iter().any(|value| !value.is_string()) {
+                return Err(admission_contract_error(quota.work(), "task capability is not a string"));
+            }
+            let slots = grant_values.len().checked_mul(std::mem::size_of::<String>())
+                .ok_or_else(|| admission_contract_error(quota.work(), "task capability slots overflow"))? as u64;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.admit_owned(slots)?;
+                io.retain_owned(slots)?;
+            }
+            quota.adopt(slots)?;
+            // Strings move into the canonical set. Its private allocator nodes
+            // are excluded; no allocator operation or string copy is invented.
+            let grants = Capabilities::new(grant_values.into_iter().map(|value| {
+                let Value::String(text) = value else { unreachable!("checked capability shape") };
+                text
+            }));
+            let limits = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "limits", quota.work())?, quota.work(),
+            )?;
+            let run_limits = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "run_limits", quota.work())?, quota.work(),
+            )?;
+            let policy = Self::decode_owned_fixed(
+                Self::take_owned_field(&mut fields, "policy", quota.work())?, quota.work(),
+            )?;
+            let extension_value = Self::take_owned_field(&mut fields, "extensions", quota.work())?;
+            let extensions = if extension_value.is_null() { None } else {
+                let (extension, slots) = ExtensionAdmission::from_owned_value_with_work(
+                    extension_value, quota.work(),
+                )?;
+                quota.adopt(slots)?;
+                Some(extension)
+            };
+            let execution_value = Self::take_owned_field(&mut fields, "execution", quota.work())?;
+            let execution = if execution_value.is_null() { None } else {
+                let (execution, slots) = Self::decode_owned_execution(execution_value, quota.work())?;
+                quota.adopt(slots)?;
+                Some(execution)
+            };
+            if !fields.is_empty() {
+                return Err(admission_contract_error(quota.work(), "task admission has unknown fields"));
+            }
+            let admission = Self { operation_id, task, machine, input, input_schema, output_schema,
+                parent, resource_proofs, grants, limits, run_limits, policy, extensions, execution };
+            let added = quota.retained();
+            quota.transfer();
+            return Ok((admission, added));
+        }
+        let admission: Self = serde_json::from_value(body)
+            .map_err(|source| Error::Invalid(source.to_string()))?;
+        Ok((admission, 0))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn owned_fields(
+        value: Value, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<serde_json::Map<String, Value>> {
+        match value {
+            Value::Object(fields) => Ok(fields),
+            _ => Err(admission_contract_error(work, "task metadata must be an object")),
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn take_owned_field(
+        fields: &mut serde_json::Map<String, Value>, name: &'static str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Value> {
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        }
+        fields.remove(name).ok_or_else(|| admission_contract_error(work, "task metadata field is missing"))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn owned_array(
+        value: Value, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Vec<Value>> {
+        match value {
+            Value::Array(values) => Ok(values),
+            _ => Err(admission_contract_error(work, "task metadata must be an array")),
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn reserve_owned_slots<T>(
+        values: &mut Vec<T>, maximum: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        if maximum == 0 { return Ok(0); }
+        let bytes = maximum.checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| admission_contract_error(work, "task metadata slots overflow"))? as u64;
+        let io = work.as_deref_mut().expect("native metadata observer");
+        io.admit_allocation(bytes)?;
+        values.try_reserve_exact(maximum).map_err(|cause| io.allocation_failure(cause))?;
+        let owned = values.capacity().checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "task metadata capacity overflows" })? as u64;
+        io.retain_owned(owned)?;
+        Ok(owned)
+    }
+
+    // Only fixed scalars/identities are accepted here. Allocation-bearing DTOs
+    // use their explicit source constructors and observed vector growth below.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn decode_owned_fixed<T: serde::de::DeserializeOwned>(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<T> {
+        const LABELS: &str = concat!(
+            "ComponentIdentity MachineIdentity TaskId OperationId ResourceKind Limits TaskRunLimits ",
+            "name version digest parent task operation_id kind file_bytes path_bytes attachments ",
+            "render_bytes model_steps model_events_per_step tool_calls_per_step context_messages ",
+            "concurrency max_steps deadline_epoch_ms namespace family policy readiness_revision ",
+            "``, ``, ``, ``, ``, ``, workspace generation artifact sandbox checkpoint stream context run ",
+            "a sequence a string an integer a UUID 32 elements hexadecimal hyphen urn uuid ",
+        );
+        let native = work.as_deref().and_then(|io| io.original_native_work())
+            .expect("native fixed metadata observer").clone();
+        let mut diagnostic_custody = None;
+        let decoded = crate::contract::json_from_value_owned_bounded_native_trusted(
+            value, crate::contract::JsonBounds {
+                maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
+            }, 0, crate::wire::ErrorCode::Invalid, crate::contract::JsonValueSchema::None,
+            &mut |charge| {
+                if let crate::contract::JsonCodecCharge::Admission { value_shape, .. } = charge {
+                    // The closed fixed visitors move their resident Strings and
+                    // require no destination collections. Their real serde
+                    // diagnostic is the only new owned allocation allowance.
+                    let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
+                        value_shape, LABELS.len() as u64, Some(crate::wire::ErrorCode::Invalid),
+                    )?;
+                    diagnostic_custody = Some(native.retain_owned(diagnostic)
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+                    Ok(())
+                } else {
+                    work.as_deref_mut().expect("native fixed metadata observer").codec_charge(charge)
+                }
+            },
+        );
+        match decoded {
+            Err(Error::NativeDecode { code, source, custody: None }) =>
+                Err(Error::NativeDecode { code, source, custody: diagnostic_custody }),
+            other => other,
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn decode_owned_provider(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<crate::resources::ProviderRef> {
+        let mut fields = Self::owned_fields(value, work)?;
+        let namespace = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "namespace", work)?, work)?;
+        let family = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "family", work)?, work)?;
+        let version = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "version", work)?, work)?;
+        if !fields.is_empty() { return Err(admission_contract_error(work, "provider has unknown fields")); }
+        crate::resources::ProviderRef::new_with_work(namespace, family, version, work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn decode_owned_resource(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(crate::resources::ResourceRef, u64)> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut fields = Self::owned_fields(value, quota.work())?;
+        let kind = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "kind", quota.work())?, quota.work())?;
+        let provider = Self::decode_owned_provider(
+            Self::take_owned_field(&mut fields, "provider", quota.work())?, quota.work(),
+        )?;
+        let values = Self::owned_array(Self::take_owned_field(&mut fields, "key", quota.work())?, quota.work())?;
+        let mut key = Vec::new();
+        quota.work().as_deref_mut().expect("native resource observer").reserve_bytes(&mut key, values.len())?;
+        quota.adopt(key.capacity() as u64)?;
+        for value in values {
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            let byte = value.as_u64().filter(|byte| *byte <= u8::MAX as u64)
+                .ok_or_else(|| admission_contract_error(quota.work(), "resource key byte is invalid"))?;
+            key.push(byte as u8);
+        }
+        let version = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "version", quota.work())?, quota.work())?;
+        if !fields.is_empty() { return Err(admission_contract_error(quota.work(), "resource has unknown fields")); }
+        let reference = crate::resources::ResourceRef::new_with_work(kind, provider, key, version, quota.work())?;
+        let added = quota.retained();
+        quota.transfer();
+        Ok((reference, added))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn decode_owned_proof(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(crate::resource_preparation::ResourceCreationProofRef, u64)> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut fields = Self::owned_fields(value, quota.work())?;
+        let provider = Self::decode_owned_provider(Self::take_owned_field(&mut fields, "provider", quota.work())?, quota.work())?;
+        let preparation = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "preparation", quota.work())?, quota.work())?;
+        let (resource, added) = Self::decode_owned_resource(Self::take_owned_field(&mut fields, "resource", quota.work())?, quota.work())?;
+        quota.adopt(added)?;
+        let (evidence, added) = Self::decode_owned_resource(Self::take_owned_field(&mut fields, "evidence", quota.work())?, quota.work())?;
+        quota.adopt(added)?;
+        if !fields.is_empty() { return Err(admission_contract_error(quota.work(), "resource proof has unknown fields")); }
+        let proof = crate::resource_preparation::ResourceCreationProofRef { provider, preparation, resource, evidence };
+        let added = quota.retained();
+        quota.transfer();
+        Ok((proof, added))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn decode_owned_execution(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(ExecutionPlacement, u64)> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut fields = Self::owned_fields(value, quota.work())?;
+        let provider = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "provider", quota.work())?, quota.work())?;
+        let (build, added) = Self::decode_owned_resource(Self::take_owned_field(&mut fields, "build", quota.work())?, quota.work())?;
+        quota.adopt(added)?;
+        let build = ArtifactRef::from_resource_with_work(build, quota.work())?;
+        let environment_value = Self::take_owned_field(&mut fields, "environment", quota.work())?;
+        let environment = if environment_value.is_null() { None } else {
+            let (environment, added) = Self::decode_owned_resource(environment_value, quota.work())?;
+            quota.adopt(added)?;
+            Some(SandboxRef::from_resource_with_work(environment, quota.work())?)
+        };
+        let readiness_revision = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "readiness_revision", quota.work())?, quota.work())?;
+        if !fields.is_empty() { return Err(admission_contract_error(quota.work(), "execution placement has unknown fields")); }
+        let execution = ExecutionPlacement { provider, build, environment, readiness_revision };
+        let added = quota.retained();
+        quota.transfer();
+        Ok((execution, added))
     }
 }
 
@@ -3710,6 +4102,102 @@ impl RuntimeScope {
         admission: &TaskAdmissionRecord,
         access: Option<crate::resource_preparation::CreatedResourceAccess>,
     ) -> Result<Self> {
+        self.with_created_access_with_work(admission, access, &mut None).map(|(scope, _)| scope)
+    }
+
+    pub(crate) fn with_created_access_with_work(
+        &self, admission: &TaskAdmissionRecord,
+        access: Option<crate::resource_preparation::CreatedResourceAccess>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()).cloned() {
+            if let Some(access) = &access {
+                if !access.has_native_custody() {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "native created resource seal requires its original payload custody",
+                    });
+                }
+                if access.operation != admission.operation_id
+                    || access.admission_digest != admission.canonical_digest_with_work(work)?
+                    || access.proofs != admission.resource_proofs
+                {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "created resource seal changed admission",
+                    });
+                }
+            } else if !admission.resource_proofs.is_empty() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "created resource proof is not authenticated",
+                });
+            }
+            // Use the original scalar attenuation checks without manufacturing
+            // another grant set merely to perform a borrowed subset test.
+            self.validate_narrowing_with_native_work(&self.grants, &admission.limits, &native)?;
+            if !admission.grants.iter().all(|grant| self.grants.contains(grant)
+                || access.as_ref().is_some_and(|created| created.grants.contains(grant)))
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "runtime scope cannot widen ancestor authority",
+                });
+            }
+            if self.extensions != admission.extensions {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "replay cannot retarget original extension admission",
+                });
+            }
+            if let Some(extensions) = &admission.extensions { extensions.validate_with_work(work)?; }
+            let proofs = access.as_ref().map_or(self.resource_proofs.as_slice(), |access| access.proofs.as_slice());
+            let (mut allocations, mut copied) = Self::native_proof_clone_recipe(proofs, &native)?;
+            let slots = proofs.len().checked_mul(
+                std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>(),
+            ).ok_or_else(Self::native_metadata_overflow)? as u64;
+            let mut owned = (std::mem::size_of::<Self>() as u64).checked_add(slots)
+                .and_then(|bytes| bytes.checked_add(copied)).ok_or_else(Self::native_metadata_overflow)?;
+            if let Some(extension) = &admission.extensions {
+                let recipe = extension.clone_work_recipe()?;
+                allocations = allocations.checked_add(recipe.0).ok_or_else(Self::native_metadata_overflow)?;
+                copied = copied.checked_add(recipe.1).ok_or_else(Self::native_metadata_overflow)?;
+                let slots = extension.selected().len()
+                    .checked_mul(std::mem::size_of::<crate::core::ExtensionDependency>())
+                    .and_then(|bytes| extension.configurations().len()
+                        .checked_mul(std::mem::size_of::<crate::core::ExtensionConfiguration>())
+                        .and_then(|configuration| bytes.checked_add(configuration)))
+                    .ok_or_else(Self::native_metadata_overflow)? as u64;
+                owned = owned.checked_add(recipe.1).and_then(|bytes| bytes.checked_add(slots))
+                    .ok_or_else(Self::native_metadata_overflow)?;
+            }
+            let grants = admission.grants.clone_with_native_work(&native)?;
+            let mut custody = native.retain_owned(owned)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            native.charge(acyclic_fs::WorkCounters {
+                allocation_operations: allocations.checked_add(u64::from(access.is_some()))
+                    .ok_or_else(Self::native_metadata_overflow)?,
+                bytes_copied: copied, ..Default::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let resource_proofs = proofs.to_vec();
+            let created_access = access.map(Arc::new).or_else(|| self.created_access.clone());
+            let scope = Self {
+                grants: grants.0, limits: admission.limits, run_limits: self.run_limits,
+                extensions: admission.extensions.clone(), extensions_sealed: true,
+                extension_runtime: self.extension_runtime.clone(),
+                extension_schemas: self.extension_schemas.clone(), resource_proofs, created_access,
+                _native_grants_custody: Some(grants.1),
+            };
+            let scope = scope.with_run_limits_with_native_work(admission.run_limits, &native)?;
+            if let Err(cause) = custody.reconcile_capacity(scope.native_metadata_owned_bytes()?) {
+                drop(scope);
+                return Err(Error::NativeWork { cause, custody: Some(custody) });
+            }
+            let held = custody.bytes();
+            work.as_deref_mut().expect("native scope observer").absorb_native_custody(custody)?;
+            return Ok((scope, held));
+        }
         let mut permitted = self.clone();
         if let Some(access) = access {
             if access.operation != admission.operation_id
@@ -3728,9 +4216,10 @@ impl RuntimeScope {
         } else if !admission.resource_proofs.is_empty() {
             return Err(Error::Unauthorized("created resource proof is not authenticated".into()));
         }
-        permitted.narrow(admission.grants.clone(), admission.limits)?
+        let scope = permitted.narrow(admission.grants.clone(), admission.limits)?
             .with_run_limits(admission.run_limits)?
-            .with_replayed_extensions(admission.extensions.clone())
+            .with_replayed_extensions(admission.extensions.clone())?;
+        Ok((scope, 0))
     }
 
     fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {
@@ -3785,30 +4274,77 @@ impl RuntimeScope {
             .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn current_created_private_volume_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&VolumeRef>> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(self.created_access.as_ref().map(|access|
+            access.current_content_with_work(&mut Some(&mut io)))
+            .transpose()?.flatten().map(|binding| &binding.volume))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn current_created_authority_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&crate::core::Authority>> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(self.created_access.as_ref().map(|access|
+            access.current_content_with_work(&mut Some(&mut io)))
+            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn current_created_agent_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<crate::AgentId>> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.current_created_private_volume_with_native_work(work)?.map(|volume| match volume.owner() {
+            crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
+            _ => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "current created scratch is not agent-owned" }),
+        }).transpose()
+    }
+
     pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
         self.created_access.as_ref().map(|access| &access.grants)
     }
 
     pub(crate) fn with_created_publication_lease(
-        mut self,
-        lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
+        self, lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
     ) -> Result<Self> {
+        self.with_created_publication_lease_with_work(lease, &mut None)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn with_created_publication_lease_with_native_work(
+        self, lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.with_created_publication_lease_with_work(lease, &mut Some(&mut io))
+    }
+
+    fn with_created_publication_lease_with_work(
+        mut self, lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(access) = &mut self.created_access {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let native = access.has_native_custody();
-            let access = match Arc::get_mut(access) {
-                Some(access) => access,
-                None => {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if native {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unauthorized,
-                            reason: "created scope was shared before publication lease binding",
-                        });
-                    }
-                    return Err(Error::Unauthorized("created scope was shared before publication lease binding".into()));
-                }
-            };
+            // An inherited seal keeps its original lease. Fresh authentication
+            // supplies the unique seal; attaching a lease never clones payloads.
+            if access.publication_lease.is_some() { return Ok(self); }
+            let access = Arc::get_mut(access).ok_or_else(|| admission_contract_error(
+                work, "created publication seal is already shared",
+            ))?;
             access.publication_lease = Some(lease);
         }
         Ok(self)

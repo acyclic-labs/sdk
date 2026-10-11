@@ -365,6 +365,28 @@ session ceilings, canonical lease digest and original keyed coordinator append.
 An uncertain acknowledgement remains the same attempt; reconciliation does not
 allocate a new lease. Execution appends and quiescent suspension likewise use
 the original optional observer and guarded journal CAS, not a second runtime.
+Native admission threads the original history observer through authenticated
+declaration reads, canonical JSON decoding and the same recursive preparation
+proof verifier. Owned admission JSON values and strings move into the record;
+typed proof/key vectors grow only after their actual source allocation is
+admitted. Descriptor validation and SHA-256 verification use the original native
+ledger, before diagnostics or another content read. Sealed created access retains
+its own payload custody; scope metadata custody protects only the scope's actual
+copies, preserving the original extension bindings and publication provenance.
+The consuming admission recipe inspects the actual `TaskAdmissionRecord` Value
+fields before extraction; closed scalar visitors use the canonical native owned
+Value decoder with prepaid real diagnostic custody. The declared original Scope
+MAC is verified before admission content IO. Returned admission guards split only
+record Self plus its actual deep payload and match both Root and resource context;
+the observer's unrelated IO custody is never returned as record custody.
+The existing `CreationFixture`/memory Filesystem controls cover paid JSON moves,
+exact retained metadata and native scalar causes, Root→child→grandchild source
+identity and read-only attenuation, foreign proof/revision and recursion-cycle
+denial, actual allocation-provenance corruption and cancelled preparations.
+Preparations publish genuine successful coordinator outcomes before consuming
+their allocations. Exhausted-work and invalid JSON metadata controls precede
+source IO/hash work and preserve the previously acknowledged root. These controls
+use the actual admission and provider engines, not verifier mocks.
 
 Input READ authorization uses the same file, whole-volume and directory-prefix
 capability recipes with or without the SDK-work observer. The observed route
