@@ -566,29 +566,22 @@ impl VolumeRef {
         ))
     }
 
-    /// Computes the original directory grant without changing its read scope.
+    /// Produces the original directory read capability identity on the caller's
+    /// native ledger. The name is not an authenticated grant or write authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn directory_read_capability_with_native_work(
-        &self,
-        prefix: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
+        &self, prefix: &str, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(String, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         if !prefix.is_empty() {
-            let mut observer = crate::store::history::native_work_io(work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            validate_content_path_with_work(prefix, &mut Some(&mut observer))?;
+            validate_content_path_with_native_work(prefix, work)?;
         }
         if is_internal_path(prefix) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "internal storage paths cannot be delegated",
-            });
+            return Err(io.invalid("internal storage paths cannot be delegated"));
         }
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let value = io.capability(&(self, prefix), "directory:read:")?;
-        let retained = io.owned_bytes()?;
-        let guard = io.into_native_custody(retained)?;
-        Ok((value, guard))
+        let capability = io.capability(&(self, prefix), "directory:read:")?;
+        let retained = capability.capacity() as u64;
+        Ok((capability, io.into_native_custody(retained)?))
     }
 
     /// Collision-resistant physical namespace key for Filesystem adapters.

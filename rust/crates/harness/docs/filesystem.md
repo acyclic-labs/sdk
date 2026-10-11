@@ -234,6 +234,12 @@ the original conversation audience. Its by-value native constructor, like
 execution-journal `Self` body is reserved and absorbed into its intrinsic guard
 immediately before the actual SDK `Arc::new` in `into_native_shared`, not invoiced
 as a second allocation while inline in an already-funded future frame.
+`VolumeRef::directory_read_capability_with_native_work` returns the unchanged
+canonical directory capability name with custody of its actual string capacity.
+Path inspection, canonical encoding, hashing and output allocation use the
+original ledger before their work; empty-prefix and internal-path policies match
+`directory_read_capability`. A name alone authenticates no grant and adds no
+write authority. Keep its returned guard through the string's physical drop.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
