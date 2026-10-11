@@ -869,15 +869,22 @@ impl DurableToolRunner {
         Ok(ToolPayload::ordinary(records))
     }
 
-    async fn load<T: crate::executor::PreparationRecord + Send>(
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn load<T: crate::executor::PreparationRecord + crate::filesystem::UploadRecord + Send>(
         &self, reference: &crate::conversation::FileRef, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ToolPayload<T>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (value, custody) = crate::executor::load_json_with_native_work(
                 self.journal.as_ref(), reference, work)?.await?;
             return Ok(ToolPayload::native(value, custody));
         }
+        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
+    }
+
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    async fn load<T: crate::executor::PreparationRecord + Send>(
+        &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ToolPayload<T>> {
         Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
     }
 
