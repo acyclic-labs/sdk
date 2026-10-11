@@ -18,7 +18,7 @@ use acyclic_harness::{
         NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError,
         NativeProcessRequest, NativeProcessView, NativeViewManifest, NativeViewOptions,
         NativeViewOwner, NativeVolumeNamespace, NativeVolumeView, NativeTaskViewDrainReceipt,
-        NativeVolumeMapping, NativeExistingLazyVolume,
+        NativeVolumeMapping, NativeExistingLazyVolume, TaskSourceInspection,
     },
     runtime::{TaskContext, NativeTaskContext, NativeVolumeCallbackGuard},
     workflow::WorkflowCommand,
@@ -1139,6 +1139,33 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     ) -> Result<EffectAttemptId> {
         let effect = task_effect_id_with_native_work(self.owner.task_id(), self.command, work)?;
         Ok(EffectAttemptId::from_bytes(effect.into_bytes()))
+    }
+
+    /// Protected observation metadata only. Keep its custody through the
+    /// genuine source-loan factory; a candidate is not Project READ authority
+    /// or a successful selected snapshot.
+    pub(crate) fn published_project_candidate_with_native_work<'a>(
+        &'a self, project: &'a VolumeRef, work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (acyclic_fs::LazySnapshotRef, acyclic_fs::NativeAllocation)>> {
+        let attempt = self.original_attempt_with_native_work(work)?;
+        self.provider.published_project_candidate_with_native_work(attempt, project, work)
+    }
+
+    /// The SDK rereads the original protected publication and checks this exact
+    /// candidate against the actual operation-bound reader before and after.
+    /// No native view, current HEAD or immutable input generation is substituted.
+    pub(crate) fn inspect_published_project_snapshot_with_native_work<'a, A, O>(
+        &'a self, inspection: &'a TaskSourceInspection<P, A, O>, project: &'a VolumeRef,
+        candidate: acyclic_fs::LazySnapshotRef, work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (acyclic_fs::LazySnapshotRef, acyclic_fs::NativeAllocation)>>
+    where
+        A: acyclic_fs::AsyncAuthorityStore + 'static,
+        O: acyclic_fs::AsyncObjectStore + 'static,
+    {
+        let attempt = self.original_attempt_with_native_work(work)?;
+        self.provider.inspect_published_project_snapshot_with_native_work(
+            attempt, inspection, project, candidate, work,
+        )
     }
 
     /// Read the original launch/observation journal on the caller's actual

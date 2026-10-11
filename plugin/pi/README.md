@@ -640,6 +640,14 @@ The terminal-result verifier returns unit after checking the original receipt,
 Created-Results READ authority, bounded immutable content and the unchanged
 terminal outcome. This read-only content check cannot issue a process, view
 drain, publication or disposal capability.
+Published Project selection is two-phase. The SDK first returns protected final
+publication metadata and custody, not Project READ or selection authority. Keep
+that custody through the existing genuine source-loan and inspection factory.
+The final SDK query rereads the original protected request/result/receipt,
+compares the candidate, and requires actual operation-bound Project READ before
+and after. Only that final snapshot may be persisted as selection success.
+Missing qualified publication remains indeterminate; neither workspace HEAD nor
+the original input generation substitutes for the accepted final snapshot.
 Intent loading, original runtime binding and request construction use borrowed DTOs and the original bounded
 native codec before owned copies. A partial startup retains the actual native
 session, including its source watcher and destination guard, until bounded stop
