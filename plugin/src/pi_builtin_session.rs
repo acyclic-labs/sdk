@@ -20,7 +20,7 @@ impl PiSession {
         let request = builtin_request(caller, event, arguments)?;
         request.validate()?;
         let host = PiBuiltinHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native.clone(), work.clone())?;
+            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
         let (value, custody) = if caller == owner.policy().root_task {
             request.require_root_source_read(owner.policy().root_task)?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
