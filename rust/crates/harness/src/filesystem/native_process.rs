@@ -31,6 +31,7 @@ mod finite_dispatch;
 mod finite_execution;
 mod finite_binding;
 mod drain;
+mod publication_observation;
 pub use drain::NativeProcessDrainProof;
 use drain::NativeCleanupControl;
 use finite_execution::execute;
@@ -323,6 +324,8 @@ struct NativeObservation {
     diagnostic: Option<crate::conversation::FileRef>,
     publication_failure: Option<NativePublicationFailure>,
     invocation_failure: Option<String>,
+    #[serde(default)]
+    published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
 }
 
@@ -331,6 +334,7 @@ struct NativeExecution {
     diagnostic: Option<crate::conversation::FileRef>,
     publication_failure: Option<NativePublicationFailure>,
     invocation_failure: Option<String>,
+    published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
 }
 
@@ -430,6 +434,18 @@ impl NativeReceiptError {
     }
 }
 
+/// Actual SDK-issued final snapshot data for one original approved mapping.
+/// The index binds the pinned request order; neither this data nor deserialization
+/// grants Project READ, publication, namespace adoption or process authority.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProcessPublishedVolume {
+    /// Exact index in the original immutable request's view manifest.
+    pub index: usize,
+    /// Full SDK qualification and actual retained DATA operation, when changed.
+    pub snapshot: acyclic_fs::NativePublicationSnapshot,
+}
+
 /// Authenticated original attempt and its durable native diagnostic.
 /// Launch-only receipts retain uncertainty; this observation conveys no authority.
 #[derive(Serialize, Deserialize)]
@@ -451,6 +467,9 @@ pub struct NativeProcessReceipt {
     pub publication_failure: Option<NativePublicationFailure>,
     /// Original capture/staging failure, not silently flattened into uncertainty.
     pub invocation_failure: Option<String>,
+    /// Actual final SDK snapshot data committed in the original observation.
+    #[serde(default)]
+    pub published: Vec<NativeProcessPublishedVolume>,
     /// Selected native view's exact filesystem capture/publication work.
     pub work: acyclic_fs::WorkCounters,
     #[serde(skip)]
@@ -468,11 +487,11 @@ impl NativeProcessReceipt {
     ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), NativeReceiptError> {
         let Self {
             task: _, command: _, original_fence, effect, observed: _,
-            diagnostic, publication_failure, invocation_failure, work, _custody,
+            diagnostic, publication_failure, invocation_failure, published, work, _custody,
         } = self;
         drop(original_fence);
         let (effect, custody) = finite_dispatch::into_observed_effect(finite_dispatch::ObservedPayload {
-            observed: NativeObservation { effect, diagnostic, publication_failure, invocation_failure, work },
+            observed: NativeObservation { effect, diagnostic, publication_failure, invocation_failure, published, work },
             _custody,
         })?;
         let custody = custody
@@ -489,6 +508,7 @@ impl std::fmt::Debug for NativeProcessReceipt {
             .field("observed", &self.observed).field("diagnostic", &self.diagnostic)
             .field("publication_failure", &self.publication_failure)
             .field("invocation_failure", &self.invocation_failure).field("work", &self.work)
+            .field("published", &self.published)
             .finish()
     }
 }
@@ -500,6 +520,7 @@ impl PartialEq for NativeProcessReceipt {
             && self.observed == other.observed && self.diagnostic == other.diagnostic
             && self.publication_failure == other.publication_failure
             && self.invocation_failure == other.invocation_failure && self.work == other.work
+            && self.published == other.published
     }
 }
 
@@ -853,45 +874,50 @@ async fn publish_view<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
     view: &dyn NativeProcessView<P>,
     admitted: &NativeViewManifest,
-) -> std::result::Result<acyclic_fs::WorkCounters, NativePublicationFailure> {
-    let failure = |error: Error| NativePublicationFailure {
-        destination: None,
-        completed: Vec::new(),
-        message: error.to_string(),
-        work: acyclic_fs::WorkCounters::default(),
-    };
-    owner.verify(false).await.map_err(failure)?;
+    slot: &mut finite_execution::NativePublicationSlot,
+) -> std::result::Result<
+    super::native_execution::NativeViewPublicationReceipt,
+    super::native_execution::NativeViewPublicationError,
+> {
+    owner.verify(false).await
+        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
     if view.manifest() != admitted {
-        return Err(failure(Error::Conflict("native publication view changed".into())));
+        return Err(slot.original_failure(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict, reason: "native publication view changed",
+        }, acyclic_fs::WorkCounters::UNCHARGED));
     }
-    require_view_grants(owner, admitted).map_err(failure)?;
-    let future = view.publish(NativeViewOwner::new(owner)).map_err(|(error, work)| {
-        NativePublicationFailure { destination: None, completed: Vec::new(),
-            message: error.to_string(), work }
-    })?;
+    require_view_grants(owner, admitted)
+        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
+    let future = view.publish(NativeViewOwner::new(owner))
+        .map_err(|(cause, work)| slot.original_failure(cause, work))?;
     let meter = future.work().clone();
-    let work = future.await.map_err(|error| NativePublicationFailure {
-        destination: None, completed: Vec::new(), message: error.to_string(), work: meter.receipt(),
-    })??;
-    if view.manifest() != admitted {
-        return Err(NativePublicationFailure {
-            destination: None,
-            completed: admitted.volumes.iter().filter(|mapping| mapping.writable).cloned().collect(),
-            message: "native publication view changed after publication".into(),
-            work,
-        });
+    slot.retain_failure_work(&meter)
+        .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
+    let receipt = future.await
+        .map_err(|cause| slot.original_failure(cause, meter.receipt()))??;
+    let checked = async {
+        if view.manifest() != admitted {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "native publication view changed after publication",
+            });
+        }
+        owner.verify(false).await
+    }.await;
+    match checked {
+        Ok(()) => Ok(receipt),
+        Err(cause) => Err(super::native_execution::NativeViewPublicationError {
+            cause, accounting_failure: None, work: receipt.work,
+            destination: None, completed: receipt.completed, published: receipt.published,
+            diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
+        }),
     }
-    owner.verify(false).await.map_err(|error| NativePublicationFailure {
-        destination: None,
-        completed: admitted.volumes.iter().filter(|mapping| mapping.writable).cloned().collect(),
-        message: error.to_string(),
-        work,
-    })?;
-    Ok(work)
 }
 
 fn native_work_error(error: acyclic_fs::WorkError) -> Error {
-    Error::Storage(format!("native work accounting failed: {error}"))
+    Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::Work(error), custody: None,
+    }
 }
 
 fn retain_validation_result<T>(
@@ -936,6 +962,7 @@ fn invocation_failure(error: Error, work: acyclic_fs::WorkCounters) -> NativeExe
         diagnostic: None,
         publication_failure: None,
         invocation_failure: Some(error.to_string()),
+        published: Vec::new(),
         work,
     }
 }

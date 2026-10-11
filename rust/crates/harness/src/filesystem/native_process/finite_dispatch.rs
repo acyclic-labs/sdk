@@ -32,6 +32,7 @@ struct ObservedWrite<'a> {
     diagnostic: &'a Option<crate::conversation::FileRef>,
     publication_failure: &'a Option<NativePublicationFailure>,
     invocation_failure: &'a Option<String>,
+    published: &'a [NativeProcessPublishedVolume],
     work: &'a WorkCounters,
 }
 
@@ -56,6 +57,9 @@ struct ExecutedPayload {
     execution: NativeExecution,
     path: StreamPath,
     _custody: Option<NativeAllocation>,
+    // Ordinary dispatch keeps the SDK publication ledger separate: it covers
+    // only the SDK-owned execution inventory, never the unmeasured effect DTO.
+    _sdk_custody: Option<NativeAllocation>,
 }
 
 // Capture this whole value, never independent Arc fields: the shared original
@@ -90,10 +94,13 @@ pub(super) fn into_observed_effect(
     payload: ObservedPayload,
 ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
     let ObservedPayload { observed, mut _custody } = payload;
-    let NativeObservation { effect, diagnostic, publication_failure, invocation_failure, work: _ } = observed;
+    let NativeObservation {
+        effect, diagnostic, publication_failure, invocation_failure, published, work: _,
+    } = observed;
     drop(diagnostic);
     drop(publication_failure);
     drop(invocation_failure);
+    drop(published);
     if let Some(custody) = _custody.as_mut() {
         custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
     }
@@ -194,7 +201,19 @@ fn observed_matches(
         && examine(work, || &observed.diagnostic == receipt.diagnostic)?
         && examine(work, || &observed.publication_failure == receipt.publication_failure)?
         && examine(work, || &observed.invocation_failure == receipt.invocation_failure)?
-        && examine(work, || &observed.work == receipt.work)?)
+        && examine(work, || &observed.work == receipt.work)?
+        && published_matches(&observed.published, receipt.published, work)?)
+}
+
+fn published_matches(
+    observed: &[NativeProcessPublishedVolume], expected: &[NativeProcessPublishedVolume],
+    work: Option<&NativeMaterializationWork>,
+) -> NativeResult<bool> {
+    if !examine(work, || observed.len() == expected.len())? { return Ok(false); }
+    for (actual, expected) in observed.iter().zip(expected) {
+        if !examine(work, || actual == expected)? { return Ok(false); }
+    }
+    Ok(true)
 }
 
 fn require_same_launch(
@@ -355,16 +374,18 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let work = original_work.as_ref();
             // Capture the complete payload, not individual fields: on every
             // early return its original guards are dropped after its values.
-            let mut payload = payload;
+            let payload = payload;
             let (execution, execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &payload.dispatch, &schema, &supervisor, work)?.await?;
-            if let Some(guard) = payload._custody.as_mut() {
-                let mut execution_custody = execution_custody.ok_or(NativeReceiptError::Record(
-                    "finite native execution lost original payload custody"))?;
-                guard.absorb(&mut execution_custody)?;
-            }
             let SupervisorPayload { dispatch, path, _custody } = payload;
-            let payload = ExecutedPayload { dispatch, execution, path, _custody };
+            let mut payload = ExecutedPayload {
+                dispatch, execution, path, _custody, _sdk_custody: execution_custody,
+            };
+            if let Some(guard) = payload._custody.as_mut() {
+                let execution_custody = payload._sdk_custody.as_mut().ok_or(NativeReceiptError::Record(
+                    "finite native execution lost original payload custody"))?;
+                guard.absorb(execution_custody)?;
+            }
             let dispatch = &payload.dispatch;
             let execution = &payload.execution;
             let observed = ObservedWrite {
@@ -373,6 +394,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     guarantee: dispatch.guarantee, status: &execution.status },
                 diagnostic: &execution.diagnostic, publication_failure: &execution.publication_failure,
                 invocation_failure: &execution.invocation_failure, work: &execution.work,
+                published: &execution.published,
             };
             if !append_receipt_original(&owner, &payload.path, 1,
                 &ReceiptWrite::Observed(&observed), JournalWrite::Settlement, work).await? {
@@ -398,22 +420,27 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 supervisor.record_capture(NativeCapturePhase::Recorded)
                     .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             }
-            let ExecutedPayload { dispatch, execution, path, _custody } = payload;
+            let ExecutedPayload { dispatch, execution, path, _custody, _sdk_custody } = payload;
             drop(path);
             let EffectDispatch { provider, effect_id, attempt_id, request_digest, guarantee,
                 effect_kind, request } = dispatch;
             drop(effect_kind);
             drop(request);
-            into_observed_effect(ObservedPayload {
+            let result = into_observed_effect(ObservedPayload {
                 observed: NativeObservation {
                     effect: EffectObservation { provider, effect_id, attempt_id, request_digest,
                         guarantee, status: execution.status },
                     diagnostic: execution.diagnostic,
                     publication_failure: execution.publication_failure,
                     invocation_failure: execution.invocation_failure, work: execution.work,
+                    published: execution.published,
                 },
                 _custody,
-            })
+            });
+            // The observed handoff has physically dropped SDK snapshot data.
+            // Release the ordinary SDK ledger only now, including on error.
+            drop(_sdk_custody);
+            result
         }, work)?;
         self.supervisor.begin(attempt)?;
         tokio::spawn(future).await
@@ -604,6 +631,7 @@ mod tests {
             task: crate::TaskId::from_bytes([4; 16]), command: OperationId::from_bytes([5; 16]),
             original_fence, effect, observed: true, diagnostic: None, publication_failure: None,
             invocation_failure: None, work: WorkCounters::default(),
+            published: Vec::new(),
             _custody: Some(work.retain_owned(bytes).unwrap()),
         }
     }
@@ -616,6 +644,7 @@ mod tests {
                 status: &observed.effect.status },
             diagnostic: &observed.diagnostic, publication_failure: &observed.publication_failure,
             invocation_failure: &observed.invocation_failure, work: &observed.work,
+            published: &observed.published,
         }
     }
 
@@ -627,6 +656,7 @@ mod tests {
         let expected = NativeObservation {
             effect: receipt.effect.clone(), diagnostic: None, publication_failure: None,
             invocation_failure: None, work: receipt.work,
+            published: Vec::new(),
         };
         let expected = borrowed(&expected);
         let bytes = crate::contract::canonical_json_bytes(&ReceiptWrite::Observed(&expected)).unwrap();
@@ -643,15 +673,17 @@ mod tests {
         let mut observed = NativeObservation {
             effect: receipt.effect.clone(), diagnostic: None, publication_failure: None,
             invocation_failure: None, work: WorkCounters::default(),
+            published: Vec::new(),
         };
         let expected = NativeObservation {
             effect: receipt.effect.clone(), diagnostic: None, publication_failure: None,
             invocation_failure: None, work: receipt.work,
+            published: Vec::new(),
         };
         let expected = borrowed(&expected);
         let before = work.receipt();
         assert!(observed_matches(Some(&observed), &expected, Some(&work)).unwrap());
-        assert_eq!(work.receipt().items_examined - before.items_examined, 5);
+        assert_eq!(work.receipt().items_examined - before.items_examined, 6);
         assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
         observed.effect.attempt_id = crate::EffectAttemptId::from_bytes([9; 16]);
         assert!(!observed_matches(Some(&observed), &expected, Some(&work)).unwrap());

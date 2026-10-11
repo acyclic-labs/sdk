@@ -118,12 +118,13 @@ fn plan_bytes(value: &TaskEffectPlan) -> std::result::Result<u64, NativeReceiptE
 
 fn observation_bytes(value: &NativeObservation) -> std::result::Result<u64, NativeReceiptError> {
     observation_parts_bytes(&value.effect, value.diagnostic.as_ref(),
-        value.publication_failure.as_ref(), value.invocation_failure.as_ref())
+        value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published)
 }
 
 fn observation_parts_bytes(
     effect: &EffectObservation, diagnostic: Option<&crate::conversation::FileRef>,
     publication_failure: Option<&NativePublicationFailure>, invocation_failure: Option<&String>,
+    published: &Vec<NativeProcessPublishedVolume>,
 ) -> std::result::Result<u64, NativeReceiptError> {
     let mut bytes = effect_bytes(effect)?;
     if let Some(value) = diagnostic { bytes = add(bytes, file_bytes(value)?)?; }
@@ -134,6 +135,7 @@ fn observation_parts_bytes(
         if let Some(value) = &value.destination { bytes = add(bytes, mapping_bytes(value)?)?; }
         for value in &value.completed { bytes = add(bytes, mapping_bytes(value)?)?; }
     }
+    bytes = add(bytes, multiply(published.capacity() as u64, size_of::<NativeProcessPublishedVolume>() as u64)?)?;
     Ok(bytes)
 }
 
@@ -157,7 +159,9 @@ pub(super) fn receipt_bytes(value: &Receipt<'static>) -> std::result::Result<u64
 // and VolumeOwner (adjacently tagged) form at most three Content layers. The
 // remaining reference converters move their wire fields; there is no Value
 // variant or from_value pass in this closed DTO. FileDescriptorWire's digest
-// Vec<u8> and NativePublicationFailure.completed are its typed collections.
+// Vec<u8>, NativePublicationFailure.completed and the fixed SDK publication
+// snapshot vector are its typed collections. SDK snapshot context is externally
+// tagged and its profile/limits are inline Copy records, not new Content layers.
 const CONTENT_LAYERS: u64 = 3;
 const RECEIPT_LABELS: &str = concat!(
     "launch observed dispatch plan conversation task command fence approval approval_digest ",
@@ -165,6 +169,9 @@ const RECEIPT_LABELS: &str = concat!(
     "result_schema kind id reservation_id placement state planned dispatched succeeded failed indeterminate result message ",
     "diagnostic publication_failure invocation_failure work destination completed volume generation namespace path writable authority_revision ",
     "materialized_directory lazy_mount snapshot source authored_generation overlay shadows ",
+    "published index operation context Authored Lazy workspace_id config profile concurrency lifecycle case_sensitivity unicode symbolic_links hard_links sparse_files limits ",
+    "portable posix windows browser exclusive_writer optimistic serialized_authority ephemeral durable sensitive profile_folded preserve require_nfc identity epoch ",
+    "maximum_path_bytes maximum_component_bytes maximum_path_depth maximum_object_bytes maximum_mutations_per_batch maximum_paths_per_batch maximum_checkout_dependencies maximum_directory_page_entries maximum_page_height maximum_read_bytes maximum_files_per_generation maximum_objects_per_generation maximum_generation_bytes ",
     "sha256 byte_length media_type display_name version class owner project agent session ",
     "authorityRecordsRead authorityRecordsAppended authorityBytesRead authorityBytesWritten ",
     "objectProbes backendReadOperations backendWriteOperations durabilityOperations ",
@@ -218,7 +225,8 @@ pub(super) fn decode(
     let slots = multiply(items, 10)?;
     let content_slot = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()
         .max(size_of::<serde::__private229::de::Content<'static>>()) as u64;
-    let typed_slot = size_of::<super::super::NativeVolumeMapping>().max(size_of::<u8>()) as u64;
+    let typed_slot = size_of::<super::super::NativeVolumeMapping>()
+        .max(size_of::<NativeProcessPublishedVolume>()).max(size_of::<u8>()) as u64;
     let mut maximum = multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?;
     maximum = add(maximum, multiply(slots, typed_slot)?)?;
     maximum = add(maximum, size_of::<LaunchReceipt<'static>>().max(size_of::<NativeObservation>()) as u64)?;
@@ -426,7 +434,55 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     check(work)
 }
 
+pub(super) enum OriginalNativeRequest {
+    Cached(Arc<NativeProcessRequest>),
+    Pinned { request: NativeProcessRequest, _custody: NativeAllocation },
+}
+
+impl OriginalNativeRequest {
+    pub(super) fn request(&self) -> &NativeProcessRequest {
+        match self {
+            Self::Cached(request) => request,
+            Self::Pinned { request, .. } => request,
+        }
+    }
+}
+
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+    pub(super) async fn original_request_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<OriginalNativeRequest> {
+        match &self.admission {
+            NativeAdmission::Executable { request, .. } =>
+                Ok(OriginalNativeRequest::Cached(Arc::clone(request))),
+            NativeAdmission::ReceiptOnly => {
+                self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
+                    crate::conversation::VolumeOperation::Read, work)?;
+                let bytes = self.authority.content.read_with_native_work(
+                    &self.plan.request, self.owner.input_limits().file_bytes, work,
+                )?.await?;
+                let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
+                let custody = custody;
+                let request = request;
+                drop(bytes);
+                Ok(OriginalNativeRequest::Pinned { request, _custody: custody })
+            }
+        }
+    }
+
+    pub(super) async fn approved_original_receipt_with_native_work(
+        &self, attempt: crate::EffectAttemptId, request: &NativeProcessRequest,
+        work: &NativeMaterializationWork,
+    ) -> Result<NativeProcessReceipt> {
+        let digest = request.approval_digest_with_native_work(
+            self.owner.task_binding().0, self.command, work,
+        )?;
+        self.authority.approvals.verify_with_native_work(self.approval, self.command, digest, work)?.await?;
+        self.receipt_original(attempt, Some(work), Some(digest)).await
+            .map_err(NativeReceiptError::into_root_error)?
+            .ok_or(Error::Indeterminate(self.command))
+    }
+
     /// Reopens only an original protected receipt. Terminal tasks remain
     /// read-only: this mode has no view, dispatch, reservation, or new lease.
     ///
@@ -547,11 +603,11 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(conversation);
         let original_fence = fence.into_owned();
         let was_observed = observed.is_some();
-        let (effect, diagnostic, publication_failure, invocation_failure, completed_work) = match observed {
+        let (effect, diagnostic, publication_failure, invocation_failure, published, completed_work) = match observed {
             Some(observed) => {
                 drop(dispatch);
                 (observed.effect, observed.diagnostic, observed.publication_failure,
-                    observed.invocation_failure, observed.work)
+                    observed.invocation_failure, observed.published, observed.work)
             }
             None => {
                 let EffectDispatch { provider, effect_id, attempt_id, effect_kind, request,
@@ -559,18 +615,18 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 drop(effect_kind);
                 drop(request);
                 (EffectObservation { provider, effect_id, attempt_id, request_digest, guarantee,
-                    status: EffectStatus::Indeterminate }, None, None, None, WorkCounters::default())
+                    status: EffectStatus::Indeterminate }, None, None, None, Vec::new(), WorkCounters::default())
             }
         };
         let mut result = NativeProcessReceipt {
             task, command, original_fence, effect, observed: was_observed,
-            diagnostic, publication_failure, invocation_failure, work: completed_work, _custody: None,
+            diagnostic, publication_failure, invocation_failure, published, work: completed_work, _custody: None,
         };
         let retained = add(
             add(result.original_fence.reservation_id.capacity() as u64,
                 result.original_fence.placement.capacity() as u64)?,
             observation_parts_bytes(&result.effect, result.diagnostic.as_ref(),
-                result.publication_failure.as_ref(), result.invocation_failure.as_ref())?,
+                result.publication_failure.as_ref(), result.invocation_failure.as_ref(), &result.published)?,
         )?;
         if let Some(custody) = custody.as_mut() { custody.resize_retained(retained)?; }
         result._custody = custody;

@@ -179,6 +179,24 @@ construction and threads the caller's original work ledger through authenticated
 history, protected receipt encoding/appends, and the original process/view engine.
 Receipt paths use the original-meter intrinsic `StreamPath` constructor; append
 aliases that guarded path instead of allocating a second String-to-Arc copy.
+The same protected observed record carries each acknowledged publication's exact
+qualified final snapshot, indexed by its original pinned volume mapping. Settlement
+borrows those proofs, and effect-only handoff drops them before narrowing custody.
+Ordinary dispatch retains the SDK proof guard separately through settlement and
+physical proof drop; that guard never adopts unmeasured ordinary effect metadata.
+Unchanged publication preserves the SDK-issued snapshot even when its operation
+is `None`. Cold candidates authenticate that stored metadata without launching or
+creating a view; they are not Project READ authority. Final selection requires the
+genuine operation-bound `TaskSourceInspection` to authenticate current Project READ.
+Readonly mappings obtain their genuine immutable SDK qualification through the
+readonly capture path, without companion rebinding or a fabricated write operation.
+Decoded state and its guard retire during capture; the admitted publication vector
+owns the returned fixed metadata. Publication returns the whole typed receipt or
+failure, preserving its original work prefix, acknowledged snapshots, cleanup and
+reconciliation causes. Its already-paid failure slot is filled without formatting
+or allocation after denial. At each protected CAS the same funded volume callback
+checks the current owner and original volume grants; its SDK and Root ports share
+one authority allocation, and the Root port preserves the original typed error.
 Finite receipt codecs admit their concrete cause box before lexing or encoding.
 Failures move the original typed cause and its existing diagnostic custody into
 that slot; its separate outer guard remains until the box is physically deallocated,
@@ -204,9 +222,11 @@ Actual mounted-source namespace scopes remain with that tree through terminal
 process and stdio quiescence, including caller-future drop; materialized-only views
 open no kernel mount scope. Namespace accounting does not classify callbacks by PID
 or thread and does not confer task, path, or volume authority.
-Cold receipts never adopt process control. Every finite publication failure retains
-the original typed cause and cleanup ownership, completed destinations and staged
-diagnostic in a preadmitted error context; formatting never replaces that cause.
+Cold receipts never adopt process control. Ordinary and finite publication failures
+retain the original typed cause and cleanup ownership, acknowledged snapshots,
+completed destinations and staged diagnostic in a preadmitted error context.
+Formatting never replaces that cause, and failure leaves the protected launch
+pending instead of appending a synthetic observed failure.
 Unfunded observation stays pending or uncertain rather than claiming a recorded result.
 `NativeProcessProvider::drain_with_native_work` requires the same existing prepared
 view Arc and issues an opaque `NativeProcessDrainProof`, never a caller boolean.
@@ -217,6 +237,17 @@ cleanup span does not reset the cancelled execution token or migrate its custody
 The proof retains its actual view, request, receipt, original canonical command/effect
 binding and guards. Disposal validation checks that binding without re-encoding or
 rehashing JSON; the proof is not namespace write, retirement or deletion authority.
+Original observations retain the SDK-issued `published` snapshot data in the same
+protected receipt, indexed by the pinned request manifest. The actual SDK DATA
+operation and final qualified generation are captured before acknowledgment or
+operation-key clearing; input generations and current heads are not replacements.
+`published_project_candidate_with_native_work` authenticates that immutable metadata,
+the original approval/result and outcome on current query work. Its funded candidate
+does not grant Project READ or establish a source selection. After the genuine Common
+source-loan factory creates `TaskSourceInspection`, `inspect_published_project_snapshot_with_native_work`
+rereads the same original receipt, checks the candidate and enforces current Project
+READ before and after selection. Old receipts without final snapshot data remain
+indeterminate; cold observation never adopts a view, PID, lease or newer head.
 `NativeProcessResult::decode_with_native_work` reads pinned result bytes through
 the same closed-record codec and retains the actual stdout, stderr and diagnostic
 capacities on the original ledger. Its source-byte custody remains with the caller;

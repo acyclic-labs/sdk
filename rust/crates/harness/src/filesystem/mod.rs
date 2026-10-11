@@ -71,7 +71,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof, NativeProcessPublishedVolume};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
@@ -89,6 +89,7 @@ pub use native_execution::{
     NativeReservationError,
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
+    NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
     copy_native_mapping_with_work, copy_native_volume_with_work, copy_native_generation_with_work,
 };
 pub use task_commands::{
