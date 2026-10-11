@@ -3167,14 +3167,16 @@ mod tests {
                 [1, 5_000, 10_000].into_iter().map(message).collect(), &mut None).map(|(state, _)| state)?;
             assert_eq!(sparse.messages().len(), 3);
             assert!(sparse.agent.is_none());
-            let selected = crate::projection::select_model_context_at_revision(
+            let selected = crate::projection::select_model_context(
                 &sparse,
+                selection.conversation_revision,
                 selection.clone(),
                 &TestContent,
                 3,
                 8,
                 65_536,
                 8,
+                None,
             )
             .await?;
             provider.observation_reads.store(0, Ordering::SeqCst);

@@ -2761,6 +2761,7 @@ mod tests {
                 max_output_tokens: Some(128),
             },
             Limits::default(),
+            None,
         )?;
         Ok(())
     }

@@ -4255,12 +4255,12 @@ impl RuntimeScope {
     }
 
     pub(crate) fn current_created_private_volume(&self) -> Result<Option<&VolumeRef>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content())
+        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
             .transpose()?.flatten().map(|binding| &binding.volume))
     }
 
     pub(crate) fn current_created_authority(&self) -> Result<Option<&crate::core::Authority>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content())
+        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
             .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
@@ -4273,7 +4273,7 @@ impl RuntimeScope {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(self.created_access.as_ref().map(|access|
-            access.current_content_with_work(&mut Some(&mut io)))
+            access.current_content(&mut Some(&mut io)))
             .transpose()?.flatten().map(|binding| &binding.volume))
     }
 
@@ -4286,7 +4286,7 @@ impl RuntimeScope {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(self.created_access.as_ref().map(|access|
-            access.current_content_with_work(&mut Some(&mut io)))
+            access.current_content(&mut Some(&mut io)))
             .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
@@ -7651,7 +7651,7 @@ impl TaskContext {
             tools,
             max_output_tokens,
         };
-        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
+        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits(), None)?;
         self.verify_model_files(&request.request().messages).await?;
         let capacity = binding.provider.context_capacity(&binding.model)?;
         capacity.validate()?;
@@ -7664,7 +7664,7 @@ impl TaskContext {
         let request = if max_output_tokens.is_none() {
             let mut bounded = request.request().clone();
             bounded.max_output_tokens = Some(output_tokens);
-            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits())?
+            crate::model::PreparedModelRequest::prepare(bounded, self.scope.limits(), None)?
         } else {
             request
         };
