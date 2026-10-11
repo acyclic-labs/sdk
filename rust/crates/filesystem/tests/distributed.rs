@@ -14,7 +14,7 @@ use acyclic_stream::{
     AppendRequest, ChildrenRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
     StreamProvider,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,7 +162,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     let proposal = ProposedCommit {
         operation_id: OperationId::from_bytes([8; 16]),
         fingerprint: Digest::from_bytes([9; 32]),
-        payload: Bytes::from_static(b"generation"),
+        payload: bytes::Bytes::from_static(b"generation"),
     };
     let committed = store
         .compare_and_append(
@@ -431,7 +431,7 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
                 ProposedCommit {
                     operation_id: OperationId::from_bytes([40; 16]),
                     fingerprint: Digest::from_bytes([41; 32]),
-                    payload: Bytes::from_static(b"inflight"),
+                    payload: bytes::Bytes::from_static(b"inflight"),
                 },
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
@@ -468,7 +468,7 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
         .bucket
         .ok_or("bucket identity missing")?;
     let store = LogicalObjectStore::new(provider, bucket);
-    let bytes = Bytes::from_static(b"authenticated");
+    let bytes = OwnedBytes::from_static(b"authenticated");
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
@@ -500,7 +500,7 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
         store
             .put(
                 wrong,
-                Bytes::from_static(b"not-that-digest"),
+                OwnedBytes::from_static(b"not-that-digest"),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
@@ -572,7 +572,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     assert!(child_records.next().await.is_none());
     assert_eq!(
         child.read("/shared", 16).await?,
-        Bytes::from_static(b"base")
+        OwnedBytes::from_static(b"base")
     );
 
     source.write_text("/source-only", "source").await?;
@@ -628,7 +628,7 @@ async fn distributed_facade_leases_authorize_workspace_publication()
     ));
     assert_eq!(
         workspace.read("/published", 32).await?,
-        Bytes::from_static(b"through lease")
+        OwnedBytes::from_static(b"through lease")
     );
     Ok(())
 }
@@ -704,7 +704,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     streams
         .append(AppendRequest {
             path: StreamPath::new(format!("{prefix}/records"))?,
-            records: vec![Bytes::from_static(b"conflict")],
+            records: vec![OwnedBytes::from_static(b"conflict")],
             if_tail: Some(0),
             idempotency_key: None,
         })

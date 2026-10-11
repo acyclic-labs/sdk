@@ -1066,7 +1066,7 @@ pub struct NativeWatch {
     root: PathBuf,
     recursive: bool,
     watched_directories: Vec<PathBuf>,
-    receiver: Receiver<QueuedWatchChange>,
+    receiver: Mutex<Receiver<QueuedWatchChange>>,
     held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
     windows_directories: Vec<WindowsDirectoryWatch>,
@@ -1260,7 +1260,7 @@ impl NativeWatch {
             crate::demand::SourceDemandReadWork::charge(
                 &mut work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
             ).map_err(demand_watch_error)?;
-            match self.receiver.try_recv() {
+            match self.receiver.get_mut().map_err(|_| NativeWatchError::StatePoisoned)?.try_recv() {
                 Ok(change) => {
                     self.queued.fetch_sub(1, Ordering::AcqRel);
                     drop(change);
@@ -1552,7 +1552,7 @@ impl NativeWatch {
         };
         let watch = Self {
             watcher, root, recursive: options.recursive, watched_directories,
-            receiver, held_root,
+            receiver: Mutex::new(receiver), held_root,
             #[cfg(windows)]
             windows_directories: Vec::new(),
             #[cfg(windows)]
@@ -2226,7 +2226,7 @@ impl NativeWatch {
         for _ in 0..queued {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
                 .map_err(demand_watch_error)?;
-            let removed = self.receiver.try_recv().map_err(|_| NativeWatchError::StatePoisoned)?;
+            let removed = self.receiver.get_mut().map_err(|_| NativeWatchError::StatePoisoned)?.try_recv().map_err(|_| NativeWatchError::StatePoisoned)?;
             self.queued.fetch_sub(1, Ordering::AcqRel);
             // Queued hints retain their service custody; this observer only
             // discards the actual payload, even on a different allocation ledger.
@@ -2984,7 +2984,7 @@ impl NativeWatch {
                     work.charge(WorkCounters {
                         items_examined: 1, items_returned: 1, ..WorkCounters::UNCHARGED
                     }).map_err(demand_watch_error)?;
-                    let change = match self.receiver.try_recv() {
+                    let change = match self.receiver.get_mut().map_err(|_| NativeWatchError::StatePoisoned)?.try_recv() {
                         Ok(change) => change,
                         Err(TryRecvError::Empty) => {
                             self.invalidate_after_poll_failure(WatchInvalidationReason::BackendError);

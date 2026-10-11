@@ -1165,20 +1165,6 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Some(&self.collection)
     }
 
-    async fn prepare_generation_publication(
-        &self,
-        request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof,
-        append: &crate::GuardedAppend,
-        scope: PublicationScope<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner
-            .prepare_generation_publication(request, proof, append, scope, budget, cancellation)
-            .await
-    }
-
     async fn historical_generation_evidence(
         &self,
         authority_id: crate::AuthorityId,
@@ -1995,7 +1981,7 @@ mod tests {
         WorkBudget {
             backend_read_operations: 128,
             backend_write_operations: 128,
-            durability_barriers: 128,
+            durability_operations: 128,
             object_probes: 256,
             object_bytes_read: 64 * 1_048_576,
             object_bytes_written: 64 * 1_048_576,
@@ -2069,7 +2055,7 @@ mod tests {
         assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
         assert!(work.receipt().backend_read_operations > 0);
         assert!(work.receipt().backend_write_operations > 0);
-        assert!(work.receipt().durability_barriers > 0);
+        assert!(work.receipt().durability_operations > 0);
         drop(hold);
         drop(store);
         drop(provider);

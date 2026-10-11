@@ -18,7 +18,7 @@ use acyclic_fs::{
     WorkspaceLineageStore, resolve_merge_plan,
 };
 use acyclic_stream::MemoryStream;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -591,7 +591,7 @@ async fn concurrent_stale_cas_and_epoch_fencing_preserve_exactly_once_replay()
     let proposal = |operation, fingerprint, payload| ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
-        payload: Bytes::from_static(payload),
+        payload: bytes::Bytes::from_static(payload),
     };
     let left = proposal(1, 1, b"left");
     let right = proposal(2, 2, b"right");

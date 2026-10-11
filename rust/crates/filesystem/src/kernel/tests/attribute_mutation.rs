@@ -1,3 +1,4 @@
+use crate::kernel::decode_attribute_page;
 use super::*;
 use crate::CancellationToken;
 use crate::foundation::Digest;

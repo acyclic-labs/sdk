@@ -150,7 +150,7 @@ impl LocalCoreStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Digest;
+    use crate::foundation::Digest;
     use crate::workspace_context::{WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
 
     fn finite_budget() -> crate::WorkBudget {

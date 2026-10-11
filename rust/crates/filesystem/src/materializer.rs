@@ -1121,6 +1121,7 @@ impl NativeOwnedRootAllocation {
                 NativeOwnedRootStatus::Known(identity) => identity,
                 _ => return Err(NativeTreeMaterializationError::IndeterminatePreparation.into()),
             },
+            _ => return Err(NativeTreeMaterializationError::InvalidLayout.into()),
         };
         before_action().await?;
         self.validate_work(work).map_err(E::from)?;
@@ -5745,7 +5746,7 @@ fn native_vec_push<T>(values: &mut Vec<T>, value: T, custody: &mut NativeAllocat
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-fn native_namespace_string(path: &crate::NamespacePath, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
+fn native_namespace_string(path: &crate::kernel::NamespacePath, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
     let mut length = path.components().len().saturating_sub(1);
     for component in path.components() {
         work.charge(crate::WorkCounters { items_examined: component.as_bytes().len() as u64 + 1, ..crate::WorkCounters::default() })?;
@@ -7817,7 +7818,7 @@ fn native_utf16_name_bytes(units: impl Iterator<Item = u16>) -> impl Iterator<It
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-fn native_host_name_matches(host: &NativeWalkNameRef, logical: &crate::LogicalName, work: &NativeMaterializationWork) -> Result<bool, NativeTreeMaterializationError> {
+fn native_host_name_matches(host: &NativeWalkNameRef, logical: &crate::kernel::LogicalName, work: &NativeMaterializationWork) -> Result<bool, NativeTreeMaterializationError> {
     fn equal<T: Eq>(mut left: impl Iterator<Item = T>, mut right: impl Iterator<Item = T>, work: &NativeMaterializationWork) -> Result<bool, NativeTreeMaterializationError> {
         loop {
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
@@ -7829,7 +7830,7 @@ fn native_host_name_matches(host: &NativeWalkNameRef, logical: &crate::LogicalNa
         }
     }
     match logical.encoding() {
-        crate::NameEncoding::WindowsUtf16Le => {
+        crate::kernel::NameEncoding::WindowsUtf16Le => {
             if logical.as_bytes().len() % 2 != 0 { return Ok(false); }
             let units = logical.as_bytes().chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
             #[cfg(unix)]
@@ -7840,7 +7841,7 @@ fn native_host_name_matches(host: &NativeWalkNameRef, logical: &crate::LogicalNa
             #[cfg(windows)]
             { equal(host.iter().copied(), units, work) }
         }
-        crate::NameEncoding::Utf8 | crate::NameEncoding::PosixBytes => {
+        crate::kernel::NameEncoding::Utf8 | crate::kernel::NameEncoding::PosixBytes => {
             #[cfg(unix)]
             {
                 use std::os::unix::ffi::OsStrExt as _;
@@ -8971,7 +8972,7 @@ fn native_source_metadata_matches(
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-fn native_join_generation_child(path: &str, name: &crate::LogicalName, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
+fn native_join_generation_child(path: &str, name: &crate::kernel::LogicalName, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
     work.charge(crate::WorkCounters { items_examined: name.as_bytes().len() as u64 + 1, ..crate::WorkCounters::default() })?;
     let Some(name_bytes) = name.unicode_utf8_bytes() else {
         return Err(native_diagnostic(work, format_args!("{path}/{name:?}"), NativeTreeMaterializationError::InvalidPath)?);
@@ -10743,6 +10744,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[ignore = "runs only as a child of native_environment_real_process_controls_are_bounded"]
+    #[allow(unsafe_code, reason = "Windows permits environment mutation in this isolated child process")]
     fn native_environment_child() {
         use std::ffi::OsStr;
         let Some(expected) = std::env::var_os(NATIVE_ENVIRONMENT_FIXTURE) else { return; };
@@ -13235,7 +13237,7 @@ mod tests {
         let paths = [Path::new("task/view"), Path::new("task/preparation"), Path::new("task/preparation/target"), Path::new("task/preparation/backup")];
         let before = work.receipt();
         work.native_read_meter().with_original_leaf(|original| {
-            original.budget.peak_live_allocated_bytes = original.live_allocation_bytes();
+            original.budget.peak_allocation_bytes = original.live_allocation_bytes();
         });
         assert!(matches!(NativeOwnedRootAllocation::new_with_native_work(OperationId::from_bytes([76; 16]), &root, paths, &work),
             Err(NativeTreeMaterializationError::Work(_))));

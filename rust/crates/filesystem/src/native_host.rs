@@ -9699,6 +9699,8 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_clone_tests {
+    use crate::WorkCounters;
+    use super::create_windows_symbolic_link_with_work;
     use super::{
         HostRoot, UNIX_EPOCH_FILETIME, WindowsMetadataError, allocated_data_ranges,
         filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,

@@ -10586,7 +10586,7 @@ mod tests {
         let mut proof = CheckoutDependencies::new([Dependency {
             region: DependencyRegion::DirectoryName {
                 directory_id: directory,
-                name: LogicalName::new(NameEncoding::Utf8, padded, 64)?,
+                name: crate::kernel::LogicalName::new(NameEncoding::Utf8, padded, 64)?,
             },
             expected: DependencyState::Absent,
         }], [], 8)?;
@@ -10604,7 +10604,7 @@ mod tests {
         let extension = proof.prepare_observations(vec![Dependency {
             region: DependencyRegion::DirectoryName {
                 directory_id: directory,
-                name: LogicalName::new(NameEncoding::Utf8, b"new".to_vec(), 64)?,
+                name: crate::kernel::LogicalName::new(NameEncoding::Utf8, b"new".to_vec(), 64)?,
             },
             expected: DependencyState::Absent,
         }], 8)?;
@@ -10651,7 +10651,7 @@ mod tests {
         let mut proof = CheckoutDependencies::new([Dependency {
             region: DependencyRegion::DirectoryName {
                 directory_id: directory,
-                name: LogicalName::new(NameEncoding::Utf8, b"old".to_vec(), 64)?,
+                name: crate::kernel::LogicalName::new(NameEncoding::Utf8, b"old".to_vec(), 64)?,
             },
             expected: DependencyState::Absent,
         }], [], 8)?;

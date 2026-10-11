@@ -598,7 +598,7 @@ where
             future.await.map_err(NativePublicationOwnerFailure::Owner)
         }
     };
-    let mut dispatch = |request: GuardedAppend, _: Option<WorkBudget>| {
+    let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
             let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(

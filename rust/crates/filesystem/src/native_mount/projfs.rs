@@ -1,26 +1,4 @@
-//! Audited Windows `ProjFS` FFI with exact close-boundary authored capture.
-//!
-//! `ProjFS` does not expose write byte ranges, so modified and newly created
-//! files are streamed from final host state only after the corresponding file
-//! handle closes. Rename and hard-link notifications preserve stable identity,
-//! and every successfully processed authored notification seals the checkout generation.
-//!
-//! Detach signals the same preborn producer and observes it with a caller wait.
-//! Original stored credits fund SDK stop, held-capability disposal and real
-//! thread controls; authored capture retains its original permission/work.
-//! Refusal retains the actual owner and original allocation custody.
-//! The SDK root marker and refused dirty/full placeholder namespace data can
-//! persist after physical retirement. No stop deletes/recreates a user root.
-//! SDK activations retain the complete original work and optional resource
-//! allowance through queued physical work. Source callbacks reuse that full
-//! view; native buffer guards retire only after their actual backing drops.
-//! Installed native source bindings select that exact work even outside an SDK
-//! lifecycle window; only ordinary unbound sources create a distinct request.
-//! The installed authorization Arc is retained and checked on the existing
-//! callback runtime before provider exchanges or source effects. Full work
-//! identity includes meter, resource allowance, capture origin and invocation.
-//! Arc accounting ends at the actual SDK payload drop, not opaque standard
-//! library control backing retained by Weak references.
+//! Windows ProjFS projection with close-boundary authored capture.
 
 #![allow(
     unsafe_code,
@@ -44,6 +22,7 @@ use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::atomic::Ordering;
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -1495,7 +1474,7 @@ struct Projection<'a> {
     custody: &'a crate::demand::NativeMountAllocationCustody,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     root: &'a std::path::Path,
-    root_identity: super::NativeRootIdentity,
+    root_identity: crate::NativeRootIdentity,
     staging_custody: &'a Mutex<Option<StagingDirectoryCustody>>,
     /// Host edits not yet captured: a file holding one is the user's until
     /// the source has it.
@@ -1647,7 +1626,7 @@ impl MemoKey for u128 {
     }
 }
 
-impl MemoKey for super::NativeRootIdentity {
+impl MemoKey for crate::NativeRootIdentity {
     fn compare(&self, other: &Self) -> std::cmp::Ordering {
         (self.device, self.object).cmp(&(other.device, other.object))
     }
@@ -5261,8 +5240,8 @@ impl ProjFsSession {
         let loan = credit.accepted_cleanup_loan();
         loan.started_io(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
             .map_err(detach_work_error)?;
-        let closed = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle.0) };
-        if closed == 0 { return Err(NativeMountError::Io(std::io::Error::last_os_error())); }
+        unsafe { windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(handle.0)) }
+            .map_err(|error| NativeMountError::Io(std::io::Error::from_raw_os_error(error.code().0 & 0xffff)))?;
         self.worker_raw_handle = None;
         self.worker_handle_close_credit = None;
         self.worker_join_credit = None;

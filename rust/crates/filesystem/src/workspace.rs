@@ -2875,9 +2875,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         path: &str,
         bytes: Bytes,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        in_heap(|| async {
         let mut transaction = self.begin_transaction(IdempotencyKey::new()).await?;
         transaction.write(path, bytes).await?;
         transaction.commit().await
+        }).await
     }
 
     /// Removes one existing path in a single atomic generation publication.
@@ -5061,7 +5063,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<TransactionCommit<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut before_publication = |_| async { Ok::<(), WorkspaceError>(()) };
+        let mut before_publication = |_: &crate::NativeMaterializationWork| async { Ok::<(), WorkspaceError>(()) };
         self.commit_with_permit_guarded_with_native_work(
             permit, original, cancellation, &mut before_publication,
         ).await.map_err(crate::facade::native_workspace_failure)

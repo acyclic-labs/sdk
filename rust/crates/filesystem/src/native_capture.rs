@@ -1801,7 +1801,7 @@ where
         |claim, bytes| {
             let (allocated, completed) = {
                 let mut work = capture_ledger_meter(&claim.meter);
-                (if bytes != 0 { capture_allocate(&mut work, bytes) } else { Ok(()) }, work.work)
+                (if bytes != 0 { capture_allocate(&mut *work, bytes) } else { Ok(()) }, work.work)
             };
             allocated.map_err(|error| OperationFailure::new(error, completed))?;
             claim.bytes = Some(bytes);

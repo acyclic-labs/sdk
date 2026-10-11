@@ -102,7 +102,10 @@ pub use materialize::{
 };
 pub(crate) use materialize::{
     MaterializeMode, materialize_checkout_paths_with_mode, materialize_checkout_with_mode,
+    NativeMaterializationActionPhase, materialize_checkout_host_paths_with_work_guarded,
+    materialize_checkout_paths_with_mode_and_work,
 };
+pub use materialize::materialize_checkout_with_work;
 
 mod publication;
 pub use publication::{seal_checkout, seal_checkout_with_permit};
@@ -3623,6 +3626,7 @@ impl NativeMountStartupStorage {
     ) -> Result<Self, NativeMountStartupAdmissionError> {
         Self::new(&work.native_materialization_work())
     }
+    #[allow(unsafe_code, reason = "transfers fully initialized preallocated failure storage")]
     fn failed(mut self, error: NativeMountError, owner: NativeMountSession) -> NativeMountStartupFailure {
         let mut buffer = self.buffer.take().expect("admitted constructor storage");
         buffer.write(NativeMountStartupFailureState { error, owner, retired: self.retired.take() });

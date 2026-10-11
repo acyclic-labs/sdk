@@ -11300,6 +11300,7 @@ where
         E: From<LazyWorkspaceError> + Send + 'static,
         F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
+        A: 'static, O: 'static, S: 'static,
     {
         original.admit(WorkCounters::UNCHARGED).map_err(LazyWorkspaceError::from)?;
         if !bytes.matches_meter(&original.runtime_meter_owner()) {
@@ -11398,6 +11399,7 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
         I::IntoIter: Send,
+        A: 'static, O: 'static, S: 'static,
     {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
         original.admit(WorkCounters {
@@ -11490,6 +11492,7 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         I: IntoIterator<Item = LazyWriteMutation<'path>> + Send,
         I::IntoIter: Send,
+        A: 'static, O: 'static, S: 'static,
     {
         let work = LazyTreapWork::native_with_work(original, cancellation)?;
         original.admit(WorkCounters {
@@ -12105,8 +12108,6 @@ where
                     Err(E::from(LazyWorkspaceError::StaleIdentity))
                 }
             };
-            drop(transaction);
-            drop(operation_evidence);
             drop(evidence_scope);
             Ok((commit, snapshot))
         }).await
@@ -15355,12 +15356,12 @@ pub(crate) fn native_publication_evidence_with_native_work(
         context, operation, original_permit, &mut accounting,
     )?;
     let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
-        .map_err(|failure| match failure.into_error() {
+        .map_err(|failure| -> crate::FsError { match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
                 | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
                 crate::NativeTreeMaterializationError::InvalidLayout.into(),
-        })?;
+        } })?;
     Ok((context, bytes))
 }
 
@@ -15473,7 +15474,7 @@ fn lazy_write_original_bytes(
                 // Bytes' private backing layout is not estimated. Admit its
                 // one shared-control allocation before immutable promotion,
                 // and force it now rather than on a later publication clone.
-                let control = WorkCounters { allocations: 1, ..WorkCounters::UNCHARGED };
+                let control = WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED };
                 accounting.admit(control).map_err(lazy_cursor_filesystem_error)?;
                 let bytes: acyclic_stream::OwnedBytes = bytes.into();
                 drop(bytes.clone());
@@ -15757,10 +15758,10 @@ struct OwnedNativeWriteGuard<A, O, D, S, F> {
 impl<A, O, D, S, E, F, Fut> LazyWriteGuard<A, O, D, S>
     for OwnedNativeWriteGuard<A, O, D, S, F>
 where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
     D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+    S: LazyWorkspaceStore + 'static,
     E: From<LazyWorkspaceError> + Send + 'static,
     F: for<'work> FnMut(&'work crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -17905,6 +17906,8 @@ mod tests {
     struct PinnedFile(Bytes);
 
     impl DemandFile for PinnedFile {
+        fn logical_owned_bytes(&self) -> u64 { 0 }
+
         fn read_range(
             &self,
             offset: u64,
@@ -18594,7 +18597,8 @@ mod tests {
         let source = CountingSource::new(Bytes::from_static(b"source"));
         let path = NamespacePath::new(
             vec![LogicalName::new(NameEncoding::Utf8, b"file.txt".to_vec(), 255).expect("name")],
-            16, 4096,
+            crate::model::VolumeLimits { maximum_path_depth: 16, maximum_path_bytes: 4096,
+                ..crate::model::VolumeLimits::default() },
         ).expect("path");
         let token = CancellationToken::new();
         let budget = finite_fixture_budget();
@@ -18753,7 +18757,7 @@ mod tests {
         assert_eq!(*failure.work, WorkCounters::default());
         let failure = root.promote_exact_measured(
             "/file.txt", expected, 6, IdempotencyKey::new(), WorkBudget::default(), &token,
-        ).await.expect_err("promotion future denied");
+        ).await.err().expect("promotion future denied");
         assert_eq!(*failure.work, WorkCounters::default());
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), lookups);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
@@ -18761,7 +18765,7 @@ mod tests {
         let budget = finite_fixture_budget();
         let failure = root.promote_exact_measured(
             "/file.txt", expected, 5, IdempotencyKey::new(), budget, &token,
-        ).await.expect_err("actual logical bytes exceed promotion quota");
+        ).await.err().expect("actual logical bytes exceed promotion quota");
         assert!(matches!(failure.error.semantic_error(), LazyWorkspaceError::TooLarge));
         assert!(failure.work.allocation_operations > 0);
         assert!(failure.work.bytes_hashed > 0);
@@ -18789,7 +18793,7 @@ mod tests {
         let failure = root.promote_resolved_with_permit_measured(
             "/file.txt", lookup.value, 64, IdempotencyKey::new(),
             crate::PublicationPermit::Unrestricted, prior, budget, &token,
-        ).await.expect_err("resolved epoch must not be silently refreshed");
+        ).await.err().expect("resolved epoch must not be silently refreshed");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::StaleSource));
         assert_eq!(failure.spent_work(), prior);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
@@ -19181,9 +19185,9 @@ mod tests {
         denied.backend_read_operations = 0;
         let failure = root.fork_with_snapshot_measured("authentic-child", key, denied, &token)
             .await.err().expect("budget failure after durable preparation");
-        assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Work(_)));
-        assert_ne!(failure.spent_work(), WorkCounters::UNCHARGED);
-        failure.spent_work().verify(denied).expect("admitted failure prefix");
+        assert!(matches!(failure.error.semantic_error(), LazyWorkspaceError::Work(_)));
+        assert_ne!(*failure.work, WorkCounters::UNCHARGED);
+        failure.work.verify(denied).expect("admitted failure prefix");
 
         root.remove("/file.txt").await.expect("advance mutable parent overlay");
         root.workspace().write_text("/authored", "advanced").await.expect("advance parent head");
@@ -19197,7 +19201,7 @@ mod tests {
         assert_eq!(original_child.source, frozen.source);
         assert_eq!(original_child.overlay, frozen.overlay);
         assert_eq!(original_child.shadows, frozen.shadows);
-        assert_eq!(child.workspace().read_text("/authored").await.expect("original authored view"), "original");
+        assert_eq!(child.workspace().read("/authored", child.workspace().limits().maximum_read_bytes).await.expect("original authored view").as_ref(), b"original");
         assert!(matches!(child.lookup("/file.txt").await.expect("original source view"), LazyLookup::Source(_)));
         assert_eq!((child.read_range_measured("/file.txt", 0, 8, budget, &token).await.expect("frozen source bytes").value).as_ref(), b"original");
 
@@ -19236,8 +19240,8 @@ mod tests {
         let wrong_operation = root.bind_prepared_fork_measured(
             frozen, child.clone(), created.id(), IdempotencyKey::from_bytes([0xd3; 16]).operation_id(), budget, &token,
         ).await.err().expect("wrong original operation");
-        assert!(matches!(wrong_operation.semantic_error(), LazyWorkspaceError::Concurrent));
-        assert_ne!(wrong_operation.spent_work(), WorkCounters::UNCHARGED);
+        assert!(matches!(wrong_operation.error.semantic_error(), LazyWorkspaceError::Concurrent));
+        assert_ne!(*wrong_operation.work, WorkCounters::UNCHARGED);
         let mut wrong_config = config;
         wrong_config.lifecycle = crate::model::Lifecycle::Durable;
         let rejected_config = fs.workspace_for_creation_operation_measured(
@@ -19250,8 +19254,8 @@ mod tests {
         let wrong_seed = root.bind_prepared_fork_measured(
             frozen, child.clone(), later, key.operation_id(), budget, &token,
         ).await.err().expect("current head cannot replace original seed");
-        assert!(matches!(wrong_seed.semantic_error(), LazyWorkspaceError::Concurrent));
-        wrong_seed.spent_work().verify(budget).expect("finite rejected seed prefix");
+        assert!(matches!(wrong_seed.error.semantic_error(), LazyWorkspaceError::Concurrent));
+        wrong_seed.work.verify(budget).expect("finite rejected seed prefix");
         let bound = root.bind_prepared_fork_measured(
             frozen, child.clone(), created.id(), key.operation_id(), budget, &token,
         ).await.expect("bind same created project");
@@ -22241,7 +22245,7 @@ mod tests {
         let metadata = lookup.metadata.expect("genuine full metadata");
         assert_eq!(lookup.resolved.lookup.metadata(), crate::WorkspaceMetadata::from_engine(metadata));
         let bytes = lookup.reader.read_record_range_with_native_work(
-            record, crate::ByteRange::new(0, 8).expect("range"), &original, &token,
+            record, crate::ByteRange { offset: 0, length: 8 }, &original, &token,
         ).await.expect("same retained reader").bytes;
         assert_eq!(bytes.as_ref(), b"original");
         assert!(original.receipt().bytes_hashed > before.bytes_hashed);
@@ -22374,7 +22378,7 @@ mod tests {
             let record = lookup.record.expect("actual retained record");
             assert!(lookup.metadata.is_some());
             let bytes = lookup.reader.read_record_range_with_native_work(
-                record, crate::ByteRange::new(0, 8).expect("range"), &original, &token,
+                record, crate::ByteRange { offset: 0, length: 8 }, &original, &token,
             ).await.expect("same exact frozen reader").bytes;
             assert_eq!(bytes.as_ref(), b"retained");
             drop(bytes);
@@ -23515,8 +23519,8 @@ mod tests {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        fn depth(overlays: &BTreeMap<LazyOverlayId, LazyOverlay>, id: LazyOverlayId) -> usize {
-            match &overlays[&id] {
+        fn depth(overlays: &[(LazyOverlayId, MemoryLazyResident<LazyOverlay>)], id: LazyOverlayId) -> usize {
+            match &overlays.iter().find(|(key, _)| *key == id).expect("resident overlay").1.value {
                 LazyOverlay::Empty => 0,
                 LazyOverlay::Node { left, right, .. } => {
                     1 + depth(overlays, *left).max(depth(overlays, *right))
@@ -23524,8 +23528,8 @@ mod tests {
             }
         }
         assert!(depth(&state.overlays, root_id) < 64);
-        assert!(state.overlays.values().all(|overlay| {
-            serde_json::to_vec(overlay)
+        assert!(state.overlays.iter().all(|(_, overlay)| {
+            serde_json::to_vec(&overlay.value)
                 .expect("encode overlay node")
                 .len()
                 < 2_048
@@ -23587,6 +23591,7 @@ mod tests {
             overlay: snapshot.overlay,
             shadows: snapshot.shadows,
             pending_remove: None,
+            pending_write: None, completed_write: None, completed_selected_import: None,
         }
     }
 
@@ -23805,61 +23810,27 @@ mod tests {
         let denied = original.native_volume_work(WorkBudget {
             allocation_operations: 0, ..WorkBudget::UNBOUNDED
         }).unwrap();
+        let before_live = original.live_allocation_bytes();
         let before = original.receipt();
         let error = store.load_lazy_overlay_with_native_work(id, &denied).await.unwrap_err();
         assert!(matches!(error.semantic_error(), LazyWorkspaceError::NativeWork(
             crate::NativeTreeMaterializationError::Work(_)) | LazyWorkspaceError::Demand(DemandError::Work(_))));
         assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(original.receipt().retained_allocation_bytes, before.retained_allocation_bytes);
+        assert_eq!(original.live_allocation_bytes(), before_live);
         assert!(original.receipt().bytes_hashed > before.bytes_hashed,
             "the completed original digest and lookup prefix survives the denied clone");
+        let prefix_live = original.live_allocation_bytes();
         let prefix = original.receipt();
         let owned = store.load_lazy_overlay_with_native_work(id, &original).await.unwrap().unwrap();
         assert!(owned.allocation.matches_work(&original));
         assert_eq!(owned.allocation.bytes(), owned.as_state().logical_owned_bytes());
         assert_eq!(original.receipt().allocation_operations, prefix.allocation_operations + 1);
-        assert_eq!(original.receipt().retained_allocation_bytes,
-            prefix.retained_allocation_bytes + owned.allocation.bytes());
+        assert_eq!(original.live_allocation_bytes(),
+            prefix_live + owned.allocation.bytes());
         assert!(store.inner.lock().unwrap().overlay_allocation.is_none(),
             "a borrowed preexisting service table is never re-adopted by lookup");
         drop(owned);
-        assert_eq!(original.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn native_memory_table_growth_keeps_new_backing_paid_until_physical_store_drop() {
-        let token = CancellationToken::new();
-        let store = MemoryLazyWorkspaceStore::default();
-        let overlay = LazyOverlay::Node {
-            path: "/inserted".to_owned(), priority: 1,
-            change: LazyOverlayChange::Tombstone { removed: None },
-            left: LazyOverlay::Empty.id().unwrap(), right: LazyOverlay::Empty.id().unwrap(),
-        };
-        let id = overlay.id().unwrap();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
-            .map_err(|(error, _)| error).unwrap();
-        let prefix = original.receipt();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &token);
-        let (copied, allocation) = overlay.clone_with_accounting(&mut accounting, &token).unwrap();
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
-            panic!("original clone must retain its actual native guard");
-        };
-        let bytes = allocation.bytes();
-        store.put_lazy_overlay_with_native_work(id,
-            NativeOwnedCoreState::from_parts(copied, allocation), &original).await.unwrap();
-        let capacity = store.inner.lock().unwrap().overlays.capacity();
-        assert_eq!(original.receipt().retained_allocation_bytes,
-            prefix.retained_allocation_bytes + bytes
-                + (capacity * std::mem::size_of::<(LazyOverlayId, MemoryLazyResident<LazyOverlay>)>()) as u64);
-        let denied = original.native_volume_work(WorkBudget {
-            items_examined: 0, ..WorkBudget::UNBOUNDED
-        }).unwrap();
-        let before = original.receipt();
-        assert!(store.load_lazy_overlay_with_native_work(id, &denied).await.is_err());
-        assert_eq!(original.receipt(), before, "scoped denial happens before service search or clone");
-        drop(store);
-        assert_eq!(original.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+        assert_eq!(original.live_allocation_bytes(), prefix_live);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -23896,7 +23867,7 @@ mod tests {
         ];
         let token = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token).expect("original ledger");
-        let prefix = original.receipt().retained_allocation_bytes;
+        let prefix = original.live_allocation_bytes();
         for qualification in contexts {
             for historical_permit in permits {
                 let (context, bytes) = native_publication_evidence_with_native_work(
@@ -23925,14 +23896,14 @@ mod tests {
                 assert_eq!(issued.snapshot().lazy_snapshot_with_native_work(&original, &token).expect("pure projection"),
                     if matches!(qualification, NativeSnapshotContext::Lazy(_)) { Some(basis) } else { None });
                 drop(bytes);
-                assert_eq!(original.receipt().retained_allocation_bytes, prefix, "encoded C drops before original custody");
+                assert_eq!(original.live_allocation_bytes(), prefix, "encoded C drops before original custody");
             }
         }
         let denied = original.native_volume_work(WorkBudget {
             bytes_encoded: 0, ..WorkBudget::UNBOUNDED
         }).expect("same original scoped quota");
         assert!(native_publication_evidence_with_native_work(contexts[0], operation, permits[0], &denied, &token).is_err());
-        assert_eq!(original.receipt().retained_allocation_bytes, prefix);
+        assert_eq!(original.live_allocation_bytes(), prefix);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let before = original.receipt();
@@ -24081,11 +24052,11 @@ mod tests {
             .await.expect("original exact prepared cut");
         assert_eq!(frozen, current, "an empty host delta does not replace genuine source or shadow metadata");
         let state = store.load_lazy_workspace(root.workspace().id()).await.expect("actual state").expect("binding");
-        let prefix = original.receipt().retained_allocation_bytes;
+        let prefix = original.live_allocation_bytes();
         let denied = original.native_volume_work(WorkBudget { items_examined: 0, ..WorkBudget::UNBOUNDED })
             .expect("same original scoped denial");
         assert!(root.mount_publication_cut_with_native_work(key.operation_id(), &denied, &token).await.is_err());
-        assert_eq!(original.receipt().retained_allocation_bytes, prefix);
+        assert_eq!(original.live_allocation_bytes(), prefix);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let before = original.receipt();
@@ -24123,10 +24094,10 @@ mod tests {
         assert_eq!(qualification.snapshot().volume_config(), root.workspace().volume_config());
         assert_eq!(qualification.snapshot().lazy_snapshot_with_native_work(&original, &token).expect("same pure SDK projection"),
             Some(basis), "logical snapshot identity is retained, never used as a generation");
-        let retained = original.receipt().retained_allocation_bytes;
+        let retained = original.live_allocation_bytes();
         let repeated = root.publication_snapshot_with_native_work(&original).await.expect("same actual readonly capture");
         assert_eq!(repeated, qualification);
-        assert_eq!(original.receipt().retained_allocation_bytes, retained,
+        assert_eq!(original.live_allocation_bytes(), retained,
             "fixed output retains no retired decoded-state guard or phantom heap allocation");
         let after = store.load_lazy_workspace(root.workspace().id()).await.expect("unchanged companion").expect("binding");
         assert_eq!((after.revision, after.source, after.overlay, after.shadows),

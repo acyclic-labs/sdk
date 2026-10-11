@@ -1560,14 +1560,14 @@ mod tests {
                 let count = request.data().len();
                 let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter,
                     count.checked_mul(size_of::<Result<Object, acyclic_objects::v1::NativeObjectsError>>())
-                        .ok_or(std::io::ErrorKind::OutOfMemory)?)?;
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?)?;
                 let mut results = Vec::new();
                 results.try_reserve_exact(count).map_err(|error| meter.allocation_failed(error))?;
                 allocation.reconcile_capacity(results.capacity() *
                     size_of::<Result<Object, acyclic_objects::v1::NativeObjectsError>>())?;
                 let mut prepared_allocation = acyclic_native_runtime::ReadAllocation::new(&meter,
                     count.checked_mul(size_of::<acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>>())
-                        .ok_or(std::io::ErrorKind::OutOfMemory)?)?;
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?)?;
                 let mut prepared = Vec::new();
                 prepared.try_reserve_exact(count).map_err(|error| meter.allocation_failed(error))?;
                 prepared_allocation.reconcile_capacity(prepared.capacity() *
@@ -1599,14 +1599,14 @@ mod tests {
                 let count = request.data().len();
                 let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter,
                     count.checked_mul(size_of::<Result<acyclic_objects::v1::ObjectsPutReceipt,
-                        acyclic_objects::v1::NativeObjectsError>>()).ok_or(std::io::ErrorKind::OutOfMemory)?)?;
+                        acyclic_objects::v1::NativeObjectsError>>()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?)?;
                 let mut results = Vec::new();
                 results.try_reserve_exact(count).map_err(|error| meter.allocation_failed(error))?;
                 allocation.reconcile_capacity(results.capacity() * size_of::<Result<acyclic_objects::v1::ObjectsPutReceipt,
                     acyclic_objects::v1::NativeObjectsError>>())?;
                 let mut inputs_allocation = acyclic_native_runtime::ReadAllocation::new(&meter,
                     count.checked_mul(size_of::<acyclic_objects::v1::ObjectsNativeRequest<PutRequest>>())
-                        .ok_or(std::io::ErrorKind::OutOfMemory)?)?;
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?)?;
                 let mut inputs = Vec::new();
                 inputs.try_reserve_exact(count).map_err(|error| meter.allocation_failed(error))?;
                 inputs_allocation.reconcile_capacity(inputs.capacity() *
@@ -1741,7 +1741,7 @@ mod tests {
     #[tokio::test]
     async fn native_logical_provider_alias_retains_original_vec_custody() -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)?;
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
         let mut custody = work.claim_allocation(4, 1)?;
         let mut bytes = Vec::new();
