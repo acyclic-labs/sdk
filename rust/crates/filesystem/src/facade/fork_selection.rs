@@ -6,7 +6,6 @@ use crate::kernel::{
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
     encode_file_table_page_with_accounting, encode_tree_page_with_accounting,
     list_tree_entries_async_with_accounting, lookup_file_record_async_with_accounting,
-    put_encoded_with_accounting,
 };
 use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use crate::workspace::{
@@ -323,9 +322,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let encoded = encode_tree_page_with_accounting(
                     &TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, accounting,
                 )?;
-                let encoded_bytes = workspace_vec_bytes(&encoded.0);
-                let empty = put_encoded_with_accounting(&self.inner.objects, ObjectKind::TreePage,
-                    Owned::new(encoded.0, encoded.1, encoded_bytes), accounting, cancellation).await?;
+                let empty = self.put_encoded_with_accounting(
+                    ObjectKind::TreePage, encoded, accounting, cancellation,
+                ).await?;
                 let tree_root = if entries.value.is_empty() { empty } else {
                     apply_tree_mutations_with_accounting(&self.inner.objects, empty, &entries.value, maximum,
                         DecodeLimits::for_volume(config), accounting, cancellation).await?.root
@@ -480,9 +479,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         records.retire(accounting)?;
         links.retire(accounting)?;
         let encoded = encode_file_table_page_with_accounting(&FileTablePage::Leaf(Vec::new()), limits.maximum_page_items, accounting)?;
-        let encoded_bytes = workspace_vec_bytes(&encoded.0);
-        let empty = put_encoded_with_accounting(&self.inner.objects, ObjectKind::FileTablePage,
-            Owned::new(encoded.0, encoded.1, encoded_bytes), accounting, cancellation).await?;
+        let empty = self.put_encoded_with_accounting(
+            ObjectKind::FileTablePage, encoded, accounting, cancellation,
+        ).await?;
         let table = apply_file_table_mutations_with_accounting(&self.inner.objects, empty, &mutations.value,
             maximum, limits, accounting, cancellation).await?;
         mutations.retire(accounting)?;

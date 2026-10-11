@@ -1672,6 +1672,14 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     }
 }
 
+/// Moves the complete filesystem cause and its intrinsic custody without formatting.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::FsError> for Error {
+    fn from(source: acyclic_fs::FsError) -> Self {
+        Self::NativeFilesystem { source, custody: None }
+    }
+}
+
 /// Moves a lifecycle failure without dropping any retained physical cleanup owner.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {

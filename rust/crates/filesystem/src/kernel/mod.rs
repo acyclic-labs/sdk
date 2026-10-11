@@ -66,6 +66,7 @@ pub(crate) use closure::{
 pub(crate) use codec::{EncodeAllocationStep, ReadAllocationStep};
 pub(crate) use file_read::{OriginalReadAccounting, ReadDecodeError, read_object_with_accounting};
 pub(crate) use file_table::encode_file_table_leaf_records_with_accounting;
+pub(crate) use file_table::encode_file_table_page_with_accounting;
 pub(crate) use generation::encode_generation_root_with_accounting;
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
