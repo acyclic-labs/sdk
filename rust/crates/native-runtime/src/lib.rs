@@ -917,6 +917,8 @@ mod process_tree;
 mod windows;
 
 pub use process_tree::{ProcessCaptureFailure, ProcessInput, ProcessTree};
+#[cfg(unix)]
+pub use process_tree::PreparedClosedProcess;
 
 /// Whether a native operation may still have an unresolved kernel completion.
 ///
@@ -1678,7 +1680,7 @@ impl NativeReadCompletion {
                 Ok(value.take().expect("native read polled after completion")),
             NativeReadCompletionState::Pending(completion) => {
                 let meter = measured_completion_meter(&completion.state)?;
-                wait_measured_completion(completion, meter, deadline, cancellation, on_deadline)
+                wait_measured_completion(completion, meter, None, deadline, cancellation, on_deadline)
             }
         }
     }
@@ -2092,17 +2094,36 @@ impl ReadAllocation {
     /// Actual excess remains in this guard even if a late quota check fails.
     /// A decrease requires that the physical capacity was already retired.
     pub fn reconcile_capacity(&mut self, actual: usize) -> io::Result<()> {
+        Self::reconcile_capacity_recorded(&mut self.bytes, &self.meter, actual, self.meter.as_ref())
+    }
+
+    /// Reconciles an already allocated buffer through its accepted completion
+    /// meter. The completion must project this exact original allocation owner;
+    /// this identity check does not grant new allocation or source authority.
+    /// Actual retained excess stays guarded even on a late quota failure.
+    pub fn reconcile_capacity_with_meter(
+        &mut self, actual: usize, completion: &dyn NativeReadMeter,
+    ) -> io::Result<()> {
+        let owner = completion.allocation_owner().ok_or(io::ErrorKind::InvalidInput)?;
+        if !Arc::ptr_eq(&owner, &self.meter) { return Err(io::ErrorKind::InvalidInput.into()); }
+        Self::reconcile_capacity_recorded(&mut self.bytes, &self.meter, actual, completion)
+    }
+
+    fn reconcile_capacity_recorded(
+        bytes: &mut u64, original: &Arc<dyn NativeReadMeter>,
+        actual: usize, completion: &dyn NativeReadMeter,
+    ) -> io::Result<()> {
         let actual = actual as u64;
-        if actual > self.bytes {
-            let additional = actual - self.bytes;
-            let (retained, result) = self.meter.record_completed_adoption(additional);
+        if actual > *bytes {
+            let additional = actual - *bytes;
+            let (retained, result) = completion.record_completed_adoption(additional);
             assert!(retained <= additional, "completed adoption retains only actual excess");
-            self.bytes += retained;
+            *bytes += retained;
             result?;
             assert_eq!(retained, additional, "successful adoption retains all actual excess");
-        } else if actual < self.bytes {
-            self.meter.release(self.bytes - actual);
-            self.bytes = actual;
+        } else if actual < *bytes {
+            original.release(*bytes - actual);
+            *bytes = actual;
         }
         Ok(())
     }
@@ -2188,6 +2209,7 @@ pub struct BlockingIoTask<T> {
     pending: Option<NativeJob>,
     waiter: Option<Arc<CapacityWaiter>>,
     terminated: bool,
+    prepared_wake: Option<Arc<BlockingWaitWake>>,
 }
 
 thread_local! {
@@ -2242,12 +2264,40 @@ pub fn run_blocking_io_measured<T: Send + 'static>(
     blocking_io_task(operation, Some(meter))
 }
 
+/// Prepares one operation on the existing host-operation engine without
+/// submitting or invoking it. Services must already be initialized.
+///
+/// Completion, exact closure storage, an unlinked capacity waiter, and the
+/// synchronous wake owner are all allocated now. If `meter` projects an
+/// original `allocation_owner`, those controls are admitted on that original
+/// meter; submission and execution retain the supplied operative meter.
+/// The caller must supply an authentic owned reservation for later cleanup,
+/// not a borrowed loan or a replacement operation allowance.
+///
+/// First polling submits the same one-shot task. Observer drop after
+/// submission still detaches rather than draining or undoing accepted work.
+pub fn prepare_blocking_io_measured<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+    meter: Arc<dyn NativeReadMeter>,
+) -> io::Result<BlockingIoTask<T>> {
+    prepare_blocking_io_task(operation, meter)
+}
+
 fn blocking_io_task<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
 ) -> io::Result<BlockingIoTask<T>> {
+    blocking_io_task_with_allocation_meter(operation, meter, None)
+}
+
+fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+    meter: Option<Arc<dyn NativeReadMeter>>,
+    allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<BlockingIoTask<T>> {
+    let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter { meter.check()?; }
-    let allocation = meter.as_ref().map(|meter| ReadAllocation::new(
+    let allocation = allocation_meter.map(|meter| ReadAllocation::new(
         meter, arc_allocation_bytes::<Mutex<CompletionState<T>>>(),
     )).transpose()?;
     let state = Arc::new(Mutex::new(CompletionState {
@@ -2275,15 +2325,32 @@ fn blocking_io_task<T: Send + 'static>(
             Err(payload) => finish_panicked_job(&completion, payload, None),
         }
     });
-    let allocation = meter.as_ref().map(|meter| ReadAllocation::new(
+    let allocation = allocation_meter.map(|meter| ReadAllocation::new(
         meter, std::mem::size_of_val(&operation),
     )).transpose()?;
     Ok(BlockingIoTask {
         pending: Some(NativeJob::Task {
             operation: Box::new(operation), meter, _allocation: allocation,
         }),
-        state, waiter: None, terminated: false,
+        state, waiter: None, terminated: false, prepared_wake: None,
     })
+}
+
+fn prepare_blocking_io_task<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+    meter: Arc<dyn NativeReadMeter>,
+) -> io::Result<BlockingIoTask<T>> {
+    // Preparation never starts services, queues a request, or invokes its
+    // producer. All four known heap controls belong to this same original
+    // meter before the caller starts a driver that may require retirement.
+    ready_workers(&BLOCKING_WORKERS)?;
+    let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
+    let mut task = blocking_io_task_with_allocation_meter(
+        operation, Some(Arc::clone(&meter)), Some(&allocation_meter),
+    )?;
+    task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
+    task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
+    Ok(task)
 }
 
 #[derive(Default)]
@@ -2945,25 +3012,28 @@ impl AdmissionState {
         waker: &Waker,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> io::Result<Arc<CapacityWaiter>> {
-        let allocation = meter.map(|meter| ReadAllocation::new(
-            meter, arc_allocation_bytes::<CapacityWaiter>(),
-        )).transpose()?;
-        let node = Arc::new(CapacityWaiter {
-            state: Mutex::new(CapacityWaiterState {
-                previous: self.tail.clone(), next: None,
-                waker: waker.clone(), queued: true,
-            }),
-            _allocation: allocation,
-        });
+        let node = allocate_capacity_waiter(meter)?;
+        self.register_existing(&node, waker);
+        Ok(node)
+    }
+
+    fn register_existing(&mut self, node: &Arc<CapacityWaiter>, waker: &Waker) {
+        {
+            let mut state = node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            debug_assert!(!state.queued);
+            state.previous = self.tail.clone();
+            state.next = None;
+            state.waker.clone_from(waker);
+            state.queued = true;
+        }
         if let Some(tail) = self.tail.upgrade() {
             tail.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .next = Some(Arc::clone(&node));
+                .next = Some(Arc::clone(node));
         } else {
-            self.head = Some(Arc::clone(&node));
+            self.head = Some(Arc::clone(node));
         }
-        self.tail = Arc::downgrade(&node);
+        self.tail = Arc::downgrade(node);
         self.waiter_count += 1;
-        Ok(node)
     }
 
     fn retire(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
@@ -2993,6 +3063,20 @@ impl AdmissionState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner).waker.clone())
         } else { None }
     }
+}
+
+fn allocate_capacity_waiter(
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<Arc<CapacityWaiter>> {
+    let allocation = meter.map(|meter| ReadAllocation::new(
+        meter, arc_allocation_bytes::<CapacityWaiter>(),
+    )).transpose()?;
+    Ok(Arc::new(CapacityWaiter {
+        state: Mutex::new(CapacityWaiterState {
+            previous: Weak::new(), next: None, waker: Waker::noop().clone(), queued: false,
+        }),
+        _allocation: allocation,
+    }))
 }
 
 impl NativeCompletion<Vec<Bytes>> {
@@ -3282,6 +3366,13 @@ impl std::task::Wake for BlockingWaitWake {
     fn wake_by_ref(self: &Arc<Self>) { self.notify(); }
 }
 
+fn allocate_blocking_wait_wake(meter: &Arc<dyn NativeReadMeter>) -> io::Result<Arc<BlockingWaitWake>> {
+    let allocation = ReadAllocation::new(meter, arc_allocation_bytes::<BlockingWaitWake>())?;
+    Ok(Arc::new(BlockingWaitWake {
+        notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
+    }))
+}
+
 fn measured_completion_meter<T>(
     state: &Mutex<CompletionState<T>>,
 ) -> io::Result<Arc<dyn NativeReadMeter>> {
@@ -3295,14 +3386,15 @@ fn measured_completion_meter<T>(
 fn wait_measured_completion<T>(
     task: impl Future<Output = io::Result<T>>,
     meter: Arc<dyn NativeReadMeter>,
+    prepared_wake: Option<Arc<BlockingWaitWake>>,
     mut deadline: Option<std::time::Instant>,
     cancellation: impl Future<Output = ()>,
     on_deadline: impl FnOnce(),
 ) -> io::Result<T> {
-    let allocation = ReadAllocation::new(&meter, arc_allocation_bytes::<BlockingWaitWake>())?;
-    let wake = Arc::new(BlockingWaitWake {
-        notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
-    });
+    let wake = match prepared_wake {
+        Some(wake) => wake,
+        None => allocate_blocking_wait_wake(&meter)?,
+    };
     let waker = Waker::from(Arc::clone(&wake));
     let mut context = Context::from_waker(&waker);
     let mut task = std::pin::pin!(task);
@@ -3338,13 +3430,14 @@ impl<T> BlockingIoTask<T> {
     /// classification and accepted work still drains to terminal completion.
     /// Native services must already be initialized unless execution is inline.
     pub fn wait_measured(
-        self,
+        mut self,
         deadline: Option<std::time::Instant>,
         cancellation: impl Future<Output = ()>,
         on_deadline: impl FnOnce(),
     ) -> io::Result<T> {
         let meter = measured_completion_meter(&self.state)?;
-        wait_measured_completion(self, meter, deadline, cancellation, on_deadline)
+        let wake = self.prepared_wake.take();
+        wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
     }
 }
 
@@ -3441,6 +3534,10 @@ fn poll_submission_with(
     let mut admission = workers.admission.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(node) = waiter.as_ref() {
+        let queued = node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued;
+        if !queued && admission.queued_jobs != 0 && admission.head.is_some() {
+            admission.register_existing(node, context.waker());
+        }
         node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .waker.clone_from(context.waker());
         if admission.queued_jobs != 0 && admission.head.as_ref()
@@ -3470,6 +3567,11 @@ fn poll_submission_with(
                     Ok(node) => *waiter = Some(node),
                     Err(error) => return Poll::Ready(Err(error)),
                 }
+            }
+            else if let Some(node) = waiter.as_ref()
+                && !node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued
+            {
+                admission.register_existing(node, context.waker());
             }
             *pending = Some(job);
             Poll::Pending
@@ -3629,7 +3731,7 @@ impl<T> Drop for BlockingIoTask<T> {
         let Some(waiter) = self.waiter.take() else {
             return;
         };
-        let Ok(workers) = blocking_workers() else {
+        let Ok(workers) = ready_workers(&BLOCKING_WORKERS) else {
             return;
         };
         remove_capacity_waiter(workers, Some(waiter));
@@ -4998,6 +5100,134 @@ mod tests {
         fn admit_write_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
         fn record_write_operations(&self, _: u64) -> io::Result<()> { Err(Self::refuse()) }
         fn admit_durability(&self) -> io::Result<()> { Err(Self::refuse()) }
+    }
+
+    fn prepared_metadata_task(
+        file: File, meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<BlockingIoTask<io::Result<u64>>> {
+        let operation = OwnedNativeOperationReservation::new(
+            Arc::clone(&meter), NativeOperationKind::Read, 1,
+        )?;
+        prepare_blocking_io_measured(move || {
+            let (result, recorded) = operation.attempt(|| file.metadata().map(|metadata| metadata.len()));
+            result.and_then(|length| recorded.map(|()| length))
+        }, meter)
+    }
+
+    #[test]
+    fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation()
+    -> io::Result<()> {
+        initialize_native_io_services()?;
+        let temporary = tempfile::tempfile()?;
+        temporary.set_len(17)?;
+        let sizing = Arc::new(ReadBudgetMeter::new(1, 0));
+        let task = prepared_metadata_task(temporary.try_clone()?, sizing.clone())?;
+        assert_eq!(sizing.operations.load(Ordering::Acquire), 0);
+        assert_eq!(sizing.allocations.load(Ordering::Acquire), 4);
+        let exact_bytes = sizing.memory.load(Ordering::Acquire);
+        assert!(exact_bytes > 0);
+        assert!(!task.waiter.as_ref().expect("preowned capacity node").state.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).queued);
+        drop(task);
+        assert_eq!(sizing.memory.load(Ordering::Acquire), 0);
+        assert_eq!(*sizing.held_operations(), 0, "unused operation refunded without physical metadata I/O");
+        let mut limits = ReadBudgetMeter::new(1, 0);
+        limits.allocation_limit = 4;
+        limits.memory_limit = exact_bytes;
+        let observed = Arc::new(limits);
+        let task = prepared_metadata_task(temporary, observed.clone())?;
+        assert_eq!(observed.memory.load(Ordering::Acquire), exact_bytes);
+        assert!(observed.allocate(1).is_err(), "all four actual control attempts exhausted the allocation quota");
+        let _inline = InlineBlocking::enter();
+        assert_eq!(task.wait_measured(None, std::future::pending(), || {})??, 17);
+        assert_eq!(observed.operations.load(Ordering::Acquire), 1);
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
+        assert_eq!(observed.peak.load(Ordering::Acquire), exact_bytes);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_blocking_control_denial_retires_only_actual_reached_allocations()
+    -> io::Result<()> {
+        initialize_native_io_services()?;
+        for accepted in 0..4 {
+            let mut limits = ReadBudgetMeter::new(1, 0);
+            limits.allocation_limit = accepted;
+            let observed = Arc::new(limits);
+            assert!(prepared_metadata_task(tempfile::tempfile()?, observed.clone()).is_err());
+            assert_eq!(observed.operations.load(Ordering::Acquire), 0);
+            assert_eq!(observed.allocations.load(Ordering::Acquire), accepted);
+            assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+            assert_eq!(*observed.held_operations(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
+    -> io::Result<()> {
+        initialize_native_io_services()?;
+        let mut limits = ReadBudgetMeter::new(1, 0);
+        limits.allocation_limit = 4;
+        let observed = Arc::new(limits);
+        let file = tempfile::tempfile()?;
+        file.set_len(23)?;
+        let mut task = prepared_metadata_task(file, observed.clone())?;
+        let prepared_bytes = observed.memory.load(Ordering::Acquire);
+        let node = Arc::clone(task.waiter.as_ref().expect("prepared original node"));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
+        workers.sender.try_send(NativeJob::Task {
+            operation: Box::new(|| None), meter: None, _allocation: None,
+        }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
+        workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
+        let context = Context::from_waker(Waker::noop());
+        assert!(matches!(poll_submission_with(
+            &workers, &mut task.pending, &mut task.waiter, &context,
+        ), Poll::Pending));
+        assert!(Arc::ptr_eq(task.waiter.as_ref().expect("same preowned node"), &node));
+        assert!(node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued);
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
+        assert_eq!(observed.memory.load(Ordering::Acquire), prepared_bytes);
+        let filler = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = filler.run();
+        assert!(matches!(poll_submission_with(
+            &workers, &mut task.pending, &mut task.waiter, &context,
+        ), Poll::Ready(Ok(()))));
+        assert!(!node.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued);
+        drop(node);
+        drop(task);
+        assert!(observed.memory.load(Ordering::Acquire) > 0,
+            "accepted job owns original completion and exact closure beyond observer drop");
+        assert_eq!(observed.operations.load(Ordering::Acquire), 0);
+        let accepted = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        let _ = accepted.run();
+        assert_eq!(observed.operations.load(Ordering::Acquire), 1);
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        assert_eq!(workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waiter_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_blocking_panic_preserves_original_payload_and_retires_actual_controls()
+    -> io::Result<()> {
+        initialize_native_io_services()?;
+        let mut limits = ReadBudgetMeter::new(0, 0);
+        limits.allocation_limit = 4;
+        let observed = Arc::new(limits);
+        let task = prepare_blocking_io_measured(|| -> () { std::panic::panic_any(0x5a17_u64) }, observed.clone())?;
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inline = InlineBlocking::enter();
+            task.wait_measured(None, std::future::pending(), || {})
+        })).expect_err("same actual producer panic must resume");
+        assert_eq!(panic.downcast_ref::<u64>(), Some(&0x5a17_u64));
+        assert_eq!(observed.allocations.load(Ordering::Acquire), 4);
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        Ok(())
     }
 
     #[test]

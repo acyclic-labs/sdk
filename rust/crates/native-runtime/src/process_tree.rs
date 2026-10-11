@@ -25,6 +25,106 @@ pub struct ProcessTree {
     cleanup_on_drop: bool,
     #[cfg(unix)]
     spawn_resources: platform::SpawnResources,
+    #[cfg(unix)]
+    prepared_spawn: Option<PreparedClosedProcess>,
+}
+
+/// Paid storage for a closed Unix spawn on the existing process-tree engine.
+/// It owns its birth environment snapshot; argument pointers are filled only
+/// during synchronous spawn while the caller's terminated arguments are live.
+/// This storage is not command, namespace, or cleanup authority.
+#[cfg(unix)]
+pub struct PreparedClosedProcess {
+    arguments: PreparedProcessBuffer<std::mem::MaybeUninit<*mut libc::c_char>>,
+    environment: PreparedProcessBuffer<PreparedProcessBuffer<u8>>,
+    environment_pointers: PreparedProcessBuffer<*mut libc::c_char>,
+}
+
+#[cfg(unix)]
+struct PreparedProcessBuffer<T> {
+    data: Vec<T>,
+    _allocation: crate::ReadAllocation,
+}
+
+// Argument slots are inert outside synchronous spawn and are overwritten
+// before reuse. Environment pointers address this frame's stable owned bytes.
+#[cfg(unix)]
+unsafe impl Send for PreparedClosedProcess {}
+
+#[cfg(unix)]
+impl std::fmt::Debug for PreparedClosedProcess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("PreparedClosedProcess")
+            .field("argument_count", &self.arguments.data.len().saturating_sub(2))
+            .field("environment_entries", &self.environment.data.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(unix)]
+fn prepared_process_vec<T>(
+    count: usize, meter: &std::sync::Arc<dyn crate::NativeReadMeter>,
+) -> io::Result<PreparedProcessBuffer<T>> {
+    let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or(io::ErrorKind::InvalidInput)?;
+    let allocation = if bytes == 0 { crate::ReadAllocation::empty(meter) }
+        else { crate::ReadAllocation::new(meter, bytes)? };
+    let mut buffer = PreparedProcessBuffer { data: Vec::new(), _allocation: allocation };
+    if bytes != 0 {
+        buffer.data.try_reserve_exact(count).map_err(|error| meter.allocation_failed(error))?;
+        let actual = buffer.data.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(io::ErrorKind::InvalidInput)?;
+        buffer._allocation.reconcile_capacity(actual)?;
+    }
+    Ok(buffer)
+}
+
+#[cfg(unix)]
+fn prepare_closed_process(
+    argument_count: usize, meter: std::sync::Arc<dyn crate::NativeReadMeter>,
+) -> io::Result<PreparedClosedProcess> {
+    let meter = meter.allocation_owner().unwrap_or(meter);
+    meter.check()?;
+    let argument_slots = argument_count.checked_add(2).ok_or(io::ErrorKind::InvalidInput)?;
+    let mut arguments = prepared_process_vec(argument_slots, &meter)?;
+    // MaybeUninit accepts uninitialized slots; actual pointer writes and their
+    // copy receipt occur at the later synchronous spawn, never hypothetically.
+    unsafe { arguments.data.set_len(argument_slots); }
+    let inherited = platform::inherited_environment();
+    let mut environment_count = 0_usize;
+    if !inherited.is_null() {
+        loop {
+            meter.examine(1, 0)?;
+            if unsafe { (*inherited.add(environment_count)).is_null() } { break; }
+            environment_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+        }
+    }
+    let mut environment = prepared_process_vec(environment_count, &meter)?;
+    let pointer_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
+    for index in 0..environment_count {
+        meter.examine(1, 0)?;
+        let value = unsafe { *inherited.add(index) };
+        let mut length = 0_usize;
+        loop {
+            meter.examine(1, 0)?;
+            if unsafe { *value.add(length) } == 0 { break; }
+            length = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+        }
+        let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+        meter.admit_examination(0, terminated as u64)?;
+        let mut bytes = prepared_process_vec(terminated, &meter)?;
+        bytes.data.extend_from_slice(unsafe { std::slice::from_raw_parts(value.cast::<u8>(), terminated) });
+        meter.record_examination(0, terminated as u64)?;
+        environment.data.push(bytes);
+    }
+    let pointer_bytes = pointer_count.checked_mul(std::mem::size_of::<*mut libc::c_char>())
+        .ok_or(io::ErrorKind::InvalidInput)? as u64;
+    meter.admit_examination(environment_count as u64, pointer_bytes)?;
+    environment_pointers.data.extend(environment.data.iter().map(|entry| entry.data.as_ptr().cast_mut().cast()));
+    environment_pointers.data.push(std::ptr::null_mut());
+    meter.record_examination(environment_count as u64, pointer_bytes)?;
+    Ok(PreparedClosedProcess {
+        arguments, environment, environment_pointers,
+    })
 }
 
 /// A stopped capture, retaining its bounded output and observed cleanup state.
@@ -267,6 +367,48 @@ impl ProcessTree {
     ) -> io::Result<()> {
         if custody.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
         platform::spawn_closed(program, args, meter, custody)
+    }
+
+    /// Snapshots the host's existing environment and pays known argument
+    /// storage before a driver starts. Host code must not mutate the native
+    /// process environment concurrently, as for the existing closed spawn.
+    #[cfg(unix)]
+    pub fn prepare_closed_process_measured(
+        argument_count: usize, meter: std::sync::Arc<dyn crate::NativeReadMeter>,
+    ) -> io::Result<PreparedClosedProcess> {
+        prepare_closed_process(argument_count, meter)
+    }
+
+    /// Uses preowned storage on the same closed-stream Unix spawn engine.
+    /// Acquired PID/configuration custody takes the original frame before any
+    /// error returns; denial without a native owner leaves `frame` unchanged.
+    #[cfg(unix)]
+    pub fn spawn_closed_prepared(
+        program: &std::ffi::CStr, args: &[&std::ffi::CStr],
+        frame: &mut Option<PreparedClosedProcess>, meter: &dyn crate::NativeReadMeter,
+        custody: &mut Option<Self>,
+    ) -> io::Result<()> {
+        if custody.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
+        let prepared = frame.as_mut().ok_or(io::ErrorKind::InvalidInput)?;
+        let count = args.len().checked_add(2).ok_or(io::ErrorKind::InvalidInput)?;
+        if prepared.arguments.data.len() != count { return Err(io::ErrorKind::InvalidInput.into()); }
+        let bytes = count.checked_mul(std::mem::size_of::<*mut libc::c_char>())
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        meter.admit_examination((count - 1) as u64, bytes as u64)?;
+        prepared.arguments.data[0].write(program.as_ptr().cast_mut());
+        for (slot, argument) in prepared.arguments.data[1..count - 1].iter_mut().zip(args) {
+            slot.write(argument.as_ptr().cast_mut());
+        }
+        prepared.arguments.data[count - 1].write(std::ptr::null_mut());
+        meter.record_examination((count - 1) as u64, bytes as u64)?;
+        // Every slot is initialized above, and the caller retains all argument
+        // data while this existing synchronous native spawn borrows it.
+        let arguments = unsafe { std::slice::from_raw_parts(prepared.arguments.data.as_ptr().cast(), count) };
+        let result = platform::spawn_closed_with_arguments(
+            program, arguments, Some(prepared.environment_pointers.data.as_mut_ptr()), meter, custody,
+        );
+        if let Some(tree) = custody { tree.prepared_spawn = frame.take(); }
+        result
     }
 
     /// Transfers the input pipe to a host-owned streaming protocol.
@@ -772,6 +914,9 @@ impl ProcessTree {
             recorded?;
             if reaped.is_none() { return Err(io::ErrorKind::Other.into()); }
         }
+        // No native child or configuration pointer can refer to this frame
+        // after the physical reap and configuration cleanup above.
+        drop(self.prepared_spawn.take());
         Ok(())
     }
 
@@ -1192,6 +1337,7 @@ mod platform {
                 output_taken: false, native_child: None,
                 cleanup_on_drop: meter.is_none(),
                 spawn_resources: SpawnResources::default(),
+                prepared_spawn: None,
             });
             Ok(())
         })
@@ -1205,6 +1351,17 @@ mod platform {
     #[cfg(not(target_vendor = "apple"))]
     unsafe extern "C" {
         static mut environ: *mut *mut libc::c_char;
+    }
+
+    pub(super) fn inherited_environment() -> *mut *mut libc::c_char {
+        // The existing closed-spawn host contract excludes concurrent unsafe
+        // native environment mutation while these pointers are borrowed.
+        unsafe {
+            #[cfg(target_vendor = "apple")]
+            return *_NSGetEnviron();
+            #[cfg(not(target_vendor = "apple"))]
+            return environ;
+        }
     }
 
     pub(super) fn spawn_closed(
@@ -1225,8 +1382,19 @@ mod platform {
         arguments.push(program.as_ptr().cast_mut());
         arguments.extend(args.iter().map(|argument| argument.as_ptr().cast_mut()));
         arguments.push(std::ptr::null_mut());
+        let result = meter.record_examination((count - 1) as u64, copied as u64)
+            .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody));
+        drop(arguments);
+        meter.release(bytes as u64);
+        result
+    }
+
+    pub(super) fn spawn_closed_with_arguments(
+        program: &std::ffi::CStr, arguments: &[*mut libc::c_char],
+        environment: Option<*mut *mut libc::c_char>, meter: &dyn crate::NativeReadMeter,
+        custody: &mut Option<super::ProcessTree>,
+    ) -> io::Result<()> {
         let result = (|| {
-            meter.record_examination((count - 1) as u64, copied as u64)?;
             let attr_cleanup = meter.reserve_cleanup_write()?;
             let actions_cleanup = match meter.reserve_cleanup_write() {
                 Ok(cleanup) => cleanup,
@@ -1269,10 +1437,7 @@ mod platform {
                 loop {
                     let (result, recorded) = super::pipe_operation_attempt(
                         Some(meter), crate::NativeOperationKind::Write, || unsafe {
-                        #[cfg(target_vendor = "apple")]
-                        let environment = *_NSGetEnviron();
-                        #[cfg(not(target_vendor = "apple"))]
-                        let environment = environ;
+                        let environment = environment.unwrap_or_else(inherited_environment);
                         let status = libc::posix_spawn(&raw mut pid, program.as_ptr(), actions.as_ptr(), attributes.as_ptr(),
                             arguments.as_ptr(), environment);
                         if status == 0 {
@@ -1281,6 +1446,7 @@ mod platform {
                                 guard: Guard { process_group: pid, active: true },
                                 output_taken: false, cleanup_on_drop: false,
                                 spawn_resources: SpawnResources::default(),
+                                prepared_spawn: None,
                             });
                         }
                         if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
@@ -1314,13 +1480,12 @@ mod platform {
                     guard: Guard { process_group: 0, active: false },
                     output_taken: false, cleanup_on_drop: false,
                     spawn_resources: SpawnResources::default(),
+                    prepared_spawn: None,
                 });
                 owner.spawn_resources = retained;
             }
             spawned.and(actions_result).and(attr_result)
         })();
-        drop(arguments);
-        meter.release(bytes as u64);
         result
     }
 
@@ -2077,6 +2242,86 @@ mod tests {
         assert!(custody.is_none());
         assert_eq!(cancelled.counts.allocations.load(Relaxed), 0);
         assert!(cancelled.check().is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation()
+    -> std::io::Result<()> {
+        use std::sync::Arc;
+        let sizing = Arc::new(ControlMeter::new(0, 0, 1024, 1024 * 1024));
+        let frame = ProcessTree::prepare_closed_process_measured(2, sizing.clone())?;
+        let allocations = sizing.counts.allocations.load(Relaxed);
+        let bytes = sizing.counts.live.load(Relaxed);
+        assert!(allocations > 0 && bytes > 0);
+        drop(frame);
+        assert_eq!(sizing.counts.live.load(Relaxed), 0);
+        let original = Arc::new(ControlMeter::new(1, 10, allocations, bytes));
+        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, original.clone())?);
+        assert_eq!(original.counts.allocations.load(Relaxed), allocations);
+        assert_eq!(original.counts.live.load(Relaxed), bytes);
+        let prepared = frame.as_mut().expect("genuine funded birth frame");
+        let path = prepared.environment.data.iter_mut()
+            .find(|entry| entry.data.starts_with(b"PATH="))
+            .ok_or(std::io::ErrorKind::NotFound)?;
+        let end = path.data.len() - 1;
+        if end <= 5 { return Err(std::io::ErrorKind::InvalidInput.into()); }
+        // Mutate this private fixture's already-owned snapshot, not the host
+        // environment. The real child distinguishes it from ambient spawn.
+        path.data[5..end].fill(b'x');
+        let mut custody = None;
+        ProcessTree::spawn_closed_prepared(
+            c"/bin/sh", &[c"-c", c"case \"$PATH\" in x*) exit 7;; *) exit 9;; esac"],
+            &mut frame, original.as_ref(), &mut custody,
+        )?;
+        assert!(frame.is_none());
+        assert_eq!(original.counts.writes.load(Relaxed), 10);
+        assert_eq!(original.counts.allocations.load(Relaxed), allocations,
+            "the real synchronous prepared spawn allocated no argument/environment backing");
+        let mut tree = custody.take().expect("same actual leader owns its frame");
+        assert!(tree.prepared_spawn.is_some());
+        assert_eq!(original.counts.live.load(Relaxed), bytes);
+        assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
+        assert!(!tree.is_reaped());
+        assert_eq!(original.counts.live.load(Relaxed), bytes, "observed exit is not physical reap");
+        tree.terminate()?;
+        assert!(tree.is_reaped() && tree.prepared_spawn.is_none());
+        assert_eq!(original.counts.live.load(Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn prepared_closed_spawn_denials_keep_original_frame_and_real_setup_prefix()
+    -> std::io::Result<()> {
+        use std::sync::Arc;
+        let original = Arc::new(ControlMeter::new(0, 9, 1024, 1024 * 1024));
+        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, original.clone())?);
+        let pointer = frame.as_ref().expect("original frame").arguments.data.as_ptr();
+        let bytes = original.counts.live.load(Relaxed);
+        let allocations = original.counts.allocations.load(Relaxed);
+        let mut custody = None;
+        assert_eq!(ProcessTree::spawn_closed_prepared(
+            c"/bin/sh", &[c"wrong argument count"], &mut frame, original.as_ref(), &mut custody,
+        ).expect_err("wrong shape").kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(original.counts.writes.load(Relaxed), 0);
+        assert!(ProcessTree::spawn_closed_prepared(
+            c"/bin/sh", &[c"-c", c"exit 7"], &mut frame, original.as_ref(), &mut custody,
+        ).is_err());
+        assert!(custody.is_none(), "real quota denies PID publication after native setup");
+        assert_eq!(original.counts.writes.load(Relaxed), 9, "seven actual setup leaves and both destroys");
+        assert_eq!(frame.as_ref().expect("unconsumed frame").arguments.data.as_ptr(), pointer);
+        assert_eq!(original.counts.allocations.load(Relaxed), allocations);
+        assert_eq!(original.counts.live.load(Relaxed), bytes);
+        original.cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(ProcessTree::spawn_closed_prepared(
+            c"/bin/sh", &[c"-c", c"exit 7"], &mut frame, original.as_ref(), &mut custody,
+        ).expect_err("ordinary original cancellation was not masked").kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(original.counts.writes.load(Relaxed), 9);
+        assert_eq!(frame.as_ref().expect("retained cancelled frame").arguments.data.as_ptr(), pointer);
+        drop(frame);
+        assert_eq!(original.counts.live.load(Relaxed), 0);
         Ok(())
     }
 

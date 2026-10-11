@@ -82,6 +82,16 @@ allocator records the actual attempt and produces original-meter `ReadAllocation
 custody; dropping an unused token refunds only its withheld credit. Accepted
 completion does not repeat quota or cancellation admission. The original global
 and resource allowance remain unavailable to other allocations while withheld.
+
+`prepare_blocking_io_measured` constructs a one-shot operation on the same
+host-operation engine without submitting it. Its completion, exact job closure,
+unlinked capacity waiter and synchronous wake owner are funded before the
+caller starts a driver. An operative meter's original `allocation_owner`
+funds those controls; the operative owned-credit meter remains responsible for
+submission and actual cleanup prefixes. First polling queues the existing job,
+and `wait_measured` reuses its prepared wake owner without a late allocation.
+Preparation is accounting custody, not namespace authority, and accepted
+observer drop still neither drains nor cancels the physical operation.
 `NativeFile::write_bounded_async_with_custody` accepts owned `AsRef<[u8]>` payloads
 without converting or copying their backing. The same positional validation and
 ordered completion driver retain the complete payload before its separate custody
@@ -119,6 +129,15 @@ path before reaping. `wait_with_output(timeout, max_bytes)` closes stdin, polls 
 pipes without reader threads, and cleans up on exit, overflow, or timeout.
 The output bound covers retained payload across both streams, with an 8 KiB
 scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
+On Unix, `ProcessTree::prepare_closed_process_measured` owns the host environment
+snapshot and fixed argument-pointer storage before driver startup.
+`spawn_closed_prepared` fills those pointers while the caller's terminated
+arguments remain live, then uses the same closed-stream `posix_spawn` engine.
+Acquired PID or native configuration custody retains the actual prepared frame,
+including failures after spawn; physical reap/configuration retirement releases
+its byte storage before its original allocation guards. The frame grants no
+command authority. As with ordinary closed spawn, trusted host code must not
+mutate the native environment concurrently with its snapshot.
 `wait_with_input_observed` uses the same collector and borrows the caller's
 literal input. It writes nonblocking prefixes, closes stdin after the last byte
 (including an explicitly empty input), and waits for normal child completion.
