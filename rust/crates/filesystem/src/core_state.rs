@@ -259,7 +259,7 @@ impl LocalCoreStateStore {
     }
 
     /// Loads one journaled record without blocking an async executor.
-    async fn load_record<T: DeserializeOwned + Send + 'static>(
+    pub(crate) async fn load_record<T: DeserializeOwned + Send + 'static>(
         &self,
         family: &'static str,
         key: [u8; 16],
@@ -269,7 +269,7 @@ impl LocalCoreStateStore {
     }
 
     /// Replaces one journaled record only at `expected_revision` (`0` means absent).
-    async fn compare_and_swap_record<T>(
+    pub(crate) async fn compare_and_swap_record<T>(
         &self,
         family: &'static str,
         key: [u8; 16],

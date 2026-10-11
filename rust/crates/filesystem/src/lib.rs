@@ -117,9 +117,11 @@ mod kani_proofs;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
+#[cfg(all(feature = "local", feature = "native-watch", not(target_arch = "wasm32")))]
+pub mod native_archive;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_exchange;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
 #[cfg(not(target_arch = "wasm32"))]
