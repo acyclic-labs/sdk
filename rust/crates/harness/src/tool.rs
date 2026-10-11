@@ -151,14 +151,14 @@ impl crate::filesystem::UploadRecord for ToolResult {
     fn logical_owned_bytes(&self) -> Result<u64> { value_owned_bytes(&self.value) }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolInvocation {
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResult {
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
@@ -239,19 +239,20 @@ impl ToolDefinition {
         value: &Value,
         limits: crate::conversation::Limits,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<(crate::model::ToolResultContent, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         crate::contract::validate_json_schema_value_with_io(
             &self.projection_schema, value, "tool projection", Some(&io))?;
         let encoded_hold;
         let encoded = io.encode_json(value, limits.render_bytes, false)?;
         encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-        let content = io.decode_preparation::<crate::model::ToolResultContent>(&encoded)?;
+        let content = io.decode_preparation::<crate::model::ToolResultContent>(&encoded)?.into_retained();
         content.validate_limits_with_io(limits, Some(&io))?;
-        drop(content);
+        let retained = content.logical_owned_bytes()?;
         drop(encoded);
         drop(encoded_hold);
-        Ok(())
+        let custody = io.into_native_custody(retained)?;
+        Ok((content, custody))
     }
 
     /// Immutable approval identity for the exact model-visible definition.
@@ -837,9 +838,15 @@ impl ToolRegistry {
         let bytes = self.selected.len().checked_mul(std::mem::size_of::<ToolDefinition>())
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native tool definitions capacity overflow" })? as u64;
-        let mut custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        let metadata = std::mem::size_of::<Vec<ToolDefinition>>() as u64;
+        let mut custody = work.retain_owned(metadata)?;
+        let mut backing = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        custody.absorb(&mut backing)?;
         let mut definitions = Vec::with_capacity(self.selected.len());
-        custody.reconcile_capacity((definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64)?;
+        let actual = (definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64;
+        custody.reconcile_capacity(actual.checked_add(metadata).ok_or(
+            Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native tool definitions ownership overflow" })?)?;
         for (name, selection) in &self.selected {
             let revision = match selection {
                 ModelSelection::Revision(revision) => revision,
@@ -859,8 +866,6 @@ impl ToolRegistry {
             custody.absorb(&mut hold)?;
             definitions.push(definition);
         }
-        let mut metadata = work.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
-        custody.absorb(&mut metadata)?;
         Ok((definitions, custody))
     }
 
