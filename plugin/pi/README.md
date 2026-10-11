@@ -166,6 +166,7 @@ must run `npm run test:pi-context` in `plugin/tests/hosts`, then the installed
 recursive native fixture against the final source-built binary. Earlier receipt
 hashes below describe their recorded source revision, not this edited extension.
 
+
 ## Durable authority and resource state
 
 There is one service catalog and one `AdapterState`/route graph. `PiTaskRuntime`
@@ -231,6 +232,7 @@ admits its separate output buffer on that same ledger before growth; the
 transport retains its custody until the actual response write completes.
 Legacy replies carry no native allocation claim. These are SDK-owned-buffer
 bounds, not a measurement of Pi, Node, transport-library or total OS memory.
+
 Shared physical roots retain the existing single-flight registry, watcher and
 lazy source. Acquisition requires an explicit finite work budget/cancellation
 token; failed nested acquisition preserves spent counters. These counters bound

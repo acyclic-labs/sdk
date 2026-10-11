@@ -731,6 +731,7 @@ function builtinReadText(bytes: Buffer, input: ReadToolInput) {
   }
   return { content: [{ type: "text" as const, text }], details, structuredContent: text };
 }
+
 export default function acyclic(pi: ExtensionAPI) {
   if (VERSION !== "1.1.0") {
     throw new Error(`Acyclic requires Pi 1.1.0 APIs; found ${VERSION}`);
