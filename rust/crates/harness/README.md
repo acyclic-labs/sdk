@@ -146,6 +146,13 @@ Selected history ranges and their sparse conversation views use that same
 original observer, without an encoded-copy workspace or post-hoc range receipt.
 Opaque provider internals and physical allocator/RSS overhead are not measured.
 
+The separate GraphCoder recursive fixture model derives real default-tool calls
+from admitted requests and completed tool results. Its provider-owned receipts
+retain actual generated responses for restart reconciliation; its diagnostic
+invocation ledger is never a result cache. A terminal-fed completion gate carries
+SDK-observed child success text, without provider task-host IO or added grants.
+The request-digest-only deterministic profile remains unchanged.
+
 Stock output-token budgets are caller-controlled: Rust exposes
 `StockExecutor::with_max_output_tokens`, and TypeScript exposes
 `HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when
