@@ -652,6 +652,56 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.seal_project_source_authorization(record, parent).await.map(Some)
     }
 
+    /// Seals the exact retained preparation selection on its original ledger.
+    /// The enclosing preparation factory already funds this borrowed future.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) async fn seal_prepared_project_source_with_native_work(
+        &self, request: &crate::resource_preparation::ResourcePreparationRequest,
+        parent: TaskId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<ProjectSourceReadHandle>, acyclic_fs::NativeAllocation)> {
+        let Some(record) = &request.read_authorization else {
+            return work.retain_owned(0)
+                .map(|custody| (None, custody))
+                .map_err(|cause| Error::NativeWork { cause, custody: None });
+        };
+        if request.child.parent != Some(parent)
+            || request.maximum_work > record.maximum_work
+            || request.maximum_bytes > record.maximum_bytes
+            || request.command.as_ref().is_some_and(|command| command.operation_id != record.operation_id)
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source differs from original preparation caller or bounds",
+            });
+        }
+        {
+            // These transient values drop before their original observer's
+            // custody; they are not retained as part of the returned token.
+            let comparison = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let operation = comparison.value_json(&record.operation_id, request.maximum_bytes)?;
+            let authorization = comparison.value_json(record, request.maximum_bytes)?;
+            if request.payload.get("operation_id") != Some(&operation)
+                || request.payload.get("authorized_source") != Some(&authorization)
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source differs from the retained preparation payload",
+                });
+            }
+        }
+        self.verify_project_source_authorization_with_native_work(record, parent, work).await?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        io.retain_owned(std::mem::size_of::<ProjectSourceReadHandle>() as u64)?;
+        let handle = {
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let copied = record.clone_with_work_and_custody(&mut observer)?.0;
+            ProjectSourceReadHandle::seal_with_work(copied, &self.verifier, &mut observer)?
+        };
+        let retained = io.owned_bytes()?;
+        Ok((Some(handle), io.into_native_custody(retained)?))
+    }
+
     async fn seal_project_source_authorization(
         &self, record: &ProjectSourceAuthorization, parent: TaskId,
     ) -> Result<ProjectSourceReadHandle> {

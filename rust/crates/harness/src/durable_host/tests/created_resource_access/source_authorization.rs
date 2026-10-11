@@ -179,6 +179,43 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let native = acyclic_fs::NativeMaterializationWork::new(
             creation_control_budget(), &native_cancellation,
         ).expect("finite original source invocation");
+        let mut prepared = created.request.clone();
+        prepared.read_authorization = Some(handle.authorization().clone());
+        prepared.command = None;
+        prepared.payload = serde_json::json!({
+            "operation_id": operation,
+            "authorized_source": handle.authorization(),
+        });
+        let (sealed, custody) = fixture.host.seal_prepared_project_source_with_native_work(
+            &prepared, fixture.root, &native,
+        ).await?;
+        let sealed = sealed.expect("authentic retained foreign Project selection");
+        sealed.require_selection(operation, child, &project, &generation, None)?;
+        assert!(custody.matches_work(&native));
+        let grant_bytes = sealed.grant().logical_owned_bytes()?;
+        let minimum = (std::mem::size_of::<crate::source_authorization::ProjectSourceReadHandle>() as u64)
+            .checked_add(sealed.authorization().logical_owned_bytes()?)
+            .and_then(|bytes| bytes.checked_add(grant_bytes))
+            .expect("finite complete source handle ownership");
+        assert!(custody.bytes() >= minimum);
+        assert_eq!(context.scope().grants(), &original);
+        drop(sealed);
+        drop(custody);
+        for field in ["operation_id", "authorized_source"] {
+            let mut forged = prepared.clone();
+            forged.payload[field] = Value::Null;
+            let before = native.receipt();
+            assert!(matches!(fixture.host.seal_prepared_project_source_with_native_work(
+                &forged, fixture.root, &native,
+            ).await, Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+            assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
+            assert_eq!(native.receipt().backend_write_operations, before.backend_write_operations);
+        }
+        let before = native.receipt();
+        assert!(matches!(fixture.host.seal_prepared_project_source_with_native_work(
+            &prepared, child, &native,
+        ).await, Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
         let baseline = native.remaining().expect("source quota").peak_allocation_bytes;
         let native_handle = owner.restore_project_source_authorization_with_native_work(
             &context, handle.authorization(), &native)?.await?;
@@ -245,6 +282,14 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             &context, owner.clone(), native_handle, wrong_operation, child, &snapshot, &native,
         ).await.is_err());
         assert_eq!(native.remaining().expect("rejected source quota").peak_allocation_bytes, baseline);
+        native_cancellation.cancel();
+        let before = native.receipt();
+        assert!(matches!(fixture.host.seal_prepared_project_source_with_native_work(
+            &prepared, fixture.root, &native,
+        ).await, Err(Error::NativeWork { .. })));
+        assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
+        assert_eq!(native.receipt().backend_write_operations, before.backend_write_operations);
     }
     let inspected = runtime.inspect_project_source(&context, owner.clone(), handle.clone(), operation, child, &snapshot, budget).await?;
     let (selected_file, selected_bytes) = inspected.read_path(&project, "", "selected.txt", &generation).await?;

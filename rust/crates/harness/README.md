@@ -410,6 +410,13 @@ configured native Root policy before sealing an operation-specific selection.
 retained original selection and task owner without reading a newer head or
 issuing replacement authority. Both return a funded future before allocation
 and keep the opaque read handle's produced metadata under its original ledger.
+Native preparation sealing checks the retained payload's exact operation and
+authorization against the original caller and finite bounds before source IO.
+It uses the same native admission, graph and protected creator verifiers; the
+returned private source handle retains its complete known header and copied
+authorization/grant fields. Temporary comparison values drop before their
+own observer custody. This is logical SDK ownership, not opaque allocator/RSS
+measurement, and gives the preparation helper no transcript or source-write grant.
 `ConfiguredRecursiveToolSource::with_project_source_policy_with_native_work`
 installs that policy in the existing immutable slot, borrowing the original held
 issuer and physically copying only its metadata on the original ledger. Slot
