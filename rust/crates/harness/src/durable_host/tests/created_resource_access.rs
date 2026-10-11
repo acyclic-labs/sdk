@@ -83,6 +83,78 @@ impl ResumableMachine for CreatedControlMachine {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_stock_startup_retains_original_configuration_and_current_context() -> Result<()> {
+    let tool = crate::tool::files::read_file()?;
+    let grant = format!("tool:{}", tool.definition.name);
+    let name = tool.definition.name.clone();
+    let revision = tool.definition.revision.clone();
+    let mut tools = crate::tool::ToolRegistry::default();
+    tools.register(tool)?;
+    let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools).await?;
+    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler",
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])))?;
+    let resumable = crate::durable_tool::ResumableToolRegistry::default();
+    let original = &fixture.creation.host;
+    let limits = original.session_limits.expect("the original fixture configures session limits");
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let runtime = NativeCustomerRuntime::open_with_creation_providers_with_native_work(
+        fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
+        &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
+        &original.tasks, &original.machines, fixture.runtime.tool_registry(), &resumable,
+        limits, 16, fixture.creation.root_scope.limits().file_bytes,
+        original.clock.clone(), original.policy.clone(), &original.resource_creation, &work,
+    ).await?;
+    assert!(runtime.tool_registry().get_version_with_native_work(&name, &revision, &work)?.is_some());
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+    let context = runtime.task_context_with_native_work(fixture.creation.root, &fence, &work).await?;
+    assert!(context.context().original_task_binding_matches(fixture.creation.root, &fence));
+    assert!(work.receipt().backend_read_operations > 0);
+    assert!(work.live_allocation_bytes() > 0);
+    drop(context);
+    drop(fence);
+    drop(io);
+    drop(runtime);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io() -> Result<()> {
+    let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler",
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])))?;
+    let resumable = crate::durable_tool::ResumableToolRegistry::default();
+    let original = &fixture.creation.host;
+    let limits = original.session_limits.expect("the original fixture configures session limits");
+    for cancelled in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut budget = creation_control_budget();
+        if !cancelled { budget.allocation_operations = 0; }
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        if cancelled { cancellation.cancel(); }
+        let result = NativeCustomerRuntime::open_with_creation_providers_with_native_work(
+            fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
+            &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
+            &original.tasks, &original.machines, fixture.runtime.tool_registry(), &resumable,
+            limits, 16, fixture.creation.root_scope.limits().file_bytes,
+            original.clock.clone(), original.policy.clone(), &original.resource_creation, &work,
+        ).await;
+        assert!(matches!(&result, Err(error) if error.is_native_failure()));
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        drop(result);
+        assert_eq!(work.live_allocation_bytes(), 0);
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SandboxAllocation {

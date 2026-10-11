@@ -1,5 +1,7 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
+mod native_startup;
+use native_startup::StartupIo;
 use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
@@ -3220,7 +3222,24 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct HostTaskState(Arc<dyn DurableTaskHost>);
+struct HostTaskState(
+    Arc<dyn DurableTaskHost>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Option<acyclic_fs::NativeAllocation>,
+);
+
+impl HostTaskState {
+    fn new_observed(host: Arc<dyn DurableTaskHost>, io: StartupIo<'_>) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            Some(io.take_native_custody(std::mem::size_of::<Self>() as u64)?)
+        } else { None };
+        let _ = io;
+        Ok(Self(host, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] custody))
+    }
+}
 
 impl TaskStateProvider for HostTaskState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
@@ -3507,7 +3526,24 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct HostTaskSpawner(Arc<dyn DurableTaskHost>);
+struct HostTaskSpawner(
+    Arc<dyn DurableTaskHost>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Option<acyclic_fs::NativeAllocation>,
+);
+
+impl HostTaskSpawner {
+    fn new_observed(host: Arc<dyn DurableTaskHost>, io: StartupIo<'_>) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            Some(io.take_native_custody(std::mem::size_of::<Self>() as u64)?)
+        } else { None };
+        let _ = io;
+        Ok(Self(host, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] custody))
+    }
+}
 
 impl TaskSpawner for HostTaskSpawner {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
@@ -3723,6 +3759,11 @@ pub struct TaskRunLimits {
 impl TaskRunLimits {
     /// Rejects zero, nonportable, or nonrepresentable runtime bounds.
     pub fn validate(&self) -> Result<()> {
+        self.validate_observed(None)
+    }
+
+    fn validate_observed(&self, io: StartupIo<'_>) -> Result<()> {
+        native_startup::item(io, 0)?;
         use crate::conversation::MAX_EXACT_JS_INTEGER as MAX_JS_INTEGER;
         if self
             .concurrency
@@ -3734,7 +3775,8 @@ impl TaskRunLimits {
                 .deadline_epoch_ms
                 .is_some_and(|value| value == 0 || value > MAX_JS_INTEGER)
         {
-            return Err(Error::Invalid("task run limits are invalid".into()));
+            return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "task run limits are invalid", || Error::Invalid("task run limits are invalid".into())));
         }
         Ok(())
     }
@@ -4727,7 +4769,6 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
 }
 
 /// Immutable typed runtime assembled from task/tool registries and providers.
-#[derive(Clone)]
 pub struct AgentHarness {
     tasks: TaskRegistry,
     tools: ToolRegistry,
@@ -4750,6 +4791,28 @@ pub struct AgentHarness {
     context: ContextPipeline,
     fork_preparer: Option<ForkBinding>,
     workspaces: Option<Arc<dyn crate::merge::ProjectWorkspaceProvider>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl Clone for AgentHarness {
+    fn clone(&self) -> Self {
+        Self {
+            tasks: self.tasks.clone(), tools: self.tools.clone(),
+            resumable_tools: self.resumable_tools.clone(), live: self.live.clone(),
+            concurrency: self.concurrency, scope: self.scope.clone(),
+            extension_runtime: self.extension_runtime.clone(), host: self.host.clone(),
+            state: self.state.clone(), spawner: self.spawner.clone(),
+            execution: self.execution.clone(), interactions: self.interactions.clone(),
+            interaction_resolver: self.interaction_resolver.clone(), content: self.content.clone(),
+            artifacts: self.artifacts.clone(), policy: self.policy.clone(),
+            policy_identity: self.policy_identity.clone(), model: self.model.clone(),
+            context: self.context.clone(), fork_preparer: self.fork_preparer.clone(),
+            workspaces: self.workspaces.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_configuration_custody: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -4879,11 +4942,20 @@ pub fn validate_task_requirements(
     environment: &TaskDependencyEnvironment,
     grants: &BTreeSet<String>,
 ) -> Result<()> {
+    validate_task_requirements_observed(tasks, tools, environment, grants, None)
+}
+
+fn validate_task_requirements_observed(
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
+    tools: &BTreeSet<(String, String)>, environment: &TaskDependencyEnvironment,
+    grants: &BTreeSet<String>, io: StartupIo<'_>,
+) -> Result<()> {
     let validator = TaskDependencyValidator {
         tasks,
         tools,
         environment,
         grants,
+        io,
     };
     let mut marks = BTreeMap::new();
     for key in tasks.keys() {
@@ -4897,6 +4969,7 @@ struct TaskDependencyValidator<'a> {
     tools: &'a BTreeSet<(String, String)>,
     environment: &'a TaskDependencyEnvironment,
     grants: &'a BTreeSet<String>,
+    io: StartupIo<'a>,
 }
 
 impl TaskDependencyValidator<'_> {
@@ -4905,27 +4978,29 @@ impl TaskDependencyValidator<'_> {
         key: &(String, String),
         marks: &mut BTreeMap<(String, String), u8>,
     ) -> Result<()> {
+        native_startup::item(self.io, 0)?;
         match marks.get(key).copied() {
             Some(1) => {
-                return Err(Error::Invalid(format!(
-                    "task dependency cycle at {}@{}",
-                    key.0, key.1
-                )));
+                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "task dependency cycle", || Error::Invalid(format!(
+                        "task dependency cycle at {}@{}", key.0, key.1,
+                    ))));
             }
             Some(2) => return Ok(()),
             _ => {}
         }
         let requirements = self.tasks.get(key).ok_or_else(|| {
-            Error::Invalid(format!(
-                "unsatisfied task requirement: task:{}@{}",
-                key.0, key.1
-            ))
+            native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied task requirement", || Error::Invalid(format!(
+                    "unsatisfied task requirement: task:{}@{}", key.0, key.1,
+                )))
         })?;
-        marks.insert(key.clone(), 1);
+        native_startup::item(self.io, std::mem::size_of::<((String, String), u8)>())?;
+        marks.insert(native_startup::key(key, self.io)?, 1);
         for requirement in requirements {
             self.validate_requirement(requirement, marks)?;
         }
-        marks.insert(key.clone(), 2);
+        *marks.get_mut(key).expect("the original task was marked before walking its dependencies") = 2;
         Ok(())
     }
 
@@ -4934,21 +5009,25 @@ impl TaskDependencyValidator<'_> {
         requirement: &str,
         marks: &mut BTreeMap<(String, String), u8>,
     ) -> Result<()> {
-        if let Some(target) = parse_dependency_target(requirement, "task:")? {
+        native_startup::item(self.io, 0)?;
+        if let Some(target) = parse_dependency_target_observed(requirement, "task:", self.io)? {
             if !self.tasks.contains_key(&target) {
-                return Err(missing_task_requirement(requirement));
+                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "unsatisfied task requirement", || missing_task_requirement(requirement)));
             }
             return self.visit(&target, marks);
         }
-        if let Some(target) = parse_dependency_target(requirement, "tool:")? {
+        if let Some(target) = parse_dependency_target_observed(requirement, "tool:", self.io)? {
             return self.tools.contains(&target).then_some(()).ok_or_else(|| {
-                Error::Invalid(format!("unsatisfied tool requirement: {requirement}"))
+                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
             });
         }
         if self.provider_requirement_satisfied(requirement)? {
             return Ok(());
         }
-        Err(missing_task_requirement(requirement))
+        Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+            "unsatisfied task requirement", || missing_task_requirement(requirement)))
     }
 
     fn provider_requirement_satisfied(&self, requirement: &str) -> Result<bool> {
@@ -4970,7 +5049,8 @@ impl TaskDependencyValidator<'_> {
             return if available {
                 Ok(true)
             } else {
-                Err(missing_task_requirement(requirement))
+                Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "unsatisfied task requirement", || missing_task_requirement(requirement)))
             };
         }
         if let Some(grant) = requirement.strip_prefix("grant:") {
@@ -4978,31 +5058,40 @@ impl TaskDependencyValidator<'_> {
         }
         if let Some(extension) = requirement.strip_prefix("extension:") {
             let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
-                Error::Invalid(format!("invalid extension dependency {requirement}"))
+                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
             })?;
             let version = version.parse::<u32>().map_err(|_| {
-                Error::Invalid(format!("invalid extension dependency {requirement}"))
+                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
+                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
             })?;
             return Ok(!name.is_empty()
                 && !name.contains('@')
                 && self
                     .environment
                     .extensions
-                    .contains(&(name.to_owned(), version)));
+                    .contains(&(native_startup::text(name, self.io)?, version)));
         }
         Ok(false)
     }
 }
 
 fn parse_dependency_target(requirement: &str, prefix: &str) -> Result<Option<(String, String)>> {
+    parse_dependency_target_observed(requirement, prefix, None)
+}
+
+fn parse_dependency_target_observed(
+    requirement: &str, prefix: &str, io: StartupIo<'_>,
+) -> Result<Option<(String, String)>> {
     let Some(value) = requirement.strip_prefix(prefix) else {
         return Ok(None);
     };
     let target = value
         .rsplit_once('@')
         .filter(|(name, version)| !name.is_empty() && !version.is_empty() && !name.contains('@'))
-        .ok_or_else(|| Error::Invalid(format!("invalid {prefix} dependency {requirement}")))?;
-    Ok(Some((target.0.to_owned(), target.1.to_owned())))
+        .ok_or_else(|| native_startup::error(io, crate::wire::ErrorCode::Invalid,
+            "invalid task dependency", || Error::Invalid(format!("invalid {prefix} dependency {requirement}"))))?;
+    Ok(Some((native_startup::text(target.0, io)?, native_startup::text(target.1, io)?)))
 }
 
 fn missing_task_requirement(requirement: &str) -> Error {
@@ -5369,6 +5458,7 @@ impl Bindings {
             durable_ready,
             state_available,
             spawner_available,
+            None,
         )?;
         let runtime = match state {
             Some(state) => runtime.bind_state(state)?,
@@ -6076,6 +6166,41 @@ impl AgentHarness {
             durable_ready,
             host_available,
             host_available,
+            None,
+        )
+    }
+
+    /// Builds the same original runtime composition from paid configuration
+    /// copies. Provider handles are shared; this never issues a task scope.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[allow(clippy::too_many_arguments, reason = "the original runtime provider configuration plus native work")]
+    pub fn with_policy_with_native_work(
+        tasks: &TaskRegistry, tools: &ToolRegistry, resumable_tools: &ResumableToolRegistry,
+        scope: &RuntimeScope,
+        concurrency: usize, host: Option<Arc<dyn DurableTaskHost>>,
+        interactions: Option<Arc<dyn InteractionRouter>>, content: Option<ContentBindings>,
+        artifacts: Option<ArtifactBindings>, policy: Option<Arc<dyn ToolPolicy>>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<Self>> {
+        if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        scope.run_limits().validate_observed(Some(&io))?;
+        if concurrency == 0 {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "runtime concurrency must be positive" });
+        }
+        let tasks = tasks.clone_with_native_work(work)?;
+        let tools = tools.clone_with_native_work(work)?;
+        io.absorb_native_custody(tools.1)?;
+        let resumable_tools = resumable_tools.clone_with_native_work(work)?;
+        io.absorb_native_custody(resumable_tools.1)?;
+        let scope = scope.clone_with_native_work(work)?;
+        io.absorb_native_custody(scope.1)?;
+        let host_available = host.is_some();
+        Self::with_policy_internal(
+            tasks, tools.0, resumable_tools.0, scope.0, concurrency,
+            host, interactions, content, artifacts, policy,
+            host_available, host_available, host_available, Some(&io),
         )
     }
 
@@ -6097,44 +6222,78 @@ impl AgentHarness {
         durable_ready: bool,
         state_available: bool,
         spawner_available: bool,
+        startup: StartupIo<'_>,
     ) -> Result<Arc<Self>> {
         if concurrency == 0 {
-            return Err(Error::Invalid(
-                "runtime concurrency must be positive".into(),
-            ));
+            return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
+                "runtime concurrency must be positive", || Error::Invalid("runtime concurrency must be positive".into())));
         }
-        scope.run_limits().validate()?;
+        scope.run_limits().validate_observed(startup)?;
         let concurrency = scope.concurrency_bound(concurrency);
-        if let Some(policy) = &policy {
-            validate_policy_identity(&policy.identity())?;
-        }
-        if host.as_ref().is_some_and(|host| {
-            host.policy_identity() != policy.as_ref().map(|policy| policy.identity())
-        }) {
-            return Err(Error::Conflict(
-                "runtime and durable host policies differ".into(),
-            ));
-        }
-        if resumable_tools.definitions().next().is_some() && !durable_ready {
-            return Err(Error::Invalid(
-                "resumable tools require durable task admission and state".into(),
-            ));
-        }
-        for definition in resumable_tools.definitions() {
-            if let Some(adapter) = tools.get_version(&definition.name, &definition.revision) {
-                let pinned = resumable_tools.get(&definition.name, &definition.revision)
-                    .ok_or_else(|| Error::Invalid("resumable registry differs from its catalog".into()))?;
-                if adapter.definition == *definition
-                    && adapter.executor.resumable_machine_identity().as_ref() == Some(pinned.machine.identity())
-                {
-                    continue;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native_policy_identity = if let Some(io) = startup {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+            })?;
+            let identity = match &policy {
+                Some(policy) => {
+                    policy.supports_native_policy(work)?;
+                    let identity = policy.identity_with_native_work(work)?;
+                    validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
+                    io.absorb_native_custody(identity.1)?;
+                    Some(identity.0)
                 }
-                return Err(Error::Conflict(format!(
-                    "tool {}@{} has different live and resumable implementations",
-                    definition.name, definition.revision,
-                )));
+                None => None,
+            };
+            if let Some(host) = &host
+                && host.policy_identity_with_native_work(work)? != identity.as_ref()
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "runtime and durable host policies differ" });
+            }
+            identity
+        } else { None };
+        if startup.is_none() {
+            if let Some(policy) = &policy { validate_policy_identity(&policy.identity())?; }
+            if host.as_ref().is_some_and(|host| {
+                host.policy_identity() != policy.as_ref().map(|policy| policy.identity())
+            }) {
+                return Err(Error::Conflict("runtime and durable host policies differ".into()));
             }
         }
+        if resumable_tools.definitions().next().is_some() && !durable_ready {
+            return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
+                "resumable tools require durable task admission and state",
+                || Error::Invalid("resumable tools require durable task admission and state".into())));
+        }
+        for definition in resumable_tools.definitions() {
+            native_startup::item(startup, 0)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let duplicate = if let Some(io) = startup {
+                tools.get_version_with_native_work(&definition.name, &definition.revision,
+                    io.original_native_work().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+                    })?)?.is_some()
+            } else { tools.get_version(&definition.name, &definition.revision).is_some() };
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let duplicate = tools.get_version(&definition.name, &definition.revision).is_some();
+            if duplicate {
+                return Err(native_startup::error(startup, crate::wire::ErrorCode::Conflict,
+                    "a tool has both live and resumable implementations",
+                    || Error::Conflict(format!("tool {}@{} has both live and resumable implementations",
+                        definition.name, definition.revision))));
+            }
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let dependency_io = startup.map(|io| {
+            crate::filesystem::PreparationIo::from_native_work(io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+            })?)
+        }).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let dependency_observer = dependency_io.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let dependency_observer = None;
         validate_task_dependencies(
             &tasks,
             &tools,
@@ -6147,20 +6306,43 @@ impl AgentHarness {
             content.as_ref(),
             artifacts.as_ref(),
             policy.is_some(),
+            dependency_observer,
         )?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        drop(dependency_io);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let policy_identity = if startup.is_some() { native_policy_identity }
+            else { policy.as_ref().map(|policy| policy.identity()) };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let policy_identity = policy.as_ref().map(|policy| policy.identity());
         let extension_runtime = scope.extension_runtime();
-        let spawner = host
-            .as_ref()
-            .map(|host| Arc::new(HostTaskSpawner(Arc::clone(host))) as Arc<dyn TaskSpawner>);
-        let state = host
-            .as_ref()
-            .map(|host| Arc::new(HostTaskState(Arc::clone(host))) as Arc<dyn TaskStateProvider>);
+        let spawner = host.as_ref().map(|host| {
+            HostTaskSpawner::new_observed(Arc::clone(host), startup)
+                .map(|source| Arc::new(source) as Arc<dyn TaskSpawner>)
+        }).transpose()?;
+        let state = host.as_ref().map(|host| {
+            HostTaskState::new_observed(Arc::clone(host), startup)
+                .map(|source| Arc::new(source) as Arc<dyn TaskStateProvider>)
+        }).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let live = if let Some(io) = startup {
+            TaskGroup::new_with_native_work(concurrency, io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+            })?)?
+        } else { TaskGroup::new(concurrency) };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let live = TaskGroup::new(concurrency);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native_configuration_custody = if let Some(io) = startup {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            Some(io.take_native_custody(io.owned_bytes()?)?)
+        } else { None };
         Ok(Arc::new(Self {
             tasks,
             tools,
             resumable_tools,
-            live: TaskGroup::new(concurrency),
+            live,
             concurrency,
             scope,
             extension_runtime,
@@ -6178,6 +6360,8 @@ impl AgentHarness {
             context: ContextPipeline::default(),
             fork_preparer: None,
             workspaces: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_configuration_custody,
         }))
     }
 
@@ -7193,12 +7377,18 @@ fn validate_task_dependencies(
     content: Option<&ContentBindings>,
     artifacts: Option<&ArtifactBindings>,
     has_policy: bool,
+    io: StartupIo<'_>,
 ) -> Result<()> {
-    let task_requirements = tasks
-        .0
-        .iter()
-        .map(|(key, entry)| (key.clone(), entry.requirements.clone()))
-        .collect::<BTreeMap<_, _>>();
+    let mut task_requirements = BTreeMap::new();
+    for (key, entry) in &tasks.0 {
+        native_startup::item(io, std::mem::size_of::<((String, String), BTreeSet<String>)>())?;
+        let mut requirements = BTreeSet::new();
+        for requirement in &entry.requirements {
+            native_startup::item(io, std::mem::size_of::<String>())?;
+            requirements.insert(native_startup::text(requirement, io)?);
+        }
+        task_requirements.insert(native_startup::key(key, io)?, requirements);
+    }
     let mut available_tools = BTreeSet::new();
     for requirement in task_requirements.values().flat_map(BTreeSet::iter) {
         let Some((name, version)) = requirement
@@ -7207,10 +7397,21 @@ fn validate_task_dependencies(
         else {
             continue;
         };
-        if tools.get_version(name, version).is_some()
-            || resumable_tools.get(name, version).is_some()
-        {
-            available_tools.insert((name.to_owned(), version.to_owned()));
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let available = if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
+            })?;
+            tools.get_version_with_native_work(name, version, work)?.is_some()
+                || resumable_tools.get_with_native_work(name, version, work)?.is_some()
+        } else {
+            tools.get_version(name, version).is_some() || resumable_tools.get(name, version).is_some()
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let available = tools.get_version(name, version).is_some() || resumable_tools.get(name, version).is_some();
+        if available {
+            native_startup::item(io, std::mem::size_of::<(String, String)>())?;
+            available_tools.insert((native_startup::text(name, io)?, native_startup::text(version, io)?));
         }
     }
     let created_default = scope.created_content(None);
@@ -7218,33 +7419,15 @@ fn validate_task_dependencies(
     let artifacts = created_default.or(artifacts);
     let created_read = scope.created_access.as_ref()
         .is_some_and(|access| !access.content.is_empty());
-    let content_write = content
-        .and_then(|binding| binding.writer.as_ref())
-        .is_some_and(|writer| {
-            writer
-                .volume()
-                .capability(VolumeOperation::Write)
-                .is_ok_and(|grant| scope.grants.contains(&grant))
-        });
-    let artifacts_write = artifacts
-        .and_then(|binding| binding.writer.as_ref())
-        .is_some_and(|writer| {
-            writer
-                .volume()
-                .capability(VolumeOperation::Write)
-                .is_ok_and(|grant| scope.grants.contains(&grant))
-        });
-    let extensions = scope
-        .extension_runtime()
-        .filter(|runtime| runtime.accepts_new_admissions())
-        .map(|runtime| {
-            runtime
-                .selected()
-                .iter()
-                .map(|identity| (identity.name.clone(), identity.version))
-                .collect()
-        })
-        .unwrap_or_default();
+    let content_write = native_startup::content_write(content, scope, io)?;
+    let artifacts_write = native_startup::content_write(artifacts, scope, io)?;
+    let mut extensions = BTreeSet::new();
+    if let Some(runtime) = scope.extension_runtime().filter(|runtime| runtime.accepts_new_admissions()) {
+        for identity in runtime.selected() {
+            native_startup::item(io, std::mem::size_of::<(String, u32)>())?;
+            extensions.insert((native_startup::text(&identity.name, io)?, identity.version));
+        }
+    }
     let environment = TaskDependencyEnvironment {
         model: scope.grants.contains(capability::MODEL_GENERATE),
         context: scope.grants.contains(capability::CONTEXT_BUILD),
@@ -7260,8 +7443,12 @@ fn validate_task_dependencies(
         artifacts_write,
         extensions,
     };
-    let grants = scope.grants.iter().map(str::to_owned).collect();
-    validate_task_requirements(&task_requirements, &available_tools, &environment, &grants)
+    let mut grants = BTreeSet::new();
+    for grant in scope.grants.iter() {
+        native_startup::item(io, std::mem::size_of::<String>())?;
+        grants.insert(native_startup::text(grant, io)?);
+    }
+    validate_task_requirements_observed(&task_requirements, &available_tools, &environment, &grants, io)
 }
 
 /// One admitted task's mailbox borrowed from its current owner token. This is
@@ -11112,6 +11299,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .is_ok()
         );
@@ -11139,6 +11327,7 @@ mod tests {
                     None,
                     None,
                     false,
+                    None,
                 )
                 .is_err()
             );

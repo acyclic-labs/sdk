@@ -16,6 +16,7 @@ use crate::{
     core::{AuthorityVerifier, SchemaRegistry, Scope},
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
+    durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, StockExecutor, StockTurnProgress, TurnInput, TurnOutput},
     interaction::{Interaction, InteractionOutcome},
     model::{Model, ModelProvider},
@@ -271,6 +272,8 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
     recursive_source: Option<Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct TaskInteractionOwner {
@@ -641,6 +644,64 @@ where
         self.recursive_source.as_ref()
     }
 
+    /// Opens the same stock composition using its original native producers.
+    /// Configuration remains borrowed until its paid SDK copies are installed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments, reason = "the original explicit stock configuration plus native work")]
+    pub async fn open_with_creation_providers_with_native_work(
+        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, signed: &Scope,
+        scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
+        tools: &ToolRegistry, resumable_tools: &ResumableToolRegistry,
+        session_limits: SessionLimits, concurrency: usize,
+        maximum_payload_bytes: u64, clock: Arc<dyn UnixMillisClock>,
+        policy: Option<Arc<dyn ToolPolicy>>,
+        creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let io = super::PreparationIo::from_native_work(work)?;
+        volume.validate_with_native_work(work)?;
+        if maximum_payload_bytes == 0 {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "stock runtime requires a positive payload limit" });
+        }
+        if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
+        let payloads = FilesystemSchedulerPayloadStore::new_with_native_work(
+            filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, work,
+        )?.into_native_shared(work)?;
+        let reader = FilesystemContentVerifier::new_with_native_work(
+            filesystem.clone(), verifier, signed, maximum_payload_bytes, work,
+        )?.into_native_shared(work)?;
+        let coordinator = DistributedCoordinator::open_with_native_work(
+            &stream, reader.clone(), work,
+        ).await?.with_payload_store(payloads.clone());
+        let mut host = CoordinatorTaskHost::new_with_native_work(
+            coordinator, stream.clone(), payloads, reader.clone(),
+            verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
+        )?.with_session_limits_with_native_work(session_limits, work)?
+            .with_resource_creation_providers_with_native_work(creation_providers, work)?;
+        if let Some(policy) = &policy {
+            host = host.with_policy_with_native_work(policy.clone(), work)?;
+        }
+        let host = host.into_native_shared(work)?;
+        let harness = AgentHarness::with_policy_with_native_work(
+            tasks, tools, resumable_tools, scope, concurrency, Some(host.clone()), None,
+            Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
+        )?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let volume = volume.clone_with_io(&io)?;
+        let verifier = verifier.clone_with_native_work(work)?;
+        io.absorb_native_custody(verifier.1)?;
+        let signed = signed.clone_with_native_work(work)?;
+        io.absorb_native_custody(signed.1)?;
+        let tools = tools.clone_with_native_work(work)?;
+        io.absorb_native_custody(tools.1)?;
+        Self::from_host_observed(
+            stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
+            maximum_payload_bytes, policy, Some(&io),
+        )
+    }
+
     /// Attaches stock commands to the same already-configured host and harness.
     /// This does not issue task authority; native contexts still require the
     /// current original owner and fence through `task_context_with_native_work`.
@@ -652,16 +713,52 @@ where
         tools: ToolRegistry, maximum_payload_bytes: u64,
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
+        Self::from_host_observed(
+            stream, harness, host, filesystem, volume, verifier, signed, tools,
+            maximum_payload_bytes, policy, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "the original configured stock initializer and its optional observer")]
+    fn from_host_observed(
+        stream: StreamClient<P>, harness: Arc<AgentHarness>,
+        host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
+        tools: ToolRegistry, maximum_payload_bytes: u64,
+        policy: Option<Arc<dyn ToolPolicy>>, io: Option<&super::PreparationIo>,
+    ) -> Result<Self> {
         if !harness.original_host_binding_matches(host.as_ref(), policy.as_deref()) {
-            return Err(Error::Invalid("stock runtime differs from the harness's original host or policy binding".into()));
+            return Err(match io {
+                Some(_) => observed::boundary(io, crate::wire::ErrorCode::Invalid,
+                    "stock runtime differs from the original host or policy binding"),
+                None => Error::Invalid("stock runtime differs from the harness's original host or policy binding".into()),
+            });
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
+            })?;
+            volume.validate_with_native_work(work)?;
+        } else { volume.validate()?; }
+        #[cfg(target_arch = "wasm32")]
         volume.validate()?;
         if maximum_payload_bytes == 0 {
-            return Err(Error::Invalid("stock runtime requires a positive payload limit".into()));
+            return Err(match io {
+                Some(_) => observed::boundary(io, crate::wire::ErrorCode::Invalid,
+                    "stock runtime requires a positive payload limit"),
+                None => Error::Invalid("stock runtime requires a positive payload limit".into()),
+            });
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_configuration_custody = io.map(|io| {
+            io.take_native_custody(io.owned_bytes()?)
+        }).transpose()?;
         Ok(Self {
             stream, host, harness, filesystem, volume, verifier, signed, tools,
             maximum_payload_bytes, policy, interaction_owner: None, recursive_source: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_configuration_custody,
         })
     }
 
@@ -2525,7 +2622,7 @@ pub(super) fn execution_operation_with_native_work(
     Ok(execution_operation(task, turn))
 }
 
-pub(super) fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {
+pub fn execution_operation(task: TaskId, turn: OperationId) -> OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness/v2/task-execution\0");
     hasher.update(&task.into_bytes());

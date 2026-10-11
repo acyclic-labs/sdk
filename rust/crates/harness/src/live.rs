@@ -137,6 +137,13 @@ impl TaskGroup {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn new_with_native_work(
+        max_concurrency: usize, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<Self> {
+        Self::new_observed(max_concurrency, Some(work))
+    }
+
     /// Creates an independently bounded child retained in this cancellation tree.
     #[must_use]
     pub fn child(&self, max_concurrency: usize) -> Self {

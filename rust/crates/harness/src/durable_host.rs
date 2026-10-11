@@ -4978,13 +4978,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(Arc::new(self))
     }
 
-    /// Observes the real SDK Arc construction, including its zero-sized clock.
-    /// The clock owns no logical metadata; opaque Arc backing is not invented.
+    /// Constructs the original default clock after the native cancellation gate.
+    /// Its logical payload is ZST; opaque Arc backing adds no SDK quota event.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn system_clock_with_native_work(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<dyn UnixMillisClock>> {
-        work.charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..Default::default() })
+        work.charge(acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(acyclic_stream::SystemUnixMillisClock))
     }
