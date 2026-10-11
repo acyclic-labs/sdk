@@ -237,6 +237,27 @@ fn assert_native_receipt_binding<P: StreamProvider>(
     Ok(())
 }
 
+#[tokio::test]
+async fn finite_native_binding_rejects_legacy_view_before_future_or_content_reads() -> Result<()> {
+    let fixture = process_fixture("write", true).await?;
+    let budget = fixture.request().await?.view.options.work_per_volume;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let before = work.receipt();
+    let result = Process::new_with_native_work(
+        fixture.owner.clone(), fixture.command, fixture.plan.clone(), fixture.view.clone(),
+        fixture.approval, fixture.authority(), &work,
+    );
+    assert!(matches!(result, Err(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Unsupported, ..
+    })));
+    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().authority_records_appended, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
 struct ProcessFixture<
     P: StreamProvider = MemoryStream,
     A = MemoryAuthorityBackend,
@@ -596,7 +617,7 @@ where
     }
     let preparation_root = NativePreparationRoot::witness(
         root.clone(), operation_directory, work, &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+    ).await.map_err(|(error, _)| error)?.value;
     let mut bindings = vec![
         PreparationSelection {
             host: files.clone(),
@@ -689,7 +710,7 @@ where
             &acyclic_fs::CancellationToken::new(),
         )
         .await
-        .map_err(|failure| Error::Storage(failure.to_string()))?
+        .map_err(|(cause, _)| cause)?
         .value,
     );
     let mut request = NativeProcessRequest {
@@ -1110,7 +1131,7 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
     };
     let allocation = NativePreparationRoot::witness(
         root, operation, options.work_per_volume, &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+    ).await.map_err(|(error, _)| error)?.value;
     let second_generation = seed.files.resolve(&workspace_ref(
         seed.second_destination.provider().clone(), &seed.second_destination.storage_name()?,
     )?).await?.generation;
@@ -1134,13 +1155,99 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
 type PreparationView = NativeVolumeView<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 #[tokio::test]
+async fn native_builtin_actual_prepared_view_reads_and_writes_original_mounted_scratch() -> Result<()> {
+    use std::path::Path;
+    let seed = process_fixture("write", true).await?;
+    let fixture = preparation_fixture_on(StreamClient::new(Arc::new(MemoryStream::default())), &seed).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let view = PreparationView::prepare(
+        &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
+        borrow_preparation_bindings(&fixture.bindings), &cancellation,
+    ).await.map_err(|(cause, _)| cause)?.value;
+    let budget = fixture.options.budget_for_volume_count(fixture.bindings.len())?;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let operation = OperationId::from_bytes([211; 16]);
+    view.write_builtin_file(fixture.owner.native_view_owner(), operation,
+        Path::new("b-destination/nested/file"), "héllo", true, None, &work).await?;
+    let output = view.read_builtin_file(fixture.owner.native_view_owner(), operation,
+        Path::new("b-destination/nested/file"), 32, &work).await?;
+    assert_eq!(output.0, "héllo".as_bytes());
+    assert_eq!(output.1.bytes(), output.0.capacity() as u64);
+    assert!(output.1.shares_ledger(&work.retain_owned(0)?));
+    assert_eq!(work.receipt().output_bytes, "héllo".len() as u64);
+    assert_eq!(work.receipt().source_bytes_read, "héllo".len() as u64);
+    drop(output);
+    assert_eq!(std::fs::read(fixture.allocation.root.join("b-destination/nested/file"))
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?, "héllo".as_bytes());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_physical_writes() -> Result<()> {
+    use std::path::Path;
+    let seed = process_fixture("write", true).await?;
+    let fixture = preparation_fixture_on(StreamClient::new(Arc::new(MemoryStream::default())), &seed).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let view = PreparationView::prepare(
+        &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
+        borrow_preparation_bindings(&fixture.bindings), &cancellation,
+    ).await.map_err(|(cause, _)| cause)?.value;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
+    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    assert!(fixture.owner.native_view_owner()
+        .require_volume_grant_with_native_work(&seed.source, VolumeOperation::Write, &work).is_err());
+    for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
+        assert!(view.write_builtin_file(fixture.owner.native_view_owner(), OperationId::from_bytes([212; 16]),
+            Path::new(path), "forbidden", true, None, &work).await.is_err());
+    }
+    assert_eq!(work.receipt().output_bytes, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?, b"pinned input");
+    assert!(!fixture.allocation.root.join("results").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_current_task() -> Result<()> {
+    use crate::runtime::DurableTaskHost as _;
+    use std::path::Path;
+    let seed = process_fixture("write", true).await?;
+    let fixture = preparation_fixture_on(StreamClient::new(Arc::new(MemoryStream::default())), &seed).await?;
+    let foreign = preparation_fixture_on(StreamClient::new(Arc::new(MemoryStream::default())), &seed).await?;
+    assert_eq!(fixture.owner.task_binding().0, foreign.owner.task_binding().0);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let view = PreparationView::prepare(
+        &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
+        borrow_preparation_bindings(&fixture.bindings), &cancellation,
+    ).await.map_err(|(cause, _)| cause)?.value;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
+    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let operation = OperationId::from_bytes([213; 16]);
+    assert!(view.read_builtin_file(foreign.owner.native_view_owner(), operation,
+        Path::new("a-source/input.txt"), 32, &work).await.is_err());
+    assert_eq!(work.receipt().source_bytes_read, 0);
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    assert!(view.write_builtin_file(fixture.owner.native_view_owner(), operation,
+        Path::new("b-destination/after-cancel"), "forbidden", true, None, &work).await.is_err());
+    assert_eq!(work.receipt().output_bytes, 0);
+    assert!(!fixture.allocation.root.join("b-destination/after-cancel").exists());
+    assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?, b"pinned input");
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_native_preparation_resumes_physical_partial_and_lost_acknowledgements() -> Result<()> {
     use acyclic_fs::MaterializationPhase::{Applied, Applying, Preparing};
     let seed = process_fixture("write", true).await?;
     let original = PreparationView::inspect_preparation(
         &seed.owner, &seed.preparation_root, seed.view.manifest().options.work_per_volume,
         &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+    ).await.map_err(|(error, _)| error)?.value
         .ok_or_else(|| Error::NotFound("completed original preparation journal".into()))?;
     assert_eq!(original.journal.plan, seed.view.preparation_receipts()[0].journal.plan);
     assert_eq!(original.journal.phase, Applied);
@@ -1168,14 +1275,14 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
             borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
         ).await.err().ok_or_else(|| Error::Storage("native preparation fault was not exercised".into()))?;
         assert!(stream.preparation_fault.lock().await.is_none());
-        assert!(failed.work.backend_read_operations > 0);
+        assert!(failed.1.backend_read_operations > 0);
         let before = PreparationView::inspect_preparation(
             &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
             &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+        ).await.map_err(|(error, _)| error)?.value;
         let original_allocation = PreparationView::recover_allocation(
-            &fixture.owner, fixture.options.work_per_volume, &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+            &fixture.owner, &fixture.options, fixture.options.work_per_volume, &acyclic_fs::CancellationToken::new(),
+        ).await.map_err(|(error, _)| error)?.value;
         assert_eq!(original_allocation.is_some(), before.is_some());
         if let Some(allocation) = &original_allocation {
             assert_eq!(allocation.root, fixture.allocation.root);
@@ -1200,7 +1307,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
         let recovered = PreparationView::prepare(
             &fixture.owner, original_allocation.unwrap_or_else(|| fixture.allocation.clone()), fixture.options.clone(),
             borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+        ).await.map_err(|(cause, _)| cause)?;
         let receipt = &recovered.value.preparation_receipts()[0];
         assert_eq!(receipt.journal.phase, Applied);
         assert_eq!(receipt.journal.applied, 3);
@@ -1211,7 +1318,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
             assert!(receipt.journal.work.backend_read_operations >= before.journal.work.backend_read_operations);
         }
         recovered.value.validate_for_dispatch(recovered.value.manifest().validation_budget()?).await
-            .map_err(|failure| Error::Storage(failure.to_string()))?;
+            .map_err(|(cause, _)| cause)?;
         for mapping in &recovered.value.manifest().volumes {
             assert!(mapping.path.is_dir());
         }
@@ -1233,7 +1340,7 @@ async fn native_preparation_cancel_cleanup_and_replaced_roots_never_adopt_user_d
             &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
             borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
         ).await.err().ok_or_else(|| Error::Storage("partial native preparation unexpectedly completed".into()))?;
-        assert!(failed.work.materializations > 0);
+        assert!(failed.1.materializations > 0);
         let cancelled = acyclic_fs::CancellationToken::new();
         cancelled.cancel();
         let stopped = PreparationView::prepare(
@@ -1255,12 +1362,12 @@ async fn native_preparation_cancel_cleanup_and_replaced_roots_never_adopt_user_d
             std::fs::write(fixture.allocation.root.join("user.txt"), b"unrelated user data")
                 .map_err(|error| Error::Storage(error.to_string()))?;
             assert!(PreparationView::recover_allocation(
-                &fixture.owner, fixture.options.work_per_volume, &acyclic_fs::CancellationToken::new(),
+                &fixture.owner, &fixture.options, fixture.options.work_per_volume, &acyclic_fs::CancellationToken::new(),
             ).await.is_err());
             let receipt = PreparationView::inspect_preparation(
                 &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
                 &acyclic_fs::CancellationToken::new(),
-            ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+            ).await.map_err(|(error, _)| error)?.value
                 .ok_or_else(|| Error::NotFound("original preparation evidence".into()))?;
             assert!(matches!(receipt.root, acyclic_fs::MaterializationRootObservation::Diverged { .. }));
             assert!(PreparationView::cleanup_preparation(
@@ -1273,7 +1380,7 @@ async fn native_preparation_cancel_cleanup_and_replaced_roots_never_adopt_user_d
             let cleaned = PreparationView::cleanup_preparation(
                 &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
                 &acyclic_fs::CancellationToken::new(),
-            ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+            ).await.map_err(|(error, _)| error)?;
             let receipt = cleaned.value.ok_or_else(|| Error::NotFound("original cleanup evidence".into()))?;
             assert_eq!(receipt.journal.phase, RolledBack);
             assert!(cleaned.work.backend_write_operations > 0);
@@ -1306,7 +1413,7 @@ async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() 
         &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
         borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("local preparation lost acknowledgement was not exercised".into()))?;
-    assert!(failed.work.materializations > 0);
+    assert!(failed.1.materializations > 0);
     let PreparationFixture { _directory, task, owner, allocation, options, bindings } = fixture;
     let (task_id, fence) = owner.task_binding();
     let fence = fence.clone();
@@ -1322,18 +1429,18 @@ async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() 
     let owner = runtime.task_host().journal_owner(task_id, fence.clone()).await?;
     let before = PreparationView::inspect_preparation(
         &owner, &allocation, options.work_per_volume, &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+    ).await.map_err(|(error, _)| error)?.value
         .ok_or_else(|| Error::NotFound("reopened actual preparation journal".into()))?;
     assert_eq!(before.journal.phase, acyclic_fs::MaterializationPhase::Applying);
     assert_eq!(before.journal.applied, 1);
     assert_eq!(before.original_fence, fence);
     let prepared = PreparationView::prepare(
         &owner, allocation.clone(), options, borrow_preparation_bindings(&bindings), &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+    ).await.map_err(|(cause, _)| cause)?;
     assert_eq!(prepared.value.preparation_receipts()[0].journal.plan, before.journal.plan);
     assert_eq!(prepared.value.preparation_receipts()[0].journal.phase, acyclic_fs::MaterializationPhase::Applied);
     prepared.value.validate_for_dispatch(prepared.value.manifest().validation_budget()?).await
-        .map_err(|failure| Error::Storage(failure.to_string()))?;
+        .map_err(|(cause, _)| cause)?;
     drop(_directory);
     Ok(())
 }
@@ -1354,7 +1461,7 @@ async fn native_preparation_nested_rollback_and_stage_replacement_are_identity_b
             &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
             borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
         ).await.err().ok_or_else(|| Error::Storage("nested physical preparation fault was not exercised".into()))?;
-        assert!(failure.work.materializations > 0);
+        assert!(failure.1.materializations > 0);
         assert_eq!(std::fs::read(fixture.allocation.root.join("group/source/input.txt"))
             .map_err(|error| Error::Storage(error.to_string()))?, b"pinned input");
         if replace_stage {
@@ -1367,7 +1474,7 @@ async fn native_preparation_nested_rollback_and_stage_replacement_are_identity_b
             let receipt = PreparationView::inspect_preparation(
                 &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
                 &acyclic_fs::CancellationToken::new(),
-            ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+            ).await.map_err(|(error, _)| error)?.value
                 .ok_or_else(|| Error::NotFound("original staging evidence".into()))?;
             assert!(matches!(receipt.preparation, acyclic_fs::MaterializationPreparationObservation::Diverged { .. }));
             assert!(PreparationView::cleanup_preparation(
@@ -1380,7 +1487,7 @@ async fn native_preparation_nested_rollback_and_stage_replacement_are_identity_b
             let cleaned = PreparationView::cleanup_preparation(
                 &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
                 &acyclic_fs::CancellationToken::new(),
-            ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+            ).await.map_err(|(error, _)| error)?;
             assert_eq!(cleaned.value.ok_or_else(|| Error::NotFound("nested rollback journal".into()))?.journal.phase,
                 acyclic_fs::MaterializationPhase::RolledBack);
             assert!(std::fs::read_dir(&fixture.allocation.root).map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
@@ -1410,13 +1517,13 @@ async fn partial_native_preparation_rechecks_destination_head_before_attachment(
         &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
         borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("stale destination attached to recovered native root".into()))?;
-    assert!(matches!(failure.error, Error::Conflict(_)));
-    assert!(failure.work.authority_records_read > 0);
+    assert!(matches!(failure.0, Error::Conflict(_)));
+    assert!(failure.1.authority_records_read > 0);
     assert!(!fixture.allocation.root.join("b-destination").exists());
     let receipt = PreparationView::inspect_preparation(
         &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
         &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+    ).await.map_err(|(error, _)| error)?.value
         .ok_or_else(|| Error::NotFound("stale original preparation".into()))?;
     assert_eq!(receipt.journal.phase, acyclic_fs::MaterializationPhase::Applying);
     Ok(())
@@ -2343,7 +2450,7 @@ async fn native_view_rejects_physical_aliases_before_any_materialization() -> Re
         let allocation = NativePreparationRoot::witness(
             options.root.clone(), operation_directory.path().to_path_buf(), options.work_per_volume,
             &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value;
+        ).await.map_err(|(error, _)| error)?.value;
         let bindings = fixture.view.manifest().volumes[..2]
             .iter()
             .zip(names)
@@ -2363,8 +2470,8 @@ async fn native_view_rejects_physical_aliases_before_any_materialization() -> Re
             borrow_preparation_bindings(&bindings),
             &acyclic_fs::CancellationToken::new(),
         ).await.err().ok_or_else(|| Error::Storage("physical alias admitted".into()))?;
-        assert!(matches!(failed.error, Error::Invalid(_)));
-        assert!(failed.work.backend_read_operations > 0);
+        assert!(matches!(failed.0, Error::Invalid(_)));
+        assert!(failed.1.backend_read_operations > 0);
         assert!(std::fs::read_dir(directory.path()).map_err(|error| Error::Storage(error.to_string()))?
             .next().is_none());
     }
@@ -3260,9 +3367,9 @@ async fn native_root_and_dynamic_validation_admit_control_storage_before_io() ->
         let failed = <PreparationView as crate::filesystem::NativeProcessView<MemoryStream>>::validate_working_directory(
             &fixture.view, &fixture.view.manifest().options.root, budget,
         ).err().ok_or_else(|| Error::Storage("unadmitted dynamic validation frame".into()))?;
-        assert_eq!(failed.work.allocation_operations, allocation_operations);
-        assert_eq!(failed.work.backend_read_operations, 0);
-        assert_eq!(failed.work.backend_write_operations, 0);
+        assert_eq!(failed.1.allocation_operations, allocation_operations);
+        assert_eq!(failed.1.backend_read_operations, 0);
+        assert_eq!(failed.1.backend_write_operations, 0);
     }
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let root = directory.path().join("root");
@@ -3274,9 +3381,9 @@ async fn native_root_and_dynamic_validation_admit_control_storage_before_io() ->
         root, operation, acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..original },
         &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("unadmitted root witness control".into()))?;
-    assert_eq!(denied.work.allocation_operations, 0);
-    assert_eq!(denied.work.backend_read_operations, 0);
-    assert_eq!(denied.work.backend_write_operations, 0);
+    assert_eq!(denied.1.allocation_operations, 0);
+    assert_eq!(denied.1.backend_read_operations, 0);
+    assert_eq!(denied.1.backend_write_operations, 0);
     Ok(())
 }
 
@@ -3295,9 +3402,9 @@ async fn native_preparation_adopts_actual_input_vector_capacity_before_root_io()
     ).await.err().ok_or_else(|| Error::Storage("input capacity outside original allowance".into()))?;
     // The control ledger and the admitted preparation frame are both real
     // allocations; input custody is adopted without another allocation.
-    assert_eq!(failed.work.allocation_operations, 2);
-    assert_eq!(failed.work.backend_read_operations, 0);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(failed.1.allocation_operations, 2);
+    assert_eq!(failed.1.backend_read_operations, 0);
+    assert_eq!(failed.1.backend_write_operations, 0);
     assert!(std::fs::read_dir(&fixture.allocation.root)
         .map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
     Ok(())
@@ -3316,9 +3423,9 @@ async fn native_preparation_frame_admission_fails_before_body_or_root_io() -> Re
             borrow_preparation_bindings(&fixture.bindings[..1]),
             &acyclic_fs::CancellationToken::new(),
         ).await.err().ok_or_else(|| Error::Storage("unadmitted preparation frame".into()))?;
-        assert_eq!(failed.work.allocation_operations, allocation_operations);
-        assert_eq!(failed.work.backend_read_operations, 0);
-        assert_eq!(failed.work.backend_write_operations, 0);
+        assert_eq!(failed.1.allocation_operations, allocation_operations);
+        assert_eq!(failed.1.backend_read_operations, 0);
+        assert_eq!(failed.1.backend_write_operations, 0);
         assert!(std::fs::read_dir(&fixture.allocation.root)
             .map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
     }
@@ -3340,9 +3447,9 @@ async fn native_preparation_bounds_shared_codec_before_physical_root_open() -> R
         borrow_preparation_bindings(&fixture.bindings[..1]),
         &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("unadmitted canonical preparation intent".into()))?;
-    assert_eq!(failed.work.bytes_encoded, 0);
-    assert_eq!(failed.work.backend_read_operations, 0);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(failed.1.bytes_encoded, 0);
+    assert_eq!(failed.1.backend_read_operations, 0);
+    assert_eq!(failed.1.backend_write_operations, 0);
     assert!(std::fs::read_dir(&fixture.allocation.root)
         .map_err(|error| Error::Storage(error.to_string()))?.next().is_none());
     Ok(())
@@ -3357,18 +3464,18 @@ async fn native_preparation_decode_failure_retains_original_journal_read_work() 
         &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
         borrow_preparation_bindings(&fixture.bindings),
         &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?;
+    ).await.map_err(|(error, _)| error)?;
     let budget = acyclic_fs::WorkBudget {
         items_examined: 0, ..prepared.value.manifest().validation_budget()?
     };
     let failed = PreparationView::inspect_preparation(
         &fixture.owner, &fixture.allocation, budget, &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("unadmitted original preparation decode".into()))?;
-    assert_eq!(failed.work.items_examined, 0);
-    assert!(failed.work.authority_records_read > 0);
-    assert!(failed.work.authority_bytes_read > 0);
-    assert!(failed.work.peak_allocation_bytes > 0);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert_eq!(failed.1.items_examined, 0);
+    assert!(failed.1.authority_records_read > 0);
+    assert!(failed.1.authority_bytes_read > 0);
+    assert!(failed.1.peak_allocation_bytes > 0);
+    assert_eq!(failed.1.backend_write_operations, 0);
     let read_budget = acyclic_fs::WorkBudget {
         authority_bytes_read: acyclic_stream::MAX_RECORD_BYTES as u64 - 1,
         ..prepared.value.manifest().validation_budget()?
@@ -3376,9 +3483,9 @@ async fn native_preparation_decode_failure_retains_original_journal_read_work() 
     let denied = PreparationView::inspect_preparation(
         &fixture.owner, &fixture.allocation, read_budget, &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("unadmitted bounded journal fetch".into()))?;
-    assert_eq!(denied.work.authority_records_read, 0);
-    assert_eq!(denied.work.authority_bytes_read, 0);
-    assert_eq!(denied.work.backend_write_operations, 0);
+    assert_eq!(denied.1.authority_records_read, 0);
+    assert_eq!(denied.1.authority_bytes_read, 0);
+    assert_eq!(denied.1.backend_write_operations, 0);
     Ok(())
 }
 
@@ -3411,11 +3518,11 @@ async fn native_preparation_partial_typed_decode_keeps_acquired_quota_receipt() 
         &fixture.owner, &fixture.allocation, prepared.value.manifest().validation_budget()?,
         &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("partial typed journal decode unexpectedly succeeded".into()))?;
-    assert!(failed.work.authority_bytes_read >= encoded_length);
+    assert!(failed.1.authority_bytes_read >= encoded_length);
     // The acquired schema quota, including temporary serde scratch, is real
     // ledger highwater even though typed construction fails before handoff.
-    assert!(failed.work.peak_allocation_bytes > encoded_length);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert!(failed.1.peak_allocation_bytes > encoded_length);
+    assert_eq!(failed.1.backend_write_operations, 0);
     assert_eq!(std::fs::read(fixture.allocation.root.join("a-source/input.txt"))
         .map_err(|error| Error::Storage(error.to_string()))?, b"pinned input");
     Ok(())
@@ -3433,11 +3540,11 @@ async fn native_allocation_recovery_never_adopts_pending_directory_identity() ->
         &fixture.owner, fixture.allocation.clone(), fixture.options.clone(),
         borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
     ).await.err().ok_or_else(|| Error::Storage("original preparation acknowledgement was not lost".into()))?;
-    assert!(failed.work.backend_read_operations > 0);
+    assert!(failed.1.backend_read_operations > 0);
     let original = PreparationView::inspect_preparation(
         &fixture.owner, &fixture.allocation, fixture.options.work_per_volume,
         &acyclic_fs::CancellationToken::new(),
-    ).await.map_err(|failure| Error::Storage(failure.to_string()))?.value
+    ).await.map_err(|(error, _)| error)?.value
         .ok_or_else(|| Error::NotFound("original preparation allocation journal".into()))?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let witness = acyclic_fs::NativeMaterializationWork::new(fixture.options.work_per_volume, &cancellation)
@@ -3466,11 +3573,11 @@ async fn native_allocation_recovery_never_adopts_pending_directory_identity() ->
         crate::distributed::JournalWrite::Fresh,
     ).await?);
     let failed = PreparationView::recover_allocation(
-        &fixture.owner, fixture.options.work_per_volume, &cancellation,
+        &fixture.owner, &fixture.options, fixture.options.work_per_volume, &cancellation,
     ).await.err().ok_or_else(|| Error::Storage("pending allocation was adopted from physical directories".into()))?;
-    assert!(failed.to_string().contains("incomplete or indeterminate"));
-    assert!(failed.work.authority_bytes_read > 0);
-    assert_eq!(failed.work.backend_write_operations, 0);
+    assert!(failed.0.to_string().contains("incomplete or indeterminate"));
+    assert!(failed.1.authority_bytes_read > 0);
+    assert_eq!(failed.1.backend_write_operations, 0);
     assert!(fixture.allocation.operation_directory.join("target").is_dir());
     Ok(())
 }
@@ -3720,7 +3827,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     // cancellation, filesystem publication, or namespace release authority.
     fixture.owner.verify(false).await?;
     fixture.view.validate_for_dispatch(budget).await
-        .map_err(|failure| Error::Storage(failure.to_string()))?;
+        .map_err(|(cause, _)| cause)?;
     assert!(fixture.files.read(&workspace_ref(
         fixture.destination.provider().clone(), &fixture.destination.storage_name()?,
     )?, None, "/output.txt", 64).await.is_err());
