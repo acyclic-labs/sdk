@@ -206,35 +206,10 @@ impl Scope {
         if work.is_none() {
             return Ok(self.clone());
         }
-        let slots = self.capabilities.iter().try_fold(0_u64, |bytes, _| {
-            bytes.checked_add(std::mem::size_of::<String>() as u64)
-                .ok_or_else(|| Error::Invalid("scope clone slots overflow".into()))
-        })?;
-        let mut custody = crate::wire_codec::CodecQuota::new(work, slots)?;
-        let id = custody.work().as_deref_mut().expect("observed scope clone").clone_text(&self.id)?;
-        custody.adopt(id.capacity() as u64)?;
-        let issuer = custody.work().as_deref_mut().expect("observed scope clone").clone_text(&self.issuer)?;
-        custody.adopt(issuer.capacity() as u64)?;
-        let mut source = self.capabilities.iter();
-        let mut failure = None;
-        let capabilities = Capabilities::new(std::iter::from_fn(|| {
-            if failure.is_some() { return None; }
-            let capability = source.next()?;
-            let copied: Result<String> = (|| {
-                let text = custody.work().as_deref_mut().expect("observed scope clone")
-                    .clone_text(capability)?;
-                custody.adopt(text.capacity() as u64)?;
-                Ok(text)
-            })();
-            match copied {
-                Ok(text) => Some(text),
-                Err(error) => { failure = Some(error); None }
-            }
-        }));
-        if let Some(error) = failure {
-            drop(capabilities);
-            return Err(error);
-        }
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let id = native_custody::copy_text(&self.id, &mut custody)?;
+        let issuer = native_custody::copy_text(&self.issuer, &mut custody)?;
+        let capabilities = native_custody::copy_capabilities(&self.capabilities, &mut custody)?;
         let cloned = Self {
             id, capabilities, agent: self.agent, issuer,
             parent_proof: self.parent_proof, proof: self.proof,
@@ -5536,6 +5511,34 @@ mod tests {
             *bound = serde_json::Value::from(1_000_000_u64);
         }
         serde_json::from_value(value).unwrap()
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_value_copy_bounds_source_before_recursion_without_encoding_quota() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        use crate::store::history::HistoryIo;
+        let cancellation = CancellationToken::new();
+        let mut budget = original_proof_budget();
+        budget.bytes_encoded = 0;
+        let work = NativeMaterializationWork::new(budget, &cancellation).expect("original copy ledger");
+        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let source = json!({"real": ["resident payload"]});
+        let (copied, bytes) = native_value_clone_with_custody(&source, &mut Some(&mut io))?;
+        assert_eq!(copied, source);
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert!(work.receipt().bytes_copied > 0);
+        drop(copied);
+        io.release_owned(bytes)?;
+        let mut deep = serde_json::Value::Null;
+        for _ in 0..257 { deep = serde_json::Value::Array(vec![deep]); }
+        let before = work.receipt();
+        assert!(native_value_clone_with_custody(&deep, &mut Some(&mut io)).is_err());
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        let (ordinary, _) = native_value_clone_with_custody(&deep, &mut None)?;
+        assert_eq!(ordinary, deep);
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

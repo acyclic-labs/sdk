@@ -159,6 +159,29 @@ pub(crate) fn copy_value(
     source: &Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Value> {
     if quota.work().is_none() { return Ok(source.clone()); }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if quota.work().as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
+        let observer = quota.work().as_deref_mut().expect("native Value copy observer");
+        let remaining = observer.remaining()?;
+        // Copying does not consume encoded-output allowance. Inspect the
+        // original resident graph once before the first recursive copy.
+        crate::contract::json_owned_value_shape_bounded(
+            source,
+            crate::contract::JsonBounds {
+                maximum_bytes: u64::MAX,
+                maximum_items: remaining.items_examined,
+                maximum_depth: 256,
+            },
+            crate::contract::JsonValueSchema::None,
+            &mut |charge| observer.codec_charge(charge),
+        )?;
+    }
+    copy_value_inner(source, quota)
+}
+
+fn copy_value_inner(
+    source: &Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<Value> {
     quota.work().as_deref_mut().expect("value copy observer")
         .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     Ok(match source {
@@ -166,7 +189,7 @@ pub(crate) fn copy_value(
         Value::Bool(value) => Value::Bool(*value),
         Value::Number(value) => Value::Number(value.clone()),
         Value::String(value) => Value::String(copy_text(value, quota)?),
-        Value::Array(values) => Value::Array(copy_vector(values, quota, copy_value)?),
+        Value::Array(values) => Value::Array(copy_vector(values, quota, copy_value_inner)?),
         Value::Object(values) => {
             let bytes = values.len().checked_mul(std::mem::size_of::<(String, Value)>())
                 .ok_or_else(|| Error::Invalid("JSON object ownership overflows".into()))? as u64;
@@ -177,7 +200,7 @@ pub(crate) fn copy_value(
             let mut output = serde_json::Map::new();
             for (key, value) in values {
                 let key = copy_text(key, quota)?;
-                let value = copy_value(value, quota)?;
+                let value = copy_value_inner(value, quota)?;
                 output.insert(key, value);
             }
             Value::Object(output)
@@ -284,7 +307,14 @@ pub(crate) fn copy_capabilities(
     let mut failure = None;
     let output = Capabilities::new(std::iter::from_fn(|| {
         if failure.is_some() { return None; }
-        match copy_text(source.next()?, quota) {
+        let value = source.next()?;
+        let copied = (|| {
+            let observer = quota.work().as_deref_mut().expect("capability copy observer");
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            copy_text(value, quota)
+        })();
+        match copied {
             Ok(text) => Some(text),
             Err(error) => { failure = Some(error); None }
         }
