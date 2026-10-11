@@ -151,6 +151,10 @@ their original allocation guard until the last consumer drops the bytes.
 Shared-slot accounting admits the known SDK value and its allocation attempt;
 it does not measure allocator overhead, RSS, or private standard-library Arc
 backing retained by weak references.
+`ToolContext::new_with_native_work` retains that same shared context and
+observes its owned call-ID string on the original ledger. Ordinary tool-context
+clones preserve the context and policy but invalidate native tool-metadata
+funding; allocation membership never replaces original invocation admission.
 
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native

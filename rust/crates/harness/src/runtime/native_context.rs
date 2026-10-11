@@ -1,4 +1,4 @@
-use super::{ContentResidencyVerifier, TaskContext};
+use super::{ContentResidencyVerifier, TaskContext, ToolContext, ToolTaskContext};
 use crate::{Error, FileRef, NativeFutureBundle, Result, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::sync::Arc;
@@ -80,6 +80,11 @@ impl NativeTaskContext {
     #[must_use]
     pub const fn context(&self) -> &TaskContext { &self.context }
 
+    /// Pure membership check for the original metadata ledger, not authority.
+    pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
+        same_work(self.custody.work(), work)
+    }
+
     /// Builds an original-owner READ facade over this same shared context.
     /// Neither the owner nor the context is reconstructed or metadata-cloned.
     pub fn content_residency_verifier_with_native_work(
@@ -101,6 +106,48 @@ impl NativeTaskContext {
         Ok(Arc::new(NativeContextVerifier {
             context: Arc::clone(self), owner, custody,
         }))
+    }
+}
+
+impl ToolContext {
+    /// Binds native tool metadata to the same SDK-issued shared task context.
+    /// Allocation membership does not authenticate an invocation; the admitted
+    /// definition, operation and call identity must still pass the tool gate.
+    pub fn new_with_native_work(
+        task: Arc<NativeTaskContext>,
+        operation_id: crate::OperationId,
+        call_id: &str,
+        work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        if !task.native_metadata_matches(work) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "tool context differs from its original native metadata ledger"));
+        }
+        crate::tool::ToolInvocation::validate_call_id_with_native_work(call_id, work)?;
+        // This stack value has no allocator attempt of its own. Its known
+        // logical metadata is admitted before the actual SDK String producer.
+        let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut output = work.display(call_id)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        output.1.absorb(&mut slot)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Self {
+            task: ToolTaskContext::Native(task),
+            operation_id,
+            call_id: output.0,
+            native_custody: Some(output.1),
+        })
+    }
+
+    /// Checks genuine SDK tool metadata funding without granting tool authority.
+    pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
+        let ToolTaskContext::Native(task) = &self.task else { return false; };
+        let Some(custody) = &self.native_custody else { return false; };
+        task.native_metadata_matches(work) && same_work(custody.work(), work)
+            && (std::mem::size_of::<Self>() as u64)
+                .checked_add(self.call_id.capacity() as u64)
+                .is_some_and(|bytes| custody.bytes() >= bytes)
     }
 }
 
@@ -407,6 +454,81 @@ mod tests {
         let before = original.receipt();
         assert!(matches!(reader.read_with_native_work(&staged.0, 65_536, &original),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert_eq!(original.receipt(), before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_funding() -> Result<()> {
+        let fixture = CreationFixture::new().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = work(&cancellation)?;
+        let (context, custody) = fixture.harness.durable_context_with_native_work(
+            fixture.root, fixture.root_lease.operation.operation_id, &original,
+        ).await?;
+        let shared = context.into_native_shared(custody, &original)?;
+        let operation = crate::OperationId::from_bytes([119; 16]);
+        let call_id = operation.to_string();
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let users = Arc::strong_count(&shared);
+        let tool = ToolContext::new_with_native_work(
+            Arc::clone(&shared), operation, &call_id, &original,
+        )?;
+        assert!(std::ptr::eq(tool.task(), shared.context()));
+        assert!(std::ptr::eq(&*tool, shared.context()));
+        assert_eq!(tool.operation_id(), operation);
+        assert_eq!(tool.call_id(), call_id);
+        assert!(tool.native_metadata_matches(&original));
+        assert_eq!(Arc::strong_count(&shared), users + 1);
+        assert!(original.receipt().bytes_copied >= before.bytes_copied + call_id.len() as u64);
+        let held = tool.native_custody.as_ref().expect("genuine SDK tool metadata").bytes();
+        assert!(held >= std::mem::size_of::<ToolContext>() as u64 + tool.call_id.capacity() as u64);
+        assert_eq!(original.live_allocation_bytes(), baseline + held);
+
+        let before = original.receipt();
+        let clone = tool.clone();
+        assert!(std::ptr::eq(clone.task(), shared.context()));
+        assert!(!clone.native_metadata_matches(&original));
+        assert_eq!(clone.call_id(), tool.call_id());
+        assert_eq!(original.receipt(), before);
+        drop(tool);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        drop(clone);
+
+        let foreign = work(&cancellation)?;
+        let before = foreign.receipt();
+        assert!(matches!(ToolContext::new_with_native_work(
+            Arc::clone(&shared), operation, &call_id, &foreign,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(foreign.receipt(), before);
+        let before = original.receipt().allocation_operations;
+        assert!(matches!(ToolContext::new_with_native_work(
+            Arc::clone(&shared), operation, "bad/call", &original,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert_eq!(original.receipt().allocation_operations, before);
+
+        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let quota = original.claim(available)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut buffer = Vec::<u8>::new();
+        buffer.try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
+            .expect("finite fixture allocation");
+        let blocker = (buffer, quota);
+        let allocations = original.receipt().allocation_operations;
+        assert!(matches!(ToolContext::new_with_native_work(
+            Arc::clone(&shared), operation, &call_id, &original,
+        ), Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }), ..
+        })));
+        assert_eq!(original.receipt().allocation_operations, allocations);
+        drop(blocker);
+        cancellation.cancel();
+        let before = original.receipt();
+        assert!(matches!(ToolContext::new_with_native_work(
+            shared, operation, &call_id, &original,
+        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(original.receipt(), before);
         Ok(())
     }

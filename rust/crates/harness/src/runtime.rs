@@ -7532,12 +7532,32 @@ impl RuntimeGroup {
     }
 }
 
-/// A task context bound to one exact tool call identity.
 #[derive(Clone)]
+enum ToolTaskContext {
+    Ordinary(TaskContext),
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Native(Arc<NativeTaskContext>),
+}
+
+/// A task context bound to one exact tool call identity.
 pub struct ToolContext {
-    task: TaskContext,
+    task: ToolTaskContext,
     operation_id: OperationId,
     call_id: String,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl Clone for ToolContext {
+    fn clone(&self) -> Self {
+        Self {
+            task: self.task.clone(),
+            operation_id: self.operation_id,
+            call_id: self.call_id.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        }
+    }
 }
 
 impl ToolContext {
@@ -7552,16 +7572,22 @@ impl ToolContext {
             return Err(Error::Invalid("tool call ID is empty".into()));
         }
         Ok(Self {
-            task,
+            task: ToolTaskContext::Ordinary(task),
             operation_id,
             call_id,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
         })
     }
 
     /// Returns the enclosing scoped task context.
     #[must_use]
-    pub const fn task(&self) -> &TaskContext {
-        &self.task
+    pub fn task(&self) -> &TaskContext {
+        match &self.task {
+            ToolTaskContext::Ordinary(task) => task,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            ToolTaskContext::Native(task) => task.context(),
+        }
     }
 
     /// Returns the exact call identity.
@@ -7581,7 +7607,7 @@ impl std::ops::Deref for ToolContext {
     type Target = TaskContext;
 
     fn deref(&self) -> &Self::Target {
-        &self.task
+        self.task()
     }
 }
 
