@@ -180,14 +180,45 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             creation_control_budget(), &native_cancellation,
         ).expect("finite original source invocation");
         let baseline = native.remaining().expect("source quota").peak_allocation_bytes;
+        let native_handle = owner.restore_project_source_authorization_with_native_work(
+            &context, handle.authorization(), &native)?.await?;
         let selected = runtime.inspect_project_source_with_native_work(
-            &context, owner.clone(), handle.clone(), operation, child, &snapshot, &native,
+            &context, owner.clone(), native_handle, operation, child, &snapshot, &native,
         ).await?;
         assert_eq!(selected.source().task_id(), child);
         assert_eq!(selected.project()?.volume, project);
         assert_eq!(context.scope().grants(), &original);
         assert!(native.receipt().backend_read_operations > 0);
         assert!(native.remaining().expect("retained source quota").peak_allocation_bytes < baseline);
+        selected.require_native_project_selection_with_native_work(
+            child, &project, &generation, None, &native,
+        ).await?;
+        for (source, volume, pinned) in [
+            (fixture.root, &project, &generation),
+            (child, &policy.bootstrap.project, &generation),
+            (child, &project, &initial_generation),
+        ] {
+            let before = native.receipt();
+            assert!(matches!(selected.require_native_project_selection_with_native_work(
+                source, volume, pinned, None, &native,
+            ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+            assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
+            assert_eq!(native.receipt().backend_write_operations, before.backend_write_operations);
+        }
+        let foreign_cancellation = acyclic_fs::CancellationToken::new();
+        let foreign = acyclic_fs::NativeMaterializationWork::new(
+            creation_control_budget(), &foreign_cancellation,
+        ).expect("independent caller ledger for the hostile selection");
+        let before = foreign.receipt();
+        assert!(matches!(selected.require_native_project_selection_with_native_work(
+            child, &project, &generation, None, &foreign,
+        ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
+        foreign_cancellation.cancel();
+        assert!(matches!(selected.require_native_project_selection_with_native_work(
+            child, &project, &generation, None, &foreign,
+        ).await, Err(Error::NativeWork { .. })));
+        assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
         assert_eq!(native.remaining().expect("released source quota").peak_allocation_bytes, baseline);
 
@@ -196,15 +227,22 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let denied = acyclic_fs::NativeMaterializationWork::new(
             denied_budget, &native_cancellation,
         ).expect("finite denied source invocation");
-        assert!(matches!(runtime.inspect_project_source_with_native_work(
-            &context, owner.clone(), handle.clone(), operation, child, &snapshot, &denied,
-        ).await, Err(Error::NativeWork { .. })));
+        let denied_read = async {
+            let native_handle = owner.restore_project_source_authorization_with_native_work(
+                &context, handle.authorization(), &denied)?.await?;
+            runtime.inspect_project_source_with_native_work(
+                &context, owner.clone(), native_handle, operation, child, &snapshot, &denied,
+            ).await
+        }.await;
+        assert!(matches!(denied_read, Err(Error::NativeWork { .. })));
         assert_eq!(denied.receipt().backend_read_operations, 0);
         assert_eq!(denied.receipt().backend_write_operations, 0);
 
         let wrong_operation = OperationId::from_bytes([153;16]);
+        let native_handle = owner.restore_project_source_authorization_with_native_work(
+            &context, handle.authorization(), &native)?.await?;
         assert!(runtime.inspect_project_source_with_native_work(
-            &context, owner.clone(), handle.clone(), wrong_operation, child, &snapshot, &native,
+            &context, owner.clone(), native_handle, wrong_operation, child, &snapshot, &native,
         ).await.is_err());
         assert_eq!(native.remaining().expect("rejected source quota").peak_allocation_bytes, baseline);
     }
