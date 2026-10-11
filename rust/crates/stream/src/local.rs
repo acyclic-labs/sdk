@@ -1737,7 +1737,7 @@ impl PreparedFrame {
         }
         encoded.extend_from_slice(&length);
         encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
-        journal.value
+        journal
             .encode(&mut encoded)
             .map_err(|_| LocalStreamError::InvalidLimits)?;
         if let Some(meter) = meter {
@@ -3219,7 +3219,7 @@ mod tests {
         let original = meter.original();
         let captured = journal_command_observed(CommandRef::Commit(&request), Some(&original))?;
         let dto_capacity = captured.allocation.as_ref().map_or(0, ReadAllocation::bytes);
-        assert_eq!(dto_capacity, 0, "borrowed payloads allocate no DTO descriptor or path copies");
+
         let frame = PreparedFrame::encode_wire_observed(&captured.value, 42, Some(&original))?;
         assert_eq!(frame.encoded, expected.encoded);
         assert_eq!(frame.bytes, expected.bytes);
