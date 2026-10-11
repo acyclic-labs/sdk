@@ -60,6 +60,22 @@ or hard elapsed-time guarantee.
 Write batches reject overlapping ranges before submitting any write, so their
 result does not depend on platform completion order.
 
+Finite callers provide their original `NativeReadMeter`; read, write and
+durability reservations are admitted before submission and retain actual partial
+prefixes on failure. Exact reads reject premature EOF through the same engine.
+Returned buffers, queued work and poisoned file anchors retain their original
+custody until their payload or file is dropped, rather than until an observer
+stops awaiting. Capacity reconciliation records completed SDK-owned capacity
+before evaluating a late cancellation or quota refusal.
+
+These limits cover SDK-visible logical payload capacities and known metadata,
+not allocator bookkeeping, RSS, kernel buffers, private codec allocations, or
+physical transport acknowledgments. An `Arc`'s known value is charged for its
+logical lifetime; opaque backing retained by weak aliases is not a physical
+allocation guarantee. Meter callbacks must preserve the caller's original
+resource attribution and typed first failure. Cancellation and deadlines are
+cooperative; they do not prove that an accepted OS operation was rolled back.
+
 The current backend uses bounded completion workers and a separate bounded
 host-operation pool for locks and namespace work without native completion.
 Its owned file operations do not block the caller's async executor, but it is not yet a

@@ -83,14 +83,17 @@ pub(super) fn write_at_measured(
 ) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     validate_range(offset, bytes.len())?;
-    meter.admit_write(bytes.len())?;
+    let mut transfer = crate::NativeByteReservation::new(
+        meter, crate::NativeOperationKind::Write, bytes.len(),
+    )?;
+    meter.admit_write(0)?;
     // SAFETY: the held descriptor and borrowed payload live through this syscall.
     let result = unsafe {
         libc::pwrite(file.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), offset as libc::off_t)
     };
     if result < 0 { return Err(io::Error::last_os_error()); }
     let count = result as usize;
-    meter.record_write(count)?;
+    transfer.record(count)?;
     Ok(count)
 }
 
