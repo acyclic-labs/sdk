@@ -6049,10 +6049,10 @@ mod tests {
         let measured = store.materialization_with_work(work.clone());
         let original = measured.load(operation).await.expect("original decoder").expect("same operation");
         let root_identity = original.journal.root_identity;
-        let mut file = work.open_state_file_with_native_work(&crate::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(&root, &work).expect("held fixture root"), std::path::Path::new("file.txt"), crate::materializer::NativeStateFileMode::ReadWriteCreate)
-            .expect("held authorized fixture file");
+        let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(root.join("file.txt")).expect("authorized fixture file");
         let completion = measured.prepare_action(original).await.expect("accepted exact original completion");
-        file.write_bytes(b"after").expect("actual bounded SDK action");
+        work.write_owned_bytes(&mut file, b"after").expect("actual bounded SDK action");
         cancellation.cancel();
         let known_prefix = work.journal_work().expect("actual post-action prefix");
         let allocations = work.receipt().allocation_operations;
