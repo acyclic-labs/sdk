@@ -22,10 +22,15 @@ macOS Keychain, or Linux Secret Service. A locked or unavailable vault returns
 an explicit error; there is no plaintext file or environment fallback. Handles
 are generation-bound and every use checks the actual vault item, so replacement
 or local deletion invalidates stale handles. The namespace includes the original
-login origin, environment, account and certificate key ID. Only the public key
-is exportable. The SQL-session callback is Rust-transport-only, not a JS binding
-or an account bearer. Local deletion does not revoke already issued bearers or
-an already admitted request; server revocation remains a separate operation.
+login origin, environment, account and certificate key ID. Public keys and
+`CustomerCustodyReference` are exportable; the latter is a bounded Rust-encoded
+nonsecret namespace/generation/public-key receipt, never a key or SQL session.
+Persist the original reference before restart cleanup and use `open_at` to
+reject newer vault generations. Recertification retries return the existing
+matching pair without replacement; foreign pairs and corruption fail closed.
+The SQL-session callback is Rust-transport-only, not a JS binding or account
+bearer. Local deletion accepts actual absence but never deletes a newer pair;
+it does not revoke admitted requests or bearers. Server revocation is separate.
 
 The implementation selects a platform backend at compile time, with runtime
 fallback where needed:

@@ -12,6 +12,7 @@ import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindin
 import {
   chooseLanes,
   classifyQualificationEvent,
+  completedQualificationMarker,
   ignored,
   languageGeneratorBackends,
   laneKeys,
@@ -53,6 +54,20 @@ const differing = (before, after) =>
   Object.keys(before).filter(lane => before[lane] !== after[lane]).sort();
 const named = lanes => lanes.map(lane => lane.lane).sort();
 const fullLanes = lanes.filter(lane => lane.scope !== "core");
+
+test("cached proofs reject canceled, partial, foreign and different source attempts", () => {
+  const repository = "acyclic-labs/sdk";
+  const marker = { run_id: 81, run_attempt: 2, source_commit: "a".repeat(40) };
+  const run = { id: 81, run_attempt: 2, status: "completed", conclusion: "success",
+    head_sha: marker.source_commit, head_repository: { full_name: repository } };
+  assert.equal(completedQualificationMarker(marker, run, repository), true);
+  for (const changed of [
+    { status: "in_progress" }, { conclusion: "cancelled" }, { conclusion: "failure" },
+    { id: 82 }, { run_attempt: 1 }, { head_sha: "b".repeat(40) },
+    { head_repository: { full_name: "foreign/sdk" } },
+  ]) assert.equal(completedQualificationMarker(marker, { ...run, ...changed }, repository), false);
+  assert.equal(completedQualificationMarker(marker, null, repository), false);
+});
 
 test("lanes use Blacksmith except the narrowly scoped real Windows ARM64 native runtime", () => {
   for (const lane of lanes) {

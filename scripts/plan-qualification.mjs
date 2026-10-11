@@ -314,6 +314,14 @@ export function remoteTreeEntries(response, sourceTree) {
     .map(entry => `${entry.mode} ${entry.type} ${entry.sha}\t${entry.path}`);
 }
 
+// Cached lane markers are not proof that their enclosing run finished.
+// Admission requires the exact successful attempt and checked-out source.
+export function completedQualificationMarker(marker, run, repository) {
+  return run?.id === marker.run_id && run.run_attempt === marker.run_attempt &&
+    run.status === "completed" && run.conclusion === "success" &&
+    run.head_sha === marker.source_commit && run.head_repository?.full_name === repository;
+}
+
 function recordedMarker(lane) {
   const path = `.qualification/${lane}.json`;
   if (!existsSync(path)) return null;
@@ -341,6 +349,18 @@ function select() {
   const lanes = readLanes();
   let donorMarkers;
   const artifacts = new Map();
+  const attempts = new Map();
+  const completed = marker => {
+    const key = `${marker.run_id}/${marker.run_attempt}`;
+    if (!attempts.has(key)) {
+      try { attempts.set(key, gh(`repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${marker.run_id}/attempts/${marker.run_attempt}`)); }
+      catch (error) {
+        console.error(`qualification attempt ${key} unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        attempts.set(key, null);
+      }
+    }
+    return completedQualificationMarker(marker, attempts.get(key), process.env.GITHUB_REPOSITORY);
+  };
   const retained = (id, prefix, attempt, commit) => {
     const key = JSON.stringify([id, prefix, attempt, commit]);
     if (!artifacts.has(key)) artifacts.set(key, retainedArtifact(id, prefix, attempt, commit));
@@ -348,6 +368,7 @@ function select() {
   };
   const marker = lane => {
     let cached = recordedMarker(lane);
+    if (cached && !completed(cached)) cached = null;
     const artifact = lanes.find(definition => definition.lane === lane)?.artifact;
     if (mainPush && cached && artifact && !retained(cached.run_id, artifact, cached.run_attempt, cached.source_commit)) cached = null;
     if (cached || !mainPush) return cached;

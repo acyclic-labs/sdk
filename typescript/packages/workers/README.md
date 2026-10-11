@@ -62,9 +62,15 @@ session to `commit`; the restored handle has no private-key/session getter or
 serializer. `requestIdentity` attaches that sealed session inside Rust only to
 the configured HTTPS origin's `/v1/identity/` routes, without redirects or
 permission retries. `renew` retains the same own leaf/session and returns a
-new generation-bound handle. Persist the new public tuple before explicitly
-deleting the old namespace. `close` only releases the local handle; deletion
-does not revoke previously emitted bearers or already dispatched requests.
+generation-bound handle. Lost-ACK retries retain an existing matching pair's
+actual generation; same-namespace renewal does not replace the pair. Different
+pairs, corruption and superseded originals fail closed. Persist the new public
+tuple and its Rust-encoded nonsecret `custodyReference` before explicitly
+deleting the old namespace. Persist each retired handle's original reference
+too; pass it to `openNativeCustomerCredential` after restart so cleanup cannot
+adopt or erase a newer OS generation. `close` only releases the local handle;
+local deletion retries accept actual absence, not a newer pair, and do not
+revoke previously emitted bearers or already dispatched requests.
 
 Browser custody requires a secure origin with real WebCrypto Ed25519/AES-GCM
 and IndexedDB CryptoKey structured cloning; it is not a Workerd storage path.

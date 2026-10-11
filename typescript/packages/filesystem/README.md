@@ -27,6 +27,23 @@ console.log(fork.name);
 
 `/browser` (also the default export) uses the browser's storage capabilities and bundled WebAssembly; `/memory` is process-local; `/hosted` connects to a service; `/native` uses the native companion. Choose the entry point explicitly when moving between environments. Workspace generations are immutable identities; transactions and forks make changes without rewriting old generations. Durability, isolation, and mount behavior depend on the chosen provider.
 
+The `/native` directory transport uses the existing Rust capture and immutable
+archive implementation: `captureNativeDirectoryArchive` returns an opaque
+original capture and bounded archive chunks. `nativeDirectoryArchiveFromChunks`
+authenticates received bytes; `importNativeDirectoryArchive` uses the same safe
+native parser, not ambient extraction. `replaceCapturedNativeDirectoryArchive`
+reconciles into the original volume, retaining unchanged identities and
+metadata. Capture roots must resolve through real directory components, without
+intermediate symlinks or reparse points.
+
+Retain the original operation ID and private `stateRoot`. After restart,
+`restoreNativeDirectoryCapture` and `exportNativeDirectoryArchive` reopen the
+original receipt and immutable logical generation, never recapture later
+physical writers. The capture's `preview`, `apply` and `recover` use existing
+generation and materialization-journal contracts; changed paths must still match
+their original physical preimages, while unrelated later writers are untouched.
+Local capture/archive/apply proof does not qualify a hosted upload or live turn.
+
 The 0.2.0 native release matrix requires Node 24 proof for GNU Linux x64/ARM64, Darwin x64/ARM64, and MSVC Windows x64/ARM64. It also requires Bun 1.4.2 native runtime proof on those targets except Windows ARM64: that Bun release ships only an x64 Windows runtime, usable for installation tooling but not for loading an ARM64 addon. Windows ARM64 native consumers use ARM64 Node. Every companion is admitted against the exact release source and retained compiler/runtime receipts; one local Linux pass does not qualify the complete release.
 
 For repository qualification, first build a clean-source canonical bundle and retain its original compiler receipt. For example, on GNU Linux x64:

@@ -22,6 +22,14 @@ import type {
   NativeRawLiveMutationResult,
   NativeRawAuthoredLiveMutationResult,
   NativeRawCheckout,
+  NativeRawDirectoryArchive,
+  NativeRawDirectoryCapture,
+  NativeRawGeneration,
+  NativeRawOperationWindowLease,
+  NativeDirectoryCaptureOptions,
+  NativeDirectoryApplyOptions,
+  NativeDirectoryApplyPreview,
+  NativeDirectoryApplyReceipt,
   NativeRawSpeculation,
   NativeRawMutation,
   NativeRawTransactionOperation,
@@ -109,6 +117,7 @@ const nativeGenerationDiff = (value: NativeRawGenerationDiff) => copyGenerationD
   parseWork(value.workJson),
 );
 const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
+const checkoutHandles = new WeakMap<FsCheckout, NativeRawCheckout>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, nativeGenerationDiff);
 type NativeAdapterScope = {
   readonly adaptGeneration: typeof adaptGeneration;
@@ -145,6 +154,100 @@ export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
+
+export type { NativeDirectoryCaptureOptions, NativeDirectoryApplyOptions, NativeDirectoryApplyPreview, NativeDirectoryApplyReceipt } from "./contracts.js";
+
+/** Immutable bytes produced or authenticated by the canonical native archive implementation. */
+export interface NativeDirectoryArchive {
+  readonly totalBytes: bigint;
+  readonly sha256: string;
+  readChunk(offset: bigint, maximumBytes: number): Uint8Array;
+}
+/** Original native capture capability; public data cannot reconstruct or retarget it. */
+export interface NativeDirectoryCapture {
+  readonly operationId: Uint8Array;
+  readonly generation: Uint8Array;
+  readonly volumeId: Uint8Array;
+  readonly totalBytes: bigint;
+  readonly sha256: string;
+  preview(from: FsGeneration, to: FsGeneration, maximumChanges: number): Promise<NativeDirectoryApplyPreview>;
+  apply(from: FsGeneration, to: FsGeneration, options: NativeDirectoryApplyOptions): Promise<NativeDirectoryApplyReceipt>;
+  recover(stateRoot: string, operationDirectory: string, operationId: Uint8Array, rollBack: boolean): Promise<NativeDirectoryApplyReceipt | null | undefined>;
+}
+export interface NativeDirectoryArchiveCapture {
+  readonly capture: NativeDirectoryCapture;
+  readonly archive: NativeDirectoryArchive;
+}
+const directoryArchives = new WeakMap<NativeDirectoryArchive, NativeRawDirectoryArchive>();
+const directoryCaptures = new WeakMap<NativeDirectoryCapture, NativeRawDirectoryCapture>();
+function nativeCheckout(checkout: FsCheckout): NativeRawCheckout {
+  const raw = checkoutHandles.get(checkout);
+  if (raw === undefined) throw new TypeError("directory operations require a native checkout");
+  return raw;
+}
+function nativeArchive(archive: NativeDirectoryArchive): NativeRawDirectoryArchive {
+  const raw = directoryArchives.get(archive);
+  if (raw === undefined) throw new TypeError("archive is not a native-produced archive");
+  return raw;
+}
+function nativeCapture(capture: NativeDirectoryCapture): NativeRawDirectoryCapture {
+  const raw = directoryCaptures.get(capture);
+  if (raw === undefined) throw new TypeError("capture is not an original native capture");
+  return raw;
+}
+function directoryGeneration(generation: FsGeneration): NativeRawGeneration {
+  return nativeBoundary<NativeRawGeneration>(rawGeneration(generation));
+}
+function adaptDirectoryArchive(raw: NativeRawDirectoryArchive): NativeDirectoryArchive {
+  const archive: NativeDirectoryArchive = {
+    get totalBytes() { return raw.totalBytes; },
+    get sha256() { return raw.sha256; },
+    readChunk(offset, maximumBytes) { return raw.readChunk(offset, maximumBytes); },
+  };
+  directoryArchives.set(archive, raw);
+  return archive;
+}
+function adaptDirectoryCapture(raw: NativeRawDirectoryCapture): NativeDirectoryCapture {
+  const capture: NativeDirectoryCapture = {
+    get operationId() { return raw.operationId; },
+    get generation() { return raw.generation; },
+    get volumeId() { return raw.volumeId; },
+    get totalBytes() { return raw.totalBytes; },
+    get sha256() { return raw.sha256; },
+    preview(from, to, maximumChanges) { return raw.preview(directoryGeneration(from), directoryGeneration(to), maximumChanges); },
+    apply(from, to, options) { return raw.apply(directoryGeneration(from), directoryGeneration(to), { ...options, operationId: copyBytes(options.operationId) }); },
+    recover(stateRoot, operationDirectory, operationId, rollBack) { return raw.recover(stateRoot, operationDirectory, copyBytes(operationId), rollBack); },
+  };
+  directoryCaptures.set(capture, raw);
+  return capture;
+}
+/** Capture, commit and retain the actual original root and immutable bounded archive. */
+export async function captureNativeDirectoryArchive(checkout: FsCheckout, options: NativeDirectoryCaptureOptions, lease?: NativeRawOperationWindowLease): Promise<NativeDirectoryArchiveCapture> {
+  const value = await nativeCheckout(checkout).captureDirectoryArchive({ ...options, operationId: copyBytes(options.operationId) }, lease);
+  return { capture: adaptDirectoryCapture(value.capture), archive: adaptDirectoryArchive(value.archive) };
+}
+/** Restore only the existing private original capture record, never recapture the current root. */
+export async function restoreNativeDirectoryCapture(stateRoot: string, operationId: Uint8Array): Promise<NativeDirectoryCapture> {
+  const original = copyBytes(operationId);
+  return adaptDirectoryCapture(await (await bindings()).restoreNativeDirectoryCapture(stateRoot, original));
+}
+/** Authenticate received chunks with the same native immutable archive contract used by capture. */
+export async function nativeDirectoryArchiveFromChunks(chunks: readonly Uint8Array[], totalBytes: bigint, sha256: string): Promise<NativeDirectoryArchive> {
+  const owned = chunks.map(copyBytes);
+  return adaptDirectoryArchive((await bindings()).nativeDirectoryArchiveFromChunks(owned, totalBytes, sha256));
+}
+/** Native receiver import; no JavaScript tar parser or ambient host extraction. */
+export function importNativeDirectoryArchive(checkout: FsCheckout, archive: NativeDirectoryArchive): Promise<void> {
+  return nativeCheckout(checkout).importDirectoryArchive(nativeArchive(archive));
+}
+/** Reconcile output into the exact original volume, retaining unchanged identities and metadata. */
+export function replaceCapturedNativeDirectoryArchive(checkout: FsCheckout, capture: NativeDirectoryCapture, archive: NativeDirectoryArchive): Promise<void> {
+  return nativeCheckout(checkout).replaceCapturedDirectoryArchive(nativeCapture(capture), nativeArchive(archive));
+}
+/** Read the original immutable logical generation after cold capture-record restoration. */
+export async function exportNativeDirectoryArchive(checkout: FsCheckout, capture: NativeDirectoryCapture, maximumPaths: number): Promise<NativeDirectoryArchive> {
+  return adaptDirectoryArchive(await nativeCheckout(checkout).exportDirectoryArchive(nativeCapture(capture), maximumPaths));
+}
 
 const PACKAGE_VERSION = "0.2.0";
 
@@ -507,7 +610,7 @@ function adaptVolume(raw: NativeRawVolume): FsVolume {
 }
 
 function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
-  return {
+  const checkout: FsCheckout = {
     get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
     async applyTransaction(operations) {
       const value = await raw.applyTransaction(operations.map(nativeTransactionOperation));
@@ -631,6 +734,8 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async discard() { return mutationResult(await raw.discard()); },
     cancel() { raw.cancel(); },
   };
+  checkoutHandles.set(checkout, raw);
+  return checkout;
 }
 
 function adaptResolvedFile(raw: NativeRawResolvedFile): ResolvedFile {

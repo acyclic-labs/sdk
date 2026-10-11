@@ -2,7 +2,7 @@
 use crate::account_binding_native::{AccountIssuedCredential, NativeClock, error, lifetime};
 use crate::client_binding::WorkersCancellation;
 use acyclic_native_runtime::account;
-use acyclic_native_runtime::customer_custody::{CustomerCustodyNamespace, PendingCustomerLeaf, RestoredCustomerLeaf};
+use acyclic_native_runtime::customer_custody::{CustomerCustodyNamespace, CustomerCustodyReference, PendingCustomerLeaf, RestoredCustomerLeaf};
 use napi::bindgen_prelude::{BigInt, Buffer};
 use napi::{Result, Status};
 use napi_derive::napi;
@@ -97,6 +97,9 @@ impl NativeCustomerCredential {
     /// The actual original configured HTTPS origin, not caller-supplied mutable metadata.
     #[napi(getter)]
     pub fn origin(&self) -> String { self.origin.origin().ascii_serialization() }
+    /// Nonsecret original OS generation receipt. Persist it before restart cleanup.
+    #[napi(getter)]
+    pub fn custody_reference(&self) -> String { self.inner.reference().encode() }
     /// Only exportable key material.
     #[napi(getter)]
     pub fn public_key(&self) -> Result<String> {
@@ -184,12 +187,17 @@ impl NativeCustomerCredential {
 
 /// Restore the original namespace, including an expired public certificate for SQL renewal.
 #[napi]
-pub async fn open_native_customer_credential(login_origin: String, public_key: String, birth: String, certificate: String) -> Result<Option<NativeCustomerCredential>> {
+pub async fn open_native_customer_credential(login_origin: String, public_key: String, birth: String, certificate: String, custody_reference: Option<String>) -> Result<Option<NativeCustomerCredential>> {
     let origin = origin(&login_origin)?;
     let namespace = namespace(&origin, &public_key, &birth, &certificate)?;
     let expected = account::public_key(&public_key).map_err(error)?.to_bytes();
+    let reference = custody_reference.as_deref().map(CustomerCustodyReference::decode).transpose().map_err(error)?;
     let leaf = blocking(move || {
-        let leaf = match RestoredCustomerLeaf::open(namespace) {
+        let restored = match reference {
+            Some(reference) => RestoredCustomerLeaf::open_at(namespace, &reference),
+            None => RestoredCustomerLeaf::open(namespace),
+        };
+        let leaf = match restored {
             Ok(leaf) => leaf,
             Err(acyclic_native_runtime::customer_custody::CustodyError::NotFound) => return Ok(None),
             Err(failure) => return Err(error(failure)),

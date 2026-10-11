@@ -4,12 +4,16 @@ import { inspectAccountHolder } from "./account.js";
 import { isNodeRuntime, loadWorkersNativeModule } from "./binding.js";
 import { WorkersTransportError } from "./client.js";
 
+/** Rust-encoded nonsecret original namespace/generation receipt; not a key or bearer. */
+export type NativeCustomerCustodyReference = RawCredential["custodyReference"];
 /** Public signed tuple; it contains neither a private key nor a SQL session. */
 export interface NativeCustomerPublicTuple {
   readonly origin: string;
   readonly publicKey: string;
   readonly birth: string;
   readonly certificate: string;
+  /** Required when reopening a persisted current or retired handle after restart. */
+  readonly custodyReference?: NativeCustomerCustodyReference;
 }
 export interface NativeCustomerEnrollment {
   readonly origin: string;
@@ -35,6 +39,7 @@ export class NativeCustomerCredentialNotFound extends Error {
 export interface NativeCustomerCredential {
   readonly origin: string;
   readonly publicKey: string;
+  readonly custodyReference: NativeCustomerCustodyReference;
   readonly metadata: AccountHolderMetadata;
   mint(credentialId: string, lifetimeSeconds: bigint, signal?: AbortSignal): Promise<AccountIssuedCredential>;
   requestIdentity(request: NativeIdentityRequest): Promise<NativeIdentityResult>;
@@ -83,6 +88,7 @@ async function restored(raw: RawCredential, tuple: NativeCustomerPublicTuple): P
   return Object.freeze({
     origin: raw.origin,
     publicKey: metadata.publicKey,
+    custodyReference: raw.custodyReference,
     metadata,
     async mint(credentialId: string, lifetimeSeconds: bigint, signal?: AbortSignal): Promise<AccountIssuedCredential> {
       const handle = current();
@@ -137,7 +143,7 @@ export async function generateNativeCustomerLeaf(): Promise<PendingNativeCustome
 export async function openNativeCustomerCredential(tuple: NativeCustomerPublicTuple): Promise<NativeCustomerCredential> {
   const snapshot = { ...tuple };
   const native = await binding();
-  const handle = await native.openNativeCustomerCredential(snapshot.origin, snapshot.publicKey, snapshot.birth, snapshot.certificate);
+  const handle = await native.openNativeCustomerCredential(snapshot.origin, snapshot.publicKey, snapshot.birth, snapshot.certificate, snapshot.custodyReference);
   if (handle === null || handle === undefined) throw new NativeCustomerCredentialNotFound();
   return restored(handle, snapshot);
 }

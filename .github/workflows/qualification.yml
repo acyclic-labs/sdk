@@ -29,8 +29,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: sdk-qualification-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: sdk-qualification-${{ inputs.release_tag || inputs.source_ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && !inputs.source_ref && !inputs.release_tag) }}
 
 env:
   CARGO_PROFILE_DEV_DEBUG: '0'
@@ -214,12 +214,12 @@ jobs:
           artifact: ${{ matrix.artifact }}
           artifact_path: ${{ matrix.artifact_path }}
 
-  # Records qualified lanes and forwards reused artifacts. It is not the
-  # required check, but release workflows only accept fully successful runs.
+  # Only a complete successful matrix records reusable proofs and forwards artifacts.
+  # Canceled or partial runs retain their diagnostic artifacts but cannot seed caches.
   record:
     name: record
     needs: [ plan, qualification ]
-    if: always() && needs.plan.result == 'success'
+    if: always() && !cancelled() && needs.plan.result == 'success' && (needs.qualification.result == 'success' || (needs.plan.outputs.matrix == '[]' && needs.qualification.result == 'skipped'))
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
