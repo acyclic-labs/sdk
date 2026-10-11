@@ -37,6 +37,11 @@ one after admission detaches the observer but does not undo the operation.
 Operations created from the same `NativeFile` run in first-poll order. Merely
 creating a future does not submit I/O or hold up later operations. Once polled,
 an operation keeps its place even if its observer is dropped.
+Observer drop does not synchronously drain an accepted blocking job. Any mounted
+original-work activation needed by that job therefore lives in its accepted
+payload, not only in the waiting future. Polling a completed panicking job resumes
+the original panic payload after its operation locals and terminal controls
+retire; it does not replace that payload with an allocated I/O diagnostic.
 An uncertain Linux completion poisons that `NativeFile` rather than allowing a
 later sync, resize, or write to overtake a possibly in-flight operation.
 Malformed CQ identities remain in bounded process-owned retirement state because

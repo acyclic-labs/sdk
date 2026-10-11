@@ -25,6 +25,11 @@ performed before a cancellation or budget failure; measured helpers use the cano
 allocation ledger rather than fixed counters.
 Native Harness preparation selects fully finite resource allowances; the low-level
 SDK still honors intentional `UNBOUNDED` allowances in the same measured engine.
+Standalone native measured wrappers return failures as an inline `(cause,
+WorkCounters)` pair. Constructor rejection does not allocate a counter box.
+Composition uses borrowed `*_with_work` / `*_with_native_work` producers on the
+same original ledger, rather than creating a remaining-budget ledger and merging
+receipts afterwards.
 Native host root and directory witnesses retain raw 16-byte allocation identities
 across held-handle
 mutations. Unsupported platform mutations report a typed error; recursive cleanup
@@ -56,6 +61,17 @@ before construction. Necessary short-frame future boxes likewise admit their act
 compiled size and preserve nested failure work, rather than using a fixed estimate
 or removing the stack boundary. Cancellation remains cooperative with OS I/O;
 receipts wait for accepted workers and their retained buffers to retire.
+Dropping an observer does not drain accepted work: its mounted original-work
+activation and payload custody remain in the accepted worker until completion.
+
+The Memory immutable-object store uses one sorted resident vector and binary
+search for both ordinary and native operations. Capacity is admitted before
+reservation; observed capacity remains guarded until its backing buffer dies.
+Replacement frees old backing before releasing its guard. Native encoded objects
+move their existing vector custody into the immutable `Bytes` owner, so persisted
+aliases retain it until their final physical drop without adopting the data twice.
+These are logical SDK-owned payload/slot bounds, not allocator/RSS or opaque
+standard-library tree-node footprint claims.
 
 Mounted callback receipts include SDK-completed prefixes from ordinary lookup
 errors as well as successful callbacks. Expected misses do not poison the source.
