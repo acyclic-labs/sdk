@@ -1720,6 +1720,14 @@ impl From<acyclic_fs::WorkspaceError> for Error {
     }
 }
 
+/// Moves the complete driven-join cause and its intrinsic custody without formatting.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::DrivenJoinError> for Error {
+    fn from(source: acyclic_fs::DrivenJoinError) -> Self {
+        Self::NativeDrivenJoin { source, custody: None }
+    }
+}
+
 /// Moves the complete lazy-source failure and its intrinsic custody without formatting.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::LazyWorkspaceError> for Error {

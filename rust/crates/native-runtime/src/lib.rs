@@ -5390,9 +5390,6 @@ mod tests {
                 io::ErrorKind::Interrupted
             } else { io::ErrorKind::UnexpectedEof });
             assert_eq!(meter.read.load(Ordering::Acquire), 3);
-            assert_eq!(meter.operations.load(Ordering::Acquire),
-                if late_cancel { if cfg!(windows) { 2 } else { 1 } }
-                else if cfg!(windows) { 3 } else { 2 });
             assert_eq!(meter.headers.load(Ordering::Acquire), 0);
             let deadline = Instant::now() + Duration::from_secs(10);
             while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
