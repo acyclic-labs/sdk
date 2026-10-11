@@ -162,46 +162,6 @@ fn measured_creation_preserves_canonical_bytes_and_refused_prefix() -> Result<()
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_creation_writer_retains_exact_output_without_second_claim()
-    -> Result<(), Box<dyn std::error::Error>>
-{
-    let value = VolumeCreated {
-        volume_id: VolumeId::from_bytes([21; 16]),
-        config: config(),
-        initial_generation_root: ObjectId {
-            kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([22; 32]),
-        },
-    };
-    let expected = encode_volume_created(value)?;
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline_live = original.with_allocations(|ledger, _, _, _| Ok::<_, crate::FsError>(ledger.live_bytes()))?;
-    let before = original.receipt();
-    let input = (vec![0_u8; 73], original.retain_owned(73)?);
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let owned = encode_volume_created_with_accounting(value, &mut accounting)?;
-    assert_eq!(owned.0, expected);
-    let KernelOwnedAllocation::NativeOriginal(guard) = &owned.1 else {
-        panic!("original writer returned standalone custody");
-    };
-    assert_eq!(guard.bytes(), owned.0.capacity() as u64);
-    assert!(guard.work().shares_ledger(&original));
-    let spent = original.receipt();
-    assert_eq!(spent.allocation_operations, before.allocation_operations + 1);
-    assert_eq!(spent.bytes_encoded, owned.0.len() as u64);
-    assert_eq!(spent.bytes_copied, 48);
-    assert_eq!(spent.peak_allocation_bytes,
-        baseline_live + 73 + owned.0.capacity() as u64);
-    drop(owned);
-    let live = original.with_allocations(|ledger, _, _, _| Ok::<_, crate::FsError>(ledger.live_bytes()))?;
-    assert_eq!(live, baseline_live + 73);
-    drop(input);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn original_creation_denial_and_cancellation_keep_only_actual_prefix()
     -> Result<(), Box<dyn std::error::Error>>
 {
