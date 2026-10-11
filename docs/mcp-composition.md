@@ -98,8 +98,17 @@ actual Serde cause and reservation until physical error drop. This is a logical
 storage bound, not allocator metadata, RSS, or an observed allocation count.
 The ingress adapter validates bounded complete frames as `RawValue` before the
 library codec sees them, preventing its malformed-input debug event from logging
-private stdout. The codec decodes raw JSON; Harness then hydrates it using its
-existing unbounded-depth JSON contract. A retained scan offset visits incomplete
+private stdout. The codec decodes raw JSON; ordinary Harness hydration retains
+its existing depth policy. The native-work entry points use the same phases and
+seven methods, with bounded lexical admission (maximum depth 256), an audited
+RawValue/Value quota before trusted serde, and the original operation's live
+allocation ledger. First/follow-up write guards and the final result guard move
+to the process caller; that caller must physically drop payloads before guards.
+Partial stdout and parser storage retain custody until physical exchange drop.
+Cumulative stdout denial precedes copying, and accounting-mode/ledger mismatch,
+malformed output, or cancellation permanently fails the exchange. These APIs do
+not create a meter, launch owner, callback route, retry, or process continuation.
+A retained scan offset visits incomplete
 prefix bytes once. Development controls exercise 192-level JSON, split BOM/CRLF,
 and malformed private input, with an unguarded library log as a negative control.
 Native MCP tool-journal binding, receipt fault/restart and actual host-death
