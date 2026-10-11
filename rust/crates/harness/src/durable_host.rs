@@ -1946,6 +1946,41 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    async fn cancel_with_work(
+        &self,
+        task_id: TaskId,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        let operation_id = OperationId::from_bytes(task_id.into_bytes());
+        let mut key = String::new();
+        if let Some(io) = work.as_deref_mut() {
+            io.admit_copy(48)?;
+            io.reserve_text(&mut key, 48)?;
+            io.copy_bytes(48)?;
+        }
+        use std::fmt::Write as _;
+        write!(&mut key, "task-cancel:{operation_id}").expect("writing into String");
+        self.coordinator.lock().await.cancel_operation_with_work(
+            &self.owner, &self.owner_scope, &self.verifier, operation_id,
+            IdempotencyKey::new(key)?, true, work,
+        ).await?;
+        Ok(())
+    }
+
+    /// Requests cancellation using the original signed owner and retained retry
+    /// identity on the existing native ledger. An ACK is not terminal cleanup.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn cancel_with_native_work(
+        &self,
+        task_id: TaskId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.cancel_with_work(task_id, &mut Some(&mut io)).await
+    }
+
     /// Authenticates operation controls against this task owner's trust root.
     /// Actual observation/cancellation also verifies the retained operation owner.
     pub async fn authorize_operation_control(
@@ -4799,22 +4834,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     }
 
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
-            self.coordinator
-                .lock()
-                .await
-                .cancel_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    operation_id,
-                    IdempotencyKey::new(format!("task-cancel:{operation_id}"))?,
-                    true,
-                )
-                .await?;
-            Ok(())
-        })
+        Box::pin(async move { self.cancel_with_work(task_id, &mut None).await })
     }
 
     fn interact<'a>(

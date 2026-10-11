@@ -197,6 +197,9 @@ Native durable-host callbacks borrow the original lease fence and return a funde
 their owned metadata. Custom hosts reject unsupported native callbacks before
 allocating a future or starting SDK IO; a native execution preflight does not
 authenticate a task or authorize a dispatch.
+Native cancellation likewise retains the ordinary retry key and signed owner
+authorization on the same observed coordinator engine. Its acknowledgement
+requests cancellation; it does not assert process exit or namespace cleanup.
 
 Native model claims use that same current-owner gate, retained admission and
 session ceilings, canonical lease digest and original keyed coordinator append.

@@ -1157,3 +1157,39 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
 
 mod mailbox_parcels;
 mod source_authorization;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    fixture.host.cancel_with_native_work(fixture.root, &work).await?;
+    fixture.host.cancel_with_native_work(fixture.root, &work).await?;
+    let state = fixture.host.observe_task(fixture.root).await?;
+    assert!(state.cancellation_requested);
+    assert!(state.outcome.is_none());
+    assert!(work.receipt().backend_read_operations > 0);
+    let before = work.receipt().backend_read_operations;
+    cancellation.cancel();
+    assert!(matches!(
+        fixture.host.cancel_with_native_work(fixture.root, &work).await,
+        Err(Error::NativeWork { .. })
+    ));
+    assert_eq!(work.receipt().backend_read_operations, before);
+
+    let fresh_cancellation = acyclic_fs::CancellationToken::new();
+    let mut minimal = creation_control_budget();
+    minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+    let denied = acyclic_fs::NativeMaterializationWork::new(
+        minimal, &fresh_cancellation,
+    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    assert!(matches!(
+        fixture.host.cancel_with_native_work(fixture.root, &denied).await,
+        Err(Error::NativeWork { .. })
+    ));
+    assert_eq!(denied.receipt().backend_read_operations, 0);
+    Ok(())
+}

@@ -5901,6 +5901,16 @@ pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool
     read_granted_with_work(grants, file, &mut None)
 }
 
+#[cfg(feature = "filesystem")]
+pub(crate) fn read_granted_measured(
+    grants: &Capabilities,
+    file: &FileRef,
+    io: &crate::filesystem::PreparationIo,
+) -> Result<bool> {
+    let mut history = io.history_io();
+    read_granted_with_work(grants, file, &mut Some(&mut history))
+}
+
 pub(crate) fn read_granted_with_work(
     grants: &Capabilities,
     file: &FileRef,
