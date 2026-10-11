@@ -28,9 +28,41 @@ pub struct WorkflowCommand {
 impl WorkflowCommand {
     /// Rejects malformed public command contracts before checkpoint commit.
     pub fn validate(&self) -> Result<()> {
-        crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
-        self.payload.validate()
+        self.validate_with_work(&mut None)
     }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = work.as_ref().is_some_and(|observer| {
+            observer.original_native_work().is_some()
+        });
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let native = false;
+        if native {
+            if !crate::contract::is_valid_component_label(&self.kind) {
+                return Err(workflow_command_invalid());
+            }
+        } else {
+            crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
+        }
+        self.payload.validate_with_work(work)
+    }
+}
+
+fn workflow_command_invalid() -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    { Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "workflow command kind is invalid",
+    } }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    { Error::Invalid("workflow command kind is invalid".into()) }
 }
 
 /// Stable identity of a resumable state-machine implementation.
@@ -494,36 +526,36 @@ impl WorkflowRecord {
 }
 
 fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
-    validate_commands_with_io(commands, None)
+    validate_commands_with_work(commands, &mut None)
 }
 
-fn validate_commands_with_io(
-    commands: &[WorkflowCommand], io: Option<&crate::executor::PreparationIo>,
+fn validate_commands_with_work(
+    commands: &[WorkflowCommand], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    // Actual command identity slots, not opaque tree nodes or allocator stats.
-    #[cfg(feature = "filesystem")]
-    let _identities = if let Some(io) = io {
-        let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
-            .ok_or_else(|| Error::Invalid("workflow command set ownership overflow".into()))? as u64;
-        Some(io.reserve_decode(bytes)?)
-    } else { None };
+    let bytes = commands.len().checked_mul(std::mem::size_of::<OperationId>())
+        .ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "workflow command set ownership overflow" };
+            }
+            Error::Invalid("workflow command set ownership overflow".into())
+        })? as u64;
+    let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
     let mut identities = BTreeSet::new();
     for command in commands {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let work = acyclic_fs::WorkCounters {
-                items_examined: command.kind.len() as u64 + 1, ..Default::default()
-            };
-            io.preflight(work)?;
-            io.charge(work)?;
-            let _metadata;
-            let metadata = io.encode_json(&command.payload, io.remaining()?.bytes_encoded, false)?;
-            _metadata = io.guard_owned(metadata.len() as u64)?;
+        command.validate_with_work(custody.work())?;
+        if let Some(observer) = custody.work().as_deref_mut() {
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        command.validate()?;
         if !identities.insert(command.operation_id) {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if custody.work().as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "workflow command identity is duplicated",
+                });
+            }
             return Err(Error::Conflict(
                 "workflow command identity is duplicated".into(),
             ));
@@ -1431,6 +1463,12 @@ fn validate_commands_with_io(
     let _workspace = io.map(|io| {
         crate::executor::reserve_preparation_workspace(&commands, io)
     }).transpose()?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let mut observer = io.history_io();
+        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        return validate_commands_with_work(commands, &mut work);
+    }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     validate_commands(commands)
