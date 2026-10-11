@@ -59,14 +59,28 @@ impl NativeHistoryIo<'_> {
         if values.len() < values.capacity() { return Ok(()); }
         let old = values.capacity();
         let target = old.checked_mul(2).unwrap_or(maximum).max(4).min(maximum);
+        if target <= old {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid, reason: "vector exceeds declared bound",
+            });
+        }
         let extra = target.checked_sub(old).and_then(|count| count.checked_mul(size_of::<T>()))
             .ok_or_else(|| self.native_error(NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))? as u64;
-        self.admit_owned(extra)?;
-        self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
-        values.try_reserve_exact(target - values.len()).map_err(error)?;
+        self.retain(extra)?;
+        if let Err(cause) = self.charge(WorkCounters {
+            allocation_operations: u64::from(extra != 0), ..WorkCounters::default()
+        }) {
+            self.release_owned(extra)?;
+            return Err(cause);
+        }
+        if let Err(cause) = values.try_reserve_exact(target - values.len()) {
+            self.release_owned(extra)?;
+            return Err(error(cause));
+        }
         let actual = values.capacity().checked_sub(old).and_then(|count| count.checked_mul(size_of::<T>()))
             .ok_or_else(|| self.native_error(NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))? as u64;
-        self.retain(actual)
+        if actual > extra { self.retain(actual - extra) }
+        else { self.release_owned(extra - actual) }
     }
 }
 
@@ -116,12 +130,11 @@ impl HistoryIo for NativeHistoryIo<'_> {
         Ok(Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
     }
     fn clone_text(&mut self, text: &str) -> Result<String> {
-        self.admit_owned(text.len() as u64)?;
-        self.charge(WorkCounters { bytes_copied: text.len() as u64, allocation_operations: u64::from(!text.is_empty()), ..WorkCounters::default() })?;
-        let mut copy = String::new();
-        copy.try_reserve_exact(text.len()).map_err(error)?;
-        copy.push_str(text);
-        self.retain(copy.capacity() as u64)?;
+        let (copy, custody) =
+            crate::conversation::clone_native_reference_text(text, self.work)?;
+        // The scalar factory gates the actual reserve and copy separately.
+        // Failed growth cannot spend a copy which never happened.
+        self.absorb_native_custody(custody)?;
         Ok(copy)
     }
     fn reserve_events(&mut self, values: &mut Vec<Event>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
@@ -131,18 +144,36 @@ impl HistoryIo for NativeHistoryIo<'_> {
     fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
         if capacity <= values.capacity() { return Ok(()); }
         let old = values.capacity();
-        self.admit_owned((capacity - old) as u64)?;
-        self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
-        values.try_reserve_exact(capacity - values.len()).map_err(error)?;
-        self.retain((values.capacity() - old) as u64)
+        let extra = (capacity - old) as u64;
+        self.retain(extra)?;
+        if let Err(cause) = self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() }) {
+            self.release_owned(extra)?;
+            return Err(cause);
+        }
+        if let Err(cause) = values.try_reserve_exact(capacity - values.len()) {
+            self.release_owned(extra)?;
+            return Err(error(cause));
+        }
+        let actual = (values.capacity() - old) as u64;
+        if actual > extra { self.retain(actual - extra) }
+        else { self.release_owned(extra - actual) }
     }
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
         if capacity <= text.capacity() { return Ok(()); }
         let old = text.capacity();
-        self.admit_owned((capacity - old) as u64)?;
-        self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
-        text.try_reserve_exact(capacity - text.len()).map_err(error)?;
-        self.retain((text.capacity() - old) as u64)
+        let extra = (capacity - old) as u64;
+        self.retain(extra)?;
+        if let Err(cause) = self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() }) {
+            self.release_owned(extra)?;
+            return Err(cause);
+        }
+        if let Err(cause) = text.try_reserve_exact(capacity - text.len()) {
+            self.release_owned(extra)?;
+            return Err(error(cause));
+        }
+        let actual = (text.capacity() - old) as u64;
+        if actual > extra { self.retain(actual - extra) }
+        else { self.release_owned(extra - actual) }
     }
     fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
         self.admit_owned(bytes)?;
@@ -271,6 +302,36 @@ mod tests {
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             ..WorkBudget::default()
         }
+    }
+
+    #[test]
+    fn native_string_copy_and_vector_growth_denials_preserve_actual_prefix() {
+        let cancellation = CancellationToken::new();
+        let mut budget = control_budget();
+        budget.peak_allocation_bytes += 128;
+        budget.bytes_copied = 32;
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original accounting state");
+        let mut io = native_work_io(&work).expect("original observer");
+        let before = work.receipt();
+        assert!(matches!(io.clone_text("original payload"), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations", ..
+            }), custody: None,
+        })));
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(io.custody.bytes(), 0);
+
+        let mut bytes = Vec::new();
+        assert!(matches!(io.reserve_bytes(&mut bytes, 16), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations", ..
+            }), custody: None,
+        })));
+        assert_eq!(bytes.capacity(), 0);
+        assert_eq!(io.custody.bytes(), 0);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     }
 
     #[test]

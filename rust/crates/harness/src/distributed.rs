@@ -3608,15 +3608,10 @@ pub(crate) async fn append_keyed_with_work<P: StreamProvider>(
             Ok(outcome)
         }
         Err(StreamError::Unavailable) => {
-            if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-            let mut received = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
-            match client.inspect_idempotency(key).await {
-                Ok(Some(observation)) => {
-                    // Inspect is evidence, never an SDK append acknowledgment.
-                    // Its raw envelope is accounted before examining its kind.
-                    let mut failure = None;
-                    observe_recovery_with_work(&observation, &mut received, &mut failure)?;
-                    if let Some(error) = failure { return Err(error); }
+            let mut received = crate::wire_codec::CodecQuota::from_retained(custody.work(), 0);
+            match inspect_idempotency_once_with_work(client, key, 0, received.work()).await? {
+                Ok(Some((observation, retained))) => {
+                    received.adopt(retained)?;
                     match observation.outcome {
                         IdempotencyOutcome::Append(outcome) => {
                             if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
@@ -3680,6 +3675,15 @@ pub(crate) fn execution_path_with_work(
     custody.transfer();
     Ok(path)
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommitPhase {
+    NotCalled,
+    Unknown,
+    Committed,
+    Conflict,
+    Failed,
+}
+
 
 /// The original SDK request and its producer-owned logical custody. Fields
 /// remain private so callers cannot claim that an unprotected request was built.
@@ -3688,6 +3692,7 @@ pub(crate) struct PreparedCommitRequest<'a, 'b> {
     request: acyclic_stream::CommitRequest,
     custody: crate::wire_codec::CodecQuota<'a, 'b>,
     vectors: u64,
+    phase: CommitPhase,
 }
 
 fn retain_received_owned(
@@ -3774,6 +3779,47 @@ fn observe_recovery_with_work(
     Ok(())
 }
 
+pub(crate) async fn inspect_idempotency_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    key: StreamIdempotencyKey,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Option<(acyclic_stream::IdempotencyObservation, u64)>> {
+    let retained_key = if work.is_some() { key.as_bytes().len() as u64 } else { 0 };
+    match inspect_idempotency_once_with_work(client, key, retained_key, work).await? {
+        Ok(observation) => Ok(observation),
+        Err(source) => Err(crate::store::operations::stream_error_with_work(source, work)),
+    }
+}
+
+// Aliased recovery keys remain owned by their original caller's guard; new
+// inspector keys transfer their already-retained payload through retained_key.
+async fn inspect_idempotency_once_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    key: StreamIdempotencyKey,
+    retained_key: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<std::result::Result<Option<(acyclic_stream::IdempotencyObservation, u64)>, StreamError>> {
+    let mut custody = crate::wire_codec::CodecQuota::from_retained(work, retained_key);
+    let key = key;
+    if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
+    let inspected = client.inspect_idempotency(key).await;
+    match inspected {
+        Err(source) => Ok(Err(source)),
+        Ok(None) => Ok(Ok(None)),
+        Ok(Some(observation)) => {
+            let mut failure = None;
+            observe_recovery_with_work(&observation, &mut custody, &mut failure)?;
+            if let Some(error) = failure { return Err(error); }
+            if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
+            // The original SDK future has physically consumed its input key.
+            custody.relinquish(retained_key)?;
+            let retained = custody.retained();
+            custody.transfer();
+            Ok(Ok(Some((observation, retained))))
+        }
+    }
+}
+
 fn reserve_prepared_vector<T>(
     values: &mut Vec<T>,
     capacity: usize,
@@ -3819,8 +3865,26 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             },
             custody: crate::wire_codec::CodecQuota::new(work, 0)?,
             vectors: 0,
+            phase: CommitPhase::NotCalled,
         })
     }
+
+    pub(crate) fn new_with_retained_key(
+        key: StreamIdempotencyKey,
+        retained_key_bytes: u64,
+        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+    ) -> Self {
+        Self {
+            request: acyclic_stream::CommitRequest {
+                conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
+            },
+            custody: crate::wire_codec::CodecQuota::from_retained(work, retained_key_bytes),
+            vectors: 0,
+            phase: CommitPhase::NotCalled,
+        }
+    }
+
+    pub(crate) fn commit_phase(&self) -> CommitPhase { self.phase }
 
     pub(crate) fn new_with_digest(
         digest: [u8; 32],
@@ -3839,7 +3903,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             request: acyclic_stream::CommitRequest {
                 conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
             },
-            custody, vectors: 0,
+            custody, vectors: 0, phase: CommitPhase::NotCalled,
         };
         if let Some(work) = prepared.work().as_deref_mut() {
             work.retain_owned(32)?;
@@ -3872,6 +3936,65 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         self.request.mutations.push(acyclic_stream::CommitMutation::Append { path, records });
         Ok(())
     }
+
+    /// Calls the original SDK once. The inner error is the original unit SDK
+    /// error; successful retained bytes transfer with the actual outcome.
+    pub(crate) async fn commit_once_with_work<P: StreamProvider>(
+        &mut self,
+        client: &StreamClient<P>,
+    ) -> Result<std::result::Result<(acyclic_stream::CommitOutcome, u64), StreamError>> {
+        if self.work().is_some() {
+            let (bytes, count) = self.request.mutations.iter().try_fold(
+                (0u64, 0u64), |(bytes, count), mutation| {
+                    let records = match mutation {
+                        acyclic_stream::CommitMutation::Append { records, .. }
+                        | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+                    };
+                    let bytes = records.iter().try_fold(bytes, |bytes, record| {
+                        bytes.checked_add(record.len() as u64)
+                            .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
+                                "commit payload byte count overflows"))
+                    })?;
+                    let count = count.checked_add(records.len() as u64)
+                        .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
+                            "commit record count overflows"))?;
+                    Ok::<_, Error>((bytes, count))
+                },
+            )?;
+            if let Some(work) = self.work().as_deref_mut() {
+                work.admit_acknowledgment(bytes, count)?;
+                work.begin_write()?;
+            }
+        }
+        let key = self.request.idempotency_key.clone();
+        let request = std::mem::replace(&mut self.request, acyclic_stream::CommitRequest {
+            conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
+        });
+        self.phase = CommitPhase::Unknown;
+        let committed = client.commit(request).await;
+        self.phase = match &committed {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Conflict,
+            Err(StreamError::Unavailable) => CommitPhase::Unknown,
+            Err(_) => CommitPhase::Failed,
+        };
+        if self.work().is_some() { self.custody.relinquish(self.vectors)?; }
+        self.vectors = 0;
+        let mut received = crate::wire_codec::CodecQuota::from_retained(self.custody.work(), 0);
+        let committed = committed;
+        match committed {
+            Err(source) => Ok(Err(source)),
+            Ok(outcome) => {
+                let mut failure = None;
+                observe_commit_with_work(&outcome, true, &mut received, &mut failure)?;
+                if let Some(error) = failure { return Err(error); }
+                if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
+                let retained = received.retained();
+                received.transfer();
+                Ok(Ok((outcome, retained)))
+            }
+        }
+    }
 }
 
 pub(crate) async fn commit_keyed<P: StreamProvider>(
@@ -3882,6 +4005,7 @@ pub(crate) async fn commit_keyed<P: StreamProvider>(
     let mut work = None;
     let prepared = PreparedCommitRequest {
         request, custody: crate::wire_codec::CodecQuota::new(&mut work, 0)?, vectors: 0,
+        phase: CommitPhase::NotCalled,
     };
     commit_prepared_with_work(client, prepared, operation).await
 }
@@ -3892,45 +4016,17 @@ pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
     operation: OperationId,
 ) -> Result<acyclic_stream::CommitOutcome> {
     let key = prepared.request.idempotency_key.clone();
-    if prepared.work().is_some() {
-        let (bytes, count) = prepared.request.mutations.iter().try_fold(
-            (0u64, 0u64), |(bytes, count), mutation| {
-                let records = match mutation {
-                    acyclic_stream::CommitMutation::Append { records, .. }
-                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-                };
-                let bytes = records.iter().try_fold(bytes, |bytes, record| {
-                    bytes.checked_add(record.len() as u64)
-                        .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
-                            "commit payload byte count overflows"))
-                })?;
-                let count = count.checked_add(records.len() as u64)
-                    .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
-                        "commit record count overflows"))?;
-                Ok::<_, Error>((bytes, count))
-            },
-        )?;
-        if let Some(work) = prepared.work().as_deref_mut() {
-            work.admit_acknowledgment(bytes, count)?;
-            work.begin_write()?;
-        }
-    }
-    let request = std::mem::replace(&mut prepared.request, acyclic_stream::CommitRequest {
-        conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key.clone(),
-    });
-    let committed = client.commit(request).await;
-    if prepared.work().is_some() { prepared.custody.relinquish(prepared.vectors)?; }
-    prepared.vectors = 0;
+    let committed = prepared.commit_once_with_work(client).await?;
     let mut received = crate::wire_codec::CodecQuota::from_retained(prepared.work(), 0);
-    let (outcome, direct_acknowledgment) = match committed {
-        Ok(outcome) => (outcome, true),
+    let outcome = match committed {
+        Ok((outcome, retained)) => {
+            received.adopt(retained)?;
+            outcome
+        }
         Err(StreamError::Unavailable) => {
-            if let Some(work) = received.work().as_deref_mut() { work.begin_call()?; }
-            match client.inspect_idempotency(key).await {
-                Ok(Some(observation)) => {
-                    let mut failure = None;
-                    observe_recovery_with_work(&observation, &mut received, &mut failure)?;
-                    if let Some(error) = failure { return Err(error); }
+            match inspect_idempotency_once_with_work(client, key, 0, received.work()).await? {
+                Ok(Some((observation, retained))) => {
+                    received.adopt(retained)?;
                     let metadata = if received.work().is_some() {
                         observation.idempotency_key.as_bytes().len() as u64
                     } else { 0 };
@@ -3938,7 +4034,7 @@ pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
                     drop(idempotency_key);
                     received.relinquish(metadata)?;
                     match outcome {
-                        IdempotencyOutcome::Commit(outcome) => (outcome, false),
+                        IdempotencyOutcome::Commit(outcome) => outcome,
                         _ => return Err(coordinator_boundary(received.work(), wire::ErrorCode::Conflict,
                             "commit recovery identity reused")),
                     }
@@ -3948,11 +4044,6 @@ pub(crate) async fn commit_prepared_with_work<P: StreamProvider>(
         }
         Err(error) => return Err(crate::store::operations::stream_error_with_work(error, received.work())),
     };
-    if direct_acknowledgment {
-        let mut failure = None;
-        observe_commit_with_work(&outcome, true, &mut received, &mut failure)?;
-        if let Some(error) = failure { return Err(error); }
-    }
     if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
     received.transfer();
     Ok(outcome)
@@ -4386,6 +4477,63 @@ mod tests {
         assert!(matches!(error, Error::NativeWork { .. }));
         assert_eq!(observer.into_custody().bytes(), 0, "input physically dropped before release");
         assert_eq!(work.receipt().backend_write_operations, 0);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_commit_once_preserves_original_sdk_error_and_separate_inspection() {
+        use std::sync::atomic::Ordering;
+        for lost_ack in [false, true] {
+            let provider = Arc::new(LostSessionAck::default());
+            let client = StreamClient::new(provider.clone());
+            let path = acyclic_stream::StreamPath::new("native-one-shot-commit").expect("original path");
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut budget = keyed_append_native_budget();
+            budget.bytes_copied = 64;
+            budget.bytes_hashed = 2 * (b"acyclic-harness-coordinator-v3".len() + "native-once-key".len()) as u64;
+            budget.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 8192;
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .expect("original ledger");
+            let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+            let mut optional = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+            let key = stream_key_with_work("native-once-key", &mut optional).expect("original paid key");
+            let mut prepared = PreparedCommitRequest::new_with_retained_key(key, 32, &mut optional);
+            assert_eq!(prepared.commit_phase(), CommitPhase::NotCalled);
+            prepared.push_condition(acyclic_stream::CommitCondition::Tail {
+                path: path.clone(), expected: 0,
+            }).expect("original condition");
+            prepared.append(path.clone(), Bytes::from_static(b"original")).expect("original record");
+            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
+            let result = prepared.commit_once_with_work(&client).await.expect("one SDK boundary");
+            assert_eq!(prepared.commit_phase(), if lost_ack { CommitPhase::Unknown } else { CommitPhase::Committed });
+            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), 0, "once never reconciles or inspects");
+            let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+            let quota = crate::wire_codec::CodecQuota::from_retained(prepared.work(), retained);
+            let result = result;
+            match result {
+                Err(source) => assert_eq!(source, StreamError::Unavailable),
+                Ok((outcome, _)) => {
+                    assert!(matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_)));
+                    drop(outcome);
+                }
+            }
+            drop(quota);
+            drop(prepared);
+            let key = stream_key_with_work("native-once-key", &mut optional).expect("fresh original paid key");
+            let inspected = inspect_idempotency_with_work(&client, key, &mut optional).await
+                .expect("same original inspector").expect("actual immutable observation");
+            let quota = crate::wire_codec::CodecQuota::from_retained(&mut optional, inspected.1);
+            let (observation, _) = inspected;
+            assert!(matches!(&observation.outcome, IdempotencyOutcome::Commit(_)));
+            drop(observation);
+            drop(quota);
+            drop(optional);
+            assert_eq!(observer.into_custody().bytes(), 0, "actual keys/outcomes die before captured grants");
+            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), 1);
+            assert_eq!(work.receipt().authority_records_appended, u64::from(!lost_ack));
+            assert_eq!(work.receipt().authority_records_read, 1 + u64::from(!lost_ack));
+        }
     }
 
     struct TestReducer {

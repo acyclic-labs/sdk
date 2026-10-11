@@ -196,30 +196,30 @@ impl Limits {
 
     /// Checks every directly named file and attachment count before admission.
     pub fn validate_message(&self, message: &ConversationMessage) -> Result<()> {
-        message.validate()?;
-        self.validate_file(&message.content)?;
+        self.validate_message_with_work(message, &mut None)
+    }
+
+    pub(crate) fn validate_message_with_work(
+        &self, message: &ConversationMessage,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        message.validate_with_work(work)?;
+        self.validate_file_with_work(&message.content, work)?;
         match &message.attachments {
             ReferencedAttachments::Inline { items } => {
                 if items.len() > self.attachments {
-                    return Err(Error::Invalid("attachments exceed harness limits".into()));
+                    return Err(conversation_boundary(work, "attachments exceed harness limits"));
                 }
-                for item in items {
-                    self.validate_file(&item.file)?;
-                }
+                for item in items { self.validate_file_with_work(&item.file, work)?; }
             }
-            ReferencedAttachments::Manifest {
-                manifest,
-                item_count,
-            } => {
+            ReferencedAttachments::Manifest { manifest, item_count } => {
                 if *item_count as usize > self.attachments {
-                    return Err(Error::Invalid("attachments exceed harness limits".into()));
+                    return Err(conversation_boundary(work, "attachments exceed harness limits"));
                 }
-                self.validate_file(manifest)?;
+                self.validate_file_with_work(manifest, work)?;
             }
         }
-        for file in message.extensions.values() {
-            self.validate_file(file)?;
-        }
+        for file in message.extensions.values() { self.validate_file_with_work(file, work)?; }
         Ok(())
     }
 }
@@ -455,6 +455,50 @@ impl VolumeRef {
         let retained = io.owned_bytes()?;
         let guard = io.into_native_custody(retained)?;
         Ok((value, guard))
+    }
+
+    /// Deep-copies the known volume fields using the original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let volume = self.clone_with_work(&mut Some(&mut observer))?;
+        Ok((volume, observer.into_custody()))
+    }
+
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        if work.is_none() { return Ok(self.clone()); }
+        self.validate_with_work(work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let volume = self.clone_in_quota(&mut quota)?;
+        quota.transfer();
+        Ok(volume)
+    }
+
+    pub(crate) fn clone_in_quota(
+        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        let namespace = clone_owned_file_text(self.provider.namespace(), quota)?;
+        let family = clone_owned_file_text(self.provider.family(), quota)?;
+        let version = clone_owned_file_text(self.provider.version(), quota)?;
+        let provider = ProviderRef::new_with_work(namespace, family, version, quota.work())?;
+        let volume = Self {
+            provider,
+            id: clone_owned_file_text(&self.id, quota)?,
+            class: self.class,
+            owner: match &self.owner {
+                VolumeOwner::Project(text) => VolumeOwner::Project(clone_owned_file_text(text, quota)?),
+                VolumeOwner::Session(text) => VolumeOwner::Session(clone_owned_file_text(text, quota)?),
+                VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
+            },
+        };
+        volume.validate_with_work(quota.work())?;
+        Ok(volume)
     }
 
     /// Owner-issued read capability for a directory and its descendants.
@@ -1236,6 +1280,20 @@ impl FileRef {
         };
         value.validate()?;
         Ok(value)
+    }
+
+    pub(crate) fn from_owned_value_with_work(
+        value: serde_json::Value,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            return native_file_from_owned_value(value, work);
+        }
+        let file: Self = serde_json::from_value(value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        file.validate_with_work(work)?;
+        Ok(file)
     }
 
     /// Validates a ref decoded at any external boundary.
@@ -2388,7 +2446,7 @@ impl ReferencedAttachments {
         self.validate_with_work(&mut None)
     }
 
-    fn validate_with_work(
+    pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         match self {
@@ -2645,69 +2703,46 @@ impl FileRef {
     pub(crate) fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        self.validate_with_native_work(work)?;
-        let (allocations, copied) = self.clone_work_recipe()?;
-        work.admit(acyclic_fs::WorkCounters {
-            allocation_operations: allocations, bytes_copied: copied,
-            ..acyclic_fs::WorkCounters::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        // Every completed field remains covered if a later field fails.
-        let mut allocation = work.retain_owned(0)
+        let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let file = Self {
-            volume: VolumeRef {
-                provider: self.volume.provider.clone_in_native_allocation(work, &mut allocation)?,
-                id: clone_native_reference_text_into(&self.volume.id, work, &mut allocation)?,
-                class: self.volume.class,
-                owner: match &self.volume.owner {
-                    VolumeOwner::Project(text) => VolumeOwner::Project(
-                        clone_native_reference_text_into(text, work, &mut allocation)?),
-                    VolumeOwner::Session(text) => VolumeOwner::Session(
-                        clone_native_reference_text_into(text, work, &mut allocation)?),
-                    VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
-                },
-            },
-            path: clone_native_reference_text_into(&self.path, work, &mut allocation)?,
-            version: clone_native_reference_text_into(&self.version, work, &mut allocation)?,
-            descriptor: FileDescriptor {
-                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
-                media_type: clone_native_reference_text_into(
-                    &self.descriptor.media_type, work, &mut allocation)?,
-            },
-            display_name: clone_native_reference_text_into(&self.display_name, work, &mut allocation)?,
-        };
-        Ok((file, allocation))
+        let file = self.clone_with_work(&mut Some(&mut io))?;
+        Ok((file, io.into_custody()))
     }
 
-    pub(crate) fn admit_clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let (allocations, copied) = self.clone_work_recipe()?;
-            NativeReferenceClone { allocations, copied }.admit(io)?;
-        }
-        let _ = work;
-        Ok(())
-    }
-    pub(crate) fn observe_clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let (allocations, copied) = self.clone_work_recipe()?;
-            NativeReferenceClone { allocations, copied }.begin(io)?;
-        }
-        let _ = work;
-        Ok(())
-    }
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        self.admit_clone_with_work(work)?;
-        self.observe_clone_with_work(work)?;
-        Ok(self.clone())
+        if work.is_none() { return Ok(self.clone()); }
+        self.validate_with_work(work)?;
+        // Closure locals physically drop before this quota releases claims.
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let file = (|| -> Result<Self> {
+            let volume = self.volume.clone_in_quota(&mut quota)?;
+            let path = clone_owned_file_text(&self.path, &mut quota)?;
+            let version = clone_owned_file_text(&self.version, &mut quota)?;
+            let descriptor = FileDescriptor {
+                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
+                media_type: clone_owned_file_text(&self.descriptor.media_type, &mut quota)?,
+            };
+            descriptor.validate_with_work(quota.work())?;
+            let file = Self {
+                volume, path, version, descriptor,
+                display_name: clone_owned_file_text(&self.display_name, &mut quota)?,
+            };
+            file.validate_with_work(quota.work())?;
+            Ok(file)
+        })()?;
+        quota.transfer();
+        Ok(file)
     }
+}
+
+fn clone_owned_file_text(
+    source: &str, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<String> {
+    let text = quota.work().as_deref_mut().expect("observed file clone").clone_text(source)?;
+    quota.adopt(text.capacity() as u64)?;
+    Ok(text)
 }
 
 impl ConversationMessage {
@@ -2905,6 +2940,146 @@ fn conversation_boundary(
     }
     let _ = work;
     Error::Invalid(reason.into())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_owned_wire_inspect(
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn native_owned_wire_object(
+    value: serde_json::Value, fields: Option<&[&str]>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    native_owned_wire_inspect(work)?;
+    let serde_json::Value::Object(object) = value else {
+        return Err(conversation_boundary(work, "wire value must be an object"));
+    };
+    for key in object.keys() {
+        native_owned_wire_inspect(work)?;
+        if fields.is_some_and(|fields| !fields.contains(&key.as_str())) {
+            return Err(conversation_boundary(work, "wire object has an unknown field"));
+        }
+    }
+    Ok(object)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn native_owned_wire_field(
+    object: &mut serde_json::Map<String, serde_json::Value>, name: &str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<serde_json::Value> {
+    object.remove(name).ok_or_else(|| conversation_boundary(work, "wire object is missing a field"))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn native_owned_wire_text(
+    value: serde_json::Value,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<String> {
+    native_owned_wire_inspect(work)?;
+    match value {
+        serde_json::Value::String(text) => Ok(text),
+        _ => Err(conversation_boundary(work, "wire value must be a string")),
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_owned_volume_class(
+    value: serde_json::Value,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<VolumeClass> {
+    native_owned_wire_inspect(work)?;
+    let name = match value {
+        serde_json::Value::String(name) => name,
+        serde_json::Value::Object(variants) if variants.len() == 1 => {
+            let (name, value) = variants.into_iter().next().expect("one enum variant");
+            native_owned_wire_inspect(work)?;
+            native_owned_wire_inspect(work)?;
+            if !value.is_null() {
+                return Err(conversation_boundary(work, "volume class is invalid"));
+            }
+            name
+        }
+        _ => return Err(conversation_boundary(work, "volume class is invalid")),
+    };
+    match name.as_str() {
+        "project" => Ok(VolumeClass::Project),
+        "agent_private" => Ok(VolumeClass::AgentPrivate),
+        "session_shared" => Ok(VolumeClass::SessionShared),
+        _ => Err(conversation_boundary(work, "volume class is invalid")),
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_file_from_owned_value(
+    value: serde_json::Value,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<FileRef> {
+    // The producer's incoming Value guard remains LAST over all moved Strings.
+    let mut file = native_owned_wire_object(value,
+        Some(&["volume", "path", "version", "descriptor", "display_name"]), work)?;
+    let mut volume = native_owned_wire_object(native_owned_wire_field(&mut file, "volume", work)?,
+        Some(&["provider", "id", "class", "owner"]), work)?;
+    let provider = ProviderRef::from_owned_value_with_work(
+        native_owned_wire_field(&mut volume, "provider", work)?, work)?;
+    let id = native_owned_wire_text(native_owned_wire_field(&mut volume, "id", work)?, work)?;
+    let class = native_owned_volume_class(native_owned_wire_field(&mut volume, "class", work)?, work)?;
+    // VolumeOwner's original adjacent-tag visitor ignores extra object fields.
+    let mut owner = native_owned_wire_object(native_owned_wire_field(&mut volume, "owner", work)?,
+        None, work)?;
+    let kind = native_owned_wire_text(native_owned_wire_field(&mut owner, "kind", work)?, work)?;
+    let owner_id = native_owned_wire_text(native_owned_wire_field(&mut owner, "id", work)?, work)?;
+    let owner = match kind.as_str() {
+        "project" => VolumeOwner::Project(owner_id),
+        "session" => VolumeOwner::Session(owner_id),
+        "agent" => {
+            let id = Uuid::parse_str(&owner_id)
+                .map_err(|_| conversation_boundary(work, "volume agent identity is invalid"))?;
+            VolumeOwner::Agent(AgentId::from_bytes(*id.as_bytes()))
+        }
+        _ => return Err(conversation_boundary(work, "volume owner kind is invalid")),
+    };
+    let volume = VolumeRef { provider, id, class, owner };
+    volume.validate_with_work(work)?;
+    let path = native_owned_wire_text(native_owned_wire_field(&mut file, "path", work)?, work)?;
+    let version = native_owned_wire_text(native_owned_wire_field(&mut file, "version", work)?, work)?;
+    let display_name = native_owned_wire_text(
+        native_owned_wire_field(&mut file, "display_name", work)?, work)?;
+    let mut descriptor = native_owned_wire_object(
+        native_owned_wire_field(&mut file, "descriptor", work)?,
+        Some(&["sha256", "byte_length", "media_type"]), work)?;
+    let digest = native_owned_wire_field(&mut descriptor, "sha256", work)?;
+    native_owned_wire_inspect(work)?;
+    let serde_json::Value::Array(digest) = digest else {
+        return Err(conversation_boundary(work, "SHA-256 digest must contain exactly 32 bytes"));
+    };
+    if digest.len() != 32 {
+        return Err(conversation_boundary(work, "SHA-256 digest must contain exactly 32 bytes"));
+    }
+    let mut sha256 = [0_u8; 32];
+    for (slot, value) in sha256.iter_mut().zip(digest) {
+        native_owned_wire_inspect(work)?;
+        *slot = value.as_u64().and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| conversation_boundary(work, "SHA-256 digest byte is invalid"))?;
+    }
+    let length = native_owned_wire_field(&mut descriptor, "byte_length", work)?;
+    native_owned_wire_inspect(work)?;
+    let byte_length = length.as_u64()
+        .ok_or_else(|| conversation_boundary(work, "file byte length is invalid"))?;
+    let media_type = native_owned_wire_text(
+        native_owned_wire_field(&mut descriptor, "media_type", work)?, work)?;
+    let descriptor = FileDescriptor { sha256, byte_length, media_type };
+    descriptor.validate_with_work(work)?;
+    let file = FileRef { volume, path, version, display_name, descriptor };
+    file.validate_with_work(work)?;
+    Ok(file)
 }
 
 fn conversation_conflict(
@@ -3408,14 +3583,20 @@ impl ConversationState {
     /// An archived cut is authenticated by the containing issuer snapshot; older
     /// cuts require an explicit read from the canonical history reader.
     pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
+        self.history_prefix_digest_with_work(through_sequence, &mut None)
+    }
+
+    pub(crate) fn history_prefix_digest_with_work(
+        &self, through_sequence: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<[u8; 32]> {
         let base = self.archived_through();
         if self.logical_revision() != base.saturating_add(self.messages.len() as u64)
             || through_sequence < base
             || through_sequence > self.logical_revision()
         {
-            return Err(Error::Invalid(
-                "history fingerprint requires a loaded dense logical prefix".into(),
-            ));
+            return Err(conversation_boundary(work,
+                "history fingerprint requires a loaded dense logical prefix"));
         }
         if through_sequence == base {
             return Ok(self
@@ -3424,11 +3605,11 @@ impl ConversationState {
                 .map_or([0; 32], |prefix| prefix.history_digest));
         }
         let position = usize::try_from(through_sequence - base - 1)
-            .map_err(|_| Error::Invalid("history prefix exceeds platform bounds".into()))?;
+            .map_err(|_| conversation_boundary(work, "history prefix exceeds platform bounds"))?;
         self.prefix_digests
             .get(position)
             .copied()
-            .ok_or_else(|| Error::Invalid("history prefix digest is missing".into()))
+            .ok_or_else(|| conversation_boundary(work, "history prefix digest is missing"))
     }
 
     pub(crate) fn checkpoint_covers_archived_prefix(
@@ -4060,6 +4241,74 @@ mod tests {
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
         assert_eq!(denied.receipt().bytes_hashed, 0);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        use crate::store::history::HistoryIo as _;
+        let source = file(AgentId::from_bytes([29; 16]), "native-partial-clone.txt")?;
+        let cancellation = CancellationToken::new();
+        let mut budget = native_conversation_budget();
+        budget.bytes_copied = 4 + source.volume().provider().namespace().len() as u64;
+        let native = NativeMaterializationWork::new(budget, &cancellation).expect("partial clone ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("partial clone observer");
+        let held = io.clone_text("held")?;
+        let before = native.receipt();
+        assert!(matches!(source.clone_with_work(&mut Some(&mut io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
+        assert_eq!(native.receipt().bytes_copied - before.bytes_copied,
+            source.volume().provider().namespace().len() as u64);
+        let guard = io.into_custody();
+        assert_eq!(guard.bytes(), held.capacity() as u64, "failed file fields are physically retired");
+        drop(held);
+        drop(guard);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        native.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_owned_file_wire_moves_original_strings_without_new_claims() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        use crate::store::history::HistoryIo as _;
+        let source = file(AgentId::from_bytes([28; 16]), "native-owned-value.txt")?;
+        let encoded = serde_json::to_vec(&source).map_err(|error| Error::Invalid(error.to_string()))?;
+        let source_token = CancellationToken::new();
+        let source_work = NativeMaterializationWork::new(native_conversation_budget(), &source_token)
+            .expect("original input Value ledger");
+        let mut source_io = crate::store::history::native_work_io(&source_work).expect("input decoder");
+        let (value, retained) = source_io.decode_json_value(&encoded)?;
+        let path = value.get("path").and_then(serde_json::Value::as_str)
+            .expect("original path String").as_ptr();
+        let namespace = value.get("volume").and_then(|volume| volume.get("provider"))
+            .and_then(|provider| provider.get("namespace")).and_then(serde_json::Value::as_str)
+            .expect("original provider String").as_ptr();
+        let incoming = source_io.take_native_custody(retained)?;
+        let source_receipt = source_work.receipt();
+        source_token.cancel();
+        let observer_token = CancellationToken::new();
+        let observer = NativeMaterializationWork::new(native_conversation_budget(), &observer_token)
+            .expect("independent consuming visitor ledger");
+        let mut io = crate::store::history::native_work_io(&observer).expect("owned visitor observer");
+        let before = observer.receipt();
+        let file = FileRef::from_owned_value_with_work(value, &mut Some(&mut io))?;
+        assert_eq!(file, source);
+        assert_eq!(file.path().as_ptr(), path);
+        assert_eq!(file.volume().provider().namespace().as_ptr(), namespace);
+        assert_eq!(observer.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(observer.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(observer.receipt().bytes_encoded + observer.receipt().bytes_hashed, 0);
+        assert!(observer.receipt().items_examined > before.items_examined);
+        assert_eq!(source_work.receipt(), source_receipt);
+        assert_eq!(io.into_custody().bytes(), 0, "the incoming guard, not a duplicate claim, owns Strings");
+        drop(file);
+        drop(incoming);
+        assert_eq!(source_io.into_custody().bytes(), 0);
         Ok(())
     }
 

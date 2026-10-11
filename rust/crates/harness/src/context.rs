@@ -143,7 +143,8 @@ pub struct CanonicalContextCheckpoint {
 }
 
 impl CanonicalContextCheckpoint {
-    /// Checks a bounded envelope. The owning journal must verify publication and read refs.
+    /// Checks a bounded envelope, sharing the I/O companion's policy and native scratch custody.
+    /// The owning journal must verify publication and read refs.
     pub fn validate(&self, limits: Limits) -> Result<()> {
         self.validate_with_io(limits, None)
     }
@@ -151,40 +152,56 @@ impl CanonicalContextCheckpoint {
     pub(crate) fn validate_with_io(
         &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        let _workspace = io.map(|io| crate::executor::reserve_preparation_workspace(self, io)).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        validate_context_limits_with_io(limits, io)?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         limits.validate()?;
+        #[cfg(feature = "filesystem")]
+        let _workspace = match io {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(io) if io.original_native_work().is_some() => None,
+            Some(io) => Some(crate::executor::reserve_preparation_workspace(self, io)?),
+            None => None,
+        };
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
         {
-            return Err(crate::Error::Invalid(
-                "canonical checkpoint coverage is invalid".into(),
-            ));
+            return Err(context_checkpoint_error(io, "canonical checkpoint coverage is invalid"));
         }
-        let mut unique = std::collections::BTreeSet::new();
-        for id in &self.selection.message_ids {
-            preparation_step(io)?;
-            unique.insert(id);
-        }
-        if unique.len() != self.selection.message_ids.len() {
-            return Err(crate::Error::Invalid(
-                "canonical checkpoint repeats source identities".into(),
-            ));
-        }
+        // Validate immutable references before the bounded scratch set grows.
+        // None and Some use this same policy; native diagnostics stay static.
         for reference in [&self.source, &self.retained, &self.compaction] {
-            preparation_step(io)?;
-            limits.validate_file(reference)?;
+            context_checkpoint_file(limits, reference, io)?;
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
             {
-                return Err(crate::Error::Invalid(
-                    "canonical checkpoint payload scope is invalid".into(),
-                ));
+                return Err(context_checkpoint_error(io, "canonical checkpoint payload scope is invalid"));
             }
         }
         if let Some(previous) = &self.selection.checkpoint {
-            limits.validate_file(previous)?;
+            context_checkpoint_file(limits, previous, io)?;
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _unique_guard = match io.and_then(crate::executor::PreparationIo::original_native_work) {
+            Some(work) => {
+                // Logical borrowed entry slots only. Opaque std tree nodes are
+                // outside the SDK allocator boundary, not invented operations.
+                let bytes = self.selection.message_ids.len()
+                    .checked_mul(std::mem::size_of::<&()>())
+                    .ok_or_else(|| context_checkpoint_error(io, "canonical checkpoint identity storage overflows"))?;
+                Some(work.retain_owned(bytes as u64)
+                    .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?)
+            }
+            None => None,
+        };
+        let mut unique = std::collections::BTreeSet::new();
+        for id in &self.selection.message_ids {
+            context_checkpoint_step(io)?;
+            unique.insert(id);
+        }
+        if unique.len() != self.selection.message_ids.len() {
+            return Err(context_checkpoint_error(io, "canonical checkpoint repeats source identities"));
         }
         Ok(())
     }
@@ -225,18 +242,50 @@ impl CanonicalContextCheckpoint {
         self.validate_with_io(limits, io)?;
         validate_projected_context_with_io(source, limits, io)?;
         validate_projected_context_with_io(retained, limits, io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            validate_compaction_native(compaction, source, retained, work)?;
+        } else {
+            validate_compaction_with_io(compaction, source, retained, io)?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         validate_compaction_with_io(compaction, source, retained, io)?;
         if compaction
             .summary
             .as_ref()
             .is_none_or(|summary| summary.operation_id != self.operation_id)
         {
-            return Err(crate::Error::Invalid(
-                "canonical checkpoint summary admission differs".into(),
-            ));
+            return Err(context_checkpoint_error(io, "canonical checkpoint summary admission differs"));
         }
         Ok(())
     }
+}
+
+fn context_checkpoint_error(io: Option<&crate::executor::PreparationIo>, reason: &'static str) -> crate::Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+        return native_context_boundary(crate::wire::ErrorCode::Invalid, reason);
+    }
+    let _ = io;
+    crate::Error::Invalid(reason.into())
+}
+
+fn context_checkpoint_file(limits: Limits, file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        return limits.validate_file_with_native_work(file, work);
+    }
+    let _ = io;
+    limits.validate_file(file)
+}
+
+fn context_checkpoint_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+    }
+    let _ = io;
+    Ok(())
 }
 
 /// Resolved view of one durable context revision. Stream retains only `content`.
@@ -1296,6 +1345,39 @@ pub(crate) fn validate_projected_context_native(
     Ok(())
 }
 
+pub(crate) fn validate_projected_context_with_io(
+    context: &Context, limits: Limits, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        return validate_projected_context_native(context, limits, work);
+    }
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        // Preserve the pre-existing measured producer. The native branch above
+        // counts the closed source directly, without manufacturing a byte buffer.
+        let _workspace = crate::executor::reserve_preparation_workspace(context, io)?;
+        let _encoded_hold;
+        let encoded = io.encode_json(context, limits.render_bytes, false)?;
+        _encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        for message in &context.messages {
+            message.content.validate_limits_with_io(limits, Some(io))?;
+        }
+        for file in context.metadata.values() {
+            context_checkpoint_step(Some(io))?;
+            limits.validate_file(file)?;
+        }
+        limits.validate()?;
+        context.validate_current_input()?;
+        if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
+            return Err(crate::Error::Invalid("context projection exceeded declared bounds".into()));
+        }
+        return Ok(());
+    }
+    let _ = io;
+    validate_projected_context(context, limits)
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn context_contract_native<T: Serialize>(
     value: &T, recipe: NativeContextValueRecipe<'_>, work: &acyclic_fs::NativeMaterializationWork,
@@ -1324,16 +1406,7 @@ pub(super) fn restrict_context_limits_native(
 ) -> Result<Limits> {
     pinned.validate_with_native_work(work)?;
     admitted.validate_with_native_work(work)?;
-    Ok(Limits {
-        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
-        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
-        attachments: pinned.attachments.min(admitted.attachments),
-        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
-        model_steps: pinned.model_steps.min(admitted.model_steps),
-        model_events_per_step: pinned.model_events_per_step.min(admitted.model_events_per_step),
-        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
-        context_messages: pinned.context_messages.min(admitted.context_messages),
-    })
+    Ok(restrict_context_limits_fields(pinned, admitted))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1537,9 +1610,19 @@ pub(super) fn validate_source_messages(messages: &[ModelMessage], limits: Limits
 
 /// A pinned provider allowance can narrow, never widen, the admitted request.
 pub(super) fn restrict_context_limits(pinned: Limits, admitted: Limits) -> Result<Limits> {
-    pinned.validate()?;
-    admitted.validate()?;
-    Ok(Limits {
+    restrict_context_limits_with_io(pinned, admitted, None)
+}
+
+pub(crate) fn restrict_context_limits_with_io(
+    pinned: Limits, admitted: Limits, io: Option<&ContextPreparationIo>,
+) -> Result<Limits> {
+    validate_context_limits_with_io(pinned, io)?;
+    validate_context_limits_with_io(admitted, io)?;
+    Ok(restrict_context_limits_fields(pinned, admitted))
+}
+
+fn restrict_context_limits_fields(pinned: Limits, admitted: Limits) -> Limits {
+    Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
         path_bytes: pinned.path_bytes.min(admitted.path_bytes),
         attachments: pinned.attachments.min(admitted.attachments),
@@ -1550,7 +1633,7 @@ pub(super) fn restrict_context_limits(pinned: Limits, admitted: Limits) -> Resul
             .min(admitted.model_events_per_step),
         tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
         context_messages: pinned.context_messages.min(admitted.context_messages),
-    })
+    }
 }
 
 /// Placement of source messages relative to existing context.

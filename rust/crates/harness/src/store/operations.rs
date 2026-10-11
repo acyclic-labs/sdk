@@ -783,18 +783,7 @@ impl IndexedPublication {
         client: &StreamClient<P>,
         key: IdempotencyKey,
     ) -> Result<CommitRequest> {
-        let target = match client.bounds(self.path.as_str()).await {
-            Ok(_) => CommitCondition::Tail {
-                path: self.path.clone(),
-                expected: self.expected_tail,
-            },
-            Err(acyclic_stream::StreamError::NotFound) if self.expected_tail == 0 => {
-                CommitCondition::Absent {
-                    path: self.path.clone(),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let target = self.target_condition_with_work(client, &mut None).await?;
         let mut request = CommitRequest {
             conditions: vec![target],
             mutations: vec![CommitMutation::Append {
@@ -807,11 +796,63 @@ impl IndexedPublication {
         Ok(request)
     }
 
+    pub(crate) async fn request_with_work<'a, 'b, P: StreamProvider>(
+        &self,
+        client: &StreamClient<P>,
+        key: IdempotencyKey,
+        work: &'a mut Option<&'b mut dyn super::history::HistoryIo>,
+    ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
+        // This key was produced and retained by the original stream-key
+        // encoder. Its existing claim enters the owned request before any
+        // cancellation, bounds await or vector allocation can fail.
+        let key_owned = if work.is_some() { 32 } else { 0 };
+        let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
+            key, key_owned, work);
+        let target = self.target_condition_with_work(client, request.work()).await?;
+        request.push_condition(target)?;
+        request.append(self.path.clone(), self.bytes.clone())?;
+        self.add_index_with_work(&mut request)?;
+        Ok(request)
+    }
+
+    async fn target_condition_with_work<P: StreamProvider>(
+        &self,
+        client: &StreamClient<P>,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<CommitCondition> {
+        if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
+        let bounds = if work.is_none() {
+            client.bounds(self.path.as_str()).await
+        } else {
+            let handle = stream_with_work(client, &self.path, work)?;
+            if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+            handle.stream.bounds().await
+        };
+        match bounds {
+            Ok(_) => Ok(CommitCondition::Tail {
+                path: self.path.clone(),
+                expected: self.expected_tail,
+            }),
+            Err(acyclic_stream::StreamError::NotFound) if self.expected_tail == 0 => {
+                Ok(CommitCondition::Absent { path: self.path.clone() })
+            }
+            Err(error) => Err(stream_error_with_work(error, work)),
+        }
+    }
+
     pub(crate) fn verify(&self, envelope: &CommittedEnvelope) -> Result<()> {
+        self.verify_with_work(envelope, &mut None)
+    }
+
+    pub(crate) fn verify_with_work(
+        &self,
+        envelope: &CommittedEnvelope,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
+        let native = work.as_deref().is_some_and(original_native_decode_mode);
         if envelope.mutations.len() != 1 + self.indexes.len() {
-            return Err(Error::Storage(
-                "indexed publication has invalid mutation count".into(),
-            ));
+            return Err(indexed_receipt_error(native, "indexed publication has invalid mutation count"));
         }
         for (path, tail, bytes) in std::iter::once((&self.path, self.expected_tail, &self.bytes))
             .chain(
@@ -820,6 +861,7 @@ impl IndexedPublication {
                     .map(|(path, tail, bytes)| (path, *tail, bytes)),
             )
         {
+            if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
             let append = envelope
                 .mutations
                 .iter()
@@ -827,10 +869,10 @@ impl IndexedPublication {
                     CommittedMutation::Append(append) if &append.path == path => Some(append),
                     _ => None,
                 })
-                .ok_or_else(|| Error::Storage("indexed publication is missing an append".into()))?;
+                .ok_or_else(|| indexed_receipt_error(native, "indexed publication is missing an append"))?;
             let end = tail
                 .checked_add(1)
-                .ok_or_else(|| Error::Storage("indexed publication tail overflows".into()))?;
+                .ok_or_else(|| indexed_receipt_error(native, "indexed publication tail overflows"))?;
             if append.start != tail
                 || append.end != end
                 || append.tail != end
@@ -841,13 +883,20 @@ impl IndexedPublication {
                         || record.commit_id != envelope.commit_id
                 })
             {
-                return Err(Error::Storage(
-                    "indexed publication append is invalid".into(),
-                ));
+                return Err(indexed_receipt_error(native, "indexed publication append is invalid"));
             }
         }
         Ok(())
     }
+}
+
+fn indexed_receipt_error(native: bool, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if native {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason };
+    }
+    let _ = native;
+    Error::Storage(reason.into())
 }
 
 // Fields retire in declaration order: the SDK handle's Arc payload must die
@@ -1652,16 +1701,40 @@ mod native_publication_custody_tests {
         assert!(publication.retained_owned() >= original_capacity);
         publication.set_effect_position_with_work(3, &mut work)?;
         let retained = publication.retained_owned();
-        drop(work);
-        let mut custody = io.into_custody();
-        assert_eq!(custody.bytes(), retained);
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let request = publication.request(&client,
             IdempotencyKey::new(Bytes::from_static(b"publication-custody"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.commit(request).await? else {
             panic!("original absent/Tail atomic publication");
         };
         publication.verify(&envelope)?;
+        publication.verify_with_work(&envelope, &mut work)?;
+        if let CommittedMutation::Append(append) = &mut envelope.mutations[0] {
+            append.start += 1;
+        }
+        assert!(matches!(publication.verify_with_work(&envelope, &mut work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                reason: "indexed publication append is invalid" })));
+        if let CommittedMutation::Append(append) = &mut envelope.mutations[0] {
+            append.start -= 1;
+        }
+        let key = super::super::stream_idempotency_key_with_work(
+            publication.path.as_str(), &command.idempotency_key, &mut work)?;
+        cancellation.cancel();
+        let denied = publication.request_with_work(&client, key, &mut work).await
+            .err().expect("cancellation before original SDK bounds");
+        assert!(matches!(denied, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+        }));
+        assert!(matches!(publication.verify_with_work(&envelope, &mut work),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+            })));
+        drop(work);
+        let mut custody = io.into_custody();
+        // The cancelled prepared request physically dropped its retained key;
+        // only the caller's original publication remains source-owned.
+        assert_eq!(custody.bytes(), retained);
         drop(envelope);
         assert_eq!(publication.into_retained_owned(), retained);
         custody.release(retained).expect("physically dropped source publication");

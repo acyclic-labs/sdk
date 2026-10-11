@@ -302,44 +302,87 @@ impl<P: StreamProvider> HistoryReader<P> {
         through_sequence: u64,
         limits: HistoryReadLimits,
     ) -> Result<crate::fork::PreparedForkHistory> {
-        self.verifier.verify_audience(parent.authority())?;
-        let source = parent.conversation()
-            .ok_or_else(|| Error::Invalid("fork archive parent is unbound".into()))?;
+        self.fork_history_with_work(parent, through_sequence, limits, &mut None).await
+    }
+
+    pub(crate) async fn fork_history_with_work(
+        &self,
+        parent: &crate::core::Reducer,
+        through_sequence: u64,
+        limits: HistoryReadLimits,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<crate::fork::PreparedForkHistory> {
+        self.verifier.verify_audience_with_work(parent.authority(), work)?;
+        let source = parent.conversation().ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "fork archive parent is unbound" };
+            }
+            Error::Invalid("fork archive parent is unbound".into())
+        })?;
         if through_sequence > source.logical_revision() {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "fork archive exceeds the logical parent cut" });
+            }
             return Err(Error::Invalid("fork archive exceeds the logical parent cut".into()));
         }
-        let messages = self.conversation_range(
-            &HistoryCursor {
-                authority: parent.authority().clone(),
-                after_revision: 0,
-                through_revision: parent.revision(),
-            },
-            0,
-            through_sequence,
-            limits,
-        ).await?;
-        let mut conversation = crate::conversation::ConversationState::selected_view(messages)?;
+        let cursor_authority = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(parent.authority())?,
+            None => parent.authority().clone(),
+        };
+        let cursor = HistoryCursor {
+            authority: cursor_authority,
+            after_revision: 0,
+            through_revision: parent.revision(),
+        };
+        let cursor_bytes = cursor.authority.id.capacity() as u64;
+        let messages = self.conversation_range_with_work(
+            &cursor, 0, through_sequence, limits, work,
+        ).await;
+        drop(cursor);
+        if let Some(work) = work.as_deref_mut() {
+            let released = work.release_owned(cursor_bytes);
+            if messages.is_ok() { released?; }
+        }
+        let (mut conversation, _) =
+            crate::conversation::ConversationState::selected_view_with_work(messages?, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
-            && conversation.history_prefix_digest(through_sequence)?
-                != source.history_prefix_digest(through_sequence)?
+            && conversation.history_prefix_digest_with_work(through_sequence, work)?
+                != source.history_prefix_digest_with_work(through_sequence, work)?
         {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                    reason: "fork archive differs from the authenticated parent prefix" });
+            }
             return Err(Error::Storage("fork archive differs from the authenticated parent prefix".into()));
         }
         #[cfg(feature = "filesystem")]
         {
-            let proof = self.verifier.fork_history_selection_proof(
+            let proof = self.verifier.fork_history_selection_proof_with_work(
                 parent.revision(), through_sequence, conversation.agent,
-                conversation.history_prefix_digest(through_sequence)?,
+                conversation.history_prefix_digest_with_work(through_sequence, work)?, work,
             )?;
+            let authority = match work.as_deref_mut() {
+                Some(work) => work.clone_authority(parent.authority())?,
+                None => parent.authority().clone(),
+            };
             Ok(crate::fork::PreparedForkHistory::from_archive(
-                parent.authority().clone(), parent.revision(), conversation, proof,
+                authority, parent.revision(), conversation, proof,
             ))
         }
         #[cfg(not(feature = "filesystem"))]
         {
+            let authority = match work.as_deref_mut() {
+                Some(work) => work.clone_authority(parent.authority())?,
+                None => parent.authority().clone(),
+            };
             Ok(crate::fork::PreparedForkHistory::from_archive(
-                parent.authority().clone(), parent.revision(), conversation,
+                authority, parent.revision(), conversation,
             ))
         }
     }
@@ -488,14 +531,19 @@ impl<P: StreamProvider> HistoryReader<P> {
         operation: crate::OperationId,
         maximum_bytes: u64,
     ) -> Result<(Option<Event>, u64)> {
-        super::operations::find_operation_bounded(
-            &self.client,
-            self.verifier.audience(),
-            &self.verifier,
-            operation,
-            maximum_bytes,
-        )
-        .await
+        self.operation_event_bounded_with_work(operation, maximum_bytes, &mut None).await
+    }
+
+    pub(crate) async fn operation_event_bounded_with_work(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(Option<Event>, u64)> {
+        super::operations::find_operation_bounded_with_work(
+            &self.client, self.verifier.audience(), &self.verifier,
+            operation, maximum_bytes, true, work,
+        ).await
     }
 
     /// Reads one explicit page of a child's published parent-history cut.
