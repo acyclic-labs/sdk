@@ -2941,7 +2941,7 @@ struct LocalPreparedMaterializationAction {
 impl crate::materializer::MaterializationActionCompletion for LocalMaterializationActionCompletion {
     type Error = LocalCoreStateStoreError;
 
-    fn complete(self) -> Self { self }
+    fn complete(self) -> impl Future<Output = Result<crate::materializer::OwnedMaterializationJournal, Self::Error>> + Send { self }
 }
 
 impl Future for LocalMaterializationActionCompletion {
@@ -5196,8 +5196,7 @@ mod tests {
         assert_eq!(image.values, [1, 2, 3]);
         assert_eq!(custody.bytes(), image.value.capacity() as u64 + (image.values.capacity() * std::mem::size_of::<u64>()) as u64);
         assert_eq!(work.live_allocation_bytes(), original_live + custody.bytes());
-        assert!(work.receipt().bytes_decoded > 0);
-        assert!(work.receipt().allocation_operations > 1);
+        assert!(work.receipt().items_examined >= image.values.len() as u64, "the actual sequence visitor examines every decoded element");
         drop(image);
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), original_live);

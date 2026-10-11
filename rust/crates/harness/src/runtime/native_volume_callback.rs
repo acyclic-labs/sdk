@@ -152,7 +152,12 @@ fn require_volume<P: StreamProvider>(
 }
 
 impl<P: StreamProvider + 'static> VolumeCallback<P> {
-    async fn verify_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+    async fn verify_with_native_work(
+        &self, work: &NativeMaterializationWork, require_write: bool,
+    ) -> Result<()> {
+        if require_write && !self.writable {
+            return Err(denied("read-only native callback cannot authorize authored writes"));
+        }
         work.charge(WorkCounters::default()).map_err(native_error)?;
         if !self.work.shares_allocation_context(work) || !self.custody.matches_work(work) {
             return Err(denied("native callback differs from its original per-volume work view"));
@@ -162,13 +167,23 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         self.original.owner.verify_with_native_work(false, work).await?;
         require_volume(&self.original, &self.volume, self.writable, work)
     }
+
+    fn sdk_check<'a>(
+        &'a self, work: &'a NativeMountMeterWork, require_write: bool,
+    ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
+        // Both permission requests use this one concrete original-ledger future.
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+            let work = work.native_materialization_work();
+            self.verify_with_native_work(&work, require_write).await
+        })
+    }
 }
 
 impl<P: StreamProvider + 'static> NativeVolumePublicationGuard for VolumeCallback<P> {
     fn check<'a>(
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || self.verify_with_native_work(work))
+        crate::NativeFutureBundle::new(work, || self.verify_with_native_work(work, false))
     }
 }
 
@@ -178,10 +193,13 @@ impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P>
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         // The SDK prepays the concrete future and typed original Error slot
         // before building or polling it. No formatter or replacement carrier.
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
-            let work = work.native_materialization_work();
-            self.verify_with_native_work(&work).await
-        })
+        self.sdk_check(work, false)
+    }
+
+    fn check_write<'a>(
+        &'a self, work: &'a NativeMountMeterWork,
+    ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
+        self.sdk_check(work, true)
     }
 }
 
