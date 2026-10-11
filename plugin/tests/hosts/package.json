@@ -9,11 +9,17 @@
     "test:pi-bootstrap": "node --experimental-strip-types --test pi-bootstrap.test.ts",
     "test:pi-session": "node --experimental-strip-types --test pi-session.test.ts",
     "test:pi-installation": "node --experimental-strip-types --test pi-installation.test.ts",
-    "test:pi-service": "node --experimental-strip-types --test pi-service.test.ts"
+    "test:pi-service": "node --experimental-strip-types --test pi-service.test.ts",
+    "test:pi-native-recursive": "node --experimental-strip-types --test pi-native-recursive.test.ts",
+    "test:pi-context-mail": "node --experimental-strip-types --test pi-context-mail.test.ts",
+    "test:pi-context-fresh": "node --experimental-strip-types --test pi-context-fresh.test.ts",
+    "test:pi-context-pages": "node --experimental-strip-types --test pi-context-pages.test.ts",
+    "test:pi-builtin-paths": "node --experimental-strip-types --test pi-builtin-paths.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",
     "@earendil-works/pi-coding-agent": "1.1.0",
+    "@noble/hashes": "1.8.0",
     "@openai/codex": "0.155.1"
   }
 }
