@@ -299,6 +299,9 @@ replay, original task ownership, and execution/turn association; they do not
 infer quiescence from a scheduler phase or populate an unfunded history cache.
 Both existing manifest helper stages perform their real descriptor hash on the
 same ledger: verified-content admission, then canonical manifest decoding.
+Ordinary Filesystem fork-seed manifest reads preserve the same provider check,
+pinned-generation read and durable retention, but return the canonical
+`OwnedBytes` carrier directly instead of copying its bytes into a vector.
 
 Pass a task-bound workflow journal to `AgentHarness::open_task(task_id, &definition, fence, journal).await` to recover a registered resumable task. The same path is available through `TaskContext::open_resumable_task` and `TaskDefinition::open`. It verifies the registered definition and the retained input, schemas and scope before opening the existing workflow host. `ResumableTaskSession::step` validates completed values against the admitted output schema and checks uncancelled ownership even for cached exact retries. `latest_transition` reads the latest committed status and outbox without retaining historical bodies; opening an existing checkpoint after cancellation is permitted for recovery, but advancing it is rejected. This session does not dispatch commands or settle scheduler outcomes, and live futures have no durable checkpoint.
 

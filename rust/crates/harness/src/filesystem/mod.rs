@@ -1812,7 +1812,7 @@ where
         })
     }
 
-    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.read_manifest_measured(manifest, acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()).await
@@ -1848,6 +1848,7 @@ where
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
             }
+
         })
     }
 
