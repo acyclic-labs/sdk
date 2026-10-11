@@ -67,8 +67,7 @@ fn check(work: &NativeMaterializationWork) -> Result<()> {
 }
 
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
-    let remaining = work.remaining()
-        .map_err(Error::from)?;
+    let remaining = work.remaining()?;
     if !remaining.has_finite_allowances() {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,

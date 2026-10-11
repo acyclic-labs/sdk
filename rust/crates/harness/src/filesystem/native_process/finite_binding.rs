@@ -1,40 +1,6 @@
 use super::*;
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use crate::filesystem::PreparationIo;
-
-const NATIVE_SERDE_LABELS: &str = concat!(
-    "struct NativeProcessRequest `executable`, `argv`, `cwd`, `environment`, ",
-    "`timeout_ms`, `control_timeout_ms`, `cancellation_poll_ms`, ",
-    "`maximum_output_bytes`, `maximum_result_bytes`, `mcp_stdio`, `standard_input`, `view`, ",
-    "struct NativeViewOptions `root`, `maximum_volumes`, `work_per_volume`, ",
-    "struct NativeViewManifest `options`, `volumes`, ",
-    "struct NativeVolumeMapping `volume`, `generation`, `namespace`, `path`, ",
-    "`writable`, `authority_revision`, enum NativeVolumeNamespace ",
-    "`materialized_directory`, `lazy_mount`, `snapshot`, ",
-    "struct McpStdioRequest `initialization`, `operation`, `method`, `params`, `maximum_bytes`, ",
-    "enum McpStdioMethod `tools/list`, `tools/call`, ",
-    "struct ProviderRefWire `namespace`, `family`, `version`, ",
-    "struct ResourceRefWire `kind`, `provider`, `key`, `version`, enum ResourceKind ",
-    "`workspace`, `generation`, `artifact`, `sandbox`, `checkpoint`, `stream`, `context`, `run`, ",
-    "struct VolumeRefWire `provider`, `id`, `class`, `owner`, enum VolumeClass ",
-    "`project`, `agent_private`, `session_shared`, adjacently tagged enum VolumeOwner ",
-    "`kind`, `id`, `project`, `agent`, `session`, ",
-    "invalid request: provider identity is invalid resource key is empty ",
-    "resource version is invalid typed resource kind mismatch file or volume label is invalid ",
-    "struct LazySnapshotRef `id`, `workspace_id`, `authored_generation`, `source`, `overlay`, `shadows`, ",
-    "struct SourceReference `identity`, `epoch`, an array of length 16 an array of length 32 ",
-    "struct WorkCounters `authorityRecordsRead`, `authorityRecordsAppended`, ",
-    "`authorityBytesRead`, `authorityBytesWritten`, `objectProbes`, ",
-    "`backendReadOperations`, `backendWriteOperations`, `durabilityOperations`, ",
-    "`pageReads`, `pageWrites`, `objectBytesRead`, `objectBytesWritten`, ",
-    "`bytesHashed`, `bytesCopied`, `bytesEncoded`, `sourceBytesRead`, ",
-    "`sourcePathComponents`, `sourceEntriesVisited`, `outputBytes`, `itemsExamined`, ",
-    "`itemsReturned`, `allocationOperations`, `peakAllocationBytes`, `materializations`, ",
-    "path string a formatted UUID string a 16 byte array UUID parsing failed: ",
-    "invalid character: found `` at invalid length: expected 16 bytes, found ",
-    "invalid group count: expected 5, found invalid group length in group : expected , found ",
-    "non-UTF8 input invalid length: found failed to parse a UUID ",
-);
 
 pub(super) fn require_family(
     bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
@@ -119,27 +85,12 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
-    let slot = NativeReceiptCodecSlot::new(work)?;
     let io = PreparationIo::from_native_work(work)?;
     let plan = copy_plan_with_io(plan, &io)?;
-    let input = plan.request.descriptor().byte_length().max(plan.result_schema.descriptor().byte_length());
-    let typed = crate::contract::audited_serde_diagnostic_bytes(input, NATIVE_SERDE_LABELS.len() as u64)?;
-    let diagnostic = io.reserve_decode(typed.max(crate::contract::sdk_json_diagnostic_bytes())
-        .max(crate::contract::lexical_json_diagnostic_bytes()))?;
-    let result = bind_body(owner, command, plan, view, approval, authority, work, &io).await;
-    match result {
-        Ok(mut provider) => {
-            drop(diagnostic);
-            let retained = io.owned_bytes()?;
-            provider._custody = Some(shared_custody(io.into_native_custody(retained)?, work)?);
-            Ok(provider)
-        }
-        Err(source) => {
-            diagnostic.into_retained();
-            let retained = io.owned_bytes()?;
-            Err(slot.retain(source, Some(io.into_native_custody(retained)?)))
-        }
-    }
+    let mut provider = bind_body(owner, command, plan, view, approval, authority, work, &io).await?;
+    let retained = io.owned_bytes()?;
+    provider._custody = Some(shared_custody(io.into_native_custody(retained)?, work)?);
+    Ok(provider)
 }
 
 async fn bind_body<P: StreamProvider + 'static>(

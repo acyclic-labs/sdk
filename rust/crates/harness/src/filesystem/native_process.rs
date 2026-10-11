@@ -327,7 +327,7 @@ struct NativeReceiptCodecSlot {
 
 impl NativeReceiptCodecSlot {
     fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        let custody = work.claim(std::mem::size_of::<Error>() as u64).map_err(Error::from)?;
+        let custody = work.claim(std::mem::size_of::<Error>() as u64)?;
         Ok(Self { source: Box::new_uninit(), custody })
     }
 
@@ -427,7 +427,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
     ) -> std::result::Result<(), Error> {
-        if !work.remaining().map_err(Error::from)?.has_finite_allowances() {
+        if !work.remaining()?.has_finite_allowances() {
             return Err(receipt_error("native stop requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async {
@@ -441,22 +441,20 @@ where
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         cleanup: Option<&NativeCleanupControl<'_>>,
     ) -> std::result::Result<(), Error> {
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(Error::from)?;
+        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
-        }).map_err(Error::from)?;
+        })?;
         let (completed, _) = self.supervisor.snapshot(attempt)?;
         self.authenticate_cleanup_owner(work).await?;
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(Error::from)?;
+        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         if completed {
             self.supervisor.settle_process_with_native_work(work, cleanup)?;
             return Ok(());
         }
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
-        }).map_err(Error::from)?;
+        })?;
         let active = self.supervisor.active.lock()
             .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
         let active = active.as_ref()
@@ -474,7 +472,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
     ) -> std::result::Result<NativeProcessReceipt, Error> {
-        if !work.remaining().map_err(Error::from)?.has_finite_allowances() {
+        if !work.remaining()?.has_finite_allowances() {
             return Err(receipt_error("native stop wait requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async { Ok(async {
@@ -509,11 +507,10 @@ where
             let notified = self.supervisor.completion.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-                .map_err(Error::from)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1, ..acyclic_fs::WorkCounters::default()
-            }).map_err(Error::from)?;
+            })?;
             let (completed, phase) = self.supervisor.snapshot(attempt)?;
             if completed {
                 if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
@@ -581,8 +578,7 @@ where
         self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(Error::from)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64)?;
         finite_binding::absorb_shared(&self._custody, custody)?;
         Ok(Arc::new(self))
     }
@@ -620,8 +616,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         self.require_work_family(work)?;
-        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(Error::from)?;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
         Ok(kind == NATIVE_PROCESS_EFFECT_KIND && guarantee == EffectGuarantee::AtMostOnce)
     }
     fn linearizable_reconciliation(&self) -> bool {
@@ -644,8 +639,7 @@ where
             reason: "receipt-only native recovery has no dispatch capability",
         })?;
         view.operation_cancellation().check()
-            .map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(Error::from)?;
+            .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         let payload = finite_dispatch::dispatch_payload(request, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let (effect, custody) = self.launch_original(payload, work).await?;

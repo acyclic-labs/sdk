@@ -17,9 +17,8 @@ pub(super) struct NativePublicationSlot {
 
 impl NativePublicationSlot {
     fn new(work: &NativeMaterializationWork) -> Result<Self> {
-        let custody = work.claim(std::mem::size_of::<NativeViewPublicationError>() as u64)
-            .map_err(Error::from)?;
-        let failure_custody = Some(work.retain_owned(0).map_err(Error::from)?);
+        let custody = work.claim(std::mem::size_of::<NativeViewPublicationError>() as u64)?;
+        let failure_custody = Some(work.retain_owned(0)?);
         Ok(Self { slot: Box::new_uninit(), failure_custody, custody: Some(custody) })
     }
 
@@ -73,7 +72,7 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
     original: &NativeMaterializationWork) -> Result<()> {
     {
         for mapping in &manifest.volumes {
-            original.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(Error::from)?;
+            original.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Read, original)?;
             if mapping.writable {
                 owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Write, original)?;
@@ -90,13 +89,13 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
     dispatch: &EffectDispatch, schema: &serde_json::Value,
     supervisor: &Arc<NativeSupervisorControl>, original: &NativeMaterializationWork,
 ) -> ExecutionResult {
-    let mut custody = Some(original.retain_owned(0).map_err(Error::from)?);
+    let mut custody = Some(original.retain_owned(0)?);
     let mut publication_slot = None;
     let result: Result<NativeExecution> = async {
         verify(owner, original)?.await?;
         grants(owner, &request.view, original)?;
         {
-            view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
+            view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             authority.results.supports_native_stage(original)?;
             if !authority.result_content.supports_native_read(authority.results.volume(), original)? {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
@@ -107,7 +106,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 bytes_hashed: u64::from(request.maximum_result_bytes),
                 bytes_copied: u64::from(request.maximum_output_bytes),
                 items_examined: u64::from(request.maximum_output_bytes).saturating_add(16),
-                ..WorkCounters::default() }).map_err(Error::from)?;
+                ..WorkCounters::default() })?;
             view.validate_working_directory(&request.cwd, original)?.await?;
             view.validate_for_dispatch(original)?.await?;
 
@@ -145,9 +144,9 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
                 &bytes, "application/json", "Native process result", original)?.await?;
             let mut guard = guard;
-            custody.as_mut().expect("original custody").absorb(&mut guard).map_err(Error::from)?;
+            custody.as_mut().expect("original custody").absorb(&mut guard)?;
             original.charge(WorkCounters { items_examined: 1,
-                ..WorkCounters::default() }).map_err(Error::from)?;
+                ..WorkCounters::default() })?;
             result.descriptor().verify_with_native_work(&bytes, original)?;
             if result.descriptor().media_type() != "application/json" {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -241,7 +240,7 @@ async fn capture<P: StreamProvider + 'static>(
     scopes: Option<NativeProcessNamespaceScopes>,
 ) -> Result<(NativeProcessResult, Option<NativeAllocation>)> {
     verify(owner, original)?.await?;
-    let mut custody = Some(original.retain_owned(0).map_err(Error::from)?);
+    let mut custody = Some(original.retain_owned(0)?);
     let mut buffers = None;
     {
         let maximum = request.maximum_output_bytes as usize;
@@ -253,14 +252,14 @@ async fn capture<P: StreamProvider + 'static>(
         for (buffer, capacity) in allocated.iter_mut().zip([maximum, maximum, input]) {
             if capacity != 0 {
                 custody.as_mut().expect("original custody").absorb(&mut original.claim(capacity as u64)
-                    .map_err(Error::from)?).map_err(Error::from)?;
+                    ?)?;
             }
             buffer.try_reserve_exact(capacity).map_err(|error| Error::from(
                 acyclic_fs::NativeTreeMaterializationError::AllocationFailed(error)))?;
             if buffer.capacity() > capacity {
                 custody.as_mut().expect("original custody").absorb(
-                    &mut original.retain_owned((buffer.capacity() - capacity) as u64).map_err(Error::from)?,
-                ).map_err(Error::from)?;
+                    &mut original.retain_owned((buffer.capacity() - capacity) as u64)?,
+                )?;
             }
         }
         buffers = Some(allocated);
@@ -287,7 +286,7 @@ async fn capture<P: StreamProvider + 'static>(
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
                 Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
-                    cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
+                    cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                     verify(check_owner.as_ref(), &original)?.await
                 }));
             match result {
@@ -415,7 +414,7 @@ async fn capture<P: StreamProvider + 'static>(
     }).map_err(|error| native_io(error, &invocation_work))?;
     if let Some(error) = original_failure {
         drop(output);
-        if let Some(guard) = custody.as_mut() { guard.substitute(0).map_err(Error::from)?; }
+        if let Some(guard) = custody.as_mut() { guard.substitute(0)?; }
         return Err(match error {
             Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody },
             Error::NativeTimeout { source, custody: None } => Error::NativeTimeout { source, custody },
@@ -434,7 +433,7 @@ async fn capture<P: StreamProvider + 'static>(
                     cause => {
                         drop(failure.stdout);
                         drop(failure.stderr);
-                        if let Some(guard) = custody.as_mut() { guard.substitute(0).map_err(Error::from)?; }
+                        if let Some(guard) = custody.as_mut() { guard.substitute(0)?; }
                         return Err(Error::NativeWork { cause, custody });
                     }
                 };
@@ -447,17 +446,16 @@ async fn capture<P: StreamProvider + 'static>(
                 _ => NativeProcessStopKind::CaptureFailed,
             };
             let message = {
-                let (message, guard) = invocation_work.display(&failure.error).map_err(Error::from)?;
+                let (message, guard) = invocation_work.display(&failure.error)?;
                 let mut guard = guard;
                 let mut message = message;
                 let mut truncate = None;
                 for (index, (offset, _)) in message.char_indices().enumerate() {
-                    invocation_work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
-                        .map_err(Error::from)?;
+                    invocation_work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                     if index == 128 { truncate = Some(offset); break; }
                 }
                 if let Some(offset) = truncate { message.truncate(offset); }
-                custody.as_mut().expect("original capture custody").absorb(&mut guard).map_err(Error::from)?;
+                custody.as_mut().expect("original capture custody").absorb(&mut guard)?;
                 message
 
 };
