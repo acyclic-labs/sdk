@@ -128,30 +128,12 @@ async fn verify_owner<P: StreamProvider>(
     owner.verify(settlement).await
 }
 
-/// Uses the audited field-copy producer and transfers its actual original-ledger custody.
+/// Uses the canonical physical field-copy engine on the original observer.
 pub(crate) fn clone_file_with_work(
     file: &crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<crate::conversation::FileRef> {
-    if work.is_none() { return Ok(file.clone()); }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        let (copy, custody) = {
-            let original = work.as_deref().and_then(|io| io.original_native_work())
-                .ok_or_else(|| Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "effect metadata clone requires its original native ledger",
-                })?;
-            let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let copy = file.clone_with_io(&io)?;
-            let retained = io.owned_bytes()?;
-            (copy, io.into_native_custody(retained)?)
-        };
-        work.as_deref_mut().expect("original effect observer").absorb_native_custody(custody)?;
-        return Ok(copy);
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    Err(Error::Unsupported("native effect metadata cloning is unavailable".into()))
+    file.clone_with_work(work)
 }
 
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {
