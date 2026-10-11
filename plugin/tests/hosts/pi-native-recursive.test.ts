@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
@@ -133,7 +133,7 @@ export default function(pi) {
 }
 `;
 
-test("required pinned Pi recursively launches original native effects and reopens without repeating work", { timeout: 240_000 }, async () => {
+test("required pinned Pi recursively launches original native effects and reopens without repeating work", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-recursive-", import.meta.url)));
   let fixture: InstalledNativeFixture | undefined;
   const oracleDirectory = join(directory, "native-oracles");
@@ -261,7 +261,7 @@ test("required pinned Pi recursively launches original native effects and reopen
     if (originalFailure !== undefined) throw originalFailure;
     if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "native fixture cleanup failed");
   }
-});
+}, { timeout: 240_000 });
 
 function assertNativePidExited(pid: number): void {
   assert.ok(Number.isSafeInteger(pid) && pid > 0, "native process oracle did not record an actual PID");

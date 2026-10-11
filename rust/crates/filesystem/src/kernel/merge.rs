@@ -573,8 +573,7 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
                     apply_extent_mutations_with_accounting(store, ours_root, ours_bytes, &mutations.value,
                         maximum_changes, limits, accounting, cancellation).await?.root
                 };
-                Ok(Some((FileRecord { file_id: ours.file_id, kind, link_count: ours.link_count, metadata,
-                    payload: FilePayload::Regular { logical_bytes, extents: root } }, mutations.value.len() as u32)))
+                Ok(Some((root, mutations.value.len() as u32)))
             }.await;
             mutations.retire(accounting)?;
             theirs_plan.retire(accounting)?;
@@ -584,7 +583,10 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
         result
     }.await;
     base_plan.retire(accounting)?;
-    result
+    result.map(|merged| merged.map(|(root, count)| (FileRecord {
+        file_id: ours.file_id, kind, link_count: ours.link_count, metadata,
+        payload: FilePayload::Regular { logical_bytes, extents: root },
+    }, count)))
 }
 
 fn sliced_extent_kind(span: &ExtentSlice, offset: u64) -> Result<ExtentKind, FsError> {

@@ -223,7 +223,7 @@ async fn lazy_workspace(
     } else {
         FilesystemProfile::Posix
     };
-    let demand = NativeDemandSource::open(&source_root, profile, VolumeLimits::default()).await?;
+    let demand = NativeDemandSource::open(&source_root, profile, VolumeLimits::default(), None, None).await?;
     let engine = Fs::local(LocalOptions::new(root.join("state"))).await?;
     let lazy = Arc::new(
         LazyWorkspace::attach(

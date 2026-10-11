@@ -396,7 +396,7 @@ impl Owned<TransactionState> {
                 Ok(entries)
             })?;
             let (listing, allocation) = super::list::list_tree_entries_async_with_accounting(
-                store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation, None,
+                store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
             ).await.map_err(|error| {
                 if is_original(accounting) { error } else {
                     GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()

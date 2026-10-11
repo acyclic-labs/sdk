@@ -1,6 +1,7 @@
 //! Passive, selected inspection over the canonical task owner and content reader.
 
 use super::*;
+use crate::filesystem::PreparationIo;
 use crate::conversation::{FileRef, PrivateDirectoryPage};
 use crate::resources::GenerationRef;
 use crate::runtime::{TaskAdmissionRecord, TaskChildrenPage};
@@ -194,7 +195,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         owner.verify(false).await?;
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
         owner.verify(false).await?;
-        let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), budget).await?;
+        let io = PreparationIo::from_budget(budget, owner.invocation_cancellation().ok_or_else(||
+            Error::Unauthorized("selected source has no original invocation token".into()))?)?;
+        let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), io).await?;
         Ok(TaskSourceInspection { source: admission, reader: SourceReader::Project(reader), volumes,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata_custody: None,
@@ -232,7 +235,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         owner.verify_with_native_work(false, work).await?;
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
         owner.verify_with_native_work(false, work).await?;
-        let reader = ProjectSourceReader::open_with_io(
+        let reader = ProjectSourceReader::open(
             self.filesystem.clone(), owner, handle.0, context.scope().limits(), io,
         ).await?;
         Ok(TaskSourceInspection {
@@ -250,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<Vec<crate::model::ModelEvent>> {
         self.validate_input(input)?;
         deadline::run(&self.host, self.task, Some(&self.fence), self.run_limits.deadline_epoch_ms,
-            self.operation_id, self.executor.model_step(&self.journal, input, step, prior_messages)).await
+            self.operation_id, self.executor.model_step(&self.journal, input, step, prior_messages), None, |_| false).await
     }
 
     /// Settles only the tools admitted by a retained model step through the ordinary stock resolver.
@@ -259,6 +262,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<crate::executor::ModelToolsProgress> {
         self.validate_input(input)?;
         deadline::run(&self.host, self.task, Some(&self.fence), self.run_limits.deadline_epoch_ms,
-            self.operation_id, self.executor.resolve_model_tools(&self.journal, input, step)).await
+            self.operation_id, self.executor.resolve_model_tools(&self.journal, input, step), None, |_| false).await
     }
 }

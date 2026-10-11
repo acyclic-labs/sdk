@@ -1220,7 +1220,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 };
                 let (page, allocation) = super::list::list_tree_entries_async_with_accounting(
                     self.store, entries, after.as_ref(), *maximum_entries, self.limits.decode,
-                    accounting, cancellation, custody,
+                    accounting, cancellation.clone(), custody,
                 ).await?;
                 let retained = directory_entries_bytes(&page.entries)?;
                 let page = Owned::new(page, allocation, retained);

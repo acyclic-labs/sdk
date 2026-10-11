@@ -48,7 +48,7 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
     let demand = NativeDemandSource::open(
         source.path(),
         FilesystemProfile::Windows,
-        VolumeLimits::default(),
+        VolumeLimits::default(), None, None,
     )
     .await?;
     let mut identities = Vec::new();
@@ -88,7 +88,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Windows,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -338,7 +338,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Windows,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -422,7 +422,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Windows,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -490,7 +490,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Windows,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );

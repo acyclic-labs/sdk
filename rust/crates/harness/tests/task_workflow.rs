@@ -2189,7 +2189,7 @@ async fn stock_restart_with_publication_fault(
             .await?
             .with_payload_store(payloads);
         assert_eq!(
-            coordinator.scheduler().session_limits(operation)?,
+            coordinator.scheduler().session_limits(operation, &mut None)?,
             session_limits
         );
         let lease = if reopened && cancel_after_failure {

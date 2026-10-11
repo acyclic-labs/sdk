@@ -1,5 +1,5 @@
 import type {
-  CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity, IdempotencyKey, MachineEvent, MachineId,
+  CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity, IdempotencyKey, MachineEventPage, MachineId,
   MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
   SuspensionPolicy, UsageReceipt,
 } from "./index.js";
@@ -67,7 +67,7 @@ export class Machine {
   wake(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "woken" }>> { return this.#outcome("woken", this.provider.wake(this.id, key)); }
   setSuspensionPolicy(policy: SuspensionPolicy, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> { return this.#outcome("suspension-policy-set", this.provider.setSuspensionPolicy(this.id, policy, key)); }
   destroy(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "machine-destroyed" }>> { return this.#outcome("machine-destroyed", this.provider.destroyMachine(this.id, key)); }
-  events(afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { return this.provider.events(this.id, afterSequence, limit); }
+  events(afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> { return this.provider.events(this.id, afterSequence, limit); }
   usage(startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.provider.usage(this.id, startUnixMs, endUnixMs); }
   async #outcome<Kind extends MutationOutcome["kind"]>(kind: Kind, value: Promise<MutationOutcome>): Promise<Extract<MutationOutcome, { kind: Kind }>> { return expectOutcome(await value, kind); }
 }

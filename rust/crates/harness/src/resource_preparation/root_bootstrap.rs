@@ -1,5 +1,7 @@
 use super::*;
-use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+use crate::conversation::VolumeRef;
+#[cfg(feature = "filesystem")]
+use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner};
 use crate::resources::GenerationRef;
 use crate::AgentId;
 
@@ -33,12 +35,6 @@ pub struct RootBootstrapContentRequest {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct FundedRootPayload<T> {
-    data: T,
-    custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl RootBootstrapContentRequest {
     /// Dynamic payload capacities only; the request's inline slot is separate.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -64,7 +60,7 @@ impl RootBootstrapContentRequest {
         let snapshot = match &self.native_snapshot {
             Some(value) => {
                 let (data, custody) = crate::tool::clone_value_with_native_work(value, work)?;
-                Some(FundedRootPayload { data, custody })
+                Some((data, custody))
             }
             None => None,
         };
@@ -74,7 +70,7 @@ impl RootBootstrapContentRequest {
             copy_reference(self.generation.as_resource(), &mut io)?, &mut io,
         )?;
         let (native_snapshot, snapshot_custody) = match snapshot {
-            Some(FundedRootPayload { data, custody }) => (Some(data), Some(custody)),
+            Some((data, custody)) => (Some(data), Some(custody)),
             None => (None, None),
         };
         let copied = Self {
@@ -297,19 +293,12 @@ fn verify_receipt_identity(
     }
     if writer.is_some() {
         let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Write, work)?;
-        let label = FundedRootPayload { data, custody };
-        if !context.original_root.grants.contains(&label.data) {
+        let label = (data, custody);
+        if !context.original_root.grants.contains(&label.0) {
             return Err(root_denial("ROOT bootstrap writer exceeds original admission WRITE"));
         }
     }
     Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct ReceivedRootBootstrap {
-    // Source DATA always drops before the allocation which funds it.
-    receipt: RootBootstrapContentReceipt,
-    custody: acyclic_fs::NativeAllocation,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -321,24 +310,24 @@ impl CreatedResourceAccess {
         custody: acyclic_fs::NativeAllocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let received = ReceivedRootBootstrap { receipt, custody };
+        let received = (receipt, custody);
         work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if !received.custody.work().shares_allocation_context(work) {
+        if !received.1.work().shares_allocation_context(work) {
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
             });
         }
         verify_receipt_identity(
-            context, request, &received.receipt.request,
-            &received.receipt.audience, received.receipt.agent,
-            received.receipt.binding.writer.as_ref().map(|writer| writer.volume()), work,
+            context, request, &received.0.request,
+            &received.0.audience, received.0.agent,
+            received.0.binding.writer.as_ref().map(|writer| writer.volume()), work,
         )?;
         let source_owned = created_access_add(
             created_access_add(std::mem::size_of::<RootBootstrapContentReceipt>() as u64,
-                received.receipt.request.logical_owned_bytes()?)?,
-            received.receipt.audience.id.capacity() as u64,
+                received.0.request.logical_owned_bytes()?)?,
+            received.0.audience.id.capacity() as u64,
         )?;
-        if received.custody.bytes() < source_owned {
+        if received.1.bytes() < source_owned {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
         // This observer is created before all copied payloads, so unwinding drops those payloads before their original-ledger allocation guards.
@@ -346,16 +335,16 @@ impl CreatedResourceAccess {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Read, work)?;
-        let read = FundedRootPayload { data, custody };
-        let write = if received.receipt.binding.writer.is_some() {
+        let read = (data, custody);
+        let write = if received.0.binding.writer.is_some() {
             let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Write, work)?;
-            Some(FundedRootPayload { data, custody })
+            Some((data, custody))
         } else { None };
-        let labels = [Some(read.data.as_str()), write.as_ref().map(|label| label.data.as_str())];
+        let labels = [Some(read.0.as_str()), write.as_ref().map(|label| label.0.as_str())];
         let (data, custody) = crate::Capabilities::new_with_native_work(
             labels.into_iter().flatten(), work,
         )?;
-        let funded_grants = FundedRootPayload { data, custody };
+        let funded_grants = (data, custody);
         drop((read, write));
         let mut content = Vec::new();
         created_access_reserve(&mut content, 1, &mut io)?;
@@ -363,24 +352,24 @@ impl CreatedResourceAccess {
         let authority = io.as_deref_mut().expect("native observer").clone_authority(context.audience)?;
         io.as_deref_mut().expect("native observer").retain_owned(std::mem::size_of::<Self>() as u64)?;
         let default_writer = request.role == RootBootstrapContentRole::Scratch
-            && received.receipt.binding.writer.is_some();
+            && received.0.binding.writer.is_some();
         // ContentBindings owns opaque shared provider handles, not SDK buffers.
         content.push(CreatedContentBinding {
-            volume, authority: Some(authority), binding: received.receipt.binding.clone(),
+            volume, authority: Some(authority), binding: received.0.binding.clone(),
             default_writer,
             artifact_writer: false, scratch_creation: None,
         });
         let mut access = Self {
             operation: context.original_root.operation_id,
             admission_digest: context.admission_digest,
-            grants: funded_grants.data, content, references: Vec::new(), proofs: Vec::new(),
+            grants: funded_grants.0, content, references: Vec::new(), proofs: Vec::new(),
             publication_lease: None,
             current_default_origin: default_writer.then_some(request.root_operation),
             native_custody: None,
         };
         drop(received);
         // Source custody has physically retired; only actual final copied payload custody survives, with no provider-claim-to-query substitution.
-        if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.custody) {
+        if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.1) {
             drop(access);
             return Err(error);
         }
@@ -413,7 +402,7 @@ impl CreatedResourceAccess {
         let (data, custody) = crate::Capabilities::new_with_native_work(
             self.grants.iter().chain(next.grants.iter()), work,
         )?;
-        let funded_grants = FundedRootPayload { data, custody };
+        let funded_grants = (data, custody);
         let mut content = Vec::new();
         created_access_reserve(&mut content, 2, &mut io)?;
         for source in self.content.iter().chain(next.content.iter()) {
@@ -431,13 +420,13 @@ impl CreatedResourceAccess {
         io.as_deref_mut().expect("native observer").retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut access = Self {
             operation: self.operation, admission_digest: self.admission_digest,
-            grants: funded_grants.data, content, references: Vec::new(), proofs: Vec::new(),
+            grants: funded_grants.0, content, references: Vec::new(), proofs: Vec::new(),
             publication_lease: None,
             current_default_origin: self.current_default_origin.or(next.current_default_origin),
             native_custody: None,
         };
         drop((self, next));
-        if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.custody) {
+        if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.1) {
             drop(access);
             return Err(error);
         }
