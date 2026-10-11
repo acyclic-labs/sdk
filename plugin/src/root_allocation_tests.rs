@@ -32,6 +32,7 @@ fn preparing_state(path: PathBuf) -> AdapterState {
                 )
                 .unwrap(),
             )]),
+            results: None,
             scratch: PiScratchBinding {
                 volume: VolumeRef::new(
                     provider,
@@ -260,9 +261,11 @@ async fn both_service_catalogs_reject_preparing_root_routes() {
     let directory = tempfile::tempdir().unwrap();
     let selected = directory.path().join("selected-root");
     fs::create_dir(&selected).unwrap();
-    let mut service = ServiceControl::open(directory.path().join("service"))
-        .await
-        .unwrap();
+    let data = directory.path().join("service");
+    let (_service_lock, configured, private_root, work) =
+        crate::tests::configured_test_service_bootstrap(&data).await.unwrap();
+    let mut service = crate::service::ServiceControl::open(data, configured, private_root, &work)
+        .await.unwrap();
     let mut control = service.open_session("pi-root").await.unwrap();
     control.state = preparing_state(selected.clone());
     service.sessions.insert("pi-root".to_owned(), control);
@@ -277,7 +280,7 @@ async fn both_service_catalogs_reject_preparing_root_routes() {
         .into_iter()
         .map(|(id, control)| (id, control.into()))
         .collect();
-    let concurrent = ConcurrentServiceControl::from_parts(service.resources, sessions);
+    let concurrent = ConcurrentServiceControl::from_parts(service.resources, sessions, &work).unwrap();
     assert!(concurrent.route_session(&selected).await.unwrap().is_none());
     assert!(
         ConcurrentControlRequestDispatcher::dispatch_request(
@@ -289,11 +292,12 @@ async fn both_service_catalogs_reject_preparing_root_routes() {
                 argv: Vec::new(),
                 name: String::new(),
                 arguments: Value::Null,
-            }
+            },
+            &mut None,
         )
         .await
-        .unwrap_err()
-        .contains("outside every registered")
+        .err().expect("preparing Root must not dispatch")
+        .to_string().contains("outside every registered")
     );
-    concurrent.drain_sessions(false).await.unwrap();
+    assert_eq!(concurrent.drain_sessions(false).await.unwrap(), SessionCloseState::Closed);
 }
