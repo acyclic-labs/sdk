@@ -260,6 +260,7 @@ pub use materializer::{
 pub use materializer::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation,
+    NativeHostPrivateStateRoot, NativeStateFile, NativeStateFileMode,
     NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX,
     validate_native_preparation_location,
 };
