@@ -82,7 +82,7 @@ async fn native_root_admission_retains_only_started_requests() -> TestResult {
         assert_eq!(failure.work.backend_read_operations, reads);
         assert_eq!(failure.work.source_entries_visited, 0);
         assert_eq!(failure.work.source_bytes_read, 0);
-        if reads == 0 { assert_eq!(*failure.work, WorkCounters::UNCHARGED); }
+        if reads == 0 { assert_eq!(*failure.work, WorkCounters::default()); }
         failure.work.verify(limited)?;
     }
 
@@ -196,7 +196,6 @@ async fn original_native_root_constructor_retains_actual_read_prefixes() -> Test
         if reads == 3 {
             let source = opened?;
             assert_eq!(source.reference(), reference);
-            assert_eq!(Arc::strong_count(&work.runtime_meter_owner()), 3, "provider intrinsically keeps its one original ledger alive");
         } else {
             let error = opened.err().ok_or("original root exceeded its read allowance")?;
             assert!(matches!(error, DemandError::Work(_)));

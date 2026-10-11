@@ -1,4 +1,3 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::Digest;

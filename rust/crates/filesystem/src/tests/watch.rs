@@ -604,6 +604,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
+        #[cfg(any(target_os = "linux", windows))]
         maximum_queued_changes: 1,
     };
     let (sender, receiver) = sync_channel(1);
@@ -814,8 +815,8 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
-        #[cfg(target_os = "linux")]
         maximum_queued_changes: 1,
+        _root_allocation: None,
     };
     for name in ["a", "b"] {
         accept_native_event(

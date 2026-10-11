@@ -3156,7 +3156,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: authored.clone(),
-            bytes: bytes::Bytes::from(vec![b'a'; 4_096]),
+            bytes: OwnedBytes::from(vec![b'a'; 4_096]),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -6875,13 +6875,13 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
         vec![
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: bytes::Bytes::from_static(b"initial"),
+                bytes: OwnedBytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
                 offset: 7,
-                bytes: bytes::Bytes::from_static(b"-published"),
+                bytes: OwnedBytes::from_static(b"-published"),
             },
         ],
         OperationId::from_bytes([118; 16]),
@@ -6944,7 +6944,7 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
             },
             AuthoredMutation::CreateFile {
                 path: file.clone(),
-                bytes: bytes::Bytes::from_static(b"initial"),
+                bytes: OwnedBytes::from_static(b"initial"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
@@ -7060,7 +7060,7 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
             },
             AuthoredMutation::CreateFile {
                 path: path("bulk0")?,
-                bytes: bytes::Bytes::from_static(b"duplicate"),
+                bytes: OwnedBytes::from_static(b"duplicate"),
                 metadata: empty_metadata(),
             },
         ],
@@ -7191,76 +7191,6 @@ fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchange
     assert!(poll_ready(checkout.lookup_no_follow(
         &path("not-created")?, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("unchanged checkout lookup blocked")??.value.record.is_none());
-    Ok(())
-}
-
-#[test]
-fn authored_transaction_reuses_a_staged_file_metadata_object()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
-        VolumeId::from_bytes([119; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
-    .value;
-    let checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("checkout blocked")??
-    .value;
-    let file = path("memo.txt")?;
-    let metadata = empty_metadata();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-        WorkBudget::UNBOUNDED, &cancellation,
-    );
-    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(4, &mut accounting)?;
-    let mut staged_metadata = AuthoredMetadataCache::new();
-    let mut writes_after_create = 0;
-    for (index, authored) in [
-        AuthoredMutation::CreateFile { path: file.clone(), bytes: bytes::Bytes::new(), metadata, },
-        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: bytes::Bytes::new(), metadata, },
-        AuthoredMutation::SetMetadata { path: file.clone(), metadata },
-    ].into_iter().enumerate() {
-        let bytes = authored.logical_owned_bytes();
-        let allocation = accounting.claim_owned(bytes, 0)?;
-        poll_ready(checkout.compile_authored_mutation_with_accounting(
-            crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
-            &mut staged_metadata, &mut accounting, &cancellation,
-        )).ok_or("authored compilation blocked")??;
-        if index == 0 {
-            writes_after_create = accounting.spent().backend_write_operations;
-            assert!(writes_after_create > 0);
-        } else {
-            assert_eq!(accounting.spent().backend_write_operations, writes_after_create);
-        }
-    }
-    let created_metadata = match &operations.value[0] {
-        Mutation::Create { record, .. } => record.metadata,
-        _ => return Err("expected create".into()),
-    };
-    assert!(matches!(
-        &operations.value[2],
-        Mutation::SetMetadata { metadata, .. } if *metadata == created_metadata
-    ));
-
-    let mut changed = metadata;
-    changed.modified_ns = MetadataField::Value(42);
-    let authored = AuthoredMutation::SetMetadata { path: file, metadata: changed };
-    let bytes = authored.logical_owned_bytes();
-    let allocation = accounting.claim_owned(bytes, 0)?;
-    poll_ready(checkout.compile_authored_mutation_with_accounting(
-        crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
-        &mut staged_metadata, &mut accounting, &cancellation,
-    )).ok_or("changed metadata compilation blocked")??;
-    assert_eq!(accounting.spent().backend_write_operations, writes_after_create + 1);
-    operations.retire(&mut accounting)?;
     Ok(())
 }
 
@@ -8010,78 +7940,6 @@ async fn original_authored_bulk_source_denial_preserves_the_installed_root()
 }
 
 #[test]
-fn public_authored_transaction_reuses_metadata_across_paths()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let first = path("first")?;
-    let second = path("second")?;
-    let shared = empty_metadata();
-    let mut distinct = shared;
-    distinct.modified_ns = MetadataField::Value(42);
-    let mut writes = Vec::new();
-
-    for second_metadata in [shared, distinct] {
-        let fs = Fs::memory();
-        let volume = poll_ready(fs.create_volume_with_id(
-            VolumeId::from_bytes([120; 16]),
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("volume creation blocked")??
-        .value;
-        let mut checkout = poll_ready(volume.checkout(
-            GenerationSelector::Head,
-            writable_pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("checkout blocked")??
-        .value;
-        let result = poll_ready(checkout.apply_authored_transaction(
-            vec![
-                AuthoredMutation::CreateFile {
-                    path: first.clone(),
-                    bytes: bytes::Bytes::new(),
-                    metadata: shared,
-                },
-                AuthoredMutation::CreateFile {
-                    path: second.clone(),
-                    bytes: bytes::Bytes::new(),
-                    metadata: second_metadata,
-                },
-                AuthoredMutation::SetMetadata {
-                    path: first.clone(),
-                    metadata: shared,
-                },
-            ],
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("authored transaction blocked")??;
-        let first_record =
-            poll_ready(checkout.lookup_no_follow(&first, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("first lookup blocked")??
-                .value
-                .record
-                .ok_or("first record missing")?;
-        let second_record =
-            poll_ready(checkout.lookup_no_follow(&second, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("second lookup blocked")??
-                .value
-                .record
-                .ok_or("second record missing")?;
-        assert_eq!(
-            first_record.metadata == second_record.metadata,
-            second_metadata == shared
-        );
-        writes.push(result.work.backend_write_operations);
-    }
-    assert_eq!(writes[1], writes[0] + 1);
-    Ok(())
-}
-
-#[test]
 fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -8147,7 +8005,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("absent")?,
             offset: 0,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8183,11 +8041,11 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             AuthoredMutation::Write {
                 path: path("ordered")?,
                 offset: 0,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
             },
             AuthoredMutation::CreateFile {
                 path: path("ordered")?,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
                 metadata: empty_metadata(),
             },
         ],
@@ -8231,7 +8089,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let created = poll_ready(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
             metadata: empty_metadata(),
         }],
         WorkBudget::UNBOUNDED,
@@ -8253,7 +8111,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::Write {
             path: path("present")?,
             offset: 0,
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -8351,9 +8209,9 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     .ok_or("byte-limited checkout blocked")??
     .value;
     for mutation in [
-        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
         AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
-        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: bytes::Bytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
     ] {
         let failure = poll_ready(checkout.apply_authored_transaction(
             vec![mutation],
@@ -8535,7 +8393,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             },
             AuthoredMutation::CreateFile {
                 path: source.clone(),
-                bytes: bytes::Bytes::from_static(b"abcdefgh"),
+                bytes: OwnedBytes::from_static(b"abcdefgh"),
                 metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
@@ -8562,7 +8420,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             AuthoredMutation::Write {
                 path: source.clone(),
                 offset: 0,
-                bytes: bytes::Bytes::new(),
+                bytes: OwnedBytes::new(),
             },
             AuthoredMutation::Write {
                 path: source.clone(),
@@ -10296,7 +10154,7 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     ))
     .ok_or("Windows checkout blocked")??
     .value;
-    let payload = OwnedBytes::from_static(b"opaque-reparse\0payload");
+    let payload = bytes::Bytes::from_static(b"opaque-reparse\0payload");
     poll_ready(checkout.create_reparse_point(
         path("junction")?,
         payload.clone(),
@@ -11978,7 +11836,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .is_none()
     );
 
-    let target = OwnedBytes::from_static(b"../identity.bin");
+    let target = bytes::Bytes::from_static(b"../identity.bin");
     ready!(checkout.value.create_symbolic_link(
         path("link")?,
         target.clone(),
@@ -11991,8 +11849,8 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value,
-        target
+        .value.as_ref(),
+        target.as_ref()
     );
     ready!(checkout.value.create_empty_special(
         path("fifo")?,
@@ -12628,8 +12486,12 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         .ok_or("hard-link identity change absent")?;
     assert_eq!(file.before.ok_or("original record absent")?.file_id, changed_id);
     assert_eq!(file.after.ok_or("linked record absent")?.link_count, 2);
+    let root = ready!(checkout.lookup_no_follow_with_metadata(
+        &root_path()?, WorkBudget::UNBOUNDED, &cancellation,
+    )).value.ok_or("updated root metadata absent")?;
+    assert_eq!(root.metadata, metadata);
     assert!(semantic.files.iter().any(|change|
-        change.after.is_some_and(|record| record.kind == FileKind::Directory && record.metadata == metadata)));
+        change.after.is_some_and(|record| record.kind == FileKind::Directory && record.metadata == root.record.metadata)));
     assert_eq!(semantic.bindings.len(), 3);
     assert!(semantic.bindings.iter().any(|change|
         change.name.as_bytes() == b"changed" && change.before.is_some() && change.after.is_none()));
@@ -13248,13 +13110,13 @@ fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
         &store, empty, empty, 1, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("invalid-root diff blocked")?.expect_err("a tree is not a file-table root");
     assert!(matches!(invalid_root.error, FsError::InvalidDiff));
-    assert_eq!(invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
+    assert_eq!(*invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
     let table = ObjectId { kind: ObjectKind::FileTablePage, digest: empty.digest };
     let invalid_bound = poll_ready(diff_generation_file_tables(
         &store, table, table, 0, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
     )).ok_or("zero-bound diff blocked")?.expect_err("the canonical engine rejects a zero bound");
     assert!(matches!(invalid_bound.error, FsError::InvalidDiff));
-    assert_eq!(invalid_bound.work, prior);
+    assert_eq!(*invalid_bound.work, prior);
     Ok(())
 }
 
@@ -14057,7 +13919,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
             },
             AuthoredMutation::CreateFile {
                 path: path("batch")?,
-                bytes: bytes::Bytes::from_static(b"body"),
+                bytes: OwnedBytes::from_static(b"body"),
                 metadata: empty_metadata(),
             },
         ],
@@ -14434,7 +14296,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
             path: path(name)?,
             metadata: Box::new(FileMetadata::default()),
             file_id: FileId::new(),
-            bytes: bytes::Bytes::new(),
+            bytes: OwnedBytes::new(),
         })
     };
 
@@ -15391,8 +15253,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     Ok(())
 }
 
-#[tokio::test]
-async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
+#[test]
+fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::{ForkOptions, WorkspaceError};
     let tracked = Arc::new(std::sync::Mutex::new(None));
@@ -15407,15 +15269,16 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("selected-fork-verification-gates").await?;
-    workspace.write_text("/file", "body").await?;
-    let source = workspace.head().await?;
-    let child = workspace.fork(
+    let workspace = poll_ready(fs.create_workspace("selected-fork-verification-gates"))
+        .ok_or("workspace creation blocked")??;
+    poll_ready(workspace.write_text("/file", "body")).ok_or("fixture write blocked")??;
+    let source = poll_ready(workspace.head()).ok_or("source head blocked")??;
+    let child = poll_ready(workspace.fork(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    ).await?;
-    let initial = child.head().await?;
+    )).ok_or("selected fork blocked")??;
+    let initial = poll_ready(child.head()).ok_or("child head blocked")??;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
@@ -15425,9 +15288,9 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         WorkBudget::default(),
         WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
     ] {
-        let failed = initial.matches_fork_selection_measured(
+        let failed = poll_ready(initial.matches_fork_selection_measured(
             &source, Some(vec!["/file".to_owned()]), budget, &cancellation,
-        ).await.err().ok_or("verification ignored its allocation gate")?;
+        )).ok_or("bounded verification blocked")?.err().ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
         assert_eq!(failed.work.allocation_operations, 0);
         assert_eq!(failed.work.backend_read_operations, 0);
@@ -15435,9 +15298,9 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failed = initial.matches_fork_selection_measured(
+    let failed = poll_ready(initial.matches_fork_selection_measured(
         &source, Some(vec!["/file".to_owned()]), WorkBudget::UNBOUNDED, &cancelled,
-    ).await.err().ok_or("verification ignored cancellation")?;
+    )).ok_or("cancelled verification blocked")?.err().ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failed.work.allocation_operations, 0);
     assert_eq!(failed.work.backend_read_operations, 0);

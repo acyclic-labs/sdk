@@ -1,4 +1,3 @@
-use acyclic_stream::OwnedBytes;
 use super::{CanonicalDecodeError, Decoder, Encoder, EncodeAllocationStep};
 
 #[test]
