@@ -37,6 +37,43 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok((read.page, native_io.into_custody()))
     }
 
+    /// Reads the original authenticated immutable operation locator and event.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn operation_event_bounded_with_native_work(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<Event>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (event, _) = super::super::operations::find_operation_bounded_with_work(
+            &self.client, self.verifier.audience(), &self.verifier, operation,
+            maximum_bytes, true, &mut Some(&mut native_io),
+        ).await?;
+        native_io.return_staged_output()?;
+        Ok((event, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated effect prefix at the supplied pinned cut.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn effect_events_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Vec<Event>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let events = super::super::effects::read_with_work(
+            &self.client, &self.verifier, cursor, effect, limits,
+            &mut Some(&mut native_io),
+        ).await?;
+        native_io.return_staged_output()?;
+        Ok((events, native_io.into_custody()))
+    }
+
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
     /// Tail metadata exposes no encoded byte size; none is invented here.
     pub async fn pin_measured(
@@ -292,8 +329,12 @@ impl<'a> HistoryWork<'a> {
             items_examined: 1,
             ..WorkCounters::default()
         })?;
-        self.retain(bytes)?;
-        self.verify(self.work)
+        let live = self.live_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history live byte count overflows".into()))?;
+        self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(live);
+        self.verify(self.work)?;
+        self.live_bytes = live;
+        Ok(())
     }
 
     fn retain(&mut self, bytes: u64) -> Result<()> {

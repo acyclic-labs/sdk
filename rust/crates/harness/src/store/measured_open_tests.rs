@@ -195,6 +195,17 @@ mod measured_open_tests {
         assert_eq!(receipt.output_bytes - prefix.output_bytes, sdk.read_bytes);
         assert_eq!(receipt.items_returned - prefix.items_returned, 5);
         assert_eq!(sdk.writes + sdk.inspections + sdk.commit_reads + sdk.other_calls, 0);
+        let prefix = native.receipt();
+        provider.reset_io();
+        let (archived, archived_custody) = reader.operation_event_bounded_with_native_work(
+            page.events[0].operation_id, budget().authority_bytes_read, &native).await?;
+        assert_eq!(archived.as_ref(), Some(&page.events[0]));
+        assert!(native.shares_ledger(archived_custody.work()));
+        assert_eq!(native.receipt().items_returned - prefix.items_returned, 1);
+        assert_eq!(native.receipt().authority_bytes_read - prefix.authority_bytes_read,
+            provider.io_snapshot().read_bytes);
+        drop(archived);
+        drop(archived_custody);
         drop(page);
         drop(page_custody);
 
@@ -279,12 +290,12 @@ mod measured_open_tests {
         drop(measured);
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original finite open ledger");
+        let accounting_bytes = work.receipt().peak_allocation_bytes;
         provider.reset_io();
         let (aggregate, custody) = StreamAggregate::open_with_native_work(
             &client, authority(), issuer().verifier(), schemas(), &work).await?;
         assert_eq!(aggregate.reducer().snapshot()?, expected);
         assert!(work.shares_ledger(custody.work()));
-        assert!(custody.bytes() > 0);
         let receipt = work.receipt();
         let sdk = provider.io_snapshot();
         assert_eq!(receipt.backend_read_operations, sdk.reads + sdk.tails as u64);
@@ -292,8 +303,11 @@ mod measured_open_tests {
         assert_eq!(receipt.output_bytes, expected_output);
         assert_eq!(receipt.items_returned, expected_items);
         assert_eq!(sdk.writes + sdk.inspections + sdk.commit_reads + sdk.other_calls, 0);
-        drop(aggregate);
         drop(custody);
+        let all_payload_allowance = budget().peak_allocation_bytes - accounting_bytes;
+        assert!(work.admit_retained(all_payload_allowance).is_err());
+        drop(aggregate);
+        assert!(work.admit_retained(all_payload_allowance).is_ok());
         let exact_work = NativeMaterializationWork::new(receipt, &cancellation)
             .expect("actual native high-water allowance includes accounting state");
         provider.reset_io();
@@ -553,6 +567,22 @@ mod measured_open_tests {
             assert_eq!(archived.work.backend_read_operations, provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
             assert_eq!(provider.io_snapshot().writes, 0);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+                .expect("original effect reader ledger");
+            provider.reset_io();
+            let (events, custody) = reader.effect_events_with_native_work(
+                &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
+                effect_id, default_projection_read_limits(), &native).await?;
+            assert_eq!(events, expected.events);
+            assert!(native.shares_ledger(custody.work()));
+            assert_eq!(native.receipt().items_returned, 3);
+            assert_eq!(native.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
+            assert!(native.receipt().output_bytes > 0);
+            drop(events);
+            drop(custody);
+        }
         provider.reset_io();
         let absent = reader.effect_events_measured(
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
@@ -624,12 +654,12 @@ mod measured_open_tests {
     async fn measured_snapshot_authentication_observes_original_encoder_and_mac_failures() -> Result<()> {
         let (provider, client) = fixture().await?;
         let snapshot = checkpoints::load(&client, &authority(), &issuer().verifier(), default_projection_read_limits()).await?.snapshot.expect("durable checkpoint");
-        let expected = Reducer::restore(snapshot.clone(), issuer().verifier(), schemas())?;
+        let expected = Reducer::restore(snapshot.clone_with_work(&mut None)?, issuer().verifier(), schemas())?;
         let cancellation = CancellationToken::new();
         let mut work = history::HistoryWork::new(budget(), &cancellation);
         work.preflight()?;
         provider.reset_io();
-        let result = Reducer::restore_with_work(snapshot.clone(), issuer().verifier(), schemas(), &mut Some(&mut work));
+        let result = Reducer::restore_with_work(snapshot.clone_with_work(&mut None)?, issuer().verifier(), schemas(), &mut Some(&mut work));
         let receipt = work.finish(result).map_err(|failure| failure.error)?;
         assert_eq!(receipt.value, expected);
         assert!(receipt.work.bytes_encoded > 0);
@@ -645,7 +675,7 @@ mod measured_open_tests {
         ] {
             let mut work = history::HistoryWork::new(narrow, &cancellation);
             work.preflight()?;
-            let result = Reducer::restore_with_work(snapshot.clone(), issuer().verifier(), schemas(), &mut Some(&mut work));
+            let result = Reducer::restore_with_work(snapshot.clone_with_work(&mut None)?, issuer().verifier(), schemas(), &mut Some(&mut work));
             let failure = work.finish(result).err().expect("original snapshot crypto shares the cumulative work allowance");
             if narrow.bytes_encoded == 0 { assert_eq!(failure.work.bytes_encoded, 0); }
             if narrow.peak_allocation_bytes == 0 { assert_eq!(failure.work.peak_allocation_bytes, 0); }
@@ -658,9 +688,9 @@ mod measured_open_tests {
             assert_eq!(failure.work.backend_read_operations, 0);
             assert_eq!(failure.work.output_bytes, 0);
         }
-        let mut forged = snapshot.clone();
+        let mut forged = snapshot.clone_with_work(&mut None)?;
         forged.attestation[0] ^= 1;
-        assert!(matches!(Reducer::restore(forged.clone(), issuer().verifier(), schemas()), Err(Error::Unauthorized(_))));
+        assert!(matches!(Reducer::restore(forged.clone_with_work(&mut None)?, issuer().verifier(), schemas()), Err(Error::Unauthorized(_))));
         let mut work = history::HistoryWork::new(budget(), &cancellation);
         let result = Reducer::restore_with_work(forged, issuer().verifier(), schemas(), &mut Some(&mut work));
         let failure = work.finish(result).err().expect("original snapshot MAC must reject even after its state digest verifies");

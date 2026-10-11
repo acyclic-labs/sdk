@@ -27,44 +27,6 @@ pub(crate) fn native_work_io(
     })
 }
 
-/// A scoped loan of existing state custody; the original guard receives every
-/// retained delta before its owner can be dropped, including on cancellation.
-pub(crate) struct NativeStateHistoryIo<'a> {
-    inner: NativeHistoryIo<'a>,
-    owner: &'a mut NativeAllocation,
-}
-
-impl<'a> std::ops::Deref for NativeStateHistoryIo<'a> {
-    type Target = NativeHistoryIo<'a>;
-    fn deref(&self) -> &Self::Target { &self.inner }
-}
-
-impl std::ops::DerefMut for NativeStateHistoryIo<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
-}
-
-impl Drop for NativeStateHistoryIo<'_> {
-    fn drop(&mut self) {
-        // The exclusive loan leaves the owner empty. Both guards share this
-        // exact ledger, and their combined bytes cannot exceed its live total.
-        self.owner.absorb(&mut self.inner.custody)
-            .expect("native state custody returns to its original owner");
-    }
-}
-
-pub(crate) fn native_state_work_io<'a>(
-    work: &'a NativeMaterializationWork,
-    owner: &'a mut NativeAllocation,
-) -> std::result::Result<NativeStateHistoryIo<'a>, NativeTreeMaterializationError> {
-    if !work.shares_ledger(owner.work()) {
-        return Err(NativeTreeMaterializationError::InvalidLayout);
-    }
-    let custody = owner.split_off(owner.bytes())?;
-    Ok(NativeStateHistoryIo {
-        inner: NativeHistoryIo { work, custody, staged_bytes: 0, staged_items: 0 },
-        owner,
-    })
-}
 
 impl NativeHistoryIo<'_> {
     /// Transfers the same ledger's retained source payloads to their last user.
@@ -135,8 +97,11 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, peak_allocation_bytes: bytes, ..WorkCounters::default() })
             .map_err(|error| self.native_error(error))?;
-        self.retain(bytes)?;
+        // Any failure leaves no new record claim. The raw receiver prefix is
+        // already observable, but quota/cancellation must be checked before
+        // custody is retained so callers can drop a rejected record exactly.
         self.work.remaining().map_err(|error| self.native_error(error))?;
+        self.retain(bytes)?;
         Ok(())
     }
     fn release_record(&mut self, bytes: u64) -> Result<()> {
@@ -200,13 +165,16 @@ impl HistoryIo for NativeHistoryIo<'_> {
         match charge {
             JsonCodecCharge::Work { bytes, items } => self.charge(WorkCounters { bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
-            JsonCodecCharge::Admission { maximum_owned_bytes } => { self.admit_owned(maximum_owned_bytes)?; self.retain(maximum_owned_bytes) }
+            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => { self.admit_owned(maximum_owned_bytes)?; self.retain(maximum_owned_bytes) }
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
             JsonCodecCharge::CopyAdmission { bytes } => self.admit_copy(bytes),
             JsonCodecCharge::AllocationOperation { .. } => self.charge(WorkCounters {
                 allocation_operations: 1, ..WorkCounters::default()
             }),
             JsonCodecCharge::Read { .. } => Ok(()),
+            JsonCodecCharge::Inspect { items } => self.charge(WorkCounters {
+                items_examined: items, ..WorkCounters::default()
+            }),
             JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
         }
     }

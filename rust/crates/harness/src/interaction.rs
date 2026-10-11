@@ -104,27 +104,150 @@ impl InteractionTicket {
     pub(crate) fn validate_decoded_request(&self, request: &Interaction) -> Result<()> {
         self.validate()?;
         request.validate()?;
+        self.validate_request_binding(&request, &mut None)?;
+        Ok(request)
+    }
+
+    /// Validates the original typed request without letting its payload escape.
+    /// The original source claim outlives every parsed field, including errors.
+    pub(crate) fn validate_request_bytes_with_work(
+        &self,
+        bytes: &[u8],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if work.is_none() {
+            return self.validate_request_bytes(bytes).map(drop);
+        }
+        self.validate_with_work(work)?;
+        self.request.descriptor().verify_with_work(bytes, work)?;
+
+        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let diagnostic = interaction_decode_diagnostic_bytes(bytes.len() as u64)?;
+        let mut items = 0_u64;
+        let native = interaction_native_mode(custody.work());
+        let bounds = crate::contract::JsonBounds {
+            maximum_bytes: bytes.len() as u64,
+            maximum_items: bytes.len() as u64,
+            maximum_depth: 256,
+        };
+        let decoded = {
+            let mut charge = |charge| -> Result<()> {
+                match charge {
+                    crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
+                        items = items.checked_add(visited).ok_or_else(|| interaction_denial(
+                            custody.work(), crate::wire::ErrorCode::Invalid,
+                            "interaction JSON item count overflows"))?;
+                    }
+                    crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                        let planned = interaction_decode_owned_bytes(
+                            bytes.len() as u64, items, maximum_owned_bytes, diagnostic,
+                        ).ok_or_else(|| interaction_denial(custody.work(),
+                            crate::wire::ErrorCode::Invalid,
+                            "interaction JSON custody overflows"))?;
+                        let observer = custody.work().as_deref_mut().expect("observed interaction");
+                        observer.admit_owned(planned)?;
+                        observer.retain_owned(planned)?;
+                        custody.adopt(planned)?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+                custody.work().as_deref_mut().expect("observed interaction").codec_charge(charge)
+            };
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let decoded = if native {
+                crate::contract::json_from_slice_bounded_native_trusted::<Interaction, _>(
+                    bytes, bounds, bytes.len() as u64, crate::wire::ErrorCode::Invalid, &mut charge,
+                )
+            } else {
+                crate::contract::json_from_slice_bounded_trusted::<Interaction, _>(
+                    bytes, bounds, bytes.len() as u64, &mut charge,
+                )
+            };
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let decoded = crate::contract::json_from_slice_bounded_trusted::<Interaction, _>(
+                bytes, bounds, bytes.len() as u64, &mut charge,
+            );
+            decoded
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let decoded = decoded.map_err(|mut error| {
+            if let Error::NativeDecode { custody: error_custody, .. } = &mut error
+                && error_custody.is_none()
+            {
+                // Pure split: no new admission/cancellation can replace the
+                // first original Serde cause after its allocation occurred.
+                let bytes = custody.retained();
+                *error_custody = Some(custody.work().as_deref_mut()
+                    .expect("observed interaction").take_native_custody(bytes)
+                    .expect("preclaimed interaction decoder custody"));
+                custody.transfer();
+            }
+            error
+        });
+        let _ = native;
+        let request = decoded?;
+        request.validate_with_work(custody.work())?;
+        self.validate_request_binding(&request, custody.work())?;
+        drop(request);
+        Ok(())
+    }
+
+    /// Validates a funded typed request after its original bytes were verified
+    /// against this ticket's descriptor. Its caller retains DTO custody through
+    /// validation and every subsequent consumer; this method never decodes again.
+    pub(crate) fn validate_decoded_request_with_work(
+        &self,
+        request: &Interaction,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate_with_work(work)?;
+        request.validate_with_work(work)?;
+        self.validate_request_binding(request, work)
+    }
+
+    /// Validates the same ref-only envelope with static native denials.
+    pub(crate) fn validate_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if work.is_none() { return self.validate(); }
+        work.as_deref_mut().expect("observed interaction").check_cancellation()?;
+        if self.id.is_nil()
+            || self.request.descriptor().media_type() != "application/json"
+            || self.deadline_unix_ms == Some(0)
+            || (self.kind == InteractionKind::Approval) != self.approval.is_some()
+            || self.approval.as_ref().is_some_and(|binding| binding.action_digest == [0; 32])
+        {
+            return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                "invalid interaction ticket"));
+        }
+        self.request.validate_with_work(work)
+    }
+
+    fn validate_request_binding(
+        &self,
+        request: &Interaction,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if request.kind() != self.kind {
-            return Err(Error::Invalid("interaction request kind mismatch".into()));
+            return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                "interaction request kind mismatch"));
         }
         match (request, &self.approval) {
             (
-                Interaction::Approval {
-                    operation_id,
-                    action_digest,
-                    ..
-                },
+                Interaction::Approval { operation_id, action_digest, .. },
                 Some(binding),
             ) if *operation_id == binding.operation_id
                 && *action_digest == binding.action_digest => {}
             (Interaction::Approval { .. }, _) => {
-                return Err(Error::Conflict("approval action binding mismatch".into()));
+                return Err(interaction_denial(work, crate::wire::ErrorCode::Conflict,
+                    "approval action binding mismatch"));
             }
             (_, None) => {}
             _ => {
-                return Err(Error::Invalid(
-                    "non-approval carries an approval binding".into(),
-                ));
+                return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                    "non-approval carries an approval binding"));
             }
         }
         Ok(())
@@ -550,13 +673,21 @@ impl Interaction {
 
     /// Validates the interaction before it is admitted.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         match self {
             Self::Question {
                 prompt,
                 response_schema,
             } => {
-                nonempty(prompt, "question prompt")?;
-                validate_schema(response_schema)?;
+                nonempty_with_work(prompt, "question prompt", "question prompt is empty", work)?;
+                validate_schema_with_work(response_schema, work)?;
             }
             Self::Choice {
                 prompt,
@@ -564,34 +695,50 @@ impl Interaction {
                 min_selections,
                 max_selections,
             } => {
-                nonempty(prompt, "choice prompt")?;
+                nonempty_with_work(prompt, "choice prompt", "choice prompt is empty", work)?;
                 if options.is_empty()
                     || min_selections > max_selections
                     || *max_selections as usize > options.len()
                 {
-                    return Err(Error::Invalid("invalid choice selection bounds".into()));
+                    return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                        "invalid choice selection bounds"));
                 }
+                // Only borrowed logical keys are owned by this original set;
+                // opaque BTree node/allocator overhead is not an SDK receipt.
+                let slots = if work.is_some() {
+                    (options.len() as u64).checked_mul(std::mem::size_of::<&str>() as u64)
+                        .ok_or_else(|| interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                            "choice identity custody overflows"))?
+                } else { 0 };
+                let mut custody = crate::wire_codec::CodecQuota::new(work, slots)?;
                 let mut ids = BTreeSet::new();
                 for option in options {
-                    nonempty(&option.id, "choice option identity")?;
-                    nonempty(&option.label, "choice option label")?;
+                    if let Some(observer) = custody.work().as_deref_mut() {
+                        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    }
+                    nonempty_with_work(&option.id, "choice option identity",
+                        "choice option identity is empty", custody.work())?;
+                    nonempty_with_work(&option.label, "choice option label",
+                        "choice option label is empty", custody.work())?;
                     if !ids.insert(option.id.as_str()) {
-                        return Err(Error::Invalid("duplicate choice option identity".into()));
+                        return Err(interaction_denial(custody.work(), crate::wire::ErrorCode::Invalid,
+                            "duplicate choice option identity"));
                     }
                 }
             }
             Self::Form { title, schema } => {
-                nonempty(title, "form title")?;
-                validate_schema(schema)?;
+                nonempty_with_work(title, "form title", "form title is empty", work)?;
+                validate_schema_with_work(schema, work)?;
             }
             Self::Approval {
                 prompt,
                 action_digest,
                 ..
             } => {
-                nonempty(prompt, "approval prompt")?;
+                nonempty_with_work(prompt, "approval prompt", "approval prompt is empty", work)?;
                 if action_digest == &[0; 32] {
-                    return Err(Error::Invalid("approval action digest is empty".into()));
+                    return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                        "approval action digest is empty"));
                 }
             }
         }
@@ -679,6 +826,119 @@ fn validate_schema(schema: &Value) -> Result<()> {
     crate::contract::compile_json_schema(schema, "interaction").map(|_| ())
 }
 
+fn validate_schema_with_work(
+    schema: &Value,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() { return validate_schema(schema); }
+    crate::contract::compile_json_schema_with_work(schema, "interaction", work).map(drop)
+}
+
+fn nonempty_with_work(
+    value: &str,
+    name: &str,
+    reason: &'static str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() { return nonempty(value, name); }
+    if value.trim().is_empty() {
+        Err(interaction_denial(work, crate::wire::ErrorCode::Invalid, reason))
+    } else {
+        Ok(())
+    }
+}
+
+fn interaction_native_mode(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    { work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    { let _ = work; false }
+}
+
+fn interaction_denial(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if interaction_native_mode(work) { return Error::NativeBoundary { code, reason }; }
+    let _ = work;
+    if code == crate::wire::ErrorCode::Conflict {
+        Error::Conflict(reason.into())
+    } else {
+        Error::Invalid(reason.into())
+    }
+}
+
+fn interaction_decode_diagnostic_bytes(input_bytes: u64) -> Result<u64> {
+    // Serde 229 internally-tagged Interaction and ChoiceOption derived visitors;
+    // UUID 1.27 human-readable visitor and its original parsing error Display.
+    // Common serde/syntax templates and escaped source interpolation are
+    // provided by the canonical diagnostic witness, not another JSON parser.
+    const LABELS: &[&str] = &[
+        "Interaction", "Question", "Choice", "Form", "Approval", "ChoiceOption", "OperationId",
+        "type", "question", "choice", "form", "approval", "prompt", "response_schema",
+        "options", "min_selections", "max_selections", "title", "schema", "operation_id",
+        "action_digest", "id", "label", "description",
+        "internally tagged enum Interaction", "struct variant Interaction::Question",
+        "struct variant Interaction::Choice", "struct variant Interaction::Form",
+        "struct variant Interaction::Approval", "struct ChoiceOption", "any value",
+        "any valid JSON value", "a string key", "a string", "u32", "u8",
+        "an array of length 32", "field identifier", "variant identifier",
+        "variant index 0 <= i < 4", "field index 0 <= i < 4",
+        "1 element in sequence", " elements in sequence", "1 element in map", " elements in map",
+        "raw value", "$serde_json::private::RawValue",
+        "a formatted UUID string", "a 16 byte array", "UUID parsing failed: ",
+        "invalid character: found `` at ", "invalid length: expected 16 bytes, found ",
+        "invalid group count: expected 5, found ",
+        "invalid group length in group : expected , found ",
+        "non-UTF8 input", "invalid length: found ", "failed to parse a UUID",
+    ];
+    // Pinned serde_json::Error::custom normalizes its trailing line/column
+    // suffix, so nested raw parser errors retain only one original position.
+    crate::contract::audited_serde_diagnostic_bytes(input_bytes,
+        LABELS.iter().map(|label| label.len() as u64 + 4).sum())
+}
+
+fn interaction_decode_owned_bytes(
+    input_bytes: u64,
+    items: u64,
+    codec_owned_bytes: u64,
+    diagnostic_bytes: u64,
+) -> Option<u64> {
+    // ONE Content layer overlaps the consuming Value/ChoiceOption collections.
+    // Ten slots/item covers minimum-eight/geometric collection capacities.
+    // With raw_value enabled, Value's first-key magic map consumes its string
+    // through the ORIGINAL nested parser. Its hidden nodes are bounded by input
+    // bytes, not exterior lexical items; no additional scanner/parser is run.
+    // Each nesting quotes the entire preceding JSON string, so even one inner
+    // quote requires at least 2^depth escape bytes in this original slice.
+    // usize::BITS bounds the active raw-box/parser chain. Per layer, scratch
+    // is <=2*max(input,8), boxed raw text <=input, and the fourth payload covers
+    // destination strings/into_boxed_str shrink overlap. Exterior codec scratch
+    // remains separately held. These are logical pairs/payloads, not opaque
+    // BTree nodes, allocator overhead, RSS, CPU or stack admission. The 256
+    // bound is EXTERIOR lexical depth; each original inner parser retains its
+    // own pinned 128-depth rule, which is not a 256 semantic-tree guarantee.
+    let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
+        .max(std::mem::size_of::<(
+            serde::__private229::de::Content<'static>,
+            serde::__private229::de::Content<'static>,
+        )>()) as u64;
+    let value_slot = std::mem::size_of::<Value>()
+        .max(std::mem::size_of::<(String, Value)>()) as u64;
+    let content_and_options = content_slot
+        .checked_add(std::mem::size_of::<ChoiceOption>() as u64)?;
+    let wire_value_slots = input_bytes.checked_mul(10)?.checked_mul(value_slot)?;
+    let raw_payload_and_scratch = input_bytes.max(8)
+        .checked_mul(4 * (u64::from(usize::BITS) + 2))?;
+    items.checked_mul(10)?.checked_mul(content_and_options)?
+        .checked_add(wire_value_slots)?
+        .checked_add(raw_payload_and_scratch)?
+        .checked_add(codec_owned_bytes)?
+        .checked_add(diagnostic_bytes)
+}
+
 fn nonempty(value: &str, name: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(Error::Invalid(format!("{name} is empty")))
@@ -720,6 +980,114 @@ mod tests {
             FileDescriptor::from_bytes(bytes, "application/json")?,
             "interaction.json",
         )
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            source_bytes_read: 1_048_576,
+            bytes_hashed: 1_048_576,
+            bytes_copied: 1_048_576,
+            bytes_encoded: 1_048_576,
+            items_examined: 1_048_576,
+            allocation_operations: 1_048_576,
+            peak_allocation_bytes: 1_048_576,
+            ..acyclic_fs::WorkBudget::default()
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let bytes = br#"{"type":"approval","prompt":"Proceed?","operation_id":"00000000-0000-0000-0000-000000000001","action_digest":[3]}"#;
+        let ticket = InteractionTicket {
+            id: Uuid::from_bytes([1; 16]),
+            kind: InteractionKind::Approval,
+            request: file("native-approval.json", bytes)?,
+            deadline_unix_ms: None,
+            approval: Some(ApprovalBinding {
+                operation_id: OperationId::from_bytes([
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+                ]),
+                action_digest: [3; 32],
+            }),
+        };
+        let original = serde_json::from_slice::<Interaction>(bytes).expect_err("fixed digest");
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+            .expect("original ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let error = ticket.validate_request_bytes_with_work(bytes, &mut Some(&mut io))
+            .expect_err("original typed digest rejects malformed length");
+        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+            panic!("native request must preserve its original typed cause and guard");
+        };
+        assert_eq!(code, crate::wire::ErrorCode::Invalid);
+        assert_eq!(source.classify(), original.classify());
+        assert_eq!((source.line(), source.column()), (original.line(), original.column()));
+        assert!(custody.bytes() > 0);
+        assert!(native.shares_ledger(custody.work()));
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(source);
+        drop(custody);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_unit_choice_validation_retires_all_temporary_custody() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let bytes = br#"{"type":"choice","prompt":"Choose","options":[{"id":"one","label":"One"},{"id":"two","label":"Two"}],"min_selections":1,"max_selections":1}"#;
+        let ticket = InteractionTicket {
+            id: Uuid::from_bytes([1; 16]),
+            kind: InteractionKind::Choice,
+            request: file("native-choice.json", bytes)?,
+            deadline_unix_ms: None,
+            approval: None,
+        };
+        ticket.validate_request_bytes_with_work(bytes, &mut None)?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+            .expect("original ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        ticket.validate_request_bytes_with_work(bytes, &mut Some(&mut io))?;
+        assert_eq!(io.into_custody().bytes(), 0);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        // Original Value deserialization expands this schema from a string;
+        // exterior lexical items alone cannot fund its actual collection.
+        let schema = json!({"const": vec![false; 64]});
+        let embedded = serde_json::to_string(&schema)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let bytes = serde_json::to_vec(&json!({
+            "type": "question",
+            "prompt": "Choose",
+            "response_schema": {"$serde_json::private::RawValue": embedded},
+        })).map_err(|error| Error::Invalid(error.to_string()))?;
+        let ticket = InteractionTicket {
+            id: Uuid::from_bytes([1; 16]),
+            kind: InteractionKind::Question,
+            request: file("native-raw-schema.json", &bytes)?,
+            deadline_unix_ms: None,
+            approval: None,
+        };
+        let Interaction::Question { response_schema, .. } = ticket.validate_request_bytes(&bytes)? else {
+            panic!("original question");
+        };
+        assert_eq!(response_schema, schema);
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+            .expect("original ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        ticket.validate_request_bytes_with_work(&bytes, &mut Some(&mut io))?;
+        assert_eq!(io.into_custody().bytes(), 0);
+        Ok(())
     }
 
     #[test]

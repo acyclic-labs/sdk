@@ -102,12 +102,107 @@ pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<V
 /// Value tree. Key ordering does not change the size of ordinary typed records.
 /// Canonical encoding and identity checks still use `canonical_json_bytes`.
 /// This is only an encoded-size check, never owned-tree or serde heap admission.
-pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
+pub(crate) fn validate_json_byte_bound<T: Serialize + ?Sized>(value: &T, maximum: u64) -> Result<()> {
     json_byte_length(value, maximum).map(|_| ())
 }
 
+/// Counts the original compact serialization of an audited, finite SDK DTO.
+/// Callers must bound its source collections before entering this method and
+/// exclude unaudited serializers and user-generated serializer errors.
+/// Ordinary checks retain their bounded early-failure behavior. Native checks
+/// avoid allocating an I/O error merely because a small byte bound was selected.
+pub(crate) fn validate_trusted_json_byte_bound_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(observer) = work.as_deref_mut()
+        && observer.original_native_work().is_some()
+    {
+        struct Count {
+            bytes: u64,
+            overflow: bool,
+        }
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                match self.bytes.checked_add(bytes.len() as u64) {
+                    Some(total) => self.bytes = total,
+                    None => {
+                        self.bytes = u64::MAX;
+                        self.overflow = true;
+                    }
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        observer.check_cancellation()?;
+        observer.admit_encoding(1)?;
+        // Audited callers use only finite SDK field serializers. Their possible
+        // diagnostics are the standard fixed Serde messages, not arbitrary
+        // user-defined Serialize errors.
+        let diagnostic = audited_serde_diagnostic_bytes(0,
+            ["EffectState", "Context", "BorrowedContext", "ContextMessages",
+                "JoinedContext", "metadata", "messages", "current_input_index",
+                "ContextAttribute", "ContextSelection", "ContextSourceValue",
+                "ContextExtent", "ContextRepresentation",
+                "provider", "guarantee", "effect_kind", "request", "request_digest",
+                "result_schema", "result_schema_digest", "status", "attempts",
+                "EffectStatus", "FileRef", "VolumeRef", "FileDescriptor",
+                "ProviderRef", "key must be a string", "number out of range"]
+                .iter().map(|label| label.len() as u64 + 4).sum())?;
+        observer.admit_owned(diagnostic)?;
+        observer.retain_owned(diagnostic)?;
+        let guard = observer.take_native_custody(diagnostic)?;
+        observer.codec_charge(JsonCodecCharge::Work {
+            bytes: 0,
+            items: 1,
+        })?;
+        let mut count = Count { bytes: 0, overflow: false };
+        let serialized = serde_json::to_writer(&mut count, value);
+        // This is the actual serializer prefix, including a genuine serializer
+        // failure; no encoded buffer or provider I/O was produced.
+        let observed = observer.encoded_bytes(count.bytes);
+        match serialized {
+            Err(source) => Err(Error::NativeEncode {
+                code: crate::wire::ErrorCode::Invalid,
+                source,
+                custody: Some(guard),
+            }),
+            Ok(()) => {
+                observed?;
+                drop(guard);
+                if count.overflow || count.bytes > maximum {
+                    Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "JSON exceeds declared byte bound",
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    } else {
+        validate_json_byte_bound(value, maximum)
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        let _ = work;
+        validate_json_byte_bound(value, maximum)
+    }
+}
+
+pub(crate) fn validate_effect_json_byte_bound_with_work(
+    value: &crate::core::EffectState,
+    maximum: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    validate_trusted_json_byte_bound_with_work(value, maximum, work)
+}
+
 /// Counts compact JSON input using a bounded writer, without allocating its bytes.
-pub(crate) fn json_byte_length<T: Serialize>(value: &T, maximum: u64) -> Result<u64> {
+pub(crate) fn json_byte_length<T: Serialize + ?Sized>(value: &T, maximum: u64) -> Result<u64> {
     struct Budget(u64);
 
     impl std::io::Write for Budget {

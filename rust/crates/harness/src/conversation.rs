@@ -154,17 +154,44 @@ impl Limits {
             || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
             || self.context_messages == 0
             || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
+
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if self.invalid_numeric_limits() {
+            return Err(conversation_boundary(work, "harness limits are invalid"));
+        }
+        Ok(())
     }
 
     /// Checks one immutable version against this runtime's tighter limits.
     pub fn validate_file(&self, file: &FileRef) -> Result<()> {
-        self.validate()?;
-        file.validate()?;
+        self.validate_file_with_work(file, &mut None)
+    }
+
+    pub(crate) fn validate_file_with_work(
+        &self, file: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate_with_work(work)?;
+        file.validate_with_work(work)?;
         if file.path().len() > self.path_bytes || file.descriptor().byte_length() > self.file_bytes
         {
-            return Err(Error::Invalid("file exceeds harness limits".into()));
+            return Err(conversation_boundary(work, "file exceeds harness limits"));
         }
         Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_file_with_native_work(
+        &self, file: &FileRef, native: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_file_with_work(file, &mut Some(&mut io))
     }
 
     /// Checks every directly named file and attachment count before admission.
@@ -304,11 +331,19 @@ impl VolumeRef {
 
     /// Rejects malformed provider and owner identities.
     pub fn validate(&self) -> Result<()> {
-        self.provider.validate()?;
-        validate_label(&self.id, MAX_LABEL_BYTES)?;
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(reason) = self.provider.validation_error() {
+            return Err(conversation_boundary(work, reason));
+        }
+        validate_label_with_work(&self.id, MAX_LABEL_BYTES, work)?;
         match &self.owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
-                validate_label(id, MAX_LABEL_BYTES)?;
+                validate_label_with_work(id, MAX_LABEL_BYTES, work)?;
             }
             VolumeOwner::Agent(_) => {}
         }
@@ -405,6 +440,23 @@ impl VolumeRef {
         }
     }
 
+    /// Computes the same grant on the original native operation ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn capability_with_native_work(
+        &self,
+        operation: VolumeOperation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(String, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let value = io.capability(self, match operation {
+            VolumeOperation::Read => "volume:read:",
+            VolumeOperation::Write => "volume:write:",
+        })?;
+        let retained = io.owned_bytes()?;
+        let guard = io.into_native_custody(retained)?;
+        Ok((value, guard))
+    }
+
     /// Owner-issued read capability for a directory and its descendants.
     /// Empty prefix names the whole volume. It never implies a write.
     pub fn directory_read_capability(&self, prefix: &str) -> Result<String> {
@@ -421,6 +473,31 @@ impl VolumeRef {
             blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&(self, prefix))?)
                 .to_hex()
         ))
+    }
+
+    /// Computes the original directory grant without changing its read scope.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn directory_read_capability_with_native_work(
+        &self,
+        prefix: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(String, acyclic_fs::NativeAllocation)> {
+        if !prefix.is_empty() {
+            let mut observer = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            validate_content_path_with_work(prefix, &mut Some(&mut observer))?;
+        }
+        if is_internal_path(prefix) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "internal storage paths cannot be delegated",
+            });
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let value = io.capability(&(self, prefix), "directory:read:")?;
+        let retained = io.owned_bytes()?;
+        let guard = io.into_native_custody(retained)?;
+        Ok((value, guard))
     }
 
     /// Collision-resistant physical namespace key for Filesystem adapters.
@@ -939,14 +1016,13 @@ impl FileDescriptor {
         self.verify_inner(bytes, &mut || Ok(()), false)
     }
 
-    #[cfg(feature = "filesystem")]
     /// Verifies through the existing borrowed cumulative history observer.
     pub(crate) fn verify_with_work(
         &self, bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native = false;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = work.as_deref().and_then(|observer| observer.original_native_work()).is_some();
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         self.verify_inner(bytes, &mut || {
@@ -999,10 +1075,19 @@ impl FileDescriptor {
         Ok(())
     }
 
+
     /// Checks metadata without fetching bytes.
     pub fn validate(&self) -> Result<()> {
         self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
     }
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        self.validation_reason().map_or(Ok(()),
+            |reason| Err(conversation_boundary(work, reason)))
+    }
+
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
@@ -1155,12 +1240,19 @@ impl FileRef {
 
     /// Validates a ref decoded at any external boundary.
     pub fn validate(&self) -> Result<()> {
-        self.volume.validate()?;
-        validate_content_path(&self.path)?;
-        validate_label(&self.version, MAX_LABEL_BYTES)?;
-        validate_label(&self.display_name, MAX_LABEL_BYTES)?;
-        self.descriptor.validate()
+        self.validate_with_work(&mut None)
     }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.volume.validate_with_work(work)?;
+        validate_content_path_with_work(&self.path, work)?;
+        validate_label_with_work(&self.version, MAX_LABEL_BYTES, work)?;
+        validate_label_with_work(&self.display_name, MAX_LABEL_BYTES, work)?;
+        self.descriptor.validate_with_work(work)
+    }
+
 
     /// Checks the same immutable metadata using the caller's original ledger.
     /// Validation does not grant authority to read the referenced bytes.
@@ -2008,9 +2100,15 @@ pub struct Attachment {
 impl Attachment {
     /// Validates referenced bytes and bounded metadata.
     pub fn validate(&self) -> Result<()> {
-        self.file.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.file.validate_with_work(work)?;
         if let Some(label) = &self.label {
-            validate_label(label, MAX_LABEL_BYTES)?;
+            validate_label_with_work(label, MAX_LABEL_BYTES, work)?;
         }
         Ok(())
     }
@@ -2287,20 +2385,22 @@ impl<'de> Deserialize<'de> for ReferencedAttachments {
 impl ReferencedAttachments {
     /// Rejects malformed attachment records and manifest metadata.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         match self {
             Self::Inline { items } => {
-                for item in items {
-                    item.validate()?;
-                }
+                for item in items { item.validate_with_work(work)?; }
             }
             Self::Manifest { manifest, .. } => {
-                manifest.validate()?;
+                manifest.validate_with_work(work)?;
                 if manifest.descriptor().media_type()
                     != "application/vnd.acyclic.harness.attachments+json"
                 {
-                    return Err(Error::Invalid(
-                        "attachment manifest metadata is invalid".into(),
-                    ));
+                    return Err(conversation_boundary(work, "attachment manifest metadata is invalid"));
                 }
             }
         }
@@ -2363,36 +2463,326 @@ pub struct ConversationMessage {
 impl ConversationMessage {
     /// Validates bounded metadata and role-specific linkage.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         if self.id.is_nil() || self.reply_to.is_some_and(|id| id.is_nil()) {
-            return Err(Error::Invalid("message identity is nil".into()));
+            return Err(conversation_boundary(work, "message identity is nil"));
         }
         if self.sequence == 0 {
-            return Err(Error::Invalid("message sequence must start at one".into()));
+            return Err(conversation_boundary(work, "message sequence must start at one"));
         }
-        self.content.validate()?;
-        self.attachments.validate()?;
+        self.content.validate_with_work(work)?;
+        self.attachments.validate_with_work(work)?;
         for (name, reference) in &self.extensions {
-            validate_label(name, MAX_LABEL_BYTES)?;
+            validate_label_with_work(name, MAX_LABEL_BYTES, work)?;
             if !name.contains('.') {
-                return Err(Error::Invalid("extension key must be namespaced".into()));
+                return Err(conversation_boundary(work, "extension key must be namespaced"));
             }
-            reference.validate()?;
+            reference.validate_with_work(work)?;
         }
         let has_call = self.tool_call_id.is_some();
         if has_call != matches!(self.kind, MessageKind::ToolCall | MessageKind::ToolResult) {
-            return Err(Error::Invalid(
-                "tool linkage does not match message kind".into(),
-            ));
+            return Err(conversation_boundary(work, "tool linkage does not match message kind"));
         }
         if let Some(call) = &self.tool_call_id {
-            validate_label(call, MAX_LABEL_BYTES)?;
+            validate_label_with_work(call, MAX_LABEL_BYTES, work)?;
         }
         Ok(())
     }
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[derive(Default)]
+struct NativeReferenceClone {
+    allocations: u64,
+    copied: u64,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl NativeReferenceClone {
+    fn allocation(&mut self) -> Result<()> {
+        self.allocations = self.allocations.checked_add(1).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason: "reference clone operations overflow",
+        })?;
+        Ok(())
+    }
+    fn text(&mut self, text: &str) -> Result<()> {
+        if !text.is_empty() { self.allocation()?; }
+        self.copied = self.copied.checked_add(text.len() as u64).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason: "reference clone bytes overflow",
+        })?;
+        Ok(())
+    }
+    fn file(&mut self, file: &FileRef) -> Result<()> {
+        self.text(file.volume.provider.namespace())?;
+        self.text(file.volume.provider.family())?;
+        self.text(file.volume.provider.version())?;
+        self.text(&file.volume.id)?;
+        match &file.volume.owner {
+            VolumeOwner::Project(text) | VolumeOwner::Session(text) => self.text(text)?,
+            VolumeOwner::Agent(_) => {}
+        }
+        self.text(&file.path)?;
+        self.text(&file.version)?;
+        self.text(&file.descriptor.media_type)?;
+        self.text(&file.display_name)
+    }
+    fn message(&mut self, message: &ConversationMessage) -> Result<()> {
+        self.file(&message.content)?;
+        match &message.attachments {
+            ReferencedAttachments::Inline { items } => {
+                // Vec<Attachment> clones its elements fieldwise, not by memcpy.
+                if !items.is_empty() { self.allocation()?; }
+                for attachment in items {
+                    self.file(&attachment.file)?;
+                    if let Some(label) = &attachment.label { self.text(label)?; }
+                }
+            }
+            ReferencedAttachments::Manifest { manifest, .. } => self.file(manifest)?,
+        }
+        if let Some(call) = &message.tool_call_id { self.text(call)?; }
+        // Opaque BTree allocator metadata is not a claimed source observation.
+        for (key, file) in &message.extensions {
+            self.text(key)?;
+            self.file(file)?;
+        }
+        Ok(())
+    }
+    fn admit(self, io: &mut dyn crate::store::history::HistoryIo) -> Result<()> {
+        io.admit_copy(self.copied)?;
+        io.original_native_work().expect("native source clone observer")
+            .admit(acyclic_fs::WorkCounters {
+                allocation_operations: self.allocations,
+                ..acyclic_fs::WorkCounters::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })
+    }
+    fn begin(self, io: &mut dyn crate::store::history::HistoryIo) -> Result<()> {
+        io.original_native_work().expect("native source clone observer")
+            .charge(acyclic_fs::WorkCounters {
+                allocation_operations: self.allocations, bytes_copied: self.copied,
+                ..acyclic_fs::WorkCounters::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn clone_native_reference_text(
+    source: &str, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(String, acyclic_fs::NativeAllocation)> {
+    let mut allocation = work.retain_owned(0)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let text = clone_native_reference_text_into(source, work, &mut allocation)?;
+    Ok((text, allocation))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn clone_native_reference_text_into(
+    source: &str, work: &acyclic_fs::NativeMaterializationWork,
+    allocation: &mut acyclic_fs::NativeAllocation,
+) -> Result<String> {
+    if source.is_empty() { return Ok(String::new()); }
+    work.admit(acyclic_fs::WorkCounters {
+        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
+    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    // The backing guard precedes the physical String on every failure path.
+    let mut component = work.retain_owned(source.len() as u64)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let mut text = String::new();
+    work.charge(acyclic_fs::WorkCounters {
+        allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
+    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    text.try_reserve_exact(source.len()).map_err(|cause| Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None,
+    })?;
+    component.reconcile_capacity(text.capacity() as u64)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    work.charge(acyclic_fs::WorkCounters {
+        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
+    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    text.push_str(source);
+    allocation.absorb(&mut component)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(text)
+}
+
+impl FileRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let owner = match &self.volume.owner {
+            VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.capacity() as u64,
+            VolumeOwner::Agent(_) => 0,
+        };
+        [self.volume.id.capacity(), self.path.capacity(), self.version.capacity(),
+            self.descriptor.media_type.capacity(), self.display_name.capacity()]
+            .into_iter().try_fold(self.volume.provider.logical_owned_bytes()?,
+                |bytes, capacity| bytes.checked_add(capacity as u64))
+            .and_then(|bytes| bytes.checked_add(owner))
+            .ok_or_else(|| {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "file capacity inventory overflows" } }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                { Error::Invalid("file capacity inventory overflows".into()) }
+            })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
+        self.clone_work_recipe().map(|(_, copied)| copied)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_work_recipe(&self) -> Result<(u64, u64)> {
+        let mut recipe = NativeReferenceClone::default();
+        recipe.file(self)?;
+        Ok((recipe.allocations, recipe.copied))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        self.validate_with_native_work(work)?;
+        let (allocations, copied) = self.clone_work_recipe()?;
+        work.admit(acyclic_fs::WorkCounters {
+            allocation_operations: allocations, bytes_copied: copied,
+            ..acyclic_fs::WorkCounters::default()
+        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // Every completed field remains covered if a later field fails.
+        let mut allocation = work.retain_owned(0)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let file = Self {
+            volume: VolumeRef {
+                provider: self.volume.provider.clone_in_native_allocation(work, &mut allocation)?,
+                id: clone_native_reference_text_into(&self.volume.id, work, &mut allocation)?,
+                class: self.volume.class,
+                owner: match &self.volume.owner {
+                    VolumeOwner::Project(text) => VolumeOwner::Project(
+                        clone_native_reference_text_into(text, work, &mut allocation)?),
+                    VolumeOwner::Session(text) => VolumeOwner::Session(
+                        clone_native_reference_text_into(text, work, &mut allocation)?),
+                    VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
+                },
+            },
+            path: clone_native_reference_text_into(&self.path, work, &mut allocation)?,
+            version: clone_native_reference_text_into(&self.version, work, &mut allocation)?,
+            descriptor: FileDescriptor {
+                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
+                media_type: clone_native_reference_text_into(
+                    &self.descriptor.media_type, work, &mut allocation)?,
+            },
+            display_name: clone_native_reference_text_into(&self.display_name, work, &mut allocation)?,
+        };
+        Ok((file, allocation))
+    }
+
+    pub(crate) fn admit_clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let (allocations, copied) = self.clone_work_recipe()?;
+            NativeReferenceClone { allocations, copied }.admit(io)?;
+        }
+        let _ = work;
+        Ok(())
+    }
+    pub(crate) fn observe_clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let (allocations, copied) = self.clone_work_recipe()?;
+            NativeReferenceClone { allocations, copied }.begin(io)?;
+        }
+        let _ = work;
+        Ok(())
+    }
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.admit_clone_with_work(work)?;
+        self.observe_clone_with_work(work)?;
+        Ok(self.clone())
+    }
+}
+
+impl ConversationMessage {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_work_recipe(&self) -> Result<(u64, u64)> {
+        let mut recipe = NativeReferenceClone::default();
+        recipe.message(self)?;
+        Ok((recipe.allocations, recipe.copied))
+    }
+
+    pub(crate) fn admit_clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let (allocations, copied) = self.clone_work_recipe()?;
+            NativeReferenceClone { allocations, copied }.admit(io)?;
+        }
+        let _ = work;
+        Ok(())
+    }
+    pub(crate) fn observe_clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let (allocations, copied) = self.clone_work_recipe()?;
+            NativeReferenceClone { allocations, copied }.begin(io)?;
+        }
+        let _ = work;
+        Ok(())
+    }
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.admit_clone_with_work(work)?;
+        self.observe_clone_with_work(work)?;
+        Ok(self.clone())
+    }
+}
+
+fn admit_conversation_copy(
+    messages: &[ConversationMessage], checkpoint: Option<&FileRef>, cache_bytes: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(u64, u64)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+        let mut recipe = NativeReferenceClone::default();
+        for message in messages { recipe.message(message)?; }
+        if let Some(checkpoint) = checkpoint { recipe.file(checkpoint)?; }
+        let copied = recipe.copied.checked_add(cache_bytes).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason: "conversation clone bytes overflow",
+        })?;
+        io.admit_copy(copied)?;
+        recipe.admit(io)?;
+        return Ok((recipe.allocations, copied));
+    }
+    let _ = (messages, checkpoint);
+    if let Some(io) = work.as_deref_mut() { io.admit_copy(cache_bytes)?; }
+    Ok((0, cache_bytes))
+}
+
+fn begin_conversation_copy(
+    recipe: (u64, u64), work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+        return NativeReferenceClone { allocations: recipe.0, copied: recipe.1 }.begin(io);
+    }
+    if let Some(io) = work.as_deref_mut() { io.copy_bytes(recipe.1)?; }
+    Ok(())
+}
+
 /// Projection of one agent-owned conversation.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ConversationStateWire")]
 pub struct ConversationState {
     /// Set once at admission.
@@ -2413,6 +2803,9 @@ pub struct ConversationState {
     model_positions: Vec<usize>,
     #[serde(skip)]
     history_digest: [u8; 32],
+    // LAST: resident buffers and source indexes physically drop before custody.
+    #[serde(skip)]
+    native_custody: NativeConversationCustody,
 }
 
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
@@ -2425,6 +2818,14 @@ struct ArchivedConversationPrefix {
     checkpoint: FileRef,
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[derive(Serialize)]
+struct ArchivedConversationPrefixRef<'a> {
+    through_sequence: u64,
+    history_digest: [u8; 32],
+    checkpoint: &'a FileRef,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConversationStateWire {
@@ -2432,6 +2833,225 @@ pub(crate) struct ConversationStateWire {
     messages: Vec<ConversationMessage>,
     #[serde(default)]
     archived_prefix: Option<ArchivedConversationPrefix>,
+}
+
+#[derive(Default)]
+struct NativeConversationCustody {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    messages: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    digests: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    positions: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    archive: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    indexes: BTreeMap<(bool, Uuid), NativeConversationIndex>,
+    // A failed cold transfer retains every not-yet-assigned source claim here.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    cache_carrier: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct NativeConversationIndex {
+    _source: acyclic_fs::NativeAllocation,
+    _metadata: acyclic_fs::NativeAllocation,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl NativeConversationIndex {
+    #[cfg(test)]
+    fn work(&self) -> &acyclic_fs::NativeMaterializationWork { self._source.work() }
+    fn metadata_bytes() -> u64 {
+        (11 * (std::mem::size_of::<(bool, Uuid)>() + std::mem::size_of::<Self>())
+            + 12 * std::mem::size_of::<usize>()) as u64
+    }
+    fn prepare_metadata(
+        io: &mut dyn crate::store::history::HistoryIo,
+    ) -> Result<acyclic_fs::NativeAllocation> {
+        let bytes = Self::metadata_bytes();
+        io.admit_allocation(bytes)?;
+        io.retain_owned(bytes)?;
+        io.take_native_custody(bytes)
+    }
+}
+
+impl std::fmt::Debug for NativeConversationCustody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeConversationCustody").finish_non_exhaustive()
+    }
+}
+impl PartialEq for NativeConversationCustody {
+    fn eq(&self, _: &Self) -> bool { true }
+}
+impl Eq for NativeConversationCustody {}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl Drop for NativeConversationCustody {
+    fn drop(&mut self) {
+        // Source containers have already dropped. Extract the bookkeeping
+        // entries before releasing the claims protecting their nodes.
+        while let Some((_, index)) = self.indexes.pop_first() { drop(index); }
+    }
+}
+
+fn conversation_boundary(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    }
+    let _ = work;
+    Error::Invalid(reason.into())
+}
+
+fn conversation_conflict(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
+    }
+    let _ = work;
+    Error::Conflict(reason.into())
+}
+
+fn conversation_buffer_bytes<T>(
+    capacity: usize, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<u64> {
+    capacity.checked_mul(std::mem::size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| conversation_boundary(work, "conversation buffer capacity overflows"))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_conversation_buffer_bytes<T>(capacity: usize) -> Result<u64> {
+    capacity.checked_mul(std::mem::size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "conversation buffer capacity overflows" })
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn reserve_native_conversation_buffer<T>(
+    values: &mut Vec<T>, owner: &mut Option<acyclic_fs::NativeAllocation>,
+    target: usize, io: &mut dyn crate::store::history::HistoryIo,
+) -> Result<()> {
+    if target <= values.capacity() { return Ok(()); }
+    let bytes = conversation_buffer_bytes::<T>(target, &Some(&mut *io))?;
+    io.admit_allocation(bytes)?;
+    io.retain_owned(bytes)?;
+    let incoming = io.take_native_custody(bytes)?;
+    // Install the new owner before the allocator may replace the old backing.
+    // Each replacement is independently paid, even across query ledgers.
+    let retired = owner.replace(incoming);
+    if let Err(cause) = values.try_reserve_exact(target - values.len()) {
+        let rejected = std::mem::replace(owner, retired);
+        drop(rejected);
+        return Err(io.allocation_failure(cause));
+    }
+    let actual = conversation_buffer_bytes::<T>(values.capacity(), &Some(&mut *io))?;
+    let result = owner.as_mut().expect("installed conversation buffer custody")
+        .reconcile_capacity(actual)
+        .map_err(|cause| Error::NativeWork { cause, custody: None });
+    // try_reserve_exact has already deallocated the old physical buffer.
+    drop(retired);
+    result
+}
+
+#[derive(Clone, Copy)]
+enum ConversationBuffer { Messages, Digests, Positions }
+
+impl NativeConversationCustody {
+    fn reserve<T>(
+        &mut self, kind: ConversationBuffer, values: &mut Vec<T>, target: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        if target <= values.capacity() { return Ok(0); }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let owner = match kind {
+                ConversationBuffer::Messages => &mut self.messages,
+                ConversationBuffer::Digests => &mut self.digests,
+                ConversationBuffer::Positions => &mut self.positions,
+            };
+            reserve_native_conversation_buffer(values, owner, target, io)?;
+            return Ok(0);
+        }
+        let _ = kind;
+        let old = values.capacity();
+        if let Some(io) = work.as_deref_mut() {
+            let requested = conversation_buffer_bytes::<T>(target - old, &Some(&mut *io))?;
+            io.admit_allocation(requested)?;
+            values.try_reserve_exact(target - values.len())
+                .map_err(|cause| io.allocation_failure(cause))?;
+            let actual = conversation_buffer_bytes::<T>(values.capacity() - old, &Some(&mut *io))?;
+            io.retain_owned(actual)?;
+            Ok(actual)
+        } else {
+            values.reserve_exact(target - values.len());
+            Ok(0)
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn adopt_existing_buffer<T>(
+        &mut self, kind: ConversationBuffer, capacity: usize,
+        io: &mut dyn crate::store::history::HistoryIo,
+    ) -> Result<()> {
+        let owner = match kind {
+            ConversationBuffer::Messages => &mut self.messages,
+            ConversationBuffer::Digests => &mut self.digests,
+            ConversationBuffer::Positions => &mut self.positions,
+        };
+        if owner.is_none() && capacity != 0 {
+            let bytes = conversation_buffer_bytes::<T>(capacity, &Some(&mut *io))?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            *owner = Some(io.take_native_custody(bytes)?);
+        }
+        Ok(())
+    }
+
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn has_native(&self) -> bool {
+        self.messages.is_some() || self.digests.is_some() || self.positions.is_some()
+            || self.archive.is_some() || self.cache_carrier.is_some() || !self.indexes.is_empty()
+    }
+
+    fn retain_index(
+        &mut self, outcome: bool, id: Uuid,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            if self.indexes.contains_key(&(outcome, id)) { return Ok(0); }
+            // The source witness is the logical (Uuid, usize) slot, not opaque
+            // BTree allocator nodes. The private guard index funds its own node.
+            let metadata = NativeConversationIndex::metadata_bytes();
+            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64 + metadata;
+            io.admit_allocation(bytes)?;
+            io.retain_owned(bytes)?;
+            let mut allocation = io.take_native_custody(bytes)?;
+            let source = allocation.split_off(std::mem::size_of::<(Uuid, usize)>() as u64)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            self.indexes.insert((outcome, id), NativeConversationIndex {
+                _source: source, _metadata: allocation,
+            });
+            return Ok(0);
+        }
+        let _ = (outcome, id);
+        if let Some(io) = work.as_deref_mut() {
+            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            return Ok(bytes);
+        }
+        Ok(0)
+    }
 }
 
 impl TryFrom<ConversationStateWire> for ConversationState {
@@ -2449,90 +3069,62 @@ impl ConversationState {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut by_id = BTreeMap::new();
         if let Some(prefix) = &wire.archived_prefix {
-            prefix.checkpoint.validate()?;
+            prefix.checkpoint.validate_with_work(cache.work())?;
             if wire.agent.is_none() || prefix.through_sequence == 0 {
-                return Err(Error::Invalid(
-                    "archived conversation prefix is unbound".into(),
-                ));
+                return Err(conversation_boundary(cache.work(),
+                    "archived conversation prefix is unbound"));
             }
         }
-        let mut previous = wire
-            .archived_prefix
-            .as_ref()
+        let mut previous = wire.archived_prefix.as_ref()
             .map_or(0, |prefix| prefix.through_sequence);
-        let mut history_digest = wire
-            .archived_prefix
-            .as_ref()
-            .map_or([0; 32], |prefix| prefix.history_digest);
-        let mut prefix_digests = if let Some(work) = cache.work().as_deref_mut() {
-            let bytes = wire.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
-                .ok_or_else(|| Error::Invalid("conversation digest cache overflows".into()))?;
-            work.admit_allocation(bytes as u64)?;
-            let mut digests = Vec::new();
-            digests.try_reserve_exact(wire.messages.len())
-                .map_err(|cause| work.allocation_failure(cause))?;
-            digests
-        } else {
-            Vec::with_capacity(wire.messages.len())
-        };
-        if let Some(work) = cache.work().as_deref_mut() {
-            let bytes = prefix_digests.capacity().checked_mul(std::mem::size_of::<[u8; 32]>())
-                .ok_or_else(|| Error::Invalid("conversation digest cache overflows".into()))? as u64;
-            work.retain_owned(bytes)?;
-            cache.adopt(bytes)?;
-        }
-        for (position, message) in wire.messages.iter().enumerate() {
-            if let Some(work) = cache.work().as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                if !by_id.contains_key(&message.id) {
-                    work.admit_owned(std::mem::size_of::<(Uuid, usize)>() as u64)?;
-                }
-            }
-            message.validate()?;
-            if message.sequence <= previous
-                || (wire.archived_prefix.is_some()
-                    && previous.checked_add(1) != Some(message.sequence))
-                || by_id.insert(message.id, position).is_some()
-            {
-                return Err(Error::Invalid(
-                    "conversation order or identity is invalid".into(),
-                ));
-            }
-            previous = message.sequence;
-            if let Some(work) = cache.work().as_deref_mut() {
-                let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
-                work.retain_owned(bytes)?;
-                cache.adopt(bytes)?;
-            }
-            history_digest = advance_history_digest_with_work(
-                history_digest, message, maximum_encoded_bytes, cache.work())?;
-            prefix_digests.push(history_digest);
-        }
-        let mut pending_user = None;
-        for message in wire.messages.iter().rev() {
-            if let Some(work) = cache.work().as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            }
-            if message.kind == MessageKind::User {
-                pending_user = Some(message.id);
-                break;
-            }
-        }
         let mut state = Self {
             agent: wire.agent,
             messages: wire.messages,
+            history_digest: wire.archived_prefix.as_ref()
+                .map_or([0; 32], |prefix| prefix.history_digest),
             archived_prefix: wire.archived_prefix,
-            prefix_digests,
-            by_id,
-            pending_user,
-            history_digest,
             ..Self::default()
         };
+        // The decoder's original payload guard already owns messages' backing;
+        // Snapshot transfers that shell separately without a second claim.
+        let retained = state.native_custody.reserve(
+            ConversationBuffer::Digests, &mut state.prefix_digests,
+            state.messages.len(), cache.work())?;
+        cache.adopt(retained)?;
+        for (position, message) in state.messages.iter().enumerate() {
+            if let Some(io) = cache.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            message.validate_with_work(cache.work())?;
+            if message.sequence <= previous
+                || (state.archived_prefix.is_some()
+                    && previous.checked_add(1) != Some(message.sequence))
+                || state.by_id.contains_key(&message.id)
+            {
+                return Err(conversation_boundary(cache.work(),
+                    "conversation order or identity is invalid"));
+            }
+            let retained = state.native_custody.retain_index(false, message.id, cache.work())?;
+            cache.adopt(retained)?;
+            state.by_id.insert(message.id, position);
+            previous = message.sequence;
+            state.history_digest = advance_history_digest_with_work(
+                state.history_digest, message, maximum_encoded_bytes, cache.work())?;
+            state.prefix_digests.push(state.history_digest);
+        }
+        for message in state.messages.iter().rev() {
+            if let Some(io) = cache.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            if message.kind == MessageKind::User {
+                state.pending_user = Some(message.id);
+                break;
+            }
+        }
         for position in 0..state.messages.len() {
-            if let Some(work) = cache.work().as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            if let Some(io) = cache.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             let retained = state.index_turn_with_work(position, cache.work())?;
             cache.adopt(retained)?;
@@ -2586,6 +3178,177 @@ impl ModelContextSelection {
 }
 
 impl ConversationState {
+    fn require_native_work(
+        &self, work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if self.native_custody.has_native()
+            && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native conversation ownership requires explicit native work",
+            });
+        }
+        let _ = work;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn install_native_message_buffer(&mut self, allocation: acyclic_fs::NativeAllocation) {
+        assert!(self.native_custody.messages.is_none(), "message buffer already has custody");
+        self.native_custody.messages = Some(allocation);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_archived_prefix_bytes(&self) -> Result<u64> {
+        self.archived_prefix.as_ref()
+            .map_or(Ok(0), crate::core::source_inventory)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn install_native_archived_prefix(&mut self, allocation: acyclic_fs::NativeAllocation) {
+        assert!(self.native_custody.archive.is_none(), "archived prefix already has custody");
+        self.native_custody.archive = Some(allocation);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_unclaimed_cache_bytes(&self) -> Result<u64> {
+        if self.native_custody.cache_carrier.is_some() { return Ok(0); }
+        let mut bytes = 0_u64;
+        if self.native_custody.digests.is_none() {
+            bytes += native_conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())?;
+        }
+        if self.native_custody.positions.is_none() {
+            bytes = bytes.checked_add(native_conversation_buffer_bytes::<usize>(
+                self.model_positions.capacity())?).ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid, reason: "conversation cache transfer overflows",
+                })?;
+        }
+        for (outcome, map) in [(false, &self.by_id), (true, &self.outcomes)] {
+            for id in map.keys() {
+                if !self.native_custody.indexes.contains_key(&(outcome, *id)) {
+                    bytes = bytes.checked_add(std::mem::size_of::<(Uuid, usize)>() as u64)
+                        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                            reason: "conversation cache transfer overflows" })?;
+                }
+            }
+        }
+        Ok(bytes)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn install_native_preclaimed_caches(
+        &mut self, allocation: acyclic_fs::NativeAllocation,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        // Original data custody is installed LAST before any metadata denial.
+        // It is only split, never resized, rebound or absorbed by another ledger.
+        if self.native_custody.cache_carrier.is_none() {
+            self.native_custody.cache_carrier = Some(allocation);
+        } else {
+            assert_eq!(allocation.bytes(), 0, "cache source already has custody");
+        }
+        let carrier = self.native_custody.cache_carrier.as_mut().expect("installed cache source custody");
+        if self.native_custody.digests.is_none() {
+            let bytes = conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity(), work)?;
+            self.native_custody.digests = Some(carrier.split_off(bytes)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        }
+        if self.native_custody.positions.is_none() {
+            let bytes = conversation_buffer_bytes::<usize>(self.model_positions.capacity(), work)?;
+            self.native_custody.positions = Some(carrier.split_off(bytes)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        }
+        for (outcome, map) in [(false, &self.by_id), (true, &self.outcomes)] {
+            for id in map.keys() {
+                if self.native_custody.indexes.contains_key(&(outcome, *id)) { continue; }
+                let io = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
+                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                        reason: "cache metadata requires original native work" })?;
+                let metadata = NativeConversationIndex::prepare_metadata(io)?;
+                let source = carrier.split_off(std::mem::size_of::<(Uuid, usize)>() as u64)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                self.native_custody.indexes.insert((outcome, *id), NativeConversationIndex {
+                    _source: source, _metadata: metadata,
+                });
+            }
+        }
+        assert_eq!(carrier.bytes(), 0, "cache source transfer inventory must match");
+        Ok(())
+    }
+
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.require_native_work(work)?;
+        let cache_copy = {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+                    self.native_clone_cache_copy_bytes()?
+                } else { self.clone_cache_logical_bytes()? }
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            { self.clone_cache_logical_bytes()? }
+        };
+        let copied = admit_conversation_copy(&self.messages,
+            self.archived_prefix.as_ref().map(|prefix| &prefix.checkpoint), cache_copy, work)?;
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut state = Self {
+            agent: self.agent, pending_user: self.pending_user,
+            history_digest: self.history_digest, ..Self::default()
+        };
+        let retained = state.native_custody.reserve(
+            ConversationBuffer::Messages, &mut state.messages, self.messages.len(), cache.work())?;
+        cache.adopt(retained)?;
+        let retained = state.native_custody.reserve(
+            ConversationBuffer::Digests, &mut state.prefix_digests,
+            self.prefix_digests.len(), cache.work())?;
+        cache.adopt(retained)?;
+        let retained = state.native_custody.reserve(
+            ConversationBuffer::Positions, &mut state.model_positions,
+            self.model_positions.len(), cache.work())?;
+        cache.adopt(retained)?;
+        state.retain_archived_prefix(self.archived_prefix.as_ref(), cache.work())?;
+        for id in self.by_id.keys() {
+            let retained = state.native_custody.retain_index(false, *id, cache.work())?;
+            cache.adopt(retained)?;
+        }
+        for id in self.outcomes.keys() {
+            let retained = state.native_custody.retain_index(true, *id, cache.work())?;
+            cache.adopt(retained)?;
+        }
+        begin_conversation_copy(copied, cache.work())?;
+        // All positive buffer/index claims and source copy admissions have
+        // succeeded; the remaining original deep clone is infallible.
+        state.messages.extend(self.messages.iter().cloned());
+        state.prefix_digests.extend_from_slice(&self.prefix_digests);
+        state.model_positions.extend_from_slice(&self.model_positions);
+        state.by_id = self.by_id.clone();
+        state.outcomes = self.outcomes.clone();
+        state.archived_prefix = self.archived_prefix.clone();
+        cache.transfer();
+        Ok(state)
+    }
+
+    fn retain_archived_prefix(
+        &mut self, prefix: Option<&ArchivedConversationPrefix>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let (Some(prefix), Some(io)) = (prefix,
+            work.as_deref_mut().filter(|io| io.original_native_work().is_some()))
+        {
+            let bytes = crate::core::source_inventory(prefix)?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            self.native_custody.archive = Some(io.take_native_custody(bytes)?);
+        }
+        let _ = (prefix, work);
+        Ok(())
+    }
+
     /// Logical payload cloned from caches omitted by the wire projection.
     /// Opaque BTreeMap allocator nodes are deliberately outside this witness.
     pub(crate) fn clone_cache_logical_bytes(&self) -> Result<u64> {
@@ -2597,6 +3360,26 @@ impl ConversationState {
             .and_then(|bytes| maps.and_then(|maps| bytes.checked_add(maps)))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| Error::Invalid("conversation clone cache inventory overflows".into()))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_clone_cache_copy_bytes(&self) -> Result<u64> {
+        native_conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.len())?
+            .checked_add(native_conversation_buffer_bytes::<usize>(self.model_positions.len())?)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "conversation clone bytes overflow" })
+    }
+
+    /// Typed heap clone and CopyVec source work, not logical BTree slots.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_clone_copy_recipe(&self) -> Result<(u64, u64)> {
+        let mut recipe = NativeReferenceClone::default();
+        for message in &self.messages { recipe.message(message)?; }
+        if let Some(prefix) = &self.archived_prefix { recipe.file(&prefix.checkpoint)?; }
+        let copied = recipe.copied.checked_add(self.native_clone_cache_copy_bytes()?)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "conversation clone bytes overflow" })?;
+        Ok((recipe.allocations, copied))
     }
 
     /// Logical history head, independent of the number of resident records.
@@ -2660,54 +3443,95 @@ impl ConversationState {
 
     /// Builds the snapshot suffix only after a committed checkpoint and closed
     /// user/tool exchange. The canonical Stream and identity indexes are untouched.
-    pub(crate) fn checkpointed_suffix(&self, selection: &ModelContextSelection) -> Result<Self> {
-        let reference = selection
-            .checkpoint
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("history retirement requires a checkpoint pin".into()))?;
+    pub(crate) fn checkpointed_suffix_with_work(
+        &self, selection: &ModelContextSelection,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.require_native_work(work)?;
+        let reference = selection.checkpoint.as_ref()
+            .ok_or_else(|| conversation_boundary(work, "history retirement requires a checkpoint pin"))?;
         let cut = selection.conversation_revision;
         if cut <= self.archived_through() || self.pending_user.is_some() {
-            return Ok(self.clone());
+            return self.clone_with_work(work);
         }
         crate::projection::validate_model_context_selection_at_revision(self, selection, cut)?;
+        let mut temporary = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut calls = BTreeSet::new();
-        for message in self
-            .messages
-            .iter()
-            .take_while(|message| message.sequence <= cut)
-        {
+        for message in self.messages.iter().take_while(|message| message.sequence <= cut) {
+            if let Some(io) = temporary.work().as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
             match message.kind {
                 MessageKind::ToolCall => {
-                    calls.insert(message.id);
+                    if !calls.contains(&message.id) {
+                        let bytes = std::mem::size_of::<Uuid>() as u64;
+                        if let Some(io) = temporary.work().as_deref_mut() {
+                            io.admit_owned(bytes)?;
+                            io.retain_owned(bytes)?;
+                        }
+                        temporary.adopt(bytes)?;
+                        calls.insert(message.id);
+                    }
                 }
                 MessageKind::ToolResult => {
-                    if let Some(parent) = message.reply_to {
-                        calls.remove(&parent);
+                    if let Some(parent) = message.reply_to
+                        && calls.remove(&parent)
+                    {
+                        temporary.relinquish(std::mem::size_of::<Uuid>() as u64)?;
                     }
                 }
                 _ => {}
             }
         }
         if !calls.is_empty() {
-            return Ok(self.clone());
+            drop(calls);
+            drop(temporary);
+            return self.clone_with_work(work);
         }
+        drop(calls);
+        drop(temporary);
         let digest = self.history_prefix_digest(cut)?;
-        let start = self
-            .messages
-            .partition_point(|message| message.sequence <= cut);
-        Self::try_from(ConversationStateWire {
+        let start = self.messages.partition_point(|message| message.sequence <= cut);
+        let suffix = self.messages.get(start..)
+            .ok_or_else(|| conversation_boundary(work, "history retirement cut is invalid"))?;
+        let copied = admit_conversation_copy(suffix, Some(reference), 0, work)?;
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut carrier = Self::default();
+        let retained = carrier.native_custody.reserve(
+            ConversationBuffer::Messages, &mut carrier.messages, suffix.len(), cache.work())?;
+        cache.adopt(retained)?;
+        // Borrow the existing checkpoint before its independent deep copy.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = cache.work().as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let bytes = crate::core::source_inventory(&ArchivedConversationPrefixRef {
+                through_sequence: cut, history_digest: digest, checkpoint: reference,
+            })?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            carrier.native_custody.archive = Some(io.take_native_custody(bytes)?);
+        }
+        begin_conversation_copy(copied, cache.work())?;
+        carrier.messages.extend(suffix.iter().cloned());
+        let wire = ConversationStateWire {
             agent: self.agent,
-            messages: self
-                .messages
-                .get(start..)
-                .ok_or_else(|| Error::Invalid("history retirement cut is invalid".into()))?
-                .to_vec(),
+            messages: std::mem::take(&mut carrier.messages),
             archived_prefix: Some(ArchivedConversationPrefix {
-                through_sequence: cut,
-                history_digest: digest,
+                through_sequence: cut, history_digest: digest,
                 checkpoint: reference.clone(),
             }),
-        })
+        };
+        let (state, retained) = Self::from_wire_with_work(
+            wire, acyclic_stream::MAX_RECORD_BYTES as u64, cache.work())?;
+        cache.adopt(retained)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let state = {
+            let mut state = state;
+            state.native_custody.messages = carrier.native_custody.messages.take();
+            state.native_custody.archive = carrier.native_custody.archive.take();
+            state
+        };
+        cache.transfer();
+        Ok(state)
     }
 
     #[cfg(feature = "filesystem")]
@@ -2741,16 +3565,41 @@ impl ConversationState {
     /// Rebuilds only a bounded, already attested selection for byte projection.
     /// This unbound sparse view cannot authorize append or stand in for history.
     pub(crate) fn selected_view(messages: Vec<ConversationMessage>) -> Result<Self> {
-        Self::try_from(ConversationStateWire {
-            agent: None,
-            messages,
-            archived_prefix: None,
-        })
+        Self::selected_view_with_work(messages, &mut None).map(|(state, _)| state)
     }
 
-    fn index_turn(&mut self, position: usize) {
-        self.index_turn_with_work(position, &mut None)
-            .expect("ordinary cache indexing has no work observer failure");
+    pub(crate) fn selected_view_with_work(
+        messages: Vec<ConversationMessage>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        // A query-scoped producer already owns the message payload and shell.
+        // This same sparse rebuild owns its native caches intrinsically.
+        Self::from_wire_with_work(ConversationStateWire {
+            agent: None, messages, archived_prefix: None,
+        }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
+    }
+
+    fn prepare_turn_index(
+        &mut self, visible: bool, outcome_parent: Option<Uuid>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
+        if visible && self.model_positions.len() == self.model_positions.capacity() {
+            let target = self.model_positions.capacity().checked_mul(2)
+                .map(|count| count.max(4))
+                .ok_or_else(|| conversation_boundary(cache.work(),
+                    "conversation position cache overflows"))?;
+            let retained = self.native_custody.reserve(
+                ConversationBuffer::Positions, &mut self.model_positions, target, cache.work())?;
+            cache.adopt(retained)?;
+        }
+        if let Some(parent) = outcome_parent.filter(|parent| !self.outcomes.contains_key(parent)) {
+            let retained = self.native_custody.retain_index(true, parent, cache.work())?;
+            cache.adopt(retained)?;
+        }
+        let retained = cache.retained();
+        cache.transfer();
+        Ok(retained)
     }
 
     #[expect(
@@ -2761,33 +3610,21 @@ impl ConversationState {
         &mut self, position: usize,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<u64> {
-        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let message = &self.messages[position];
-        if matches!(
-            message.kind,
-            MessageKind::System
-                | MessageKind::User
-                | MessageKind::Assistant
-                | MessageKind::ToolCall
-                | MessageKind::ToolResult
-        ) {
-            if let Some(work) = cache.work().as_deref_mut() {
-                if self.model_positions.len() == self.model_positions.capacity() {
-                    let old = self.model_positions.capacity();
-                    let target = old.checked_mul(2).map(|count| count.max(4))
-                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))?;
-                    let bytes = (target - old).checked_mul(std::mem::size_of::<usize>())
-                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))?;
-                    work.admit_allocation(bytes as u64)?;
-                    self.model_positions.try_reserve_exact(target - self.model_positions.len())
-                        .map_err(|cause| work.allocation_failure(cause))?;
-                    let actual = (self.model_positions.capacity() - old)
-                        .checked_mul(std::mem::size_of::<usize>())
-                        .ok_or_else(|| Error::Invalid("conversation position cache overflows".into()))? as u64;
-                    work.retain_owned(actual)?;
-                    cache.adopt(actual)?;
-                }
-            }
+        let visible = model_visible(&message.kind);
+        let outcome_parent = turn_outcome_parent(message);
+        let retained = self.prepare_turn_index(visible, outcome_parent, work)?;
+        self.index_turn(position);
+        Ok(retained)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the caller pre-admits every index and passes a validated in-bounds message"
+    )]
+    fn index_turn(&mut self, position: usize) {
+        let message = &self.messages[position];
+        if model_visible(&message.kind) {
             self.model_positions.push(position);
         }
         let outcome = message.kind == MessageKind::System
@@ -2799,20 +3636,9 @@ impl ConversationState {
                 self.pending_user = None;
             }
             if outcome {
-                if let std::collections::btree_map::Entry::Vacant(entry) = self.outcomes.entry(parent) {
-                    let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
-                    if let Some(work) = cache.work().as_deref_mut() { work.admit_owned(bytes)?; }
-                    entry.insert(position);
-                    if let Some(work) = cache.work().as_deref_mut() {
-                        work.retain_owned(bytes)?;
-                        cache.adopt(bytes)?;
-                    }
-                }
+                self.outcomes.entry(parent).or_insert(position);
             }
         }
-        let retained = cache.retained();
-        cache.transfer();
-        Ok(retained)
     }
 
     pub(crate) fn unresolved_user(&self) -> Option<Uuid> {
@@ -2925,8 +3751,97 @@ impl ConversationState {
 
     /// Appends one ordered, validated message.
     pub fn append(&mut self, message: ConversationMessage) -> Result<()> {
-        self.validate_append(&message)?;
-        let history_digest = advance_history_digest(self.history_digest, &message)?;
+        self.append_with_work(message, &mut None)
+    }
+
+    fn adopt_existing_metadata(
+        &mut self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            if self.native_custody.cache_carrier.as_ref().is_some_and(|carrier| carrier.bytes() != 0) {
+                let no_data = io.take_native_custody(0)?;
+                self.install_native_preclaimed_caches(no_data, &mut Some(&mut *io))?;
+            }
+            self.native_custody.adopt_existing_buffer::<ConversationMessage>(
+                ConversationBuffer::Messages, self.messages.capacity(), io)?;
+            self.native_custody.adopt_existing_buffer::<[u8; 32]>(
+                ConversationBuffer::Digests, self.prefix_digests.capacity(), io)?;
+            self.native_custody.adopt_existing_buffer::<usize>(
+                ConversationBuffer::Positions, self.model_positions.capacity(), io)?;
+            if self.native_custody.archive.is_none()
+                && let Some(prefix) = &self.archived_prefix
+            {
+                let bytes = crate::core::source_inventory(prefix)?;
+                io.admit_owned(bytes)?;
+                io.retain_owned(bytes)?;
+                self.native_custody.archive = Some(io.take_native_custody(bytes)?);
+            }
+            let count = self.by_id.len().checked_add(self.outcomes.len()).ok_or(
+                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "conversation source index count overflows" })?;
+            if self.native_custody.indexes.len() != count {
+                // Ordinary input promotion inventories its live keys once.
+                // Native append checks counts only, never revisits old history.
+                let mut native: Option<&mut dyn crate::store::history::HistoryIo> = Some(io);
+                for id in self.by_id.keys() {
+                    self.native_custody.retain_index(false, *id, &mut native)?;
+                }
+                for id in self.outcomes.keys() {
+                    self.native_custody.retain_index(true, *id, &mut native)?;
+                }
+            }
+        }
+        let _ = work;
+        Ok(())
+    }
+
+    pub(crate) fn append_with_work(
+        &mut self, message: ConversationMessage,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.require_native_work(work)?;
+        self.validate_append_with_work(&message, work)?;
+        let history_digest = advance_history_digest_with_work(
+            self.history_digest, &message, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+        self.adopt_existing_metadata(work)?;
+        let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let outcome_parent = turn_outcome_parent(&message)
+            .filter(|parent| !self.outcomes.contains_key(parent));
+        let preparation = (|| {
+            if self.messages.len() == self.messages.capacity() {
+                let target = self.messages.capacity().checked_mul(2).map(|count| count.max(4))
+                    .ok_or_else(|| conversation_boundary(cache.work(),
+                        "conversation message capacity overflows"))?;
+                let retained = self.native_custody.reserve(
+                    ConversationBuffer::Messages, &mut self.messages, target, cache.work())?;
+                cache.adopt(retained)?;
+            }
+            if self.prefix_digests.len() == self.prefix_digests.capacity() {
+                let target = self.prefix_digests.capacity().checked_mul(2).map(|count| count.max(4))
+                    .ok_or_else(|| conversation_boundary(cache.work(),
+                        "conversation digest cache overflows"))?;
+                let retained = self.native_custody.reserve(
+                    ConversationBuffer::Digests, &mut self.prefix_digests, target, cache.work())?;
+                cache.adopt(retained)?;
+            }
+            let retained = self.prepare_turn_index(
+                model_visible(&message.kind), outcome_parent, cache.work())?;
+            cache.adopt(retained)?;
+            let retained = self.native_custody.retain_index(false, message.id, cache.work())?;
+            cache.adopt(retained)?;
+            Ok(())
+        })();
+        if let Err(error) = preparation {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                self.native_custody.indexes.remove(&(false, message.id));
+                if let Some(parent) = outcome_parent {
+                    self.native_custody.indexes.remove(&(true, parent));
+                }
+            }
+            return Err(error);
+        }
         // Foreign-owned refs may be carried globally. Their bytes are gated by
         // the provider's owner-mediated read grant at event admission/resolution.
         self.by_id.insert(message.id, self.messages.len());
@@ -2937,38 +3852,42 @@ impl ConversationState {
         self.history_digest = history_digest;
         self.prefix_digests.push(history_digest);
         self.index_turn(self.messages.len() - 1);
+        cache.transfer();
         Ok(())
     }
 
     /// Admits the next append through rebuildable identity indexes without
     /// copying or scanning the complete history.
     pub(crate) fn validate_append(&self, message: &ConversationMessage) -> Result<()> {
+        self.validate_append_with_work(message, &mut None)
+    }
+
+    pub(crate) fn validate_append_with_work(
+        &self, message: &ConversationMessage,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         self.agent
-            .ok_or_else(|| Error::Conflict("conversation is unbound".into()))?;
-        message.validate()?;
+            .ok_or_else(|| conversation_conflict(work, "conversation is unbound"))?;
+        message.validate_with_work(work)?;
         if self.messages.last().is_some_and(|last| {
             last.sequence
                 != self
                     .archived_through()
                     .saturating_add(self.messages.len() as u64)
         }) {
-            return Err(Error::Invalid(
-                "sparse conversation history is read-only".into(),
-            ));
+            return Err(conversation_boundary(work, "sparse conversation history is read-only"));
         }
         let expected = self
             .logical_revision()
             .checked_add(1)
-            .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))?;
+            .ok_or_else(|| conversation_boundary(work, "conversation sequence exhausted"))?;
         if message.sequence != expected || self.by_id.contains_key(&message.id) {
-            return Err(Error::Conflict(
-                "message sequence or identity is invalid".into(),
-            ));
+            return Err(conversation_conflict(work, "message sequence or identity is invalid"));
         }
         if let Some(parent) = message.reply_to
             && !self.by_id.contains_key(&parent)
         {
-            return Err(Error::Invalid("message reply target is missing".into()));
+            return Err(conversation_boundary(work, "message reply target is missing"));
         }
         if message.kind == MessageKind::ToolResult
             && !message
@@ -2980,7 +3899,7 @@ impl ConversationState {
                         && prior.tool_call_id.as_deref() == message.tool_call_id.as_deref()
                 })
         {
-            return Err(Error::Invalid("tool result has no preceding call".into()));
+            return Err(conversation_boundary(work, "tool result has no preceding call"));
         }
         // Foreign-owned refs may be carried globally. Their bytes are gated by
         // the provider's owner-mediated read grant at event admission/resolution.
@@ -2994,8 +3913,15 @@ std::thread_local! {
     static HISTORY_HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn advance_history_digest(previous: [u8; 32], message: &ConversationMessage) -> Result<[u8; 32]> {
-    advance_history_digest_with_work(previous, message, 1, &mut None)
+fn model_visible(kind: &MessageKind) -> bool {
+    matches!(kind, MessageKind::System | MessageKind::User | MessageKind::Assistant
+        | MessageKind::ToolCall | MessageKind::ToolResult)
+}
+
+fn turn_outcome_parent(message: &ConversationMessage) -> Option<Uuid> {
+    (message.kind == MessageKind::System
+        && message.extensions.contains_key("acyclic.turn.outcome"))
+        .then_some(message.reply_to).flatten()
 }
 
 fn advance_history_digest_with_work(
@@ -3033,6 +3959,16 @@ fn label_is_invalid(value: &str, limit: usize) -> bool {
         || value == ".."
 }
 
+fn validate_label_with_work(
+    value: &str, limit: usize, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+    if label_is_invalid(value, limit) {
+        return Err(conversation_boundary(work, "file or volume label is invalid"));
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn validate_label_native(value: &str, limit: usize) -> Result<()> {
     if label_is_invalid(value, limit) {
@@ -3062,6 +3998,16 @@ fn content_path_is_valid(path: &str) -> bool {
             .any(|segment| segment.is_empty() || segment == "." || segment == ".."))
 }
 
+pub(crate) fn validate_content_path_with_work(
+    path: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+    if !content_path_is_valid(path) {
+        return Err(conversation_boundary(work, "volume-relative path is invalid"));
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_content_path_with_native_work(
     path: &str, work: &acyclic_fs::NativeMaterializationWork,
@@ -3080,6 +4026,391 @@ pub(crate) fn validate_content_path_with_native_work(
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let agent = AgentId::from_bytes([24; 16]);
+        let mut source = file(agent, "native-validation.txt")?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_conversation_budget(), &cancellation)
+            .expect("original validation ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original validation observer");
+        source.path = "../escape".into();
+        let before = native.receipt();
+        assert!(matches!(source.validate_with_work(&mut Some(&mut io)),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "volume-relative path is invalid" })));
+        assert_eq!(native.receipt(), before, "validation denial allocates no diagnostic");
+        source.path = "native-validation.txt".into();
+        source.validate_with_work(&mut Some(&mut io))?;
+        assert!(matches!(source.descriptor().verify_with_work(b"too long", &mut Some(&mut io)),
+            Err(Error::NativeBoundary { reason: "file content does not match its descriptor", .. })));
+        assert_eq!(native.receipt().bytes_hashed, 0, "original length short-circuit remains intact");
+        assert!(matches!(source.descriptor().verify_with_work(b"other", &mut Some(&mut io)),
+            Err(Error::NativeBoundary { reason: "file content does not match its descriptor", .. })));
+        assert_eq!(native.receipt().bytes_hashed, 5);
+        source.descriptor().verify_with_work(b"hello", &mut Some(&mut io))?;
+        assert_eq!(native.receipt().bytes_hashed, 10);
+        let mut allowance = native_conversation_budget();
+        allowance.bytes_hashed = 0;
+        let denied = NativeMaterializationWork::new(allowance, &cancellation).expect("hash denial ledger");
+        let mut denied_io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        assert!(matches!(source.descriptor().verify_with_work(b"hello", &mut Some(&mut denied_io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
+        assert_eq!(denied.receipt().bytes_hashed, 0);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_file_field_clone_owns_actual_capacity_on_an_independent_ledger() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let mut source = file(AgentId::from_bytes([27; 16]), "native-field-clone.txt")?;
+        let mut path = String::with_capacity(1_024);
+        path.push_str(source.path());
+        source.path = path;
+        let mut media = String::with_capacity(512);
+        media.push_str(source.descriptor().media_type());
+        source.descriptor.media_type = media;
+        assert!(source.logical_owned_bytes()? > source.logical_clone_owned_bytes()?);
+        let budget = native_conversation_budget();
+        let source_token = CancellationToken::new();
+        let source_work = NativeMaterializationWork::new(budget, &source_token).expect("source ledger");
+        let source_guard = source_work.retain_owned(source.logical_owned_bytes()?)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let source_receipt = source_work.receipt();
+        source_token.cancel();
+        let copy_token = CancellationToken::new();
+        let copy_work = NativeMaterializationWork::new(budget, &copy_token).expect("independent copy ledger");
+        let before = copy_work.receipt();
+        let recipe = source.clone_work_recipe()?;
+        let (copied, guard) = source.clone_with_native_work(&copy_work)?;
+        assert_eq!(copied, source);
+        assert_eq!(guard.bytes(), copied.logical_owned_bytes()?);
+        assert!(guard.work().shares_ledger(&copy_work));
+        assert_eq!(source_work.receipt(), source_receipt);
+        assert_eq!(copy_work.receipt().allocation_operations - before.allocation_operations, recipe.0);
+        assert_eq!(copy_work.receipt().bytes_copied - before.bytes_copied, recipe.1);
+        assert_eq!(copy_work.receipt().bytes_hashed + copy_work.receipt().bytes_encoded, 0);
+        drop(copied);
+        drop(guard);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        copy_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        drop(source);
+        drop(source_guard);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_reference_clones_deny_before_actual_payload_copy() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let content = file(AgentId::from_bytes([23; 16]), "native-clone-source.txt")?;
+        let mut message = native_message(&content, 1);
+        message.attachments = ReferencedAttachments::Inline { items: vec![Attachment {
+            file: content.clone(), label: Some("caption".into()),
+        }] };
+        message.extensions.insert("acyclic.turn.outcome".into(), content.clone());
+        for denied in ["allocation_operations", "bytes_copied"] {
+            let mut budget = native_conversation_budget();
+            if denied == "allocation_operations" { budget.allocation_operations = 1; }
+            else { budget.bytes_copied = 0; }
+            let cancellation = CancellationToken::new();
+            let native = NativeMaterializationWork::new(budget, &cancellation).expect("original clone ledger");
+            let prefix = native.receipt();
+            let mut io = crate::store::history::native_work_io(&native).expect("original clone observer");
+            assert!(matches!(content.clone_with_work(&mut Some(&mut io)),
+                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
+            assert!(matches!(message.clone_with_work(&mut Some(&mut io)),
+                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
+            assert_eq!(native.receipt().bytes_copied, prefix.bytes_copied);
+            assert_eq!(native.receipt().allocation_operations, prefix.allocation_operations);
+            assert!(matches!(content.clone_with_native_work(&native),
+                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
+            assert_eq!(native.receipt().bytes_copied, prefix.bytes_copied);
+            assert_eq!(native.receipt().allocation_operations, prefix.allocation_operations);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_buffer_try_reserve_failure_preserves_the_actual_old_owner() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
+        let old_token = CancellationToken::new();
+        let old = NativeMaterializationWork::new(native_conversation_budget(), &old_token)
+            .expect("actual old backing ledger");
+        let mut values = vec![[7_u8; 32]];
+        let capacity = values.capacity();
+        let mut owner = Some(old.retain_owned(native_conversation_buffer_bytes::<[u8; 32]>(capacity)?)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+        let before = old.receipt();
+        old_token.cancel();
+        let new_token = CancellationToken::new();
+        let mut allowance = native_conversation_budget();
+        allowance.peak_allocation_bytes = u64::MAX;
+        let new = NativeMaterializationWork::new(allowance, &new_token)
+            .expect("independent requested backing ledger");
+        let mut io = crate::store::history::native_work_io(&new).expect("actual growth observer");
+        // Rust's real Vec capacity check rejects a backing larger than isize::MAX.
+        let target = isize::MAX as usize / std::mem::size_of::<[u8; 32]>() + 1;
+        assert!(matches!(reserve_native_conversation_buffer(&mut values, &mut owner, target, &mut io),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::AllocationFailed(_),
+                custody: None })));
+        assert_eq!(values, [[7_u8; 32]]);
+        assert_eq!(values.capacity(), capacity);
+        assert!(owner.as_ref().expect("restored original backing").work().shares_ledger(&old));
+        assert_eq!(old.receipt(), before);
+        assert_eq!(io.into_custody().bytes(), 0);
+        let available = allowance.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        new.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        drop(values);
+        drop(owner);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_conversation_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            allocation_operations: 100_000, peak_allocation_bytes: 16_777_216,
+            bytes_copied: 16_777_216, bytes_encoded: 16_777_216,
+            bytes_hashed: 16_777_216, items_examined: 16_777_216,
+            ..acyclic_fs::WorkBudget::default()
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_message(content: &FileRef, sequence: u64) -> ConversationMessage {
+        ConversationMessage {
+            id: Uuid::from_u128(u128::from(sequence)), sequence,
+            kind: if sequence % 2 == 1 { MessageKind::User } else { MessageKind::Assistant },
+            content: content.clone(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: (sequence % 2 == 0).then(|| Uuid::from_u128(u128::from(sequence - 1))),
+            tool_call_id: None, extensions: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_cache_transfer_keeps_source_and_metadata_ledgers_independent() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let agent = AgentId::from_bytes([26; 16]);
+        let content = file(agent, "native-cache-transfer.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
+        let source_token = CancellationToken::new();
+        let metadata_token = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let source = NativeMaterializationWork::new(budget, &source_token).expect("source data ledger");
+        let metadata = NativeMaterializationWork::new(budget, &metadata_token).expect("metadata ledger");
+        let bytes = state.native_unclaimed_cache_bytes()?;
+        let allocation = source.retain_owned(bytes).expect("original source cache preclaim");
+        let prefix = source.receipt();
+        source_token.cancel();
+        let mut io = crate::store::history::native_work_io(&metadata).expect("independent metadata observer");
+        state.install_native_preclaimed_caches(allocation, &mut Some(&mut io))?;
+        assert_eq!(source.receipt(), prefix, "source transfer is pure despite source cancellation");
+        assert_eq!(metadata.receipt().bytes_hashed + metadata.receipt().bytes_copied, 0);
+        assert_eq!(state.native_unclaimed_cache_bytes()?, 0);
+        let slot = state.native_custody.indexes.get(&(false, Uuid::from_u128(1))).expect("source slot");
+        assert!(slot.work().shares_ledger(&source));
+        assert!(slot._metadata.work().shares_ledger(&metadata));
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(state);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
+        let source_token = CancellationToken::new();
+        let source = NativeMaterializationWork::new(budget, &source_token).expect("partial source ledger");
+        let bytes = state.native_unclaimed_cache_bytes()?;
+        let allocation = source.retain_owned(bytes).expect("partial source preclaim");
+        let mut denied_budget = budget;
+        denied_budget.allocation_operations = 1;
+        let denied = NativeMaterializationWork::new(denied_budget, &metadata_token).expect("metadata denial ledger");
+        let mut denied_io = crate::store::history::native_work_io(&denied).expect("metadata denial observer");
+        assert!(matches!(state.install_native_preclaimed_caches(allocation, &mut Some(&mut denied_io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
+        assert!(state.native_custody.cache_carrier.as_ref().expect("remaining source custody").bytes() > 0);
+        assert!(source.admit_retained(available).is_err(), "partial failure still owns actual source caches");
+        let mut io = crate::store::history::native_work_io(&metadata).expect("independent retry metadata observer");
+        use crate::store::history::HistoryIo as _;
+        let no_data = io.take_native_custody(0)?;
+        state.install_native_preclaimed_caches(no_data, &mut Some(&mut io))?;
+        assert_eq!(state.native_unclaimed_cache_bytes()?, 0);
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(state);
+        source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_append_adopts_existing_spare_buffers_once_then_replaces_their_owner() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let agent = AgentId::from_bytes([25; 16]);
+        let content = file(agent, "native-spare-backing.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
+        let cancellation = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let first = NativeMaterializationWork::new(budget, &cancellation).expect("adoption ledger");
+        let second = NativeMaterializationWork::new(budget, &cancellation).expect("replacement ledger");
+        let mut io = crate::store::history::native_work_io(&first).expect("original adoption observer");
+        state.append_with_work(native_message(&content, 4), &mut Some(&mut io))?;
+        assert!(state.native_custody.messages.as_ref().expect("existing spare backing guard")
+            .work().shares_ledger(&first));
+        assert_eq!(state.native_custody.indexes.len(), state.by_id.len());
+        assert_eq!(io.into_custody().bytes(), 0);
+        let mut io = crate::store::history::native_work_io(&second).expect("independent growth observer");
+        state.append_with_work(native_message(&content, 5), &mut Some(&mut io))?;
+        assert!(state.native_custody.messages.as_ref().expect("replacement backing guard")
+            .work().shares_ledger(&second));
+        assert!(state.native_custody.indexes.get(&(false, Uuid::from_u128(1)))
+            .expect("original logical source slot").work().shares_ledger(&first));
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(state);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        first.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        second.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_append_and_retirement_keep_only_live_independent_components() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let cancellation = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let first = NativeMaterializationWork::new(budget, &cancellation).expect("first original ledger");
+        let second = NativeMaterializationWork::new(budget, &cancellation).expect("independent original ledger");
+        let agent = AgentId::from_bytes([21; 16]);
+        let content = file(agent, "native-history.txt")?;
+        let checkpoint = file(agent, "native-checkpoint.json")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
+        for sequence in 1..=64_u64 {
+            let ledger = if (sequence - 1) / 4 % 2 == 0 { &first } else { &second };
+            let mut message = native_message(&content, sequence);
+            if sequence % 8 == 0 {
+                message.kind = MessageKind::System;
+                message.extensions.insert("acyclic.turn.outcome".into(), content.clone());
+            }
+            let expected = crate::contract::canonical_json_bytes(&message)?.len() as u64
+                + b"harness:conversation-prefix:v3\0".len() as u64 + 64;
+            let before = ledger.receipt().bytes_hashed;
+            let mut io = crate::store::history::native_work_io(ledger).expect("original observer");
+            state.append_with_work(message, &mut Some(&mut io))?;
+            assert_eq!(ledger.receipt().bytes_hashed - before, expected,
+                "append hashes only its original message, never the resident prefix");
+            assert!(state.native_custody.indexes
+                .get(&(false, Uuid::from_u128(u128::from(sequence)))).expect("actual source identity slot")
+                .work().shares_ledger(ledger));
+            assert_eq!(io.into_custody().bytes(), 0, "state, not the query, owns cache custody");
+            if sequence % 8 == 0 {
+                assert!(state.native_custody.indexes
+                    .get(&(true, Uuid::from_u128(u128::from(sequence - 1))))
+                    .expect("actual outcome source slot").work().shares_ledger(ledger));
+                let selection = ModelContextSelection {
+                    conversation_revision: sequence,
+                    message_ids: vec![Uuid::from_u128(u128::from(sequence - 1)),
+                        Uuid::from_u128(u128::from(sequence))],
+                    checkpoint: Some(checkpoint.clone()),
+                };
+                let digest = state.history_prefix_digest(sequence)?;
+                let mut io = crate::store::history::native_work_io(ledger).expect("retirement observer");
+                let suffix = state.checkpointed_suffix_with_work(&selection, &mut Some(&mut io))?;
+                state = suffix;
+                assert!(state.messages.is_empty());
+                assert!(state.by_id.is_empty() && state.outcomes.is_empty());
+                assert!(state.native_custody.indexes.is_empty());
+                assert_eq!(state.history_prefix_digest(sequence)?, digest);
+                assert_eq!(io.into_custody().bytes(), 0);
+            }
+        }
+        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 64);
+        assert!(matches!(state.clone_with_work(&mut None), Err(Error::NativeBoundary { .. })));
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        assert!(second.admit_retained(available).is_err(), "the live archived checkpoint keeps custody");
+        drop(state);
+        first.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        second.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+        let cancellation = CancellationToken::new();
+        let budget = native_conversation_budget();
+        let funded = NativeMaterializationWork::new(budget, &cancellation).expect("state ledger");
+        let agent = AgentId::from_bytes([22; 16]);
+        let content = file(agent, "native-failed-growth.txt")?;
+        let mut state = ConversationState::default();
+        state.bind(agent)?;
+        for sequence in 1..=4 {
+            let mut io = crate::store::history::native_work_io(&funded).expect("original observer");
+            state.append_with_work(native_message(&content, sequence), &mut Some(&mut io))?;
+        }
+        let head = state.history_digest;
+        let capacities = (state.messages.capacity(), state.prefix_digests.capacity(),
+            state.model_positions.capacity());
+        let mut denied_budget = budget;
+        denied_budget.bytes_hashed = 0;
+        let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("hash denial ledger");
+        let mut io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        assert!(matches!(state.append_with_work(native_message(&content, 5), &mut Some(&mut io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
+        assert_eq!(denied.receipt().bytes_hashed, 0);
+        drop(io);
+        assert_eq!(state.history_digest, head);
+        assert_eq!(state.messages.len(), 4);
+        assert_eq!(capacities, (state.messages.capacity(), state.prefix_digests.capacity(),
+            state.model_positions.capacity()));
+        // Pay the exact original hash first; the next allocation is the original
+        // messages Vec growth, not a substitute encoder or synthetic charge.
+        let probe = NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
+        let mut probe_io = crate::store::history::native_work_io(&probe).expect("original hash observer");
+        advance_history_digest_with_work(head, &native_message(&content, 5),
+            acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut probe_io))?;
+        denied_budget = budget;
+        denied_budget.allocation_operations = probe.receipt().allocation_operations;
+        drop(probe_io);
+        let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("growth denial ledger");
+        let mut io = crate::store::history::native_work_io(&denied).expect("growth denial observer");
+        assert!(matches!(state.append_with_work(native_message(&content, 5), &mut Some(&mut io)),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
+                WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
+        assert!(denied.receipt().bytes_hashed > 0, "the original message hash completed before growth");
+        drop(io);
+        assert_eq!(state.history_digest, head);
+        assert_eq!(state.messages.len(), 4);
+        assert!(!state.by_id.contains_key(&Uuid::from_u128(5)));
+        assert_eq!(capacities, (state.messages.capacity(), state.prefix_digests.capacity(),
+            state.model_positions.capacity()));
+        assert_eq!(state.native_custody.messages.as_ref().expect("live backing").bytes(),
+            state.messages.capacity() as u64 * std::mem::size_of::<ConversationMessage>() as u64);
+        drop(state);
+        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+        funded.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(())
+    }
+
     #[cfg(feature = "filesystem")]
     #[test]
     fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -> Result<()> {
@@ -3093,7 +4424,7 @@ mod tests {
             (2, MessageKind::Assistant), (3, MessageKind::System)] {
             let mut extensions = BTreeMap::new();
             if sequence == 3 {
-                extensions.insert("acyclic.turn.outcome".into(), serde_json::Value::Null);
+                extensions.insert("acyclic.turn.outcome".into(), content.clone());
             }
             original.append(ConversationMessage {
                 id: Uuid::from_u128(u128::from(sequence)), sequence, kind,
@@ -3180,7 +4511,7 @@ mod tests {
             checkpoint: Some(checkpoint.clone()),
         };
         HISTORY_HASH_CALLS.with(|calls| calls.set(0));
-        let suffix = state.checkpointed_suffix(&selection)?;
+        let suffix = state.checkpointed_suffix_with_work(&selection, &mut None)?;
         assert_eq!(suffix.messages().len(), 2);
         assert_eq!(suffix.logical_revision(), 1_000);
         assert_eq!(suffix.resident_after_sequence(), 998);
@@ -3211,7 +4542,7 @@ mod tests {
         assert_eq!(restored.logical_revision(), 1_001);
         assert_eq!(restored.messages().len(), 3);
         assert_eq!(restored.unresolved_user(), Some(Uuid::from_u128(1_001)));
-        assert_eq!(restored.checkpointed_suffix(&selection)?, restored);
+        assert_eq!(restored.checkpointed_suffix_with_work(&selection, &mut None)?, restored);
         Ok(())
     }
 
@@ -3483,7 +4814,7 @@ mod tests {
             tool_call_id: None,
             extensions: Default::default(),
         };
-        let before = state.clone();
+        let before = state.clone_with_work(&mut None)?;
         assert!(state.append(candidate.clone()).is_err());
         assert_eq!(state, before);
         assert!(state.message(candidate.id).is_none());
@@ -3498,7 +4829,7 @@ mod tests {
         assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
         candidate.id = Uuid::new_v4();
         candidate.sequence = 2;
-        let before = sparse.clone();
+        let before = sparse.clone_with_work(&mut None)?;
         assert!(sparse.append(candidate).is_err());
         assert_eq!(sparse, before);
         Ok(())

@@ -140,7 +140,7 @@ impl InheritedConversationPrefix {
 
 /// A finite, authenticated archive selection used only during explicit fork
 /// preparation. It is not a second journal or permission to publish a child.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PreparedForkHistory {
     parent: Authority,
     parent_revision: u64,

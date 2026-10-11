@@ -12,14 +12,14 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
-pub(super) fn original_native_decode_mode(observer: &dyn super::history::HistoryIo) -> bool {
+pub(crate) fn original_native_decode_mode(observer: &dyn super::history::HistoryIo) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     { observer.original_native_work().is_some() }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     { let _ = observer; false }
 }
 
-pub(super) fn decode_preclaimed_json_with_mode<T, F>(
+pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     bytes: &[u8],
     bounds: crate::contract::JsonBounds,
     maximum_owned_bytes: u64,
@@ -40,7 +40,7 @@ where
     crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
 }
 
-pub(super) fn retain_original_decode_error<T>(
+pub(crate) fn retain_original_decode_error<T>(
     mut result: Result<T>,
     reservation: &mut u64,
     observer: &mut dyn super::history::HistoryIo,
@@ -141,7 +141,8 @@ pub(super) fn validate_canonical_json_with_work(
                         observer.release_owned(capacity)?;
                     }
                     if identical { Ok(()) } else {
-                        Err(Error::Storage("execution journal JSON is not canonical".into()))
+                        Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                            "execution journal JSON is not canonical"))
                     }
                 }
                 Err(error) => Err(error),
@@ -398,34 +399,50 @@ pub(super) fn publication_path_with_work(
     let canonical_capacity = canonical.capacity() as u64;
     let result = (|| {
         let suffix = canonical.strip_prefix("harness/v2/")
-            .ok_or_else(|| Error::Invalid("publication authority path is invalid".into()))?;
+            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "publication authority path is invalid"))?;
         let capacity = prefix.len().checked_add(suffix.len())
             .and_then(|bytes| bytes.checked_add(last.map_or(0, |(_, bytes)| bytes + 1)))
-            .ok_or_else(|| Error::Invalid("publication path length overflows".into()))?;
+            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "publication path length overflows"))?;
         let mut text = String::new();
         let result = (|| {
             match work.as_deref_mut() {
                 Some(observer) => observer.reserve_text(&mut text, capacity)?,
                 None => text.reserve_exact(capacity),
             }
+            if let Some(observer) = work.as_deref_mut() {
+                observer.copy_bytes((prefix.len() + suffix.len()) as u64)?;
+            }
             text.push_str(prefix);
             text.push_str(suffix);
             if let Some((last, _)) = last {
-                write!(&mut text, "/{last}")
-                    .map_err(|_| Error::Invalid("publication path formatting failed".into()))?;
+                struct Count(usize);
+                impl std::fmt::Write for Count {
+                    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                        self.0 += value.len();
+                        Ok(())
+                    }
+                }
+                let mut count = Count(0);
+                write!(&mut count, "/{last}").map_err(|_| message_lookup_error(work,
+                    crate::wire::ErrorCode::Invalid, "publication path formatting failed"))?;
+                if let Some(observer) = work.as_deref_mut() { observer.copy_bytes(count.0 as u64)?; }
+                write!(&mut text, "/{last}").map_err(|_| message_lookup_error(work,
+                    crate::wire::ErrorCode::Invalid, "publication path formatting failed"))?;
             }
-            if let Some(observer) = work.as_deref_mut() {
-                observer.copy_bytes(text.len() as u64)?;
-                observer.admit_allocation(text.len() as u64)?;
-                observer.copy_bytes(text.len() as u64)?;
-            }
-            let path = StreamPath::new(&text)?;
             let retained = if let Some(observer) = work.as_deref_mut() {
-                let payload = path.as_str().len() as u64;
+                let payload = text.len() as u64;
+                observer.admit_allocation(payload)?;
+                observer.copy_bytes(payload)?;
                 observer.retain_owned(payload)?;
                 payload
             } else { 0 };
-            Ok((path, retained))
+            match StreamPath::new(&text) {
+                Ok(path) => Ok((path, retained)),
+                Err(error) => release_owned_after_drop(
+                    Err(stream_error_with_work(error, work)), retained, work),
+            }
         })();
         let text_capacity = text.capacity() as u64;
         drop(text);
@@ -435,7 +452,7 @@ pub(super) fn publication_path_with_work(
     release_owned_after_drop(result, canonical_capacity, work)
 }
 
-fn canonical_publication_path_with_work(
+pub(super) fn canonical_publication_path_with_work(
     authority: &Authority,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
@@ -446,13 +463,16 @@ fn canonical_publication_path_with_work(
             observer.admit_allocation(text.len() as u64)?;
             observer.copy_bytes(text.len() as u64)?;
         }
-        let path = StreamPath::new(&text)?;
         let retained = if let Some(observer) = work.as_deref_mut() {
-            let payload = path.as_str().len() as u64;
+            let payload = text.len() as u64;
             observer.retain_owned(payload)?;
             payload
         } else { 0 };
-        Ok((path, retained))
+        match StreamPath::new(&text) {
+            Ok(path) => Ok((path, retained)),
+            Err(error) => release_owned_after_drop(
+                Err(stream_error_with_work(error, work)), retained, work),
+        }
     })();
     drop(text);
     release_owned_after_drop(result, capacity, work)
@@ -829,6 +849,90 @@ impl IndexedPublication {
     }
 }
 
+// Fields retire in declaration order: the SDK handle's Arc payload must die
+// before its independent source allocation claim, including future cancellation.
+pub(crate) struct ObservedStream<P> {
+    pub(crate) stream: acyclic_stream::Stream<P>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _path_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+pub(crate) fn stream_error_with_work(
+    source: acyclic_stream::StreamError,
+    work: &Option<&mut dyn super::history::HistoryIo>,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(original_native_decode_mode) {
+        let code = if matches!(&source, acyclic_stream::StreamError::IdempotencyMismatch) {
+            crate::wire::ErrorCode::Conflict
+        } else {
+            crate::wire::ErrorCode::Storage
+        };
+        return Error::NativeStream { code, source, custody: None };
+    }
+    let _ = work;
+    source.into()
+}
+
+pub(crate) fn stream_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<ObservedStream<P>> {
+    stream_text_with_work(client, path.as_str(), work)
+}
+
+pub(crate) fn stream_text_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &str,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<ObservedStream<P>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let path_custody = if let Some(observer) = work.as_deref_mut()
+        .filter(|observer| observer.original_native_work().is_some())
+    {
+        // The input text is not the Arc recreated by StreamClient.
+        let bytes = path.len() as u64;
+        observer.admit_owned(bytes)?;
+        observer.admit_allocation(bytes)?;
+        observer.admit_copy(bytes)?;
+        observer.retain_owned(bytes)?;
+        let custody = observer.take_native_custody(bytes)?;
+        observer.copy_bytes(bytes)?;
+        Some(custody)
+    } else { None };
+    let stream = client.stream(path)
+        .map_err(|error| stream_error_with_work(error, work))?;
+    Ok(ObservedStream {
+        stream,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _path_custody: path_custody,
+    })
+}
+
+pub(super) async fn tail_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<u64> {
+    tail_optional_with_work(client, path, work).await?
+        .ok_or_else(|| stream_error_with_work(acyclic_stream::StreamError::NotFound, work))
+}
+
+pub(super) async fn tail_optional_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    path: &StreamPath,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<Option<u64>> {
+    let handle = stream_with_work(client, path, work)?;
+    if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+    match handle.stream.tail().await {
+        Ok(tail) => Ok(Some(tail)),
+        Err(acyclic_stream::StreamError::NotFound) => Ok(None),
+        Err(error) => Err(stream_error_with_work(error, work)),
+    }
+}
+
 pub(super) async fn one_record<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
@@ -844,36 +948,64 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
     from: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<Option<Record>> {
-    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-    let mut records = match client.stream(path.as_str())?.read(from, 1).await {
+    let handle = stream_with_work(client, path, work)?;
+    if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
+    let mut records = match handle.stream.read(from, 1).await {
         Ok(records) => records,
         Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(stream_error_with_work(error, work)),
     };
-    if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-    let first = records.try_next().await?;
-    if let Some(record) = &first
-        && let Some(work) = work.as_deref_mut()
-    {
-        work.receive_record(record.value.len() as u64)?;
-    }
-    if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-    if let Some(extra) = records.try_next().await? {
-        if let Some(work) = work.as_deref_mut() {
-            work.receive_record(extra.value.len() as u64)?;
+    let mut first = None;
+    let mut extra = None;
+    let mut received = 0;
+    let result = async {
+        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
+        first = records.try_next().await.map_err(|error| stream_error_with_work(error, work))?;
+        if let Some(record) = &first
+            && let Some(observer) = work.as_deref_mut()
+        {
+            observer.receive_record(record.value.len() as u64)?;
+            received += record.value.len() as u64;
         }
-        return Err(Error::Storage(
-            "operation lookup exceeded its one-record bound".into(),
-        ));
+        if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
+        extra = records.try_next().await.map_err(|error| stream_error_with_work(error, work))?;
+        if let Some(record) = &extra {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.receive_record(record.value.len() as u64)?;
+                received += record.value.len() as u64;
+            }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(original_native_decode_mode) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                    reason: "operation lookup exceeded its one-record bound" });
+            }
+            return Err(Error::Storage("operation lookup exceeded its one-record bound".into()));
+        }
+        if let Some(record) = &first
+            && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
+        {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(original_native_decode_mode) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                    reason: "operation location record is invalid" });
+            }
+            return Err(Error::Storage("operation location record is invalid".into()));
+        }
+        Ok(())
+    }.await;
+    drop(records);
+    drop(extra);
+    drop(handle);
+    match result {
+        Ok(()) => Ok(first),
+        Err(error) => {
+            drop(first);
+            if let Some(observer) = work.as_deref_mut() {
+                let _ = observer.release_record(received);
+            }
+            Err(error)
+        }
     }
-    if let Some(record) = &first
-        && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
-    {
-        return Err(Error::Storage(
-            "operation location record is invalid".into(),
-        ));
-    }
-    Ok(first)
 }
 
 pub(crate) async fn find_operation<P: StreamProvider>(
@@ -921,21 +1053,18 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     }
     let path = operation_path(authority, operation)?;
     let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
-        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-        return match client.stream(path.as_str())?.tail().await {
-            Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
-            Ok(_) => Err(Error::Storage(
+        return match tail_optional_with_work(client, &path, work).await? {
+            None => Ok((None, 0)),
+            Some(_) => Err(Error::Storage(
                 "operation location is missing before its committed tail".into(),
             )),
-            Err(error) => Err(error.into()),
         };
     };
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
         return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
     }
-    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-    if client.stream(path.as_str())?.tail().await? != 1 {
+    if tail_with_work(client, &path, work).await? != 1 {
         return Err(Error::Storage(
             "operation location is not a single immutable record".into(),
         ));
@@ -986,28 +1115,57 @@ pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
     verifier.verify_audience(authority)?;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
-        return Err(Error::Invalid("operation lookup exceeds byte bound".into()));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            "operation lookup exceeds byte bound"));
     }
     if &location.authority != authority || location.revision == 0 {
-        return Err(Error::Storage(
-            "operation location identity is invalid".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            "operation location identity is invalid"));
     }
-    let canonical = StreamPath::new(authority.stream_path()?)?;
+    let (canonical, path_owned) = if work.is_none() {
+        (StreamPath::new(authority.stream_path()?)?, 0)
+    } else {
+        canonical_publication_path_with_work(authority, work)?
+    };
     let sequence = location.revision - 1;
-    let record = one_record_with_work(client, &canonical, sequence, work)
-        .await?
-        .ok_or_else(|| Error::Storage("indexed canonical event is missing".into()))?;
-    let consumed_bytes = index_bytes
-        .checked_add(record.value.len() as u64)
-        .filter(|bytes| *bytes <= maximum_bytes)
-        .ok_or_else(|| Error::Invalid("operation lookup exceeds byte bound".into()))?;
-    let event = super::history::verify_history_record_with_work(verifier, authority, sequence, &record, work)?;
-    verify_operation_binding(authority, index, location, &record, &event)?;
+    let received = one_record_with_work(client, &canonical, sequence, work).await;
+    drop(canonical);
+    let record = release_owned_after_drop(received, path_owned, work)?
+        .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            "indexed canonical event is missing"))?;
     let record_bytes = record.value.len() as u64;
+    let result = (|| {
+        let consumed_bytes = index_bytes.checked_add(record_bytes)
+            .filter(|bytes| *bytes <= maximum_bytes)
+            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "operation lookup exceeds byte bound"))?;
+        let event = super::history::verify_history_record_with_work(
+            verifier, authority, sequence, &record, work)?;
+        let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+        if let Err(error) = verify_operation_binding_with_work(
+            authority, index, location, &record, &event, work)
+        {
+            drop(event);
+            return release_owned_after_drop(Err(error), owned, work);
+        }
+        Ok((event, consumed_bytes))
+    })();
     drop(record);
-    if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
-    Ok((event, consumed_bytes))
+    let released = match work.as_deref_mut() {
+        Some(observer) => observer.release_record(record_bytes),
+        None => Ok(()),
+    };
+    match result {
+        Ok((event, bytes)) => match released {
+            Ok(()) => Ok((event, bytes)),
+            Err(error) => {
+                let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+                drop(event);
+                release_owned_after_drop(Err(error), owned, work)
+            }
+        },
+        Err(error) => Err(error),
+    }
 }
 
 pub(super) fn verify_operation_binding(
@@ -1017,6 +1175,17 @@ pub(super) fn verify_operation_binding(
     canonical: &Record,
     event: &Event,
 ) -> Result<()> {
+    verify_operation_binding_with_work(authority, index, location, canonical, event, &mut None)
+}
+
+fn verify_operation_binding_with_work(
+    authority: &Authority,
+    index: &Record,
+    location: &OperationLocation,
+    canonical: &Record,
+    event: &Event,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<()> {
     if &location.authority != authority
         || location.revision != event.revision
         || canonical.sequence.checked_add(1) != Some(event.revision)
@@ -1024,11 +1193,26 @@ pub(super) fn verify_operation_binding(
         || event.intent_digest != location.intent_digest
         || canonical.commit_id != index.commit_id
     {
-        return Err(Error::Storage(
-            "operation location differs from its atomic canonical event".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            "operation location differs from its atomic canonical event"));
     }
     Ok(())
+}
+
+fn message_lookup_error(
+    work: &Option<&mut dyn super::history::HistoryIo>,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(original_native_decode_mode) {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
+        _ => Error::Storage(reason.into()),
+    }
 }
 
 /// Loads one exact archived message without reconstructing a conversation projection.
@@ -1061,18 +1245,34 @@ pub(crate) async fn find_message_counted<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let path = message_path(authority, message_id)?;
-    find_message_at_locator(
-        client,
-        authority,
-        verifier,
-        path,
-        Some(message_id),
-        None,
-        through_revision,
-        maximum_bytes,
-    )
-    .await
+    find_message_with_work(client, authority, verifier, message_id, through_revision,
+        maximum_bytes, &mut None).await
+}
+
+pub(crate) async fn find_message_with_work<P: StreamProvider>(
+    client: &StreamClient<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    message_id: uuid::Uuid,
+    through_revision: u64,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
+    verifier.verify_audience(authority)?;
+    let (path, owned) = if work.is_none() {
+        (message_path(authority, message_id)?, 0)
+    } else {
+        if authority.kind != crate::core::AggregateKind::Conversation {
+            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "message index requires a conversation"));
+        }
+        publication_path_with_work(authority, "harness/v2/conversation-messages/",
+            Some((&message_id, 36)), work)?
+    };
+    let result = find_message_at_locator_with_work(client, authority, verifier, &path,
+        Some(message_id), None, through_revision, maximum_bytes, work).await;
+    drop(path);
+    release_owned_after_drop(result, owned, work)
 }
 
 pub(crate) async fn find_message_sequence<P: StreamProvider>(
@@ -1095,45 +1295,30 @@ pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let path = message_sequence_path(authority, sequence)?;
-    find_message_at_locator_with_work(
-        client,
-        authority,
-        verifier,
-        path,
-        None,
-        Some(sequence),
-        through_revision,
-        maximum_bytes,
-        work,
-    )
-    .await
+    verifier.verify_audience(authority)?;
+    let (path, owned) = if work.is_none() {
+        (message_sequence_path(authority, sequence)?, 0)
+    } else {
+        if sequence == 0 || authority.kind != crate::core::AggregateKind::Conversation {
+            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "message sequence index requires a positive conversation sequence"));
+        }
+        publication_path_with_work(authority, "harness/v2/conversation-sequences/",
+            Some((&sequence, 20)), work)?
+    };
+    let result = find_message_at_locator_with_work(client, authority, verifier, &path,
+        None, Some(sequence), through_revision, maximum_bytes, work).await;
+    drop(path);
+    release_owned_after_drop(result, owned, work)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one atomic locator verifier binds its exact ID or sequence and pinned byte/read boundary"
-)]
-async fn find_message_at_locator<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    path: StreamPath,
-    expected_id: Option<uuid::Uuid>,
-    expected_sequence: Option<u64>,
-    through_revision: u64,
-    maximum_bytes: u64,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    find_message_at_locator_with_work(client, authority, verifier, path, expected_id,
-        expected_sequence, through_revision, maximum_bytes, &mut None).await
-}
 
 #[allow(clippy::too_many_arguments, reason = "same exact indexed locator and pinned cut with optional SDK receipts")]
 async fn find_message_at_locator_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
-    path: StreamPath,
+    path: &StreamPath,
     expected_id: Option<uuid::Uuid>,
     expected_sequence: Option<u64>,
     through_revision: u64,
@@ -1142,39 +1327,38 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     verifier.verify_audience(authority)?;
     if maximum_bytes == 0 {
-        return Err(Error::Invalid(
-            "message lookup byte bound must be positive".into(),
-        ));
+        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            "message lookup byte bound must be positive"));
     }
-    let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
-        if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-        return match client.stream(path.as_str())?.tail().await {
-            Err(acyclic_stream::StreamError::NotFound) => Ok((None, 0)),
-            Ok(_) => Err(Error::Storage(
-                "message location is missing before its committed tail".into(),
-            )),
-            Err(error) => Err(error.into()),
+    let Some(index) = one_record_with_work(client, path, 0, work).await? else {
+        return match tail_optional_with_work(client, path, work).await? {
+            None => Ok((None, 0)),
+            Some(_) => Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                "message location is missing before its committed tail")),
         };
     };
-    if index.value.len() as u64 > maximum_bytes {
-        return Err(Error::Invalid("message lookup exceeds byte bound".into()));
+    let index_bytes = index.value.len() as u64;
+    let result = async {
+        if index_bytes > maximum_bytes {
+            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+                "message lookup exceeds byte bound"));
+        }
+        if tail_with_work(client, path, work).await? != 1 {
+            return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                "message location is not immutable"));
+        }
+        verify_message_locator_with_work(client, authority, verifier, &index,
+            expected_id, expected_sequence, through_revision, maximum_bytes, work).await
+    }.await;
+    drop(index);
+    let released = match work.as_deref_mut() {
+        Some(observer) => observer.release_record(index_bytes),
+        None => Ok(()),
+    };
+    match result {
+        Ok(value) => released.map(|()| value),
+        Err(error) => Err(error),
     }
-    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-    if client.stream(path.as_str())?.tail().await? != 1 {
-        return Err(Error::Storage("message location is not immutable".into()));
-    }
-    verify_message_locator_with_work(
-        client,
-        authority,
-        verifier,
-        index,
-        expected_id,
-        expected_sequence,
-        through_revision,
-        maximum_bytes,
-        work,
-    )
-    .await
 }
 
 #[allow(
@@ -1191,7 +1375,7 @@ async fn verify_message_locator<P: StreamProvider>(
     through_revision: u64,
     maximum_bytes: u64,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verify_message_locator_with_work(client, authority, verifier, index, expected_id,
+    verify_message_locator_with_work(client, authority, verifier, &index, expected_id,
         expected_sequence, through_revision, maximum_bytes, &mut None).await
 }
 
@@ -1200,7 +1384,7 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
-    index: Record,
+    index: &Record,
     expected_id: Option<uuid::Uuid>,
     expected_sequence: Option<u64>,
     through_revision: u64,
@@ -1208,71 +1392,70 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     let location = decode_message_location_with_work(&index.value, work)?;
-    if &location.location.authority != authority
-        || expected_id.is_some_and(|id| location.message_id != id)
-        || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
-        || location.location.revision == 0
-        || (location.sequence == 0 && expected_sequence != Some(0))
-    {
-        return Err(Error::Storage(
-            "message location identity is invalid".into(),
-        ));
-    }
-    let (event, consumed_bytes) = verify_operation_locator_with_work(
-        client,
-        authority,
-        verifier,
-        &index,
-        &location.location,
-        maximum_bytes,
-        work,
-    )
-    .await?;
-    let index_bytes = index.value.len() as u64;
-    drop(index);
-    if let Some(work) = work.as_deref_mut() { work.release_record(index_bytes)?; }
-    let message_id = location.message_id;
-    let sequence = location.sequence;
     let location_bytes = location.location.authority.id.capacity() as u64;
-    drop(location);
-    if let Some(work) = work.as_deref_mut() { work.release_owned(location_bytes)?; }
-    if sequence == 0 {
-        let bound = message_id.is_nil()
-            && matches!(&event.payload, crate::core::EventPayload::ConversationBound { .. });
-        let event_bytes = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
-        drop(event);
-        if let Some(work) = work.as_deref_mut() { work.release_owned(event_bytes)?; }
-        return if bound {
-            Ok((None, consumed_bytes))
-        } else {
-            Err(Error::Storage(
-                "empty message head differs from its canonical binding".into(),
-            ))
-        };
-    }
-    let message = match event.payload {
-        crate::core::EventPayload::ConversationMessageAppended { message } => *message,
-        crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
-        _ => {
-            return Err(Error::Storage(
-                "message location points to another event kind".into(),
-            ));
+    let result = async {
+        if &location.location.authority != authority
+            || expected_id.is_some_and(|id| location.message_id != id)
+            || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
+            || location.location.revision == 0
+            || (location.sequence == 0 && expected_sequence != Some(0))
+        {
+            return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                "message location identity is invalid"));
         }
-    };
-    if message.id != message_id || message.sequence != sequence {
-        return Err(Error::Storage(
-            "message location differs from its canonical message".into(),
-        ));
-    }
-    if event.revision <= through_revision
-        && let Some(work) = work.as_deref_mut()
-    {
-        work.stage_output(consumed_bytes - index_bytes, 1)?;
-    }
-    Ok((
-        (event.revision <= through_revision).then_some(message),
-        consumed_bytes,
-    ))
+        let (event, consumed_bytes) = verify_operation_locator_with_work(
+            client, authority, verifier, index, &location.location, maximum_bytes, work).await?;
+        let owned = if work.is_some() { crate::core::event_clone_reservation(&event)? } else { 0 };
+        let selected = (|| {
+            if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
+            if location.sequence == 0 {
+                if !location.message_id.is_nil()
+                    || !matches!(&event.payload, crate::core::EventPayload::ConversationBound { .. })
+                {
+                    return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                        "empty message head differs from its canonical binding"));
+                }
+                return Ok(false);
+            }
+            let message = match &event.payload {
+                crate::core::EventPayload::ConversationMessageAppended { message } => message.as_ref(),
+                crate::core::EventPayload::ProjectMergePublished { receipt } => &receipt.notice,
+                _ => return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                    "message location points to another event kind")),
+            };
+            if message.id != location.message_id || message.sequence != location.sequence {
+                return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                    "message location differs from its canonical message"));
+            }
+            if event.revision > through_revision { return Ok(false); }
+            if let Some(observer) = work.as_deref_mut() {
+                observer.check_cancellation()?;
+                observer.stage_output(consumed_bytes - index.value.len() as u64, 1)?;
+            }
+            Ok(true)
+        })();
+        match selected {
+            Ok(true) => {
+                let message = match event.payload {
+                    crate::core::EventPayload::ConversationMessageAppended { message } => *message,
+                    crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
+                    _ => unreachable!("selected canonical message payload"),
+                };
+                // Keep the original single decoded-event allowance on this moved
+                // output until the caller's query custody drops. No second sizer,
+                // encoder, clone, or persistent per-query guard is introduced.
+                drop(event.scope);
+                drop(event.causal_parent);
+                Ok((Some(message), consumed_bytes))
+            }
+            selected => {
+                drop(event);
+                release_owned_after_drop(selected.map(|_| (None, consumed_bytes)), owned, work)
+            }
+        }
+    }.await;
+    drop(location);
+    release_owned_after_drop(result, location_bytes, work)
 }
 
 /// Captures one logical message head without a reducer or retained-history scan.
@@ -1351,6 +1534,91 @@ mod native_publication_custody_tests {
             peak_allocation_bytes: 1_048_576,
             ..WorkBudget::default()
         }
+    }
+
+    #[tokio::test]
+    async fn native_message_lookup_provider_corruption_bound_and_cancellation_release_records() -> Result<()> {
+        let authority = Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: "native-message-lookup".into(),
+        };
+        let issuer = crate::core::AuthorityIssuer::new("message-lookup", [9; 32], authority.clone());
+        let message_id = uuid::Uuid::from_bytes([11; 16]);
+        let path = message_path(&authority, message_id)?;
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let outcome = client.commit(CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path, records: vec![Bytes::from_static(b"{{")],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-corrupt-message"))?,
+        }).await?;
+        assert!(matches!(outcome, acyclic_stream::CommitOutcome::Committed(_)));
+        drop(outcome);
+        for mode in 0..4 {
+            let cancellation = CancellationToken::new();
+            let mut allowance = budget();
+            if mode == 3 { allowance.source_bytes_read = 0; }
+            let native = NativeMaterializationWork::new(allowance, &cancellation)
+                .expect("original message query ledger");
+            let mut io = native_work_io(&native).expect("original query custody");
+            if mode == 2 { cancellation.cancel(); }
+            let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+                message_id, 1, if mode == 1 { 1 } else { 1_048_576 },
+                &mut Some(&mut io)).await.expect_err("original provider record is corrupt or denied");
+            match mode {
+                0 => assert!(matches!(&error, Error::NativeDecode { .. })),
+                1 => assert!(matches!(&error, Error::NativeBoundary { .. })),
+                2 => assert!(matches!(&error, Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+                })),
+                _ => assert!(matches!(&error, Error::NativeWork { .. })),
+            }
+            drop(error);
+            assert_eq!(io.into_custody().bytes(), 0);
+        }
+        let missing_id = uuid::Uuid::from_bytes([12; 16]);
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original missing query ledger");
+        let mut io = native_work_io(&native).expect("original query custody");
+        let absent = find_message_with_work(&client, &authority, &issuer.verifier(),
+            missing_id, 1, 1_048_576, &mut Some(&mut io)).await?;
+        assert_eq!(absent, (None, 0));
+        assert_eq!(io.into_custody().bytes(), 0);
+
+        let location = MessageLocation {
+            location: OperationLocation {
+                authority: authority.clone(),
+                operation_id: OperationId::from_bytes([13; 16]),
+                revision: 1,
+                intent_digest: [0; 32],
+                effect_position: None,
+            },
+            message_id: missing_id,
+            sequence: 1,
+        };
+        let path = message_path(&authority, missing_id)?;
+        client.commit(CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![Bytes::from(crate::contract::canonical_json_bytes(&location)?)],
+            }],
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"native-missing-canonical"))?,
+        }).await?;
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original missing canonical ledger");
+        let mut io = native_work_io(&native).expect("original query custody");
+        let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+            missing_id, 1, 1_048_576, &mut Some(&mut io)).await
+            .expect_err("original canonical stream is absent");
+        assert!(matches!(&error, Error::NativeBoundary {
+            reason: "indexed canonical event is missing", ..
+        }));
+        drop(error);
+        assert_eq!(io.into_custody().bytes(), 0);
+        Ok(())
     }
 
     #[tokio::test]

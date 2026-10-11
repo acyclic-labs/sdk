@@ -99,6 +99,38 @@ impl ProviderRef {
         }))
     }
 
+    pub(crate) fn validation_error(&self) -> Option<&'static str> {
+        self.validation_reason()
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        [self.namespace.capacity(), self.family.capacity(), self.version.capacity()]
+            .into_iter().try_fold(0_u64, |bytes, capacity| {
+                bytes.checked_add(capacity as u64).ok_or_else(|| {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                        reason: "provider capacity inventory overflows" } }
+                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                    { Error::Invalid("provider capacity inventory overflows".into()) }
+                })
+            })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn clone_in_native_allocation(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+        allocation: &mut acyclic_fs::NativeAllocation,
+    ) -> Result<Self> {
+        Ok(Self {
+            namespace: crate::conversation::clone_native_reference_text_into(
+                &self.namespace, work, allocation)?,
+            family: crate::conversation::clone_native_reference_text_into(
+                &self.family, work, allocation)?,
+            version: crate::conversation::clone_native_reference_text_into(
+                &self.version, work, allocation)?,
+        })
+    }
+
     /// Globally unique provider namespace.
     #[must_use]
     pub fn namespace(&self) -> &str {

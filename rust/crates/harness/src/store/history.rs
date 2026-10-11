@@ -17,8 +17,6 @@ pub(crate) use measured::HistoryWork;
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native::native_work_io;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::native_state_work_io;
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
 /// The ordinary branch records the concrete frame admitted before boxing.
@@ -257,7 +255,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
     }
 
-    fn new_owned(
+    pub(super) fn new_owned(
         client: &StreamClient<P>,
         authority: &Authority,
         verifier: AuthorityVerifier,
