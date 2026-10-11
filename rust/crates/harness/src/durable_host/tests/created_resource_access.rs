@@ -1152,6 +1152,18 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     // cannot turn the coordinator's tenant authority into a fork audience.
     assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
     assert!(owner.authenticate_fork_parent(&fixture.host.authority).is_err());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            creation_control_budget(), &cancellation,
+        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        assert!(matches!(
+            owner.authenticated_root_binding_with_native_work(&work).await,
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
+        ));
+        assert_eq!(work.receipt().backend_read_operations, 0);
+    }
     Ok(())
 }
 
