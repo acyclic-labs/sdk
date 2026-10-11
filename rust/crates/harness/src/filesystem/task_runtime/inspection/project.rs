@@ -437,16 +437,15 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
     }
 
-    /// Reads the immutable selected native source under the supplied original
-    /// ledger. Bytes retain the SDK's intrinsic source-data owner; the returned
-    /// guard retains separate SDK metadata/body custody. Preserve both through
-    /// their actual payload lifetimes without charging the data a second time.
-    /// This does not derive a new allowance from a measured receipt.
+    /// Reads the immutable selected native source on its original caller ledger.
+    /// The SDK's intrinsic byte carrier keeps its genuine source-data custody
+    /// inseparable through the last alias; no payload guard is extracted,
+    /// absorbed into another work view or charged a second time.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_native_path_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, maximum_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)>
+    ) -> Result<acyclic_stream::OwnedBytes>
     where D: DemandSource + 'static, S: LazyWorkspaceStore {
         work.remaining()?;
         let reader = match &self.reader {
@@ -459,7 +458,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        let selected = reader.authorization();
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         if maximum_bytes == 0 || maximum_bytes > reader.limits.file_bytes
             || maximum_bytes > reader.authorization().maximum_bytes
         {
@@ -469,7 +471,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             });
         }
         let _serial = reader.serial.lock().await;
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
@@ -484,8 +488,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         ).await;
         match result {
             Ok(owned) => {
-                // Keep bytes and custody together if the final fence rejects.
-                reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+                // The original intrinsic carrier survives the final owner check.
+                self.require_native_project_selection_with_native_work(
+                    selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+                ).await?;
                 if reader.io.cancellation.is_cancelled() {
                     return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
                 }
@@ -519,9 +525,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        let selected = reader.authorization();
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         let _serial = reader.serial.lock().await;
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
@@ -535,7 +546,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         match result {
             Ok(owned) => {
                 // Preserve the actual lookup and guard together on final rejection.
-                reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+                self.require_native_project_selection_with_native_work(
+                    selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+                ).await?;
                 if reader.io.cancellation.is_cancelled() {
                     return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
                 }
@@ -556,7 +569,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub async fn read_native_link_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(bytes::Bytes, acyclic_fs::NativeAllocation)>
+    ) -> Result<acyclic_stream::OwnedBytes>
     where D: DemandSource + 'static, S: LazyWorkspaceStore {
         work.remaining()?;
         let reader = match &self.reader {
@@ -569,7 +582,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        let selected = reader.authorization();
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         let maximum_bytes = reader.limits.file_bytes.min(reader.authorization().maximum_bytes);
         if maximum_bytes == 0 {
             return Err(Error::NativeBoundary {
@@ -578,7 +594,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             });
         }
         let _serial = reader.serial.lock().await;
-        reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+        self.require_native_project_selection_with_native_work(
+            selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+        ).await?;
         if reader.io.cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }
@@ -593,8 +611,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         ).await;
         match result {
             Ok(owned) => {
-                // Bytes keep intrinsic payload custody; do not charge them twice.
-                reader.owner.verify_project_source_read_with_native_work(&reader.handle, work).await?;
+                // Move the actual intrinsic carrier without extracting custody.
+                self.require_native_project_selection_with_native_work(
+                    selected.source_task, &selected.project, &selected.generation, Some(frozen), work,
+                ).await?;
                 if reader.io.cancellation.is_cancelled() {
                     return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
                 }
