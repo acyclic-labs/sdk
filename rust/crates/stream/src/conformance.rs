@@ -1,6 +1,7 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
 use bytes::Bytes;
+use crate::OwnedBytes;
 use futures::StreamExt as _;
 
 use crate::{
@@ -38,7 +39,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     }
     let initial = AppendRequest {
         path: source.clone(),
-        records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+        records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
         if_tail: Some(0),
         idempotency_key: Some(append_key.clone()),
     };
@@ -59,7 +60,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"different")],
+            records: vec![OwnedBytes::from_static(b"different")],
             if_tail: Some(0),
             idempotency_key: Some(append_key.clone()),
         })
@@ -82,7 +83,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"never")],
+            records: vec![OwnedBytes::from_static(b"never")],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -117,7 +118,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     let [item] = inherited.as_slice() else {
         return Err("forked history was not exact".into());
     };
-    if item.as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one") {
+    if item.as_ref().map_err(ToString::to_string)?.value.as_slice() != b"one" {
         return Err("forked history was not exact".into());
     }
     let children = provider
@@ -173,7 +174,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     provider
         .append(AppendRequest {
             path: path("conformance/paging-new")?,
-            records: vec![Bytes::from_static(b"created")],
+            records: vec![OwnedBytes::from_static(b"created")],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -198,7 +199,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     provider
         .append(AppendRequest {
             path: child.clone(),
-            records: vec![Bytes::from_static(b"live")],
+            records: vec![OwnedBytes::from_static(b"live")],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -209,7 +210,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .map_err(|_| "follow did not make bounded progress".to_owned())?
         .ok_or_else(|| "follow ended".to_owned())?
         .map_err(|err| error(&err))?;
-    if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
+    if live.sequence != 1 || live.value.as_slice() != b"live" {
         return Err("follow returned a gap or duplicate".into());
     }
     let complete_history = provider
@@ -226,8 +227,8 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| error(&err))?;
     if !matches!(complete_history.as_slice(), [first, second]
-        if first.value == Bytes::from_static(b"one")
-            && second.value == Bytes::from_static(b"live"))
+        if first.value.as_slice() == b"one"
+            && second.value.as_slice() == b"live")
         || provider
             .bounds(child.clone())
             .await
@@ -282,7 +283,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         }],
         mutations: vec![CommitMutation::Append {
             path: absent.clone(),
-            records: vec![Bytes::from_static(b"must-not-commit")],
+            records: vec![OwnedBytes::from_static(b"must-not-commit")],
         }],
         idempotency_key: absent_key.clone(),
     };
@@ -391,8 +392,8 @@ async fn verify_fork_with_records(
             destination: destination.clone(),
             at_tail: 1,
             records: vec![
-                Bytes::from_static(b"extended"),
-                Bytes::from_static(b"again"),
+                OwnedBytes::from_static(b"extended"),
+                OwnedBytes::from_static(b"again"),
             ],
         }],
         idempotency_key: key(b"stream-fork-with-records")?,
@@ -410,14 +411,14 @@ async fn verify_fork_with_records(
     let appended = fork
         .records
         .iter()
-        .map(|record| (record.sequence, record.value.clone(), record.commit_id))
+        .map(|record| (record.sequence, record.value.as_slice(), record.commit_id))
         .collect::<Vec<_>>();
     if fork.forked_at != 1
         || fork.tail != 3
         || appended
             != [
-                (1, Bytes::from_static(b"extended"), envelope.commit_id),
-                (2, Bytes::from_static(b"again"), envelope.commit_id),
+                (1, b"extended".as_slice(), envelope.commit_id),
+                (2, b"again".as_slice(), envelope.commit_id),
             ]
     {
         return Err("fork with records did not append after the inherited prefix".into());
@@ -436,12 +437,11 @@ async fn verify_fork_with_records(
         .map(|record| record.map(|record| record.value))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| error(&err))?;
-    if values
-        != [
-            Bytes::from_static(b"one"),
-            Bytes::from_static(b"extended"),
-            Bytes::from_static(b"again"),
-        ]
+    if !values.iter().map(OwnedBytes::as_slice).eq([
+        b"one".as_slice(),
+        b"extended".as_slice(),
+        b"again".as_slice(),
+    ])
         || provider
             .tail(destination)
             .await

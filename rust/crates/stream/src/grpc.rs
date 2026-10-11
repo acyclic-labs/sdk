@@ -29,9 +29,9 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
-    commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
-    fork_receipt_to_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
+    WireFunding, append_from_wire, append_outcome_from_wire, append_outcome_wire, commit_from_wire,
+    commit_id, commit_outcome_from_wire, commit_outcome_wire, condition_wire, envelope_from_wire,
+    envelope_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
     optional_key, path, read_response_records, read_response_wire, record, record_wire,
 };
 use crate::{
@@ -747,11 +747,16 @@ impl StreamProvider for Client {
             || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
+        // This is the ordinary provider API. Ready immutable wire aliases keep
+        // each canonical payload's custody; no native operation meter is inferred.
+        let records = WireFunding::new(None)
+            .wire_records(&request.records)
+            .map_err(|_| StreamError::Capacity)?;
         let response = self
             .unary(
                 wire::AppendRequest {
                     path: request.path.to_string(),
-                    records: request.records,
+                    records,
                     if_tail: request.if_tail,
                     idempotency_key: Some(idempotency_key),
                 },
@@ -982,13 +987,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 let request = request.into_inner();
                 let outcome = self
                     .provider
-                    .append(AppendRequest {
-                        path: path(request.path).map_err(|error| error_status(&error))?,
-                        records: request.records,
-                        if_tail: request.if_tail,
-                        idempotency_key: optional_key(request.idempotency_key)
-                            .map_err(|error| error_status(&error))?,
-                    })
+                    .append(append_from_wire(request).map_err(|error| error_status(&error))?)
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(append_outcome_wire(outcome)))
@@ -1253,22 +1252,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let deadline_unix_millis = request.deadline_unix_millis;
-                let request = CommitRequest {
-                    conditions: request
-                        .conditions
-                        .into_iter()
-                        .map(condition_from_wire)
-                        .collect::<Result<_, _>>()
-                        .map_err(|error| error_status(&error))?,
-                    mutations: request
-                        .mutations
-                        .into_iter()
-                        .map(mutation_from_wire)
-                        .collect::<Result<_, _>>()
-                        .map_err(|error| error_status(&error))?,
-                    idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                        .map_err(|error| error_status(&error))?,
-                };
+                let request = commit_from_wire(request).map_err(|error| error_status(&error))?;
                 let outcome = if let Some(deadline) = deadline_unix_millis {
                     self.provider.commit_before(request, deadline).await
                 } else {
@@ -1503,6 +1487,7 @@ fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamEr
 mod tests {
     use super::*;
     use crate::MemoryStream;
+    use crate::OwnedBytes;
     use rcgen::generate_simple_self_signed;
     use tokio::{io::AsyncReadExt, net::TcpListener};
     use tokio_stream::wrappers::TcpListenerStream;
@@ -1531,7 +1516,7 @@ mod tests {
                 .inner
                 .append(AppendRequest {
                     path: StreamPath::new("events")?,
-                    records: vec![Bytes::from_static(b"one")],
+                    records: vec![OwnedBytes::from_static(b"one")],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -2313,7 +2298,7 @@ mod tests {
         let path = StreamPath::new("events")?;
         live.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![OwnedBytes::from_static(b"record")],
             if_tail: None,
             idempotency_key: None,
         })
@@ -2473,7 +2458,7 @@ mod tests {
         let transport = Client::from_channels(Arc::from([channel]), "fixture")?;
         let path = StreamPath::new("accounts/mixed")?;
         let values = (0..20_u8)
-            .map(|value| Bytes::from(vec![value; 64]))
+            .map(|value| OwnedBytes::from(vec![value; 64]))
             .collect::<Vec<_>>();
         transport
             .append(AppendRequest {
@@ -2754,7 +2739,7 @@ mod tests {
             .inner
             .append(AppendRequest {
                 path: StreamPath::new("accounts/events")?,
-                records: vec![Bytes::from_static(b"seed")],
+                records: vec![OwnedBytes::from_static(b"seed")],
                 if_tail: Some(0),
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
             })
@@ -2785,7 +2770,7 @@ mod tests {
             .inner
             .append(AppendRequest {
                 path: StreamPath::new("accounts/events")?,
-                records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+                records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -2873,7 +2858,7 @@ mod tests {
         durable
             .append(AppendRequest {
                 path: StreamPath::new("accounts/events")?,
-                records: vec![Bytes::from_static(b"resumed")],
+                records: vec![OwnedBytes::from_static(b"resumed")],
                 if_tail: Some(0),
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
             })
@@ -2897,7 +2882,7 @@ mod tests {
                 .ok_or(StreamError::Unavailable)?
         })
         .await??;
-        assert_eq!(record.value, Bytes::from_static(b"resumed"));
+        assert_eq!(record.value.as_slice(), b"resumed");
         assert_eq!(ended.follows.load(Ordering::Relaxed), 1);
         assert_eq!(preferred.load(Ordering::Relaxed), 1);
 
@@ -3123,10 +3108,11 @@ mod tests {
     async fn service_maps_the_canonical_contract_without_an_alternate_state_machine()
     -> Result<(), Status> {
         let service = Service::new(Arc::new(MemoryStream::default()));
+        let payload = Bytes::from(vec![b'o', b'n', b'e']);
         let append = service
             .append(Request::new(wire::AppendRequest {
                 path: "accounts/events".to_owned(),
-                records: vec![Bytes::from_static(b"one")],
+                records: vec![payload],
                 if_tail: Some(0),
                 idempotency_key: Some(Bytes::from_static(b"wire-append")),
             }))
@@ -3174,6 +3160,57 @@ mod tests {
         if record.sequence != 0 || record.value != Bytes::from_static(b"one") {
             return Err(Status::internal("record changed"));
         }
+        let payload = Bytes::from(vec![b't', b'w', b'o']);
+        let payload_pointer = payload.as_ptr();
+        let command = wire::CommitRequest {
+            conditions: vec![wire::CommitCondition {
+                condition: Some(wire::commit_condition::Condition::Tail(wire::TailCondition {
+                    path: "accounts/events".to_owned(),
+                    expected: 1,
+                })),
+            }],
+            mutations: vec![wire::CommitMutation {
+                mutation: Some(wire::commit_mutation::Mutation::Append(wire::AppendMutation {
+                    path: "accounts/events".to_owned(),
+                    records: vec![payload],
+                })),
+            }],
+            idempotency_key: Bytes::from_static(b"wire-commit"),
+            deadline_unix_millis: None,
+        };
+        let committed = service.commit(Request::new(command.clone())).await?.into_inner();
+        let replay = service.commit(Request::new(command)).await?.into_inner();
+        assert_eq!(committed, replay);
+        let Some(wire::commit_response::Outcome::Committed(envelope)) = committed.outcome else {
+            return Err(Status::internal("commit outcome missing"));
+        };
+        let read_commit = service
+            .read_commit(Request::new(wire::ReadCommitRequest {
+                commit_id: envelope.commit_id.clone(),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(read_commit, envelope);
+        let decoded = envelope_from_wire(read_commit).map_err(|error| error_status(&error))?;
+        let Some(crate::CommittedMutation::Append(append)) = decoded.mutations.first() else {
+            return Err(Status::internal("committed append missing"));
+        };
+        let record = append.records.first().ok_or_else(|| Status::internal("commit record missing"))?;
+        assert_eq!(record.value.as_slice(), b"two");
+        assert_eq!(record.value.as_slice().as_ptr(), payload_pointer);
+        let observation = service
+            .inspect_idempotency(Request::new(wire::InspectIdempotencyRequest {
+                idempotency_key: Bytes::from_static(b"wire-commit"),
+            }))
+            .await?
+            .into_inner()
+            .observation
+            .ok_or_else(|| Status::internal("commit observation missing"))?;
+        assert_eq!(observation.outcome, Some(wire::idempotency_observation::Outcome::Commit(
+            wire::CommitResponse {
+                outcome: Some(wire::commit_response::Outcome::Committed(envelope)),
+            },
+        )));
         Ok(())
     }
 }

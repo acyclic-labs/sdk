@@ -4,6 +4,7 @@ use crate::{
     IdempotencyKey, MemoryStream, StreamProvider,
 };
 use bytes::Bytes;
+use crate::OwnedBytes;
 
 const BOUND: usize = 1024 * 1024;
 
@@ -39,7 +40,7 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
     let source = StreamPath::new("source")?;
     let append = AppendRequest {
         path: source.clone(),
-        records: vec![Bytes::from_static(b"one")],
+        records: vec![OwnedBytes::from_static(b"one")],
         if_tail: Some(0),
         idempotency_key: Some(key(b"append")?),
     };
@@ -71,13 +72,13 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
         mutations: vec![
             CommitMutation::Append {
                 path: source.clone(),
-                records: vec![Bytes::from_static(b"two")],
+                records: vec![OwnedBytes::from_static(b"two")],
             },
             CommitMutation::Fork {
                 source: source.clone(),
                 destination: StreamPath::new("forked")?,
                 at_tail: 1,
-                records: vec![Bytes::from_static(b"fork-two")],
+                records: vec![OwnedBytes::from_static(b"fork-two")],
             },
         ],
         idempotency_key: key(b"commit")?,
@@ -165,7 +166,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
     let AppendOutcome::Committed(receipt) = provider
         .append(AppendRequest {
             path: StreamPath::new("source")?,
-            records: vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+            records: vec![OwnedBytes::from_static(b"a"), OwnedBytes::from_static(b"b")],
             if_tail: None,
             idempotency_key: None,
         })
@@ -194,7 +195,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             4 => {
                 append.records.pop();
             }
-            _ => first.value = Bytes::from(vec![0; MAX_RECORD_BYTES + 1]),
+            _ => first.value = OwnedBytes::from(vec![0; MAX_RECORD_BYTES + 1]),
         }
         assert_eq!(
             encode_envelope(&broken, BOUND),

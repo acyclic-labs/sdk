@@ -5,6 +5,7 @@ use acyclic_stream::{
     StreamProvider,
 };
 use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
 use serde_json::json;
 
@@ -13,8 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MemoryStream::default();
     let path = StreamPath::new("typescript/events")?;
     let values = vec![
-        Bytes::from_static(br#"{"kind":"created"}"#),
-        Bytes::from_static(br#"{"kind":"ready"}"#),
+        OwnedBytes::from_static(br#"{"kind":"created"}"#),
+        OwnedBytes::from_static(br#"{"kind":"ready"}"#),
     ];
     let idempotency_key = IdempotencyKey::new(Bytes::from_static(b"typescript-stream"))?;
     let append = provider

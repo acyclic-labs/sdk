@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use crate::OwnedBytes;
 use prost::Message as _;
 use tokio::sync::watch;
 
@@ -337,7 +338,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                         sequence: input.u64()?,
                         commit_id: CommitId::from_bytes(input.array()?),
                         committed_at_micros: input.u64()?,
-                        value: Bytes::copy_from_slice(input.bytes()?),
+                        value: OwnedBytes::copy_from_slice(input.bytes()?),
                     };
                     if record.sequence != sequence || record.value.len() > crate::MAX_RECORD_BYTES {
                         return None;
@@ -424,7 +425,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             let bytes = input.bytes()?;
             let observation =
                 crate::persistence::decode_observation(bytes, retained_fact_bound()?).ok()?;
-            let key = Bytes::copy_from_slice(observation.idempotency_key.as_bytes());
+            let key = OwnedBytes::copy_from_slice(observation.idempotency_key.as_bytes());
             if state.replays.contains_key(&key) {
                 return None;
             }
@@ -579,7 +580,7 @@ mod tests {
         let stream = MemoryStream::new(limits);
         let request = AppendRequest {
             path: StreamPath::new("snapshot/retained")?,
-            records: vec![Bytes::from_static(b"once")],
+            records: vec![OwnedBytes::from_static(b"once")],
             if_tail: None,
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
         };
@@ -589,7 +590,7 @@ mod tests {
         assert_eq!(restored.append(request.clone()).await?, first);
         assert_eq!(restored.tail(request.path.clone()).await?, 1);
         let mut changed = request.clone();
-        changed.records = vec![Bytes::from_static(b"different")];
+        changed.records = vec![OwnedBytes::from_static(b"different")];
         assert_eq!(
             restored.append(changed).await,
             Err(StreamError::IdempotencyMismatch)
@@ -608,7 +609,7 @@ mod tests {
         let destination = StreamPath::new("roundtrip/fork")?;
         let appended = AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+            records: vec![OwnedBytes::from_static(b"first"), OwnedBytes::from_static(b"second")],
             if_tail: Some(0),
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
         };
@@ -627,7 +628,7 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: destination.clone(),
-                records: vec![Bytes::from_static(b"third")],
+                records: vec![OwnedBytes::from_static(b"third")],
             }],
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"commit"))?,
         };
@@ -676,7 +677,7 @@ mod tests {
         let destination = StreamPath::new("writer/destination")?;
         let append = |path: StreamPath, value: &'static [u8]| AppendRequest {
             path,
-            records: vec![Bytes::from_static(value)],
+            records: vec![OwnedBytes::from_static(value)],
             if_tail: None,
             idempotency_key: None,
         };
@@ -722,7 +723,7 @@ mod tests {
             mutations: vec![
                 crate::CommitMutation::Append {
                     path: source.clone(),
-                    records: vec![Bytes::from_static(b"after")],
+                    records: vec![OwnedBytes::from_static(b"after")],
                 },
                 crate::CommitMutation::Fork {
                     source: source.clone(),

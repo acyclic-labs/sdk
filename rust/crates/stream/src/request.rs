@@ -36,13 +36,14 @@ mod tests {
     use super::*;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
     use bytes::Bytes;
+    use crate::OwnedBytes;
 
     #[tokio::test]
     async fn provider_digest_matches_retained_observation() -> Result<(), StreamError> {
         let key = IdempotencyKey::new(Bytes::from_static(b"provider-digest"))?;
         let request = AppendRequest {
             path: StreamPath::new("digest/events")?,
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![OwnedBytes::from_static(b"record")],
             if_tail: Some(0),
             idempotency_key: Some(key.clone()),
         };

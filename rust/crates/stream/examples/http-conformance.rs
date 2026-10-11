@@ -22,11 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mutations: vec![
             acyclic_stream::CommitMutation::Append {
                 path: first.clone(),
-                records: vec![bytes::Bytes::from_static(b"first")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"first")],
             },
             acyclic_stream::CommitMutation::Append {
                 path: second.clone(),
-                records: vec![bytes::Bytes::from_static(b"second")],
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"second")],
             },
         ],
         idempotency_key: atomic_key.clone(),
@@ -60,7 +60,7 @@ async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Er
         }],
         mutations: vec![acyclic_stream::CommitMutation::Append {
             path: StreamPath::new("conformance/commit-only")?,
-            records: vec![bytes::Bytes::from_static(b"admitted")],
+            records: vec![acyclic_stream::OwnedBytes::from_static(b"admitted")],
         }],
         idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
             b"commit-only",
@@ -92,7 +92,7 @@ async fn verify_deadline_and_bounds(
         }],
         mutations: vec![acyclic_stream::CommitMutation::Append {
             path: deadline_path.clone(),
-            records: vec![bytes::Bytes::from_static(b"must-not-commit")],
+            records: vec![acyclic_stream::OwnedBytes::from_static(b"must-not-commit")],
         }],
         idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
             b"http-deadline",
