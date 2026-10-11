@@ -184,18 +184,27 @@ impl ToolContext {
         })
     }
 
+    /// Checks stock restrictions against this tool's current effective scope
+    /// without cloning the original task or allocating a candidate scope.
+    pub(crate) fn validate_stock_scope_with_native_work(
+        &self, requested: &RuntimeScope, limits: Limits,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.task().require_original_native_work(work)?;
+        if !self.native_metadata_matches(work) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "stock scope has no original native tool metadata source"));
+        }
+        validate_scope_attenuation(self.effective_scope(), requested, limits, work)
+    }
+
     /// Narrows only tool-local authority, preserving the same issued task and
     /// its original metadata, owner bindings and dispatch/read purpose.
     pub fn with_native_scope(
         mut self, requested: &RuntimeScope, work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        self.task().require_original_native_work(work)?;
-        if !self.native_metadata_matches(work) {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "scope attenuation has no original native tool metadata source"));
-        }
+        self.validate_stock_scope_with_native_work(requested, requested.limits, work)?;
         let original = self.effective_scope();
-        validate_scope_attenuation(original, requested, requested.limits, work)?;
         // Caller scope metadata is only a restriction specification. The SDK
         // narrow producer inherits proof/extension/created-access provenance
         // from the original (or previously attenuated) scope, never the caller.
@@ -259,6 +268,28 @@ impl ToolContext {
     /// This cached context gate does not authorize an MCP namespace or endpoint;
     /// the pinned remote-tool registry must check those grants separately.
     pub fn validate_native_mcp_context(&self, work: &NativeMaterializationWork) -> Result<()> {
+        let context = self.validate_native_bound_context(work)?;
+        if !context.native_metadata_source.as_ref()
+            .is_some_and(|source| source.dispatch_source)
+        {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "native context purpose does not permit MCP dispatch"));
+        }
+        Ok(())
+    }
+
+    /// Checks a genuine owner-bound native reconciliation context. The approved
+    /// effect descriptor and reconciliation authority remain external checks.
+    /// Historical READ contexts have no mailbox and cannot pass this gate.
+    pub fn validate_native_mcp_reconciliation_context(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.validate_native_bound_context(work).map(|_| ())
+    }
+
+    fn validate_native_bound_context(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<&TaskContext> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if !self.native_metadata_matches(work) {
@@ -271,12 +302,6 @@ impl ToolContext {
         };
         let context = shared.context();
         context.require_original_native_work(work)?;
-        if !context.native_metadata_source.as_ref()
-            .is_some_and(|source| source.dispatch_source)
-        {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "native context purpose does not permit MCP dispatch"));
-        }
         let Some((task, fence)) = context.owned_mailbox.as_ref()
             .and_then(|owner| owner.task_binding())
         else {
@@ -287,7 +312,7 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "MCP context differs from its original task and fence"));
         }
-        Ok(())
+        Ok(context)
     }
 }
 
@@ -529,9 +554,12 @@ mod tests {
         )?;
         let before = original.receipt();
         mcp_tool.validate_native_mcp_context(&original)?;
+        mcp_tool.validate_native_mcp_reconciliation_context(&original)?;
         assert_eq!(original.receipt(), before);
         let unqualified = mcp_tool.clone();
         assert!(matches!(unqualified.validate_native_mcp_context(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert!(matches!(unqualified.validate_native_mcp_reconciliation_context(&original),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before);
         drop(unqualified);
@@ -609,6 +637,8 @@ mod tests {
         cancellation.cancel();
         let before = original.receipt();
         assert!(matches!(mcp_tool.validate_native_mcp_context(&original),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&original),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert!(matches!(reader.read_with_native_work(&staged.0, 65_536, &original),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
@@ -734,11 +764,21 @@ mod tests {
         assert!(tool.native_metadata_matches(&original));
         let (_, guard) = tool.effective_scope.as_ref().expect("one effective scope");
         assert!(guard.as_ref().expect("scope copy guard").work().shares_ledger(&original));
+        let before = original.receipt();
+        tool.validate_stock_scope_with_native_work(&requested, limits, &original)?;
+        assert!(matches!(tool.validate_stock_scope_with_native_work(
+            shared.context().scope(), limits, &original,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(original.receipt(), before);
 
         let clone = tool.clone();
         assert_eq!(clone.effective_scope().grants(), tool.effective_scope().grants());
         assert_eq!(clone.effective_scope().limits(), tool.effective_scope().limits());
         assert!(!clone.native_metadata_matches(&original));
+        let before = original.receipt();
+        assert!(matches!(clone.validate_stock_scope_with_native_work(&requested, limits, &original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(original.receipt(), before);
         assert!(Arc::ptr_eq(clone.native_task().expect("same issued task"), &shared));
         drop(clone);
 

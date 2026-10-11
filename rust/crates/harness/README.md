@@ -159,6 +159,11 @@ Native MCP preflight additionally requires the SDK's original current-dispatch
 purpose and borrowed task/fence binding. Metadata-only and READ/query contexts
 cannot authorize transport dispatch. The preflight performs no provider IO or
 allocation and does not replace invocation admission or remote-namespace grants.
+Reconciliation preflight checks the same original native metadata and borrowed
+owner binding without promoting reconciliation purpose to current dispatch.
+Its genuine SDK producer supplies that owner binding after settlement checks;
+READ/query contexts have no mailbox. Approved effect authority remains a
+separate check.
 The SDK stock worker may retain its original per-command journal interaction
 router in tool-local metadata without replacing the shared task or its policy.
 This override is not a public custom-executor setter; its producer and policy
@@ -168,6 +173,8 @@ and run bounds before copying. `effective_scope` is the grant/limit facade;
 `task()` and `native_task()` still identify the same original issued context.
 Derived scope metadata retains original created-resource/extension provenance;
 caller scope metadata supplies restrictions, never a replacement issuer or proof.
+Stock configuration preflight checks against the current tool-local effective
+scope, not merely the wider original task scope, before any candidate allocation.
 
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native
