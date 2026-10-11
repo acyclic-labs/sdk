@@ -2448,3 +2448,141 @@ fn publication_admission_failure((error, work): (Error, acyclic_fs::WorkCounters
         destination: None, completed: Vec::new(), work, message: error.to_string(),
     }
 }
+
+struct NativeRootBindingInput {
+    authority: Option<crate::core::Authority>,
+    issuer: crate::core::AuthorityIssuer,
+    scope: Option<Scope>,
+    _custody: acyclic_fs::NativeAllocation,
+}
+
+struct NativeRootBindingPayload<T> {
+    value: T,
+    _custody: acyclic_fs::NativeAllocation,
+}
+
+/// Derives the original ROOT Bind operation from its actual private-volume
+/// creation identity. This identity is data, not a grant or a creation proof.
+pub fn native_root_output_binding_operation(
+    audience: &crate::core::Authority,
+    private_volume: &VolumeRef,
+    original_creation: acyclic_fs::OperationId,
+    work: &NativeMaterializationWork,
+) -> Result<crate::OperationId> {
+    let mut io = crate::store::history::native_work_io(work).map_err(native_root_error)?;
+    let bytes = crate::store::history::canonical_bytes_with_work(
+        &("harness/native-root-output-bind/v2", audience, private_volume, original_creation),
+        crate::store::default_projection_read_limits().maximum_bytes,
+        &mut Some(&mut io),
+    )?;
+    crate::store::history::HistoryIo::hashed_bytes(&mut io, bytes.len() as u64)?;
+    let digest = blake3::hash(&bytes);
+    let mut identity = [0_u8; 16];
+    identity.copy_from_slice(&digest.as_bytes()[..16]);
+    drop(bytes);
+    Ok(crate::OperationId::from_bytes(identity))
+}
+
+/// Authenticates or publishes the original protected ROOT conversation Bind
+/// and returns that exact SDK command's canonical bytes. Conversation identity
+/// need not equal the logical task ID: the original owner authenticates the
+/// actor, audience, scope and accepted binding through the canonical engine.
+#[allow(clippy::too_many_arguments, reason = "original creator, owner and paid authority are distinct")]
+pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider + 'static>(
+    stream: &acyclic_stream::StreamClient<P>,
+    authority: (crate::core::Authority, crate::core::AuthorityIssuer, Scope),
+    authority_custody: acyclic_fs::NativeAllocation,
+    owner: &TaskJournalOwner<P>,
+    private_volume: &VolumeRef,
+    original_creation: acyclic_fs::OperationId,
+    limits: crate::conversation::Limits,
+    work: &NativeMaterializationWork,
+) -> Result<acyclic_stream::OwnedBytes> {
+    let mut input = NativeRootBindingInput {
+        authority: Some(authority.0), issuer: authority.1, scope: Some(authority.2),
+        _custody: authority_custody,
+    };
+    let invalid = |reason| Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid, reason,
+    };
+    let audience = input.authority.as_ref().expect("unconsumed ROOT audience");
+    let scope = input.scope.as_ref().expect("unconsumed ROOT scope");
+    if audience.kind != crate::core::AggregateKind::Conversation
+        || scope.agent().is_none()
+        || !scope.capabilities().contains("conversation:bind")
+        || limits.file_bytes == 0
+    {
+        return Err(invalid("ROOT binding requires its original conversation authority and finite event allowance"));
+    }
+    owner.verify_with_native_work(false, work).await?;
+    let verifier = input.issuer.verifier_with_native_work(work)?;
+    let verifier = NativeRootBindingPayload { value: verifier.0, _custody: verifier.1 };
+    let operation = native_root_output_binding_operation(
+        audience, private_volume, original_creation, work,
+    )?;
+    let reader = crate::store::HistoryReader::new_with_native_work(
+        stream, audience, &verifier.value, work,
+    )?;
+    let reader = NativeRootBindingPayload { value: reader.0, _custody: reader.1 };
+    let event = reader.value.operation_event_bounded_with_native_work(
+        operation, limits.file_bytes, work,
+    ).await?;
+    let event = NativeRootBindingPayload { value: event.0, _custody: event.1 };
+    let original_revision = match event.value.as_ref() {
+        None => None,
+        Some(event) => match &event.payload {
+            crate::core::EventPayload::ConversationBound { agent }
+                if Some(*agent) == scope.agent()
+                    && event.scope.agent() == scope.agent()
+                    && event.scope.id() == scope.id()
+                    && event.scope.capabilities() == scope.capabilities()
+                    && event.causal_parent.is_none() =>
+            {
+                Some(event.revision.checked_sub(1)
+                    .ok_or_else(|| invalid("original ROOT binding has no command revision"))?)
+            }
+            _ => return Err(invalid("ROOT binding differs from the protected original creation")),
+        },
+    };
+    drop(event);
+    drop(reader);
+    let aggregate = crate::store::StreamAggregate::open_with_native_work(
+        stream, input.authority.take().expect("unconsumed ROOT audience"),
+        verifier.value, crate::core::SchemaRegistry::new(), work,
+    ).await?;
+    let mut aggregate = NativeRootBindingPayload {
+        value: aggregate.0.with_limits(limits)?, _custody: aggregate.1,
+    };
+    if original_revision.is_none()
+        && aggregate.value.reducer().conversation().and_then(|state| state.agent).is_some()
+    {
+        return Err(invalid("ROOT conversation changed during original binding admission"));
+    }
+    let key = work.display(&format_args!("harness/native-root-output-bind/v2/{operation}"))
+        .map_err(native_root_error)?;
+    let key = NativeRootBindingPayload {
+        value: crate::IdempotencyKey::new(key.0)?, _custody: key.1,
+    };
+    let scope = input.scope.take().expect("unconsumed ROOT scope");
+    let agent = scope.agent().expect("validated ROOT binding actor");
+    let command = crate::core::Command {
+        operation_id: operation, idempotency_key: key.value,
+        expected_revision: original_revision.unwrap_or_else(|| aggregate.value.reducer().revision()),
+        causal_parent: None, action: crate::core::Action::BindConversation { agent }, scope,
+    };
+    let mut io = crate::store::history::native_work_io(work).map_err(native_root_error)?;
+    let encoded = crate::store::history::canonical_bytes_with_work(
+        &command, crate::store::default_projection_read_limits().maximum_bytes,
+        &mut Some(&mut io),
+    )?;
+    let encoded_custody = crate::store::history::HistoryIo::take_native_custody(
+        &mut io, encoded.capacity() as u64,
+    )?;
+    let encoded = acyclic_stream::OwnedBytes::from_vec_with_guard(
+        encoded, encoded_custody, work.runtime_meter_owner(),
+    ).map_err(|failure| native_root_error(work.runtime_error(failure.into_error())))?;
+    let applied = aggregate.value.execute_task_command_with_native_work(command, owner, work).await?;
+    let applied = NativeRootBindingPayload { value: applied.0, _custody: applied.1 };
+    drop(applied);
+    Ok(encoded)
+}
