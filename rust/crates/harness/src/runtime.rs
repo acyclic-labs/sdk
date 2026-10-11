@@ -2340,6 +2340,25 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Pure discovery of this original owner's native interaction boundary.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_interactions(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable owner has no original-ledger interaction route" })
+    }
+
+    /// Routes through the original durable owner without an ordinary callback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn interact_with_native_work<'a>(
+        &'a self, _task_id: TaskId, _operation_id: OperationId,
+        _interaction: Interaction, _request_custody: acyclic_fs::NativeAllocation,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
+        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "durable owner has no original-ledger interaction route" })
+    }
+
     /// Publishes one ref-only, idempotent task message.
     fn send<'a>(
         &'a self,
@@ -2538,6 +2557,25 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
             ))
         })
     }
+
+    /// Pure discovery before request validation or future construction.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_interactions(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "task state has no original-ledger interaction route" })
+    }
+
+    /// Native routing is independently replaceable, never an ordinary fallback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn interact_with_native_work<'a>(
+        &'a self, _task_id: TaskId, _operation_id: OperationId,
+        _interaction: Interaction, _request_custody: acyclic_fs::NativeAllocation,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
+        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "task state has no original-ledger interaction route" })
+    }
     /// Publishes one idempotent ref-only mailbox item.
     fn send<'a>(
         &'a self,
@@ -2696,6 +2734,18 @@ impl TaskStateProvider for HostTaskState {
         interaction: Interaction,
     ) -> BoxFuture<'a, Result<InteractionOutcome>> {
         self.0.interact(task_id, operation_id, interaction)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_interactions(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.0.supports_native_interactions(work)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn interact_with_native_work<'a>(
+        &'a self, task_id: TaskId, operation_id: OperationId,
+        interaction: Interaction, request_custody: acyclic_fs::NativeAllocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
+        self.0.interact_with_native_work(task_id, operation_id, interaction, request_custody, work)
     }
     fn send<'a>(
         &'a self,
@@ -3016,6 +3066,25 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
         operation_id: OperationId,
         interaction: Interaction,
     ) -> BoxFuture<'a, Result<InteractionOutcome>>;
+
+    /// Pure native support discovery, before building a callback future.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_interactions(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "interaction router has no original-ledger implementation" })
+    }
+
+    /// Moves the paid request into the original owner's guarded journal route.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn route_with_native_work<'a>(
+        &'a self, _operation_id: OperationId, _interaction: Interaction,
+        _request_custody: acyclic_fs::NativeAllocation,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
+        let _paid = NativePolicyPayload { value: _interaction, custody: _request_custody };
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "interaction router has no original-ledger route" })
+    }
 }
 
 /// Owner-mediated interaction ledger. Routing cannot grant resolution authority;
@@ -7868,20 +7937,23 @@ impl TaskContext {
                 let PaidPolicyValue { value: (approval_id, request), custody } = paid;
                 let outcome = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    Some(work) => self.interact_with_native_work(
-                        approval_id, request, custody.expect("native approval retains its prompt"), work,
-                    ).await?,
-                    _ => self.interact(approval_id, request).await?,
+                    Some(work) => {
+                        let (value, custody) = self.interact_with_native_work(
+                            approval_id, request, custody.expect("native approval retains its prompt"), work,
+                        ).await?;
+                        PaidPolicyValue { value, custody: Some(custody) }
+                    }
+                    _ => PaidPolicyValue { value: self.interact(approval_id, request).await?, custody: None },
                 };
-                if let InteractionOutcome::Indeterminate { operation_id } = outcome {
-                    return Ok(Some(operation_id));
+                if let InteractionOutcome::Indeterminate { operation_id } = &outcome.value {
+                    return Ok(Some(*operation_id));
                 }
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.is_some() && matches!(outcome, InteractionOutcome::Answered { .. }) {
+                if work.is_some() && matches!(&outcome.value, InteractionOutcome::Answered { .. }) {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                         reason: "approval resolved with a question answer" });
                 }
-                check_tool_approval(outcome)?;
+                check_tool_approval(outcome.value)?;
             }
         }
         Ok(None)
@@ -8111,6 +8183,93 @@ impl TaskContext {
             })?;
             router.route(operation_id, interaction).await
         }
+    }
+
+    /// Routes an already-paid request through this context's original binding.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn interact_with_native_work(
+        &self, operation_id: OperationId, interaction: Interaction,
+        request_custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
+        let paid = NativePolicyPayload { value: interaction, custody: request_custody };
+        self.require_original_native_work(work)?;
+        if !paid.custody.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "interaction request belongs to another original ledger" });
+        }
+        if let Interaction::Approval { prompt, .. } = &paid.value {
+            if paid.custody.bytes() < prompt.capacity() as u64 {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "approval request does not retain its original prompt" });
+            }
+        }
+        let router = if self.durable_task.is_some() {
+            self.owned_interactions.as_ref()
+        } else {
+            self.harness.interactions.as_ref()
+        };
+        let state = if router.is_none() && self.durable_task.is_some() {
+            Some(self.harness.state.as_ref().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported, reason: "durable task state is not bound",
+            })?)
+        } else { None };
+        if let Some(router) = router {
+            router.supports_native_interactions(work)?;
+        } else if let Some(state) = state {
+            state.supports_native_interactions(work)?;
+        } else {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "local interaction router is not bound" });
+        }
+        let mut io = crate::store::history::native_work_io(work)?;
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+        paid.value.validate_with_work(&mut observed)?;
+        if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "scope lacks interaction:route" });
+        }
+        if self.durable_task.is_some_and(|task| operation_id.into_bytes() == task.into_bytes()) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "interaction operation must differ from task admission" });
+        }
+        let future = if let Some(router) = router {
+            let NativePolicyPayload { value: interaction, custody: request_custody } = paid;
+            router.route_with_native_work(operation_id, interaction, request_custody, work)?
+        } else if let (Some(task), Some(state)) = (self.durable_task, state) {
+            let NativePolicyPayload { value: interaction, custody: request_custody } = paid;
+            state.interact_with_native_work(task, operation_id, interaction, request_custody, work)?
+        } else {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "local interaction router is not bound" });
+        };
+        if !future.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "interaction route belongs to another original ledger" });
+        }
+        let (value, custody) = future.await?;
+        let paid = NativePolicyPayload { value, custody };
+        if !paid.custody.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "interaction outcome belongs to another original ledger" });
+        }
+        if let InteractionOutcome::Answered { answer } = &paid.value {
+            let owned = answer.logical_owned_bytes().map_err(|error| {
+                if error.is_native_failure() { error } else {
+                    Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                        reason: "interaction answer ownership overflows" }
+                }
+            })?;
+            let bytes = owned.checked_add(std::mem::size_of::<FileRef>() as u64)
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "interaction answer ownership overflows" })?;
+            if paid.custody.bytes() < bytes {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "interaction answer does not retain its original metadata" });
+            }
+        }
+        work.remaining()?;
+        Ok((paid.value, paid.custody))
     }
 
     /// Opens a schema-constrained question by stable identity. The outcome
@@ -10759,6 +10918,36 @@ mod tests {
         assert!(matches!(OpaquePolicy.evaluate_with_native_work(&invocation, &scope, &work),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
         assert_eq!(work.receipt(), before);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Result<()> {
+        use crate::store::history::HistoryIo;
+        struct OpaqueRouter;
+        impl InteractionRouter for OpaqueRouter {
+            fn route<'a>(
+                &'a self, _: OperationId, _: Interaction,
+            ) -> BoxFuture<'a, Result<InteractionOutcome>> { panic!("ordinary route must not run"); }
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+            .expect("original interaction ledger");
+        let before = work.receipt();
+        assert!(matches!(OpaqueRouter.supports_native_interactions(&work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
+        assert_eq!(work.receipt(), before);
+        let mut io = crate::store::history::native_work_io(&work)?;
+        let prompt = io.clone_text("Approve λ?")?;
+        let request = Interaction::Approval { prompt, operation_id: OperationId::new(), action_digest: [1; 32] };
+        let custody = io.into_custody();
+        let before = work.receipt();
+        assert!(matches!(OpaqueRouter.route_with_native_work(
+            OperationId::new(), request, custody, &work,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
+        assert_eq!(work.receipt(), before);
+        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         Ok(())
     }
 
