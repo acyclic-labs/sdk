@@ -4,7 +4,8 @@
 //! an open one), a cleared environment, and stdout read line by line. Past the
 //! deadline the whole group gets SIGTERM, then SIGKILL after [`GRACE`].
 
-use acyclic_harness::{Error, Result};
+use acyclic_harness::{Error, OperationId, Result};
+use futures::future::BoxFuture;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -50,12 +51,57 @@ pub(crate) struct Launch<'a> {
 }
 
 /// The next thing a running Codex produced.
-pub(crate) enum Next {
+pub enum Next {
+    /// One complete UTF-8 stdout line from the original command.
     Line(String),
+    /// That command's stdout closed; physical exit still requires `wait`.
     Eof,
+    /// The observation deadline elapsed, without claiming physical completion.
     Deadline,
+    /// The original lifecycle requested cancellation or revoked dispatch.
+    Cancelled,
+    /// Reading the original command's control stream failed.
     Failed(std::io::Error),
 }
+
+/// An owned Codex process, local or provider-backed. An elapsed deadline is
+/// pending work: `wait` returns `None` until actual exit and descendant closure.
+pub trait RunningProcess: Send {
+    /// Reads one genuine stdout observation without restarting the command.
+    fn next(&mut self, deadline: Option<Instant>) -> BoxFuture<'_, Next>;
+    /// Observes exit and full owned-process closure; never infers it from time.
+    fn wait(&mut self, deadline: Option<Instant>) -> BoxFuture<'_, Result<Option<String>>>;
+    /// Stops and drains the same owned process, including its descendants.
+    fn terminate(&mut self) -> BoxFuture<'_, Result<()>>;
+    /// Returns the retained stderr suffix of that original process.
+    fn stderr_tail(&mut self) -> BoxFuture<'_, String>;
+}
+
+/// Consumer-owned physical process transport. Protected consumers must supply
+/// an implementation backed by their admitted sandbox and durable command
+/// receipt; this interface does not authorize a sandbox or a provider call.
+pub trait ProcessHost: Send + Sync {
+    /// Immutable implementation identity included in the durable turn binding.
+    fn identity(&self) -> &acyclic_harness::registry::ComponentIdentity;
+    /// Verifies the pinned version in the actual selected execution environment.
+    fn check_version<'a>(&'a self, context: &'a acyclic_harness::runtime::TaskContext, binary: &'a Path) -> BoxFuture<'a, Result<()>>;
+    /// Resolves the accepted host-only tools for the exact upstream protocol.
+    fn builtin_bindings(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<Vec<crate::exec_server::BuiltinToolBinding>>;
+    /// Starts or reconciles the original command. A lost command ACK must not
+    /// dispatch a second mutation. Endpoint URLs in `home` must be made
+    /// reachable from the owned process without exposing their bearer tokens.
+    fn launch<'a>(
+        &'a self,
+        operation: OperationId,
+        config: &'a crate::executor::CodexConfig,
+        home: crate::config::HomeConfig,
+        args: Vec<OsString>,
+        env: Vec<(String, String)>,
+        context: acyclic_harness::runtime::TaskContext,
+        builtins: crate::exec_server::BuiltinMediator,
+    ) -> BoxFuture<'a, Result<Box<dyn RunningProcess>>>;
+}
+
 
 /// A running `codex exec`.
 pub(crate) struct CodexProcess {
@@ -235,6 +281,23 @@ impl CodexProcess {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         String::from_utf8_lossy(&bytes).trim().to_owned()
+    }
+}
+
+impl RunningProcess for CodexProcess {
+    fn next(&mut self, deadline: Option<Instant>) -> BoxFuture<'_, Next> {
+        Box::pin(CodexProcess::next(self, deadline))
+    }
+    fn wait(&mut self, deadline: Option<Instant>) -> BoxFuture<'_, Result<Option<String>>> {
+        Box::pin(async move {
+            CodexProcess::wait(self, deadline).await.map(|status| status.map(|value| value.to_string()))
+        })
+    }
+    fn terminate(&mut self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(CodexProcess::terminate(self))
+    }
+    fn stderr_tail(&mut self) -> BoxFuture<'_, String> {
+        Box::pin(CodexProcess::stderr_tail(self))
     }
 }
 

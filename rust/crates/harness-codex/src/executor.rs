@@ -18,15 +18,15 @@ use crate::{
     events::{CodexEvent, CodexItem, ItemKind, ItemStatus, Transcript, parse_line},
     mcp::McpEndpoint,
     meter::{ResponsesUsage, Unmetered, UsageMeter},
-    process::{CodexProcess, Dirs, Launch, Next, check_version},
-    proxy::{ProxyCall, ProxyStop, ResponsesProxy},
+    process::{CodexProcess, Dirs, Launch, Next, ProcessHost, RunningProcess, check_version},
+    proxy::{DirectResponsesTransport, ProxyCall, ProxyStop, ResponsesProxy, ResponsesTransport},
 };
 use acyclic_harness::{
     Error, OperationId, Result,
     conversation::FileRef,
     executor::{ExecutionEvent, ExecutionJournal, Executor, ModelPurpose, TurnInput, TurnOutput},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelRole},
-    runtime::{RuntimeScope, ToolPolicy},
+    runtime::{RuntimeScope, TaskContext, ToolPolicy},
     tool::ToolRegistry,
 };
 use futures::{FutureExt as _, future::BoxFuture};
@@ -133,6 +133,7 @@ pub struct CodexExecutor {
     policy: Option<Arc<dyn ToolPolicy>>,
     meter: Arc<dyn UsageMeter>,
     observer: Option<Arc<dyn CodexObserver>>,
+    runtime: Option<(Arc<dyn ProcessHost>, Arc<dyn ResponsesTransport>)>,
 }
 
 impl CodexExecutor {
@@ -146,6 +147,7 @@ impl CodexExecutor {
             policy: None,
             meter: Arc::new(Unmetered),
             observer: None,
+            runtime: None,
         }
     }
 
@@ -182,14 +184,31 @@ impl CodexExecutor {
         self
     }
 
+    /// Binds the actual consumer-owned process and protected model transports.
+    /// These hooks require the admitted durable context and never fall back to
+    /// a local CLI or direct upstream HTTP.
+    pub fn with_runtime(
+        mut self,
+        process: Arc<dyn ProcessHost>,
+        model: Arc<dyn ResponsesTransport>,
+    ) -> Result<Self> {
+        for identity in [process.identity(), model.identity()] {
+            if identity.name.is_empty() || identity.version.is_empty() || identity.digest == [0; 32] {
+                return Err(Error::Invalid("Codex runtime implementation identity is incomplete".into()));
+            }
+        }
+        self.runtime = Some((process, model));
+        Ok(self)
+    }
+
     /// The configuration this executor runs with.
     #[must_use]
     pub const fn config(&self) -> &CodexConfig {
         &self.config
     }
 
-    fn granted_definitions(&self) -> Result<Vec<Value>> {
-        let Some(scope) = &self.scope else {
+    fn granted_definitions(&self, context: Option<&TaskContext>) -> Result<Vec<Value>> {
+        let Some(scope) = context.map(TaskContext::scope).or(self.scope.as_ref()) else {
             return Ok(Vec::new());
         };
         self.tools
@@ -204,7 +223,7 @@ impl CodexExecutor {
             .collect()
     }
 
-    fn request_digest(&self, input: &TurnInput, max_steps: u32) -> Result<[u8; 32]> {
+    fn request_digest(&self, input: &TurnInput, max_steps: u32, context: Option<&TaskContext>) -> Result<[u8; 32]> {
         let request = json!({
             "executor": EXECUTOR_ID,
             "codex_version": CODEX_VERSION,
@@ -215,19 +234,26 @@ impl CodexExecutor {
             "max_steps": max_steps,
             "instructions": self.config.instructions,
             "resume_thread": self.config.resume_thread,
-            "tools": self.granted_definitions()?,
-            "scope": self.scope.as_ref().map(|scope| {
+            "tools": self.granted_definitions(context)?,
+            "scope": context.map(TaskContext::scope).or(self.scope.as_ref()).map(|scope| {
                 json!({"grants": scope.grants(), "limits": scope.limits(), "run_limits": scope.run_limits()})
             }),
             "policy": self.policy.as_ref().map(|policy| {
                 let identity = policy.identity();
                 json!({"name": identity.name, "version": identity.version, "digest": identity.digest})
             }),
+            "process_host": self.runtime.as_ref().map(|(host, _)| host.identity()),
+            "model_transport": self.runtime.as_ref().map(|(_, transport)| transport.identity()),
         });
         Ok(*blake3::hash(&canonical(&request)?).as_bytes())
     }
 
-    async fn run(&self, input: TurnInput, journal: &dyn ExecutionJournal) -> Result<TurnOutput> {
+    async fn run(&self, input: TurnInput, journal: &dyn ExecutionJournal, context: Option<&TaskContext>) -> Result<TurnOutput> {
+        match (self.runtime.is_some(), context) {
+            (true, Some(context)) if context.id() == input.operation_id && context.durable_task_id().is_some() => {}
+            (false, None) => {}
+            _ => return Err(Error::Unauthorized("protected Codex requires its original durable context and both runtime transports".into())),
+        }
         let operation = input.operation_id;
         let max_steps = input.max_steps.min(self.config.max_steps);
         if max_steps == 0 {
@@ -236,7 +262,7 @@ impl CodexExecutor {
             ));
         }
         let prompt = with_selected_context(&input, prompt_text(&input.input)?);
-        let digest = self.request_digest(&input, max_steps)?;
+        let digest = self.request_digest(&input, max_steps, context)?;
 
         let prior = Prior::read(journal, operation, digest).await?;
         if let Some(output) = prior.finished {
@@ -253,26 +279,35 @@ impl CodexExecutor {
                 )
                 .await?;
         }
-        check_version(&self.config.binary).await?;
+        match &self.runtime {
+            Some((host, _)) => host.check_version(context.ok_or_else(|| Error::Unauthorized("owned Codex version query requires its task context".into()))?, &self.config.binary).await?,
+            None => check_version(&self.config.binary).await?,
+        }
 
         // A crashed run's model calls count against this turn's cap.
         let remaining = max_steps.saturating_sub(prior.last_step);
         if remaining == 0 {
             return Err(stop_error(&ProxyStop::StepLimit(max_steps)));
         }
-        // Resume a crashed run's thread; otherwise a follow-up's, if given.
-        let (resume, prompt) = match (&prior.thread, &self.config.resume_thread) {
-            (Some(thread), _) => (Some(thread.clone()), CONTINUE_PROMPT.to_owned()),
-            (None, Some(thread)) => (Some(thread.clone()), prompt),
-            (None, None) => (None, prompt),
+        // Ordinary local CLI recovery may resume a thread. A protected runtime
+        // reopens its original command through ProcessHost, never dispatches a
+        // fresh CLI resume mutation after a lost ACK.
+        let (resume, prompt) = if self.runtime.is_some() {
+            (self.config.resume_thread.clone(), prompt)
+        } else {
+            match (&prior.thread, &self.config.resume_thread) {
+                (Some(thread), _) => (Some(thread.clone()), CONTINUE_PROMPT.to_owned()),
+                (None, Some(thread)) => (Some(thread.clone()), prompt),
+                (None, None) => (None, prompt),
+            }
         };
         let span = op_span!(DEBUG, "acyclic.harness.codex.launch");
-        let launch = self.launch(operation, remaining, resume.as_deref(), prompt);
+        let launch = self.launch(operation, remaining, prior.last_step, resume.as_deref(), prompt, context);
         let mut session = traced(span, launch).await?;
         let mut turn = TurnJournal {
             journal,
             operation,
-            run: uuid::Uuid::new_v4().simple().to_string(),
+            run: if self.runtime.is_some() { operation.to_string() } else { uuid::Uuid::new_v4().simple().to_string() },
             offset: prior.last_step,
             proxy: &session.proxy,
             calls: session.calls,
@@ -280,9 +315,13 @@ impl CodexExecutor {
             started_items: BTreeSet::new(),
             metered: prior.metered,
         };
-        let ended = self
-            .drive(&mut session.process, session.deadline, &mut turn)
-            .await?;
+        let ended = match self.drive(session.process.as_mut(), session.deadline, &mut turn).await {
+            Ok(ended) => ended,
+            Err(error) => {
+                session.process.terminate().await?;
+                return Err(error);
+            }
+        };
         let span = op_span!(DEBUG, "acyclic.harness.codex.conclude");
         traced(span, conclude(&mut turn, ended)).await
     }
@@ -292,24 +331,37 @@ impl CodexExecutor {
         &self,
         operation: OperationId,
         max_steps: u32,
+        offset: u32,
         resume: Option<&str>,
         prompt: String,
+        context: Option<&TaskContext>,
     ) -> Result<Session> {
-        let dirs = Dirs::create(&self.config.state_dir, &operation.to_string())?;
+        let dirs = if self.runtime.is_none() {
+            Some(Dirs::create(&self.config.state_dir, &operation.to_string())?)
+        } else {
+            None
+        };
+        let transport: Arc<dyn ResponsesTransport> = match &self.runtime {
+            Some((_, transport)) => Arc::clone(transport),
+            None => Arc::new(DirectResponsesTransport::new()?),
+        };
         let (proxy, calls) = ResponsesProxy::start_reporting(
             self.config.upstream.clone(),
             self.meter.clone(),
             max_steps,
+            operation,
+            offset,
+            transport,
         )
         .await?;
-        let mcp = match &self.scope {
+        let mcp = match context.map(TaskContext::scope).or(self.scope.as_ref()) {
             Some(scope) => Some(
-                McpEndpoint::start(self.tools.clone(), scope.clone(), self.policy.clone()).await?,
+                McpEndpoint::start(self.tools.clone(), scope.clone(), self.policy.clone(), operation, context.cloned()).await?,
             )
             .filter(|endpoint| !endpoint.is_empty()),
             None => None,
         };
-        HomeConfig {
+        let home = HomeConfig {
             model: self.config.model.clone(),
             proxy_base_url: proxy.base_url().to_owned(),
             mcp_url: mcp.as_ref().map(|endpoint| endpoint.url().to_owned()),
@@ -322,9 +374,7 @@ impl CodexExecutor {
             subagents: self.config.subagents,
             request_max_retries: 2,
             stream_max_retries: 2,
-        }
-        .write(&dirs.codex_home, &self.config.instructions)
-        .map_err(|error| Error::Storage(format!("cannot write CODEX_HOME: {error}")))?;
+        };
 
         let mut args: Vec<OsString> = [
             "exec",
@@ -344,23 +394,30 @@ impl CodexExecutor {
             args.push(thread.into());
         }
         args.push(prompt.into());
-        let mut env = vec![
-            ("HOME".to_owned(), dirs.home.display().to_string()),
-            (
-                "CODEX_HOME".to_owned(),
-                dirs.codex_home.display().to_string(),
-            ),
-            (PROXY_KEY_ENV.to_owned(), proxy.client_key().to_owned()),
-        ];
+        let mut env = vec![(PROXY_KEY_ENV.to_owned(), proxy.client_key().to_owned())];
         if let Some(endpoint) = &mcp {
             env.push((MCP_TOKEN_ENV.to_owned(), endpoint.token().to_owned()));
         }
-        let process = CodexProcess::spawn(Launch {
-            binary: &self.config.binary,
-            args,
-            env,
-            workspace: &self.config.workspace,
-        })?;
+        let process: Box<dyn RunningProcess> = match &self.runtime {
+            Some((host, _)) => {
+                let context = context.ok_or_else(|| Error::Unauthorized("owned Codex launch requires its task context".into()))?;
+                let builtins = crate::exec_server::BuiltinMediator::new(context.clone(), host.builtin_bindings(context)?)?;
+                host.launch(operation, &self.config, home, args, env, context.clone(), builtins).await?
+            }
+            None => {
+                let dirs = dirs.as_ref().ok_or_else(|| Error::Storage("local Codex home is absent".into()))?;
+                home.write(&dirs.codex_home, &self.config.instructions)
+                    .map_err(|error| Error::Storage(format!("cannot write CODEX_HOME: {error}")))?;
+                env.push(("HOME".to_owned(), dirs.home.display().to_string()));
+                env.push(("CODEX_HOME".to_owned(), dirs.codex_home.display().to_string()));
+                Box::new(CodexProcess::spawn(Launch {
+                    binary: &self.config.binary,
+                    args,
+                    env,
+                    workspace: &self.config.workspace,
+                })?)
+            }
+        };
         Ok(Session {
             proxy,
             calls,
@@ -373,7 +430,7 @@ impl CodexExecutor {
     /// Reads Codex's events to the end, journaling them as they arrive.
     async fn drive(
         &self,
-        process: &mut CodexProcess,
+        process: &mut dyn RunningProcess,
         deadline: Option<tokio::time::Instant>,
         turn: &mut TurnJournal<'_>,
     ) -> Result<Ended> {
@@ -398,8 +455,10 @@ impl CodexExecutor {
                 }
                 Next::Eof => break,
                 Next::Failed(error) => {
-                    process.terminate().await?;
                     return Err(Error::Storage(format!("codex output failed: {error}")));
+                }
+                Next::Cancelled => {
+                    return Err(Error::InteractionRejected(acyclic_harness::InteractionRejection::Cancelled));
                 }
                 Next::Deadline => {
                     deadline_hit = true;
@@ -417,7 +476,7 @@ impl CodexExecutor {
         Ok(Ended {
             transcript,
             deadline_hit,
-            status: status.map_or_else(|| "unknown status".to_owned(), |s| s.to_string()),
+            status: status.unwrap_or_else(|| "unknown status".to_owned()),
             stderr,
         })
     }
@@ -428,7 +487,7 @@ struct Session {
     proxy: ResponsesProxy,
     calls: mpsc::UnboundedReceiver<ProxyCall>,
     _mcp: Option<McpEndpoint>,
-    process: CodexProcess,
+    process: Box<dyn RunningProcess>,
     deadline: Option<tokio::time::Instant>,
 }
 
@@ -516,7 +575,17 @@ impl Executor for CodexExecutor {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
         let span = op_span!(INFO, "acyclic.harness.codex.run");
-        traced(span, self.run(input, journal)).boxed()
+        traced(span, self.run(input, journal, None)).boxed()
+    }
+
+    fn execute_with_context<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<TurnOutput>> {
+        let span = op_span!(INFO, "acyclic.harness.codex.run");
+        traced(span, self.run(input, journal, Some(context))).boxed()
     }
 }
 
@@ -571,6 +640,7 @@ fn stop_error(stop: &ProxyStop) -> Error {
         ProxyStop::StepLimit(limit) => {
             Error::Conflict(format!("executor step limit reached ({limit} model calls)"))
         }
+        ProxyStop::Uncertain(operation) => Error::Indeterminate(*operation),
     }
 }
 
@@ -603,9 +673,9 @@ fn to_json<T: Serialize>(value: &T) -> Result<Value> {
     serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-/// Canonical JSON: sorted keys (`serde_json` maps are ordered), no whitespace.
+/// Uses the shared Rust SDK's canonical sorted-key JSON codec.
 fn canonical<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(&to_json(value)?).map_err(|error| Error::Invalid(error.to_string()))
+    acyclic_harness::executor::encode_json(value)
 }
 
 /// What an earlier execution of this operation left in the journal.
@@ -727,7 +797,7 @@ impl Prior {
 
 async fn load(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<ModelEvent> {
     let bytes = journal.load(reference).await?;
-    serde_json::from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
+    acyclic_harness::executor::decode_json(&bytes)
 }
 
 /// Writes one run's records.

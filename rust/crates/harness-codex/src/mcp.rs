@@ -14,9 +14,10 @@
 //!   at `render_bytes`; the raw result is never sent.
 
 use acyclic_harness::{
-    Error, OperationId, Result,
-    runtime::{RuntimeScope, ToolPolicy, ToolPolicyDecision},
-    tool::{Tool, ToolInvocation, ToolRegistry},
+    Error, OperationId, Outcome, Result,
+    executor::encode_json,
+    runtime::{RuntimeScope, TaskContext, ToolPolicy, ToolPolicyDecision},
+    tool::{Tool, ToolInvocation, ToolRegistry, ToolResult},
 };
 use axum::{
     Router,
@@ -26,13 +27,7 @@ use axum::{
     routing::post,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::task::JoinHandle;
 
 /// The MCP protocol revision Codex 0.155.1 speaks.
@@ -51,7 +46,7 @@ struct Shared {
     policy: Option<Arc<dyn ToolPolicy>>,
     token: String,
     parent: OperationId,
-    calls: AtomicU64,
+    context: Option<TaskContext>,
 }
 
 /// A running MCP endpoint for one turn. Dropping it stops the server.
@@ -81,7 +76,19 @@ impl McpEndpoint {
         tools: ToolRegistry,
         scope: RuntimeScope,
         policy: Option<Arc<dyn ToolPolicy>>,
+        parent: OperationId,
+        context: Option<TaskContext>,
     ) -> Result<Self> {
+        if let Some(context) = &context {
+            if context.id() != parent || context.durable_task_id().is_none() {
+                return Err(Error::Unauthorized("Codex MCP requires its admitted durable turn context".into()));
+            }
+            if context.scope().grants() != scope.grants()
+                || context.scope().limits() != scope.limits()
+                || context.scope().run_limits() != scope.run_limits() {
+                return Err(Error::Unauthorized("Codex MCP scope differs from admitted context".into()));
+            }
+        }
         let mut granted = BTreeMap::new();
         let mut names = BTreeMap::new();
         for definition in tools.definitions()? {
@@ -109,8 +116,8 @@ impl McpEndpoint {
             scope,
             policy,
             token: token.clone(),
-            parent: OperationId::new(),
-            calls: AtomicU64::new(0),
+            parent,
+            context,
         });
         let app = Router::new()
             .route("/mcp", post(rpc).get(not_streaming).delete(not_streaming))
@@ -217,7 +224,7 @@ async fn rpc(
         }
         Some("ping") => reply(&id, Ok(json!({}))),
         Some("tools/list") => reply(&id, Ok(json!({"tools": list(&shared)}))),
-        Some("tools/call") => reply(&id, Ok(call(&shared, &params).await)),
+        Some("tools/call") => reply(&id, Ok(call(&shared, &id, &params).await)),
         Some(other) => reply(
             &id,
             Err((-32601, format!("method {other} is not supported"))),
@@ -244,7 +251,7 @@ fn error_result(message: impl Into<String>) -> Value {
     json!({"content": [{"type": "text", "text": message.into()}], "isError": true})
 }
 
-async fn call(shared: &Shared, params: &Value) -> Value {
+async fn call(shared: &Shared, request_id: &Value, params: &Value) -> Value {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -258,20 +265,22 @@ async fn call(shared: &Shared, params: &Value) -> Value {
     let Some(tool) = shared.tools.get(name) else {
         return error_result(format!("tool {name} is not available"));
     };
-    let call_id = format!(
-        "mcp-{}",
-        shared
-            .calls
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1)
-    );
-    let invocation = ToolInvocation::for_model_call(
+    // Reconnects resolve the same original call, never a fresh random parent.
+    let identity = match encode_json(request_id) {
+        Ok(bytes) => bytes,
+        Err(error) => return error_result(format!("invalid MCP request identity: {error}")),
+    };
+    let call_id = format!("mcp-{}", blake3::hash(&identity).to_hex());
+    let mut invocation = ToolInvocation::for_model_call(
         shared.parent,
         0,
         call_id,
         tool.definition.name.clone(),
         arguments,
     );
+    if shared.context.is_some() {
+        invocation.call_id = invocation.operation_id.to_string();
+    }
     if let Err(error) = tool.executor.authorize(Some(&shared.scope), &invocation) {
         return error_result(format!("tool {name} refused this call: {error}"));
     }
@@ -292,7 +301,24 @@ async fn call(shared: &Shared, params: &Value) -> Value {
             Err(error) => return error_result(format!("policy failed for {name}: {error}")),
         }
     }
-    let result = match tool.executor.execute(invocation.clone()).await {
+    let outcome = match &shared.context {
+        Some(context) => {
+            let pinned = match context.tool::<Value, Value>(&tool.definition.name) {
+                Ok(pinned) if pinned.definition() == &tool.definition => pinned,
+                Ok(_) => return error_result("admitted Codex tool revision changed"),
+                Err(error) => return error_result(format!("{name} is not admitted: {error}")),
+            };
+            match context.call_durable(invocation.operation_id, &pinned, &invocation.arguments).await {
+                Ok(Outcome::Succeeded(value)) => Ok(ToolResult { value }),
+                Ok(Outcome::Indeterminate { operation_id }) => Err(Error::Indeterminate(operation_id)),
+                Ok(Outcome::Cancelled) => Err(Error::InteractionRejected(acyclic_harness::InteractionRejection::Cancelled)),
+                Ok(Outcome::Failed { message }) => Err(Error::Invalid(message)),
+                Err(error) => Err(error),
+            }
+        }
+        None => tool.executor.execute(invocation.clone()).await,
+    };
+    let result = match outcome {
         Ok(result) => result,
         Err(error) => return error_result(format!("{name} failed: {error}")),
     };

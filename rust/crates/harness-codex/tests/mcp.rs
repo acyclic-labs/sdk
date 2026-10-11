@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 const PENDING: &str = "A3: the MCP endpoint is not built yet";
 
 async fn endpoint() -> McpEndpoint {
-    McpEndpoint::start(support::registry(), support::scope(), None)
+    McpEndpoint::start(support::registry(), support::scope(), None,
+        acyclic_harness::OperationId::from_bytes([1; 16]), None)
         .await
         .expect(PENDING)
 }

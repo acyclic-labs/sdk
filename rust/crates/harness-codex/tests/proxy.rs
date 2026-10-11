@@ -219,7 +219,8 @@ async fn upstream_errors_pass_through_unchanged() {
         assert_eq!(response.status(), code);
         let body: Value = response.json().await.expect("JSON");
         assert_eq!(body["error"]["message"], format!("upstream {code}"));
-        assert!(meter.recorded().is_empty(), "failed calls cost nothing");
+        assert!(meter.recorded().is_empty(), "failed calls have no usable usage report");
+        assert_eq!(proxy.steps(), 1, "a dispatched error does not refund the admitted step");
     }
 }
 

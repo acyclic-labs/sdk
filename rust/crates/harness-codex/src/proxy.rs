@@ -8,13 +8,14 @@
 //! - Once the meter or the step cap says stop, answers `429` with
 //!   `{"error":{"type":"insufficient_quota"}}`. Codex 0.155.1 retries a 402
 //!   six times but ends the turn on this after one request.
-//! - Upstream 4xx/5xx pass through unchanged and cost nothing.
+//! - Upstream errors retain their admitted step; absent usage is not zero cost.
 
 use crate::{
     executor::Upstream,
     meter::{MeterVerdict, ResponsesUsage, UsageMeter},
 };
-use acyclic_harness::{Error, Result};
+use acyclic_harness::{Error, OperationId, Result, model::ModelDispatch};
+use futures::future::BoxFuture;
 use axum::{
     Router,
     body::{Body, Bytes},
@@ -35,6 +36,50 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 /// dummy `authorization`, is dropped.
 const FORWARDED_HEADERS: [&str; 4] = ["accept", "session-id", "thread-id", "x-client-request-id"];
 
+/// Original-bound Responses transport. Protected hosts persist the exact
+/// request, obtain their current financial/provider admission, and reconcile
+/// the same dispatch before any external effect. The returned response must
+/// originate from that admitted provider path, never from a synthetic receipt.
+pub trait ResponsesTransport: Send + Sync {
+    /// Immutable implementation identity included in the durable turn binding.
+    fn identity(&self) -> &acyclic_harness::registry::ComponentIdentity;
+    /// Performs or reconciles one exact canonical model dispatch. Implementors
+    /// retain raw provider cost/liability evidence before releasing its body.
+    fn execute<'a>(
+        &'a self,
+        dispatch: ModelDispatch,
+        request: reqwest::Request,
+    ) -> BoxFuture<'a, Result<reqwest::Response>>;
+}
+
+/// Explicit local, unprotected HTTP transport for ordinary CLI consumers.
+pub struct DirectResponsesTransport(reqwest::Client);
+impl DirectResponsesTransport {
+    /// Creates a client with redirects disabled. Protected runtimes must use
+    /// their original-bound transport instead of this local implementation.
+    pub fn new() -> Result<Self> {
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+            .build().map(Self).map_err(|error| Error::Unsupported(error.to_string()))
+    }
+}
+impl ResponsesTransport for DirectResponsesTransport {
+    fn identity(&self) -> &acyclic_harness::registry::ComponentIdentity {
+        static IDENTITY: std::sync::LazyLock<acyclic_harness::registry::ComponentIdentity> =
+            std::sync::LazyLock::new(|| acyclic_harness::registry::ComponentIdentity {
+                name: "acyclic.codex.direct_http".into(),
+                version: "1".into(),
+                digest: *blake3::hash(b"acyclic.codex.direct-http.no-redirect.v1").as_bytes(),
+            });
+        &IDENTITY
+    }
+    fn execute<'a>(&'a self, _dispatch: ModelDispatch, request: reqwest::Request)
+        -> BoxFuture<'a, Result<reqwest::Response>> {
+        Box::pin(async move {
+            self.0.execute(request).await.map_err(|error| Error::Storage(error.to_string()))
+        })
+    }
+}
+
 /// Why the proxy stopped forwarding, reported in the executor's error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProxyStop {
@@ -42,6 +87,8 @@ pub enum ProxyStop {
     Budget(String),
     /// The turn's model-step cap was reached.
     StepLimit(u32),
+    /// The original dispatch has an uncertain outcome and requires reconciliation.
+    Uncertain(OperationId),
 }
 
 /// One proxied model call, as the executor journals it.
@@ -72,6 +119,9 @@ struct Shared {
     max_steps: u32,
     client: reqwest::Client,
     ledger: Mutex<Ledger>,
+    operation: OperationId,
+    offset: u32,
+    transport: Arc<dyn ResponsesTransport>,
     calls: Option<mpsc::UnboundedSender<ProxyCall>>,
 }
 
@@ -79,6 +129,20 @@ struct Shared {
 struct Ledger {
     steps: u32,
     stopped: Option<ProxyStop>,
+}
+
+// A dropped or incomplete response is unresolved original work. In particular,
+// a Codex reconnect cannot buy a fresh attempt by abandoning this response body.
+struct ResponseGuard {
+    shared: Arc<Shared>,
+    completed: bool,
+}
+impl Drop for ResponseGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.shared.stop(ProxyStop::Uncertain(self.shared.operation));
+        }
+    }
 }
 
 impl Shared {
@@ -126,7 +190,8 @@ impl ResponsesProxy {
         meter: Arc<dyn UsageMeter>,
         max_steps: u32,
     ) -> Result<Self> {
-        Self::launch(upstream, meter, max_steps, None).await
+        Self::launch(upstream, meter, max_steps, None, OperationId::new(), 0,
+            Arc::new(DirectResponsesTransport::new()?)).await
     }
 
     /// Starts the proxy and reports every call on the returned channel.
@@ -137,10 +202,13 @@ impl ResponsesProxy {
         upstream: Upstream,
         meter: Arc<dyn UsageMeter>,
         max_steps: u32,
+        operation: OperationId,
+        offset: u32,
+        transport: Arc<dyn ResponsesTransport>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<ProxyCall>)> {
         let (sender, receiver) = mpsc::unbounded_channel();
         Ok((
-            Self::launch(upstream, meter, max_steps, Some(sender)).await?,
+            Self::launch(upstream, meter, max_steps, Some(sender), operation, offset, transport).await?,
             receiver,
         ))
     }
@@ -150,8 +218,15 @@ impl ResponsesProxy {
         meter: Arc<dyn UsageMeter>,
         max_steps: u32,
         calls: Option<mpsc::UnboundedSender<ProxyCall>>,
+        operation: OperationId,
+        offset: u32,
+        transport: Arc<dyn ResponsesTransport>,
     ) -> Result<Self> {
+        if offset.checked_add(max_steps).is_none() {
+            return Err(Error::Invalid("original model step count overflows".into()));
+        }
         let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| Error::Unsupported(format!("codex proxy client: {error}")))?;
         let shared = Arc::new(Shared {
@@ -162,6 +237,9 @@ impl ResponsesProxy {
             client,
             ledger: Mutex::new(Ledger::default()),
             calls,
+            operation,
+            offset,
+            transport,
         });
         let app = Router::new()
             .route("/v1/responses", post(responses))
@@ -231,6 +309,7 @@ fn stop_reason(stop: &ProxyStop) -> String {
     match stop {
         ProxyStop::Budget(reason) => format!("budget exhausted: {reason}"),
         ProxyStop::StepLimit(limit) => format!("step limit of {limit} model calls reached"),
+        ProxyStop::Uncertain(operation) => format!("original model dispatch {operation} requires reconciliation"),
     }
 }
 
@@ -273,10 +352,6 @@ fn admit(shared: &Shared, model: &str) -> std::result::Result<u32, ProxyStop> {
     Ok(ledger.steps)
 }
 
-fn release(shared: &Shared) {
-    let mut ledger = shared.ledger();
-    ledger.steps = ledger.steps.saturating_sub(1);
-}
 
 async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
     let presented = headers
@@ -310,10 +385,18 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
         Err(stop) => return refuse(&stop_reason(&stop)),
     };
     merge(&mut request, &shared.upstream.extra_body);
-    let forwarded = request.to_string();
+    let forwarded = match acyclic_harness::executor::encode_json(&request) {
+        Ok(bytes) => bytes,
+        Err(error) => return refuse(&error.to_string()),
+    };
+    let dispatch = ModelDispatch {
+        operation_id: shared.operation,
+        step: shared.offset + step - 1,
+        request_digest: *blake3::hash(&forwarded).as_bytes(),
+    };
     shared.report(ProxyCall::Started {
         step,
-        request: forwarded.as_bytes().to_vec(),
+        request: forwarded.clone(),
     });
 
     let mut outgoing = shared
@@ -330,15 +413,18 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
             outgoing = outgoing.header(name, value);
         }
     }
-    let upstream = match outgoing.send().await {
+    let outgoing = match outgoing.build() {
+        Ok(request) => request,
+        Err(error) => return refuse(&error.to_string()),
+    };
+    let upstream = match shared.transport.execute(dispatch, outgoing).await {
         Ok(response) => response,
         Err(error) => {
-            release(&shared);
-            return (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(json!({"error": {"message": format!("upstream unreachable: {error}"), "type": "upstream_error"}})),
-            )
-                .into_response();
+            // An uncertain transport outcome remains charged against the step
+            // and stops this process's retry path. Reopening requires the same
+            // original transport to reconcile its durable dispatch, not send again.
+            shared.stop(ProxyStop::Uncertain(shared.operation));
+            return refuse(&error.to_string());
         }
     };
     let status =
@@ -350,8 +436,13 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
         .unwrap_or("application/json")
         .to_owned();
     if !status.is_success() {
-        release(&shared);
-        let bytes = upstream.bytes().await.unwrap_or_default();
+        let bytes = match upstream.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                shared.stop(ProxyStop::Uncertain(shared.operation));
+                return refuse(&error.to_string());
+            }
+        };
         return Response::builder()
             .status(status)
             .header(header::CONTENT_TYPE, content_type)
@@ -360,15 +451,19 @@ async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: 
     }
 
     let mut scanner = SseScanner::default();
-    let metered = shared.clone();
+    let mut guard = ResponseGuard { shared: Arc::clone(&shared), completed: false };
     let stream = upstream.bytes_stream().map(move |chunk| {
         if let Ok(bytes) = &chunk {
             for usage in scanner.push(bytes) {
-                metered.report(ProxyCall::Completed { step, usage });
-                if let MeterVerdict::Stop { reason } = metered.meter.record(&model, &usage) {
-                    metered.stop(ProxyStop::Budget(reason));
+                guard.completed = true;
+                guard.shared.report(ProxyCall::Completed { step, usage });
+                if let MeterVerdict::Stop { reason } = guard.shared.meter.record(&model, &usage) {
+                    guard.shared.stop(ProxyStop::Budget(reason));
                 }
             }
+        }
+        else {
+            guard.shared.stop(ProxyStop::Uncertain(guard.shared.operation));
         }
         chunk
     });
