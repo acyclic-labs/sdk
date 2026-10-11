@@ -1181,48 +1181,70 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.validate_workflow_record_with_io(record, None)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn validate_workflow_record_with_native_work(
+        &self, record: &crate::workflow::WorkflowRecord,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let held = self._native_custody.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "workflow proof owner has no original native custody",
+        })?;
+        if !held.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "workflow proof belongs to another native owner ledger",
+            });
+        }
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = self.validate_workflow_record_with_io(record, Some(&io));
+        let (_, _temporary_custody) = crate::workflow::finish_native_io(result, io, 0)?;
+        Ok(())
+    }
+
     pub(crate) fn validate_workflow_record_with_io(
         &self, record: &crate::workflow::WorkflowRecord,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        if record.prior.machine != self.workflow.initial.machine {
-            return Err(Error::Conflict(
-                "workflow implementation differs from task admission".into(),
-            ));
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io {
-            if let Some(work) = io.original_native_work() {
-                self.host.machines.require_native_work(&record.prior.machine)?;
-                let before = io.owned_bytes()?;
-                let input_hold;
-                let input = crate::executor::clone_preparation(&record.input, Some(io))?;
-                input_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| Error::Invalid("workflow validation input custody underflow".into()))?)?;
-                let proof = self.host.machines.step_with_native_work(&record.prior, input, work)?;
-                if proof.0 != record.next || proof.1 != record.transition {
-                    return Err(Error::Conflict("workflow transition differs from pinned machine".into()));
-                }
-                if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
-                    crate::contract::validate_json_schema_value_with_io(
-                        &self.output_schema, value, "task output", Some(io))?;
-                }
-                drop(proof);
-                drop(input_hold);
-                return Ok(());
+        let conflict = |reason: &'static str| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+                return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
             }
+            Error::Conflict(reason.into())
+        };
+        if record.prior.machine != self.workflow.initial.machine {
+            return Err(conflict("workflow implementation differs from task admission"));
         }
-        if io.is_some() {
-            return Err(Error::Unsupported("workflow machine lacks original native-work validation".into()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let proof = if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "workflow proof requires original native work",
+            })?;
+            self.host.machines.require_native_work(&record.prior.machine)?;
+            let input = crate::executor::clone_preparation(&record.input, Some(io))?;
+            let (next, transition, custody) = self.host.machines.step_with_native_work(
+                &record.prior, input, work,
+            )?;
+            (next, transition, Some(custody))
+        } else {
+            let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
+            (next, transition, None)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let proof = self.host.machines.step(&record.prior, &record.input)?;
+        if proof.0 != record.next || proof.1 != record.transition {
+            return Err(conflict("workflow transition differs from pinned machine"));
         }
-        let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
-        if next != record.next || transition != record.transition {
-            return Err(Error::Conflict(
-                "workflow transition differs from pinned machine".into(),
-            ));
-        }
-        if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
-            crate::tool::validate_value(&self.output_schema, value, "task output")?;
+        if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
+            if io.is_some() {
+                crate::contract::validate_json_schema_value_with_io(
+                    &self.output_schema, value, "task output", io,
+                )?;
+            } else {
+                crate::tool::validate_value(&self.output_schema, value, "task output")?;
+            }
         }
         Ok(())
     }

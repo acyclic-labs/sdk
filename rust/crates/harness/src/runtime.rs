@@ -72,6 +72,18 @@ pub struct TaskDefinition<I, O> {
     requirements: BTreeSet<String>,
     implementation: TaskImplementation<I, O>,
     types: PhantomData<fn(I) -> O>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_definition_source: Option<NativeDefinitionSource>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_schema_custody: Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_metadata_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct NativeDefinitionSource {
+    work: acyclic_fs::NativeMaterializationWork,
+    bytes: u64,
 }
 
 impl<I, O> TaskDefinition<I, O> {
@@ -101,6 +113,12 @@ impl<I, O> TaskDefinition<I, O> {
                 Box::pin(handler(context, input))
             })),
             types: PhantomData,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_definition_source: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_schema_custody: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_custody: None,
         };
         definition.refresh_digest()?;
         Ok(definition)
@@ -114,28 +132,71 @@ impl<I, O> TaskDefinition<I, O> {
         input_schema: Value,
         output_schema: Value,
     ) -> Result<Self> {
-        let pinned = machine.identity();
-        validate_identity(&pinned.name, &pinned.version)?;
-        if pinned.digest == [0; 32] {
-            return Err(Error::Invalid(
-                "resumable task requires an implementation digest".into(),
-            ));
+        Ok(Self::resumable_with_io(machine, input_schema, output_schema, None)?.0)
+    }
+
+    /// Moves genuinely guarded schema values into the original definition.
+    /// Returned metadata custody must be consumed by native registration.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn resumable_with_native_work(
+        machine: Arc<dyn ResumableMachine>, input_schema: Value, output_schema: Value,
+        schema_custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut schemas = (input_schema, output_schema, schema_custody);
+        if !machine.supports_native_work() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "machine has no native definition callbacks",
+            });
         }
-        validate_task_schemas(&input_schema, &output_schema, true)?;
+        machine.identity_with_native_work(work)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = Self::resumable_with_io(
+            machine, std::mem::take(&mut schemas.0), std::mem::take(&mut schemas.1), Some(&io),
+        );
+        let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+        let ((mut definition, _), custody) = crate::workflow::finish_native_io(result, io, retained)?;
+        definition.native_definition_source = Some(NativeDefinitionSource {
+            work: work.clone(), bytes: custody.bytes(),
+        });
+        definition.native_schema_custody = Some(schemas.2);
+        Ok((definition, custody))
+    }
+
+    fn resumable_with_io(
+        machine: Arc<dyn ResumableMachine>, input_schema: Value, output_schema: Value,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Self, u64)> {
+        let pinned = task_machine_identity(machine.as_ref(), io)?;
+        validate_task_identity_with_io(&pinned.name, &pinned.version, io)?;
+        if pinned.digest == [0; 32] {
+            return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
+                "resumable task requires an implementation digest"));
+        }
+        validate_task_schemas_with_io(&input_schema, &output_schema, true, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        }
         let mut definition = Self {
             identity: ComponentIdentity {
-                name: pinned.name.clone(),
-                version: pinned.version.clone(),
+                name: crate::executor::clone_preparation(&pinned.name, io)?,
+                version: crate::executor::clone_preparation(&pinned.version, io)?,
                 digest: [0; 32],
             },
-            input_schema,
-            output_schema,
-            requirements: BTreeSet::new(),
-            implementation: TaskImplementation::Resumable(machine),
-            types: PhantomData,
+            input_schema, output_schema, requirements: BTreeSet::new(),
+            implementation: TaskImplementation::Resumable(machine), types: PhantomData,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_definition_source: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_schema_custody: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_custody: None,
         };
-        definition.refresh_digest()?;
-        Ok(definition)
+        let retained = crate::workflow::workflow_owned_bytes(io)?;
+        definition.refresh_digest_with_io(io)?;
+        Ok((definition, retained))
     }
 
     /// Pins both public JSON Schemas before registration.
@@ -145,6 +206,8 @@ impl<I, O> TaskDefinition<I, O> {
             &output,
             matches!(&self.implementation, TaskImplementation::Resumable(_)),
         )?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { self.native_definition_source = None; }
         self.input_schema = input;
         self.output_schema = output;
         self.refresh_digest()?;
@@ -158,22 +221,24 @@ impl<I, O> TaskDefinition<I, O> {
             return Err(Error::Invalid("task requirement is invalid".into()));
         }
         self.requirements.insert(requirement);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { self.native_definition_source = None; }
         self.refresh_digest()?;
         Ok(self)
     }
 
     fn refresh_digest(&mut self) -> Result<()> {
+        self.refresh_digest_with_io(None)
+    }
+
+    fn refresh_digest_with_io(&mut self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         let implementation = match &self.implementation {
             TaskImplementation::Live(_) => None,
-            TaskImplementation::Resumable(machine) => Some(machine.identity().digest),
+            TaskImplementation::Resumable(machine) => Some(task_machine_identity(machine.as_ref(), io)?.digest),
         };
-        self.identity.digest = task_definition_digest(
-            &self.identity.name,
-            &self.identity.version,
-            &self.input_schema,
-            &self.output_schema,
-            &self.requirements,
-            implementation,
+        self.identity.digest = task_definition_digest_with_io(
+            &self.identity.name, &self.identity.version, &self.input_schema, &self.output_schema,
+            &self.requirements, implementation, io,
         )?;
         Ok(())
     }
@@ -205,7 +270,7 @@ impl<I, O> TaskDefinition<I, O> {
     ) -> Result<ResumableTaskSession>
     where I: 'static, O: 'static,
     {
-        self.require_native_open()?;
+        self.require_native_identity(work)?;
         if !journal.supports_native_work() {
             return Err(task_workflow_error(Some(work), crate::wire::ErrorCode::Unsupported,
                 "workflow journal has no native callbacks"));
@@ -247,11 +312,28 @@ impl<I, O> TaskDefinition<I, O> {
                 reason: "live tasks have no resumable workflow",
             });
         };
+        if self.native_definition_source.is_none() || self.native_schema_custody.is_none()
+            || self.native_metadata_custody.is_none()
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "task definition was not published with native custody",
+            });
+        }
         if !machine.supports_native_work() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "machine has no native initialization or transition callback",
             });
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.require_native_open()?;
+        if let TaskImplementation::Resumable(machine) = &self.implementation {
+            machine.identity_with_native_work(work)?;
         }
         Ok(())
     }
@@ -267,7 +349,8 @@ impl<I, O> TaskDefinition<I, O> {
         let registered = if io.is_some() {
             context.harness.tasks.0.iter().find(|((name, version), _)| {
                 name == &self.identity.name && version == &self.identity.version
-            }).and_then(|(_, entry)| entry.definition.downcast_ref::<Arc<Self>>().cloned())
+            }).filter(|(_, entry)| entry.native_custody.is_some())
+                .and_then(|(_, entry)| task_definition_arc::<I, O>(entry))
                 .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                     "task definition is not the registered version"))?
         } else {
@@ -297,7 +380,7 @@ impl<I, O> TaskDefinition<I, O> {
         let retained = observe_task_open_admission(host.as_ref(), task_id, io).await?;
         validate_task_open_admission(&context.harness, &retained.value, io).await?;
         if retained.value.task != self.identity
-            || retained.value.machine != *machine.identity()
+            || retained.value.machine != *task_machine_identity(machine.as_ref(), io)?
             || retained.value.input_schema != self.input_schema
             || retained.value.output_schema != self.output_schema
             || context.task_id != retained.value.operation_id
@@ -425,6 +508,31 @@ fn task_original_work(io: Option<&crate::executor::PreparationIo>) -> Result<Tas
     Ok(None)
 }
 
+fn task_machine_identity<'a>(
+    machine: &'a dyn ResumableMachine, io: Option<&crate::executor::PreparationIo>,
+) -> Result<&'a MachineIdentity> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = task_original_work(io)? {
+        return machine.identity_with_native_work(work);
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let _ = io;
+    Ok(machine.identity())
+}
+
+fn inspect_task_metadata(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        use crate::store::history::HistoryIo as _;
+        let mut observer = io.history_io();
+        observer.check_cancellation()?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items })?;
+    }
+    #[cfg(not(feature = "filesystem"))]
+    let _ = (io, items);
+    Ok(())
+}
+
 fn task_workflow_error(
     work: TaskWorkflowWork<'_>, code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
@@ -438,6 +546,7 @@ fn task_workflow_error(
         crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
         crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
+        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
         _ => Error::Conflict(reason.into()),
     }
 }
@@ -763,26 +872,45 @@ pub(crate) fn task_definition_digest(
     requirements: &BTreeSet<String>,
     machine_digest: Option<[u8; 32]>,
 ) -> Result<[u8; 32]> {
-    validate_identity(name, version)?;
-    validate_task_schemas(input_schema, output_schema, machine_digest.is_some())?;
-    if machine_digest == Some([0; 32])
-        || requirements
-            .iter()
-            .any(|value| value.is_empty() || value.chars().any(char::is_whitespace))
-    {
-        return Err(Error::Invalid(
-            "task dependency or machine digest is invalid".into(),
-        ));
+    task_definition_digest_with_io(name, version, input_schema, output_schema, requirements, machine_digest, None)
+}
+
+#[derive(Serialize)]
+struct TaskDefinitionDigest<'a> {
+    contract: &'static str,
+    name: &'a str,
+    version: &'a str,
+    input_schema: &'a Value,
+    output_schema: &'a Value,
+    requirements: &'a BTreeSet<String>,
+    machine_digest: Option<[u8; 32]>,
+}
+
+fn task_definition_digest_with_io(
+    name: &str, version: &str, input_schema: &Value, output_schema: &Value,
+    requirements: &BTreeSet<String>, machine_digest: Option<[u8; 32]>,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 32]> {
+    validate_task_identity_with_io(name, version, io)?;
+    validate_task_schemas_with_io(input_schema, output_schema, machine_digest.is_some(), io)?;
+    let mut invalid = machine_digest == Some([0; 32]);
+    if !invalid {
+        for value in requirements {
+            inspect_task_metadata(io, 1)?;
+            if value.is_empty() || value.chars().any(char::is_whitespace) {
+                invalid = true;
+                break;
+            }
+        }
     }
-    crate::contract::canonical_json_digest(&serde_json::json!({
-        "contract": "harness.task.v2",
-        "name": name,
-        "version": version,
-        "input_schema": input_schema,
-        "output_schema": output_schema,
-        "requirements": requirements,
-        "machine_digest": machine_digest,
-    }))
+    if invalid {
+        return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
+            "task dependency or machine digest is invalid"));
+    }
+    crate::executor::preparation_digest(&TaskDefinitionDigest {
+        contract: "harness.task.v2", name, version, input_schema, output_schema,
+        requirements, machine_digest,
+    }, io)
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -861,6 +989,21 @@ fn validate_task_schemas_with_work(
     }
     Ok(())
 }
+fn validate_task_schemas_with_io(
+    input: &Value, output: &Value, resumable: bool,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let mut observer = io.map(crate::executor::PreparationIo::history_io);
+    #[cfg(feature = "filesystem")]
+    let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = None;
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
+    validate_task_schemas_with_work(input, output, resumable, &mut work)
+}
+
 
 fn admission_contract_error(
     work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
@@ -873,17 +1016,39 @@ fn admission_contract_error(
 }
 
 fn validate_identity(name: &str, version: &str) -> Result<()> {
-    validate_component_label(name, "task name")?;
-    validate_component_label(version, "task version")?;
+    validate_task_identity_with_io(name, version, None)
+}
+
+fn validate_task_identity_with_io(
+    name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if io.is_some() {
+        inspect_task_metadata(io, 2)?;
+        if !crate::contract::is_valid_component_label(name)
+            || !crate::contract::is_valid_component_label(version)
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "task name or version is invalid",
+            });
+        }
+    } else {
+        validate_component_label(name, "task name")?;
+        validate_component_label(version, "task version")?;
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        validate_component_label(name, "task name")?;
+        validate_component_label(version, "task version")?;
+    }
     if name.contains('@') || version.contains('@') {
-        return Err(Error::Invalid(
-            "task name and version cannot contain the version separator".into(),
-        ));
+        return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
+            "task name and version cannot contain the version separator"));
     }
     Ok(())
 }
 
-#[derive(Clone)]
 struct TaskEntry {
     identity: ComponentIdentity,
     resumable: bool,
@@ -893,6 +1058,48 @@ struct TaskEntry {
     requirements: BTreeSet<String>,
     definition: Arc<StoredDefinition>,
     workflow_definition: Option<Arc<dyn RegisteredTaskDefinition>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl TaskEntry {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_native_definition(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        let definition = self.workflow_definition.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "live tasks have no native workflow definition",
+        })?;
+        definition.require_native_identity(work)
+    }
+}
+
+impl Clone for TaskEntry {
+    fn clone(&self) -> Self {
+        self.clone_with_io(None).expect("unobserved task entry cloning is infallible")
+    }
+}
+
+impl TaskEntry {
+    fn clone_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        Ok(Self {
+            identity: crate::executor::clone_preparation(&self.identity, io)?,
+            resumable: self.resumable,
+            machine: crate::executor::clone_preparation(&self.machine, io)?,
+            input_schema: crate::executor::clone_preparation(&self.input_schema, io)?,
+            output_schema: crate::executor::clone_preparation(&self.output_schema, io)?,
+            requirements: crate::executor::clone_preparation(&self.requirements, io)?,
+            definition: self.definition.clone(), workflow_definition: self.workflow_definition.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        })
+    }
+}
+
+fn task_definition_arc<I: 'static, O: 'static>(entry: &TaskEntry) -> Option<Arc<TaskDefinition<I, O>>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    { entry.definition.clone().downcast::<TaskDefinition<I, O>>().ok() }
+    #[cfg(target_arch = "wasm32")]
+    { entry.definition.downcast_ref::<Arc<TaskDefinition<I, O>>>().cloned() }
 }
 
 // An erased view of the same registered Arc, not another definition or registry.
@@ -905,7 +1112,7 @@ trait RegisteredTaskDefinition: acyclic_stream::ProviderPlatform {
         journal: Arc<dyn WorkflowJournal>,
     ) -> BoxFuture<'static, Result<ResumableTaskSession>>;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn require_native_open(&self) -> Result<()>;
+    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()>;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn open_workflow_with_native_work<'a>(
         self: Arc<Self>, context: Arc<NativeTaskContext>,
@@ -928,8 +1135,8 @@ where
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn require_native_open(&self) -> Result<()> {
-        TaskDefinition::require_native_open(self)
+    fn require_native_identity(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        TaskDefinition::require_native_identity(self, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -938,7 +1145,7 @@ where
         fence: &'a crate::scheduler::LeaseFence, journal: Arc<dyn WorkflowJournal>,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ResumableTaskSession>> {
-        TaskDefinition::require_native_open(self.as_ref())?;
+        TaskDefinition::require_native_identity(self.as_ref(), work)?;
         if !journal.supports_native_work() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -952,8 +1159,18 @@ where
 }
 
 /// Immutable typed definitions indexed by their exact name and version.
-#[derive(Clone, Default)]
-pub struct TaskRegistry(BTreeMap<(String, String), TaskEntry>);
+#[derive(Default)]
+pub struct TaskRegistry(
+    BTreeMap<(String, String), TaskEntry>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Option<acyclic_fs::NativeAllocation>,
+);
+
+impl Clone for TaskRegistry {
+    fn clone(&self) -> Self {
+        self.clone_with_io(None).expect("unobserved task registry cloning is infallible")
+    }
+}
 
 impl TaskRegistry {
     /// Registers a single exact task version and rejects ambiguous aliases.
@@ -964,34 +1181,131 @@ impl TaskRegistry {
     where
         TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
-        let name = definition.identity.name.clone();
-        let version = definition.identity.version.clone();
-        if self.0.contains_key(&(name.clone(), version.clone())) {
-            return Err(Error::Conflict(format!(
-                "task {name}@{version} is already registered"
-            )));
+        let (key, entry) = self.prepare_registration(definition, None)?;
+        self.0.insert(key, entry);
+        Ok(())
+    }
+
+    /// Publishes the genuine SDK definition and retains all escaping custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn register_with_native_work<I: 'static, O: 'static>(
+        &mut self, definition: TaskDefinition<I, O>, custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()>
+    where TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
+    {
+        let mut input = (definition, custody);
+        let source = input.0.native_definition_source.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task definition has no original native constructor receipt",
+        })?;
+        if input.0.native_schema_custody.is_none()
+            || !source.work.shares_ledger(work)
+            || !input.1.work().shares_ledger(work)
+            || input.1.bytes() < source.bytes
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task definition metadata differs from its original constructor",
+            });
+        }
+        input.0.native_metadata_custody = Some(input.1);
+        input.0.require_native_open()?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let self_slot = if self.1.is_none() {
+            let slot_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            slot_io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            Some(slot_io.into_native_custody(std::mem::size_of::<Self>() as u64)?)
+        } else { None };
+        let result = self.prepare_registration(input.0, Some(&io));
+        let retained = io.owned_bytes()?;
+        let ((key, mut entry), custody) = crate::workflow::finish_native_io(result, io, retained)?;
+        entry.native_custody = Some(custody);
+        if self.1.is_none() { self.1 = self_slot; }
+        self.0.insert(key, entry);
+        Ok(())
+    }
+
+    fn prepare_registration<I: 'static, O: 'static>(
+        &self, definition: TaskDefinition<I, O>, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<((String, String), TaskEntry)>
+    where TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
+    {
+        let native = task_original_work(io)?;
+        let observed_machine = if io.is_some() {
+            match &definition.implementation {
+                TaskImplementation::Live(_) => return Err(task_workflow_error(native,
+                    crate::wire::ErrorCode::Unsupported, "live tasks have no native workflow")),
+                TaskImplementation::Resumable(machine) => Some(crate::executor::clone_preparation(
+                    task_machine_identity(machine.as_ref(), io)?, io,
+                )?),
+            }
+        } else { None };
+        let name = crate::executor::clone_preparation(&definition.identity.name, io)?;
+        let version = crate::executor::clone_preparation(&definition.identity.version, io)?;
+        let duplicate = if io.is_some() {
+            let mut found = false;
+            for ((existing_name, existing_version), _) in &self.0 {
+                inspect_task_metadata(io, 1)?;
+                if existing_name == &name && existing_version == &version { found = true; break; }
+            }
+            found
+        } else { self.0.contains_key(&(name.clone(), version.clone())) };
+        if duplicate {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if io.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict, reason: "task version is already registered",
+                });
+            }
+            return Err(Error::Conflict(format!("task {name}@{version} is already registered")));
+        }
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.retain_owned((std::mem::size_of::<TaskEntry>()
+                + std::mem::size_of::<(String, String)>()) as u64)?;
+        }
+        // All native duplicate metadata is admitted and copied before Arc
+        // publication. None retains its original field/callback evaluation.
+        let copied = if io.is_some() {
+            Some((
+                crate::executor::clone_preparation(&definition.identity, io)?,
+                observed_machine,
+                crate::executor::clone_preparation(&definition.input_schema, io)?,
+                crate::executor::clone_preparation(&definition.output_schema, io)?,
+                crate::executor::clone_preparation(&definition.requirements, io)?,
+            ))
+        } else { None };
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.allocation_attempt(std::mem::size_of::<TaskDefinition<I, O>>() as u64)?;
         }
         let definition = Arc::new(definition);
-        self.0.insert(
-            (name, version),
-            TaskEntry {
-                identity: definition.identity.clone(),
-                resumable: matches!(&definition.implementation, TaskImplementation::Resumable(_)),
-                machine: match &definition.implementation {
-                    TaskImplementation::Live(_) => None,
-                    TaskImplementation::Resumable(machine) => Some(machine.identity().clone()),
-                },
-                input_schema: definition.input_schema.clone(),
-                output_schema: definition.output_schema.clone(),
-                requirements: definition.requirements.clone(),
-                workflow_definition: match &definition.implementation {
-                    TaskImplementation::Live(_) => None,
-                    TaskImplementation::Resumable(_) => Some(definition.clone()),
-                },
-                definition: Arc::new(definition),
-            },
-        );
-        Ok(())
+        let (identity, machine, input_schema, output_schema, requirements) = if let Some(copied) = copied {
+            copied
+        } else {
+            let identity = definition.identity.clone();
+            let machine = match &definition.implementation {
+                TaskImplementation::Live(_) => None,
+                TaskImplementation::Resumable(machine) => Some(machine.identity().clone()),
+            };
+            (identity, machine, definition.input_schema.clone(), definition.output_schema.clone(),
+                definition.requirements.clone())
+        };
+        let workflow_definition: Option<Arc<dyn RegisteredTaskDefinition>> = match &definition.implementation {
+            TaskImplementation::Live(_) => None,
+            TaskImplementation::Resumable(_) => Some(definition.clone()),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let stored_definition: Arc<StoredDefinition> = definition;
+        #[cfg(target_arch = "wasm32")]
+        let stored_definition: Arc<StoredDefinition> = Arc::new(definition);
+        Ok(((name, version), TaskEntry {
+            identity, resumable: workflow_definition.is_some(), machine, input_schema, output_schema,
+            requirements, workflow_definition, definition: stored_definition,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        }))
     }
 
     /// Resolves one Rust input/output pair. An unqualified name is accepted
@@ -1013,10 +1327,7 @@ impl TaskRegistry {
             }
             first.1
         };
-        stored
-            .definition
-            .downcast_ref::<Arc<TaskDefinition<I, O>>>()
-            .cloned()
+        task_definition_arc::<I, O>(stored)
             .ok_or_else(|| Error::Conflict(format!("task {name} has different input/output types")))
     }
 
@@ -1026,19 +1337,97 @@ impl TaskRegistry {
         name: &str,
         version: &str,
     ) -> Result<Arc<TaskDefinition<I, O>>> {
-        let stored = self
-            .0
-            .get(&(name.to_owned(), version.to_owned()))
-            .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
-        stored
-            .definition
-            .downcast_ref::<Arc<TaskDefinition<I, O>>>()
-            .cloned()
-            .ok_or_else(|| {
-                Error::Conflict(format!(
-                    "task {name}@{version} has different input/output types"
-                ))
-            })
+        self.get_version_with_io(name, version, None)
+    }
+
+    /// Borrows keys and clones only the actual published definition Arc.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn get_version_with_native_work<I: 'static, O: 'static>(
+        &self, name: &str, version: &str, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<TaskDefinition<I, O>>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = self.get_version_with_io(name, version, Some(&io));
+        let (definition, _temporary_custody) = crate::workflow::finish_native_io(result, io, 0)?;
+        Ok(definition)
+    }
+
+    fn get_version_with_io<I: 'static, O: 'static>(
+        &self, name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Arc<TaskDefinition<I, O>>> {
+        let native = task_original_work(io)?;
+        let stored = if io.is_some() {
+            let mut selected = None;
+            for ((logical, pinned_version), entry) in &self.0 {
+                inspect_task_metadata(io, 1)?;
+                if logical == name && pinned_version == version { selected = Some(entry); break; }
+            }
+            selected.ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::NotFound,
+                "native task version is unavailable"))?
+        } else {
+            self.0.get(&(name.to_owned(), version.to_owned()))
+                .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = native {
+            if stored.native_custody.is_none() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "registry entry was not copied with native custody",
+                });
+            }
+            stored.require_native_definition(work)?;
+        }
+        task_definition_arc::<I, O>(stored).ok_or_else(|| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native.is_some() {
+                return Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "task version has different input/output types",
+                };
+            }
+            Error::Conflict(format!("task {name}@{version} has different input/output types"))
+        })
+    }
+
+    /// Copies actual registry metadata under the original work before growth.
+    /// Published definition Arcs retain their own source guards independently.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = self.clone_with_io(Some(&io));
+        let (mut registry, custody) = crate::workflow::finish_native_io(
+            result, io, std::mem::size_of::<Self>() as u64,
+        )?;
+        registry.1 = Some(custody);
+        Ok(registry)
+    }
+
+    fn clone_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.retain_owned(std::mem::size_of::<Self>() as u64)?; }
+        let mut registry = Self::default();
+        for (key, entry) in &self.0 {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = task_original_work(io)? {
+                entry.require_native_definition(work)?;
+                let entry_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                let result = (|| {
+                    entry_io.retain_owned((std::mem::size_of::<TaskEntry>()
+                        + std::mem::size_of::<(String, String)>()) as u64)?;
+                    let key = crate::executor::clone_preparation(key, Some(&entry_io))?;
+                    Ok((key, entry.clone_with_io(Some(&entry_io))?))
+                })();
+                let retained = entry_io.owned_bytes()?;
+                let ((key, mut copied), custody) = crate::workflow::finish_native_io(
+                    result, entry_io, retained,
+                )?;
+                copied.native_custody = Some(custody);
+                registry.0.insert(key, copied);
+                continue;
+            }
+            registry.0.insert(crate::executor::clone_preparation(key, io)?, entry.clone_with_io(io)?);
+        }
+        Ok(registry)
     }
 
     /// Uses the same registered metadata for an erased stock child command.
@@ -5282,11 +5671,17 @@ impl AgentHarness {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original native task definition is unavailable",
         })?;
+        if entry.native_custody.is_none() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "registered task metadata lacks native custody",
+            });
+        }
         let definition = entry.workflow_definition.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "live tasks have no resumable workflow",
         })?;
-        definition.require_native_open()?;
+        definition.require_native_identity(work)?;
         let opening = RegisteredTaskOpening::Native {
             fence, context, definition: definition.clone(),
         };
