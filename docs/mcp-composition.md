@@ -88,6 +88,14 @@ boundary without performing its writes, including after provider recovery.
 It validates initialization before emitting the initialized notification and
 one request, pins distinct IDs, and fails permanently after malformed output.
 Its parser state is transient; it does not substitute for native durable receipts.
+The finite native path uses those same RPC and seven-method service validators.
+RPC envelope and UUID checks borrow or move the original value; they do not
+clone a response or infer host authority from its fields. Closed typed DTO
+validation reserves a logical quota on the original operation ledger before
+Serde runs, including nested tagged/untagged content and owned diagnostics.
+Typed temporaries drop before that reservation; a decode error retains its
+actual Serde cause and reservation until physical error drop. This is a logical
+storage bound, not allocator metadata, RSS, or an observed allocation count.
 The ingress adapter validates bounded complete frames as `RawValue` before the
 library codec sees them, preventing its malformed-input debug event from logging
 private stdout. The codec decodes raw JSON; Harness then hydrates it using its

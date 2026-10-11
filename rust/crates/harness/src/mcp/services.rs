@@ -3,38 +3,69 @@ use crate::{Error, OperationId, Result};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use super::http::HttpMcpTransport;
-
-fn check<T: DeserializeOwned>(value: &Value) -> Result<()> {
-    T::deserialize(value)
-        .map(|_| ())
-        .map_err(|error| Error::Invalid(error.to_string()))
-}
+use super::rpc::{Dto, NativeWork, check_dto, checkpoint, protocol_error};
 
 /// Validates service input before network dispatch. The allowlist cannot be used
 /// to invoke arbitrary callbacks, continuations or remote effect methods.
 pub fn validate_params(method: &str, params: &Value) -> Result<()> {
-    if !params.is_object() { return Err(Error::Invalid("MCP service parameters must be an object".into())); }
-    match method {
-        "resources/list" | "resources/templates/list" | "prompts/list" | "tools/list" => check::<rmcp::model::PaginatedRequestParams>(params),
-        "resources/read" => check::<rmcp::model::ReadResourceRequestParams>(params),
-        "prompts/get" => check::<rmcp::model::GetPromptRequestParams>(params),
-        _ => Err(Error::Unsupported("MCP service method not selected".into())),
+    validate_params_with_native_work(method, params, None)
+}
+
+pub(super) fn validate_params_with_native_work(
+    method: &str, params: &Value, work: NativeWork<'_>,
+) -> Result<()> {
+    checkpoint(work, 1, 0)?;
+    if !params.is_object() {
+        return Err(protocol_error(work, false, "MCP service parameters must be an object"));
     }
+    let dto = match method {
+        "resources/list" | "resources/templates/list" | "prompts/list" | "tools/list" => Dto::PaginatedParams,
+        "resources/read" => Dto::ReadResourceParams,
+        "prompts/get" => Dto::GetPromptParams,
+        _ => return Err(protocol_error(work, true, "MCP service method not selected")),
+    };
+    check_dto(dto, params, work)
+}
+
+pub(super) fn validate_stdio_params_with_native_work(
+    method: &str, params: &Value, work: NativeWork<'_>,
+) -> Result<()> {
+    if method != "tools/call" { return validate_params_with_native_work(method, params, work); }
+    checkpoint(work, 1, 0)?;
+    if !params.is_object() {
+        return Err(protocol_error(work, false, "MCP service parameters must be an object"));
+    }
+    // Match the existing one-shot continuation policy, including explicit null
+    // and alternate spellings. Reject before the MRTR DTO can buffer its input.
+    for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
+        checkpoint(work, 1, 0)?;
+        if params.get(key).is_some() {
+            return Err(protocol_error(work, true, "MCP stdio continuation needs its own authority owner"));
+        }
+    }
+    check_dto(Dto::CallToolParams, params, work)
 }
 
 /// Validates protocol results using the maintained protocol library. Neither
 /// resources nor prompts are instructions or grants; hosts explicitly project them.
 pub fn validate_result(method: &str, value: Value) -> Result<Value> {
-    match method {
-        "resources/list" => check::<rmcp::model::ListResourcesResult>(&value)?,
-        "resources/templates/list" => check::<rmcp::model::ListResourceTemplatesResult>(&value)?,
-        "resources/read" => check::<rmcp::model::ReadResourceResult>(&value)?,
-        "prompts/list" => check::<rmcp::model::ListPromptsResult>(&value)?,
-        "prompts/get" => check::<rmcp::model::GetPromptResult>(&value)?,
-        "tools/list" => check::<super::McpToolsPage>(&value)?,
-        "tools/call" => super::rpc::validate_tool_result(&value)?,
-        _ => return Err(Error::Unsupported("MCP method is not an admitted service".into())),
-    }
+    validate_result_with_native_work(method, value, None)
+}
+
+pub(super) fn validate_result_with_native_work(
+    method: &str, value: Value, work: NativeWork<'_>,
+) -> Result<Value> {
+    let dto = match method {
+        "resources/list" => Dto::Resources,
+        "resources/templates/list" => Dto::ResourceTemplates,
+        "resources/read" => Dto::ReadResource,
+        "prompts/list" => Dto::Prompts,
+        "prompts/get" => Dto::GetPrompt,
+        "tools/list" => Dto::Tools,
+        "tools/call" => Dto::CallToolResult,
+        _ => return Err(protocol_error(work, true, "MCP method is not an admitted service")),
+    };
+    check_dto(dto, &value, work)?;
     Ok(value)
 }
 
@@ -73,4 +104,67 @@ impl HttpMcpTransport {
 }
 fn cursor_params(cursor: Option<&str>) -> Value {
     cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service_cases() -> [(&'static str, Value, Value); 5] {
+        [
+            ("resources/list", json!({"resources":[{"uri":"file:///exact","name":"external"}]}), json!({"resources":[{"uri":9,"name":"external"}]})),
+            ("resources/templates/list", json!({"resourceTemplates":[{"uriTemplate":"file:///{name}","name":"template"}]}), json!({"resourceTemplates":[{"uriTemplate":[],"name":"template"}]})),
+            ("resources/read", json!({"contents":[{"uri":"file:///exact","blob":"AAEC","mimeType":"application/octet-stream"}]}), json!({"contents":[{"uri":"file:///exact","blob":false}]})),
+            ("prompts/list", json!({"prompts":[{"name":"external","arguments":[{"name":"input","required":true}]}]}), json!({"prompts":[{"name":"external","arguments":[{"required":true}]}]})),
+            ("prompts/get", json!({"messages":[{"role":"user","content":{"type":"resource","resource":{"uri":"file:///exact","text":"external"}}}]}), json!({"messages":[{"role":"system","content":{"type":"text","text":"not authority"}}]})),
+        ]
+    }
+
+    #[test]
+    fn five_services_validate_maintained_dtos_without_projecting_authority() {
+        for (method, valid, invalid) in service_cases() {
+            assert_eq!(validate_result(method, valid.clone()).expect("closed valid DTO"), valid);
+            assert!(validate_result(method, invalid).is_err(), "{method}");
+        }
+        assert!(validate_result("sampling/createMessage", json!({})).is_err());
+        assert!(validate_stdio_params_with_native_work("resources/read", &json!({"uri":9}), None).is_err());
+        assert!(validate_stdio_params_with_native_work("prompts/get", &json!({"name":"exact","arguments":{"input":9}}), None).is_err());
+        assert!(validate_stdio_params_with_native_work("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok());
+        for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
+            let mut params = json!({"name":"exact","arguments":{}});
+            params.as_object_mut().expect("params").insert(key.into(), Value::Null);
+            assert!(matches!(validate_stdio_params_with_native_work("tools/call", &params, None), Err(Error::Unsupported(_))));
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn finite_seven_method_validation_uses_original_ledger_and_retires_typed_temporaries() {
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 16 << 20, items_examined: 10_000,
+            allocation_operations: 32, ..Default::default()
+        }, &acyclic_fs::CancellationToken::new()).expect("original finite work");
+        let baseline = work.live_allocation_bytes();
+        let before = work.receipt();
+        for (method, valid, invalid) in service_cases() {
+            validate_result_with_native_work(method, valid, Some(&work)).expect("bounded closed DTO");
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            let error = validate_result_with_native_work(method, invalid, Some(&work)).expect_err("malformed result");
+            assert!(matches!(&error, Error::NativeDecode { custody: Some(_), .. }));
+            assert!(work.live_allocation_bytes() > baseline);
+            drop(error);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        validate_result_with_native_work("tools/list", json!({"tools":[]}), Some(&work)).expect("tool discovery");
+        validate_result_with_native_work("tools/call", json!({
+            "content":[{"type":"image","data":"AAEC","mimeType":"image/png"}],
+            "structuredContent":null
+        }), Some(&work)).expect("binary and present null tool result");
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert!(work.receipt().items_examined > before.items_examined);
+        work.cancellation().cancel();
+        assert!(matches!(validate_stdio_params_with_native_work("tools/list", &json!({}), Some(&work)),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    }
 }
