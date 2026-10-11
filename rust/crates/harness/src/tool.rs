@@ -231,6 +231,29 @@ impl ToolDefinition {
         })
     }
 
+    /// Validates the same complete projection envelope through the original
+    /// schema and audited DTO codec, without an ordinary allocating decode.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_projection_with_native_work(
+        &self,
+        value: &Value,
+        limits: crate::conversation::Limits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        crate::contract::validate_json_schema_value_with_io(
+            &self.projection_schema, value, "tool projection", Some(&io))?;
+        let encoded_hold;
+        let encoded = io.encode_json(value, limits.render_bytes, false)?;
+        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        let content = io.decode_preparation::<crate::model::ToolResultContent>(&encoded)?;
+        content.validate_limits_with_io(limits, Some(&io))?;
+        drop(content);
+        drop(encoded);
+        drop(encoded_hold);
+        Ok(())
+    }
+
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate()?;
@@ -279,15 +302,12 @@ impl ToolInvocation {
         name: String,
         arguments: Value,
     ) -> Self {
-        let digest = blake3::hash(
-            &[
-                b"harness:tool-call:v2".as_slice(),
-                parent.into_bytes().as_slice(),
-                &step.to_be_bytes(),
-                call_id.as_bytes(),
-            ]
-            .concat(),
-        );
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"harness:tool-call:v2");
+        hasher.update(&parent.into_bytes());
+        hasher.update(&step.to_be_bytes());
+        hasher.update(call_id.as_bytes());
+        let digest = hasher.finalize();
         let mut identity = [0_u8; 16];
         identity.copy_from_slice(&digest.as_bytes()[..16]);
         Self {
@@ -296,6 +316,32 @@ impl ToolInvocation {
             name,
             arguments,
         }
+    }
+
+    /// Moves an already-paid native provider call into the same deterministic
+    /// identity; the caller retains its original payload custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn for_model_call_with_native_work(
+        parent: OperationId,
+        step: u32,
+        call_id: String,
+        name: String,
+        arguments: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let hashed = (b"harness:tool-call:v2".len() as u64)
+            .checked_add(16 + 4)
+            .and_then(|bytes| bytes.checked_add(call_id.len() as u64))
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool call hash length overflow",
+            })?;
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: hashed,
+            items_examined: 4,
+            ..Default::default()
+        })?;
+        Ok(Self::for_model_call(parent, step, call_id, name, arguments))
     }
 
     /// Rejects identities that could execute successfully but fail later when
@@ -699,11 +745,30 @@ impl ToolRegistry {
     /// Resolves a pinned revision independently of the model-visible choice.
     #[must_use]
     pub fn get_version(&self, name: &str, revision: &str) -> Option<&Tool> {
-        // Tuple-key lookup otherwise allocates both borrowed labels on every
-        // execution/replay. Registration remains the only owner of these keys.
-        self.versions.iter().find_map(|((logical, pinned), tool)| {
-            (logical == name && pinned == revision).then_some(tool)
-        })
+        self.versions.get(&(name.to_owned(), revision.to_owned()))
+    }
+
+    /// Uses the same logarithmic pinned registry lookup with funded temporary
+    /// key strings; no second registry or linear native lookup is introduced.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn get_version_with_native_work(
+        &self,
+        name: &str,
+        revision: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&Tool>> {
+        let name_hold;
+        let (name, hold) = work.display(name)?;
+        name_hold = hold;
+        let revision_hold;
+        let (revision, hold) = work.display(revision)?;
+        revision_hold = hold;
+        let key = (name, revision);
+        let found = self.versions.get(&key);
+        drop(key);
+        drop(revision_hold);
+        drop(name_hold);
+        Ok(found)
     }
 
     /// Copies only SDK-owned registry metadata on the original ledger. Executor
@@ -784,7 +849,7 @@ impl ToolRegistry {
                     reason: "tool requires an explicit model revision",
                 }),
             };
-            let tool = self.get_version(name, revision).ok_or(Error::NativeBoundary {
+            let tool = self.get_version_with_native_work(name, revision, work)?.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "selected tool revision is not registered",
             })?;
