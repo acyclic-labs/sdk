@@ -321,6 +321,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 plan.children.retire(accounting)?;
                 let encoded = encode_tree_page_with_accounting(
                     &TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, accounting,
+                    cancellation,
                 )?;
                 let empty = self.put_encoded_with_accounting(
                     ObjectKind::TreePage, encoded, accounting, cancellation,

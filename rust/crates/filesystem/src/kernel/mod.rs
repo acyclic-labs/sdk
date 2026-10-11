@@ -56,6 +56,8 @@ pub(crate) use attribute::encode_attribute_page_with_accounting;
 pub(crate) use attribute_list::list_attributes_async_with_accounting;
 pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use blob::PreparedBlobDemandFailure;
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use checkpoint::build_checkpoint_with_native_work;
@@ -67,6 +69,7 @@ pub(crate) use codec::{EncodeAllocationStep, ReadAllocationStep};
 pub(crate) use file_read::{OriginalReadAccounting, ReadDecodeError, read_object_with_accounting};
 pub(crate) use file_table::encode_file_table_leaf_records_with_accounting;
 pub(crate) use file_table::encode_file_table_page_with_accounting;
+pub(crate) use file_table::encode_file_record_with_accounting;
 pub(crate) use generation::encode_generation_root_with_accounting;
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
@@ -81,6 +84,9 @@ pub(crate) use merge::{
 };
 pub(crate) use metadata::encode_file_metadata_with_accounting;
 pub(crate) use namespace_path::NamespacePathStep;
+pub(crate) use persistent_diff::{
+    ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
+};
 pub(crate) use persistent_point::split_allocation;
 pub(crate) use publication::{
     contextual_publication_fingerprint_with_accounting, decode_published_generation_with_steps,

@@ -1076,16 +1076,16 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
         F: FnMut(WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::FsResult<()>> + Send,
     {
-        cancellation.check().map_err(|error| crate::FsFailure::before_work(error.into()))?;
+        cancellation.check().map_err(|error| crate::OperationFailure::before_work(error.into()))?;
         let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)
-            .map_err(|error| crate::FsFailure::before_work(error.into()))?;
+            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
         check_authority_fault(fault)
-            .map_err(|error| crate::FsFailure::before_work(error.into()))?;
+            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
         let receipt = self.inner.create_authority_with_first_record_guarded(
             authority, commit, budget, cancellation, guard,
         ).await?;
         if receipt.value && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
-            return Err(crate::FsFailure::new(
+            return Err(crate::OperationFailure::new(
                 lost_authority_acknowledgement("create-authority-with-first-record").into(),
                 receipt.work,
             ));
@@ -1543,14 +1543,6 @@ fn altered_read_data(
 }
 
 impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
-    async fn flush_before_publish(
-        &self,
-        scope: crate::PublicationScope<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<crate::PublicationHold> {
-        self.inner.flush_before_publish(scope, budget, cancellation).await
-    }
 
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         self.inner.collection()
@@ -1560,19 +1552,6 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         self.inner.collection_sweeps()
     }
 
-    async fn prepare_generation_publication(
-        &self,
-        request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof,
-        append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.prepare_generation_publication(
-            request, proof, append, scope, budget, cancellation,
-        ).await
-    }
 
     async fn historical_generation_evidence(
         &self,
