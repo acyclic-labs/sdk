@@ -12,6 +12,111 @@ use std::{
     sync::Arc,
 };
 
+// Closed physical factories share the enclosing quota and original observer.
+// No wire encoding or diagnostic String participates in copying these DTOs.
+fn copy_machine_identity(
+    source: &MachineIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<MachineIdentity> {
+    Ok(MachineIdentity {
+        name: crate::core::copy_text(&source.name, quota)?,
+        version: crate::core::copy_text(&source.version, quota)?,
+        digest: source.digest,
+    })
+}
+
+fn copy_machine_checkpoint(
+    source: &MachineCheckpoint, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<MachineCheckpoint> {
+    Ok(MachineCheckpoint {
+        machine: copy_machine_identity(&source.machine, quota)?,
+        revision: source.revision,
+        state: crate::core::copy_value(&source.state, quota)?,
+    })
+}
+
+fn copy_machine_transition(
+    source: &MachineTransition, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<MachineTransition> {
+    Ok(MachineTransition {
+        state: crate::core::copy_value(&source.state, quota)?,
+        commands: crate::core::copy_vector(&source.commands, quota, |command, quota| {
+            Ok(WorkflowCommand {
+                operation_id: command.operation_id,
+                kind: crate::core::copy_text(&command.kind, quota)?,
+                payload: crate::core::copy_file(&command.payload, quota)?,
+            })
+        })?,
+        status: match &source.status {
+            MachineStatus::Suspended => MachineStatus::Suspended,
+            MachineStatus::Completed { value } => MachineStatus::Completed {
+                value: crate::core::copy_value(value, quota)?,
+            },
+            MachineStatus::Failed { message } => MachineStatus::Failed {
+                message: crate::core::copy_text(message, quota)?,
+            },
+        },
+    })
+}
+
+fn copy_workflow_key(
+    source: &IdempotencyKey, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<IdempotencyKey> {
+    Ok(IdempotencyKey(crate::core::copy_text(&source.0, quota)?))
+}
+
+fn copy_workflow_record(
+    source: &WorkflowRecord, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<WorkflowRecord> {
+    Ok(WorkflowRecord {
+        operation_id: source.operation_id,
+        idempotency_key: copy_workflow_key(&source.idempotency_key, quota)?,
+        input_digest: source.input_digest,
+        prior: copy_machine_checkpoint(&source.prior, quota)?,
+        input: crate::core::copy_value(&source.input, quota)?,
+        transition: copy_machine_transition(&source.transition, quota)?,
+        next: copy_machine_checkpoint(&source.next, quota)?,
+    })
+}
+
+fn copy_workflow_admission(
+    source: &WorkflowAdmission, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<WorkflowAdmission> {
+    Ok(WorkflowAdmission {
+        operation_id: source.operation_id,
+        request_digest: source.request_digest,
+        initial: copy_machine_checkpoint(&source.initial, quota)?,
+    })
+}
+
+macro_rules! workflow_physical_copy {
+    ($name:ident, $kind:ty, $factory:path) => {
+        pub(crate) fn $name(
+            source: &$kind, io: Option<&crate::executor::PreparationIo>,
+        ) -> Result<$kind> {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let mut observer = io.history_io();
+                let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+                let copied = $factory(source, &mut quota)?;
+                quota.transfer();
+                return Ok(copied);
+            }
+            let _ = io;
+            Ok(source.clone())
+        }
+    };
+}
+
+workflow_physical_copy!(workflow_copy_text, String, crate::core::copy_text);
+workflow_physical_copy!(workflow_copy_value, Value, crate::core::copy_value);
+workflow_physical_copy!(workflow_copy_identity, MachineIdentity, copy_machine_identity);
+workflow_physical_copy!(workflow_copy_checkpoint, MachineCheckpoint, copy_machine_checkpoint);
+workflow_physical_copy!(workflow_copy_transition, MachineTransition, copy_machine_transition);
+workflow_physical_copy!(workflow_copy_record, WorkflowRecord, copy_workflow_record);
+workflow_physical_copy!(workflow_copy_admission, WorkflowAdmission, copy_workflow_admission);
+workflow_physical_copy!(workflow_copy_key, IdempotencyKey, copy_workflow_key);
+
 /// Replay-safe command emitted by a machine. The operation ID is stable and
 /// all variable arguments live in an immutable owner-resolved file version.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -264,8 +369,8 @@ impl MachineRegistry {
         identity.validate_with_io(io)?;
         crate::contract::compile_json_schema_with_io(machine.state_schema(), "machine state", io)?;
         let key = (
-            crate::executor::clone_preparation(&identity.name, io)?,
-            crate::executor::clone_preparation(&identity.version, io)?,
+            workflow_copy_text(&identity.name, io)?,
+            workflow_copy_text(&identity.version, io)?,
             identity.digest,
         );
         if self.0.contains_key(&key) {
@@ -299,6 +404,26 @@ impl MachineRegistry {
             identity.version.clone(),
             identity.digest,
         ))
+    }
+
+    /// Observes borrowed pinned metadata before lookup, without manufacturing
+    /// owned registry keys or replacing the caller's original work ledger.
+    pub(crate) fn resolve_with_work(
+        &self, identity: &MachineIdentity,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<&Arc<dyn ResumableMachine>>> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                bytes: identity.name.len() as u64 + identity.version.len() as u64 + 32,
+                items: self.0.len() as u64,
+            })?;
+        }
+        Ok(self.0.iter().find_map(|((name, version, digest), machine)| {
+            (name == &identity.name && version == &identity.version && digest == &identity.digest)
+                .then_some(machine)
+        }))
     }
 
     /// Applies one replay-safe step and returns the next checkpoint.
@@ -355,9 +480,9 @@ impl MachineRegistry {
         validate_commands_with_io(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
         let next = MachineCheckpoint {
-            machine: crate::executor::clone_preparation(&checkpoint.machine, io)?,
+            machine: workflow_copy_identity(&checkpoint.machine, io)?,
             revision: workflow_next_revision(checkpoint.revision, io)?,
-            state: crate::executor::clone_preparation(&transition.state, io)?,
+            state: workflow_copy_value(&transition.state, io)?,
         };
         let checkpoint_retained = workflow_owned_bytes(io)? - before;
         Ok((next, transition, checkpoint_retained, transition_retained))
@@ -467,7 +592,7 @@ impl MachineRegistry {
     ) -> Result<(MachineCheckpoint, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native_input = io.map(|io| {
-            crate::executor::clone_preparation(&record.input, Some(io))
+            workflow_copy_value(&record.input, Some(io))
         }).transpose()?;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native_input = None;
@@ -1045,7 +1170,7 @@ impl DurableWorkflowHost {
                 if let Some(io) = io {
                     host.reserve_native_index(record.transition.commands.len(), io)?;
                 }
-                keys.insert(crate::executor::clone_preparation(&record.idempotency_key, io)?);
+                keys.insert(workflow_copy_key(&record.idempotency_key, io)?);
                 host.reserved_operations.extend(record.operation_ids());
                 host.intents.insert(
                     record.operation_id,
@@ -1263,7 +1388,7 @@ impl DurableWorkflowHost {
             return if record.idempotency_key == idempotency_key && record.input == input {
                 check(&record.transition)?;
                 let before = workflow_owned_bytes(io)?;
-                let transition = crate::executor::clone_preparation(&record.transition, io)?;
+                let transition = workflow_copy_transition(&record.transition, io)?;
                 Ok((transition, 0, workflow_owned_bytes(io)? - before))
             } else {
                 Err(workflow_recovery_error(io, "workflow operation identity is bound to another input", false))
@@ -1279,7 +1404,7 @@ impl DurableWorkflowHost {
         // that necessary replay copy before the machine consumes the original.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (input, native_input) = if io.is_some() {
-            (crate::executor::clone_preparation(&input, io)?, Some(input))
+            (workflow_copy_value(&input, io)?, Some(input))
         } else {
             (input, None)
         };
@@ -1290,12 +1415,12 @@ impl DurableWorkflowHost {
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
-            idempotency_key: crate::executor::clone_preparation(&idempotency_key, io)?,
+            idempotency_key: workflow_copy_key(&idempotency_key, io)?,
             input_digest: crate::executor::preparation_digest(&input, io)?,
-            prior: crate::executor::clone_preparation(&self.checkpoint, io)?,
+            prior: workflow_copy_checkpoint(&self.checkpoint, io)?,
             input,
-            transition: crate::executor::clone_preparation(&transition, io)?,
-            next: crate::executor::clone_preparation(&next, io)?,
+            transition: workflow_copy_transition(&transition, io)?,
+            next: workflow_copy_checkpoint(&next, io)?,
         };
         record.validate_with_io(io)?;
         if record.transition.commands.iter().any(|command| {
@@ -1314,8 +1439,8 @@ impl DurableWorkflowHost {
         if let Some(io) = io {
             self.reserve_native_index(record.transition.commands.len(), io)?;
         }
-        let committed_record = crate::executor::clone_preparation(&record, io)?;
-        let commit_key = crate::executor::clone_preparation(&idempotency_key, io)?;
+        let committed_record = workflow_copy_record(&record, io)?;
+        let commit_key = workflow_copy_key(&idempotency_key, io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let observed = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -1654,6 +1779,47 @@ fn workflow_recovery_error(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn workflow_transition_copy_preserves_terminal_fields_without_encoding() -> Result<()> {
+        use crate::store::history::HistoryWork;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut observer = HistoryWork::new(acyclic_fs::WorkBudget {
+            allocation_operations: 1000, peak_allocation_bytes: 1_048_576,
+            bytes_copied: 1_048_576, items_examined: 1000,
+            ..acyclic_fs::WorkBudget::default()
+        }, &cancellation);
+        let source = MachineTransition {
+            state: json!({"private": ["state"]}), commands: Vec::new(),
+            status: MachineStatus::Completed { value: json!({"result": "terminal"}) },
+        };
+        {
+            let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            let copied = copy_machine_transition(&source, &mut quota)?;
+            assert_eq!(copied, source);
+            assert!(quota.retained() > 0);
+            drop(copied);
+        }
+        let observed = observer.finish(Ok(())).expect("physical workflow copy");
+        assert!(observed.work.bytes_copied > 0);
+        assert_eq!(observed.work.bytes_encoded, 0);
+        assert_eq!(observed.work.bytes_hashed, 0);
+        assert_eq!(workflow_copy_transition(&source, None)?, source);
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_registry_resolution_preserves_exact_missing_identity() -> Result<()> {
+        let registry = MachineRegistry::default();
+        let identity = MachineIdentity {
+            name: "machine".into(), version: "1".into(), digest: [1; 32],
+        };
+        assert!(registry.resolve(&identity).is_none());
+        assert!(registry.resolve_with_work(&identity, &mut None)?.is_none());
+        Ok(())
+    }
 
     #[test]
     fn v2_workflow_admission_fixture_is_canonical() -> Result<()> {
