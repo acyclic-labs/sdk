@@ -919,7 +919,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         cancellation.check().map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
         let snapshot = self.0.historical_snapshot(authority).await
             .map_err(OperationFailure::before_work)?;
-        authority_success(snapshot.head, authority_read_work(2), budget)
+        authority_success(snapshot.head, authority_read_work(2), budget).map_err(Into::into)
     }
 
     async fn compare_and_append(
@@ -1076,7 +1076,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             }
             commits.push(durable);
         }
-        authority_success(commits, work, budget)
+        authority_success(commits, work, budget).map_err(Into::into)
     }
 }
 
@@ -4250,7 +4250,7 @@ mod tests {
             match forgery {
                 0 => append.path = records_path(AuthorityId::from_bytes([0x74; 16])).expect("other path"),
                 1 => append.records[0].sequence += 1,
-                _ => append.records[0].value = Bytes::from_static(b"forged record"),
+                _ => append.records[0].value = acyclic_stream::OwnedBytes::from_static(b"forged record"),
             }
             assert!(matches!(durable_from_operation_envelope(
                 authority_id, proposed.operation_id, forged,
@@ -4580,7 +4580,7 @@ mod tests {
         assert_eq!(append.path, epochs_path(authority)?);
         assert_eq!(append.records.len(), 1);
         assert_eq!(append.records[0].value,
-            encode_epoch(EPOCH_DOMAIN, Epoch::new(current.epoch.get() + 1)?));
+            encode_epoch(EPOCH_DOMAIN, Epoch::new(current.epoch.get() + 1)?).into());
         original.receipt().verify(native_authority_budget())?;
         Ok(())
     }
@@ -5441,8 +5441,8 @@ mod tests {
             -> Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> { self.inner.append(request).await }
         async fn fork(&self, request: acyclic_stream::ForkRequest)
             -> Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> { self.inner.fork(request).await }
-        async fn follow(&self, request: acyclic_stream::ReadRequest)
-            -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> { self.inner.follow(request).await }
+        async fn follow(&self, path: acyclic_stream::StreamPath, from: u64)
+            -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> { self.inner.follow(path, from).await }
         async fn children(&self, request: acyclic_stream::ChildrenRequest)
             -> Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> { self.inner.children(request).await }
         async fn read_commit(&self, id: acyclic_stream::CommitId)

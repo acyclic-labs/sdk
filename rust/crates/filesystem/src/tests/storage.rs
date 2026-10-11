@@ -97,7 +97,7 @@ fn shared_backend_handles_forward_without_semantic_wrappers()
         ProposedCommit {
             operation_id,
             fingerprint: Digest::from_bytes([11; 32]),
-            payload: Bytes::from_static(b"forwarded"),
+            payload: bytes::Bytes::from_static(b"forwarded"),
         },
         WorkBudget::UNBOUNDED,
     )?;

@@ -266,6 +266,8 @@ pub use probe::{
 pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use publication::NativePublicationPayload;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,

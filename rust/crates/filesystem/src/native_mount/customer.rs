@@ -2201,7 +2201,6 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let budget = crate::WorkBudget {
             source_bytes_read: 0,
-            source_directory_pages: 0,
             materializations: 0,
             ..crate::WorkBudget::UNBOUNDED
         };
@@ -2215,7 +2214,6 @@ mod tests {
         assert_eq!(root.0, "/selected");
         work.receipt().verify(budget)?;
         assert_eq!(work.receipt().source_bytes_read, 0);
-        assert_eq!(work.receipt().source_directory_pages, 0);
         assert_eq!(work.receipt().materializations, 0);
         assert!(work.receipt().backend_read_operations > 0);
         assert!(matches!(lazy.lookup("/selected").await?, LazyLookup::Authored { .. }));
@@ -2284,7 +2282,6 @@ mod tests {
         assert!(native_source.capture_retired());
         work.receipt().verify(budget)?;
         assert_eq!(work.receipt().source_bytes_read, 0);
-        assert_eq!(work.receipt().source_directory_pages, 0);
         assert_eq!(work.receipt().materializations, 0);
         Ok(())
     }
@@ -2334,7 +2331,7 @@ mod tests {
         assert_ne!(startup.1, crate::WorkCounters::UNCHARGED);
         let mut startup = match startup.0 {
             MountLifecycleError::Native(NativeMountError::StartupFailed(startup)) => startup,
-            error => return Err(Box::new(error)),
+            error => return Err(Box::<dyn std::error::Error>::from(error)),
         };
         // The source watcher is real cleanup custody even before a driver or
         // destination fence exists.
@@ -2400,7 +2397,7 @@ mod tests {
         let (lookup, lookup_custody) = mount.lookup_at_snapshot_with_work(
             before.value, "/source.txt", &query_native,
         ).await?;
-        assert!(matches!(&lookup, crate::LazyLookup::Source(node) if node.kind == crate::SourceNodeKind::RegularFile));
+        assert!(matches!(&lookup, crate::LazyLookup::Source(node) if node.kind == crate::demand::SourceNodeKind::RegularFile));
         assert!(lookup_custody.work().shares_ledger(&query_work));
         assert!(query_work.receipt().items_examined > 0);
         drop(lookup);
@@ -2419,7 +2416,7 @@ mod tests {
             .map_err(|(error, _)| error)?;
         let unrelated = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let (bytes, custody) = mount.with_original_work(&io_work.native_mount_work(), |_scope| async {
+        let bytes = mount.with_original_work(&io_work.native_mount_work(), |_scope| async {
             let conflict = mount.with_original_work(
                 &unrelated.native_mount_work(), |_scope| std::future::ready(()),
             ).await;
@@ -2441,7 +2438,6 @@ mod tests {
         assert!(io_work.receipt().source_bytes_read >= 6);
         assert_eq!(unrelated.receipt().source_bytes_read, 0);
         drop(bytes);
-        drop(custody);
         assert_eq!(std::fs::read(destination.path().join("source.txt"))?, b"source");
         assert_eq!(std::fs::read(destination.path().join("authored.txt"))?, b"authored");
         std::fs::write(destination.path().join("authored.txt"), b"native edit")?;
@@ -2855,6 +2851,7 @@ mod tests {
     #[tokio::test]
     async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let source = tempfile::tempdir()?;

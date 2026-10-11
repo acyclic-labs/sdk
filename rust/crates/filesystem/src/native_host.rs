@@ -3469,25 +3469,10 @@ impl LinuxMetadataTarget {
         Ok(unsafe { stat.assume_init() })
     }
 
-    /// Sets POSIX extended attributes on the pinned inode, each by its full
-    /// raw name, and reads each back. Linux gives a symbolic link no user
-    /// attributes, so asking for any on one fails closed.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes(
+    pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
         &self,
-        attributes: &[(Vec<u8>, bytes::Bytes)],
-    ) -> Result<(), LinuxMetadataError> {
-        self.set_extended_attributes_measured(attributes, &mut ordinary_work())
-            .map_err(|error| match error {
-                DemandError::LinuxMetadata(error) => error,
-                error => LinuxMetadataError::Io(ordinary_error(error)),
-            })
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes_measured<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        attributes: &[(Vec<u8>, bytes::Bytes)],
+        attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)],
         work: &mut W,
     ) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
@@ -6443,24 +6428,9 @@ impl MacMetadataTarget {
         }
     }
 
-    /// Sets each extended attribute on the held inode by its exact raw
-    /// name, and reads each back. A node no descriptor can hold (a socket,
-    /// say) takes none: asking for any on one fails closed.
     #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes(
-        &self,
-        attributes: &[(Vec<u8>, bytes::Bytes)],
-    ) -> Result<(), MacMetadataError> {
-        self.set_extended_attributes_measured(attributes, &mut ordinary_work())
-            .map_err(|error| match error {
-                DemandError::MacMetadata(error) => error,
-                error => MacMetadataError::Io(ordinary_error(error)),
-            })
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes_measured<W: crate::demand::SourceDemandReadWork>(
-        &self, attributes: &[(Vec<u8>, bytes::Bytes)], work: &mut W,
+    pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
+        &self, attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)], work: &mut W,
     ) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         use std::os::unix::ffi::OsStrExt as _;
@@ -9699,6 +9669,8 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_clone_tests {
+    use crate::WorkCounters;
+    use super::create_windows_symbolic_link_with_work;
     use super::{
         HostRoot, UNIX_EPOCH_FILETIME, WindowsMetadataError, allocated_data_ranges,
         filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,
@@ -10352,7 +10324,7 @@ mod windows_clone_tests {
         let published = std::cell::Cell::new(false);
         let set = std::cell::Cell::new(false);
         let result = create_windows_symbolic_link_with_work(
-            root.directory_handle(), &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
+            &root.directory, &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
             &mut created, || published.set(true), || set.set(true), &mut &work,
         );
         assert!(result.is_err());
@@ -10381,7 +10353,7 @@ mod windows_clone_tests {
         let mut created = None;
         let set = std::cell::Cell::new(false);
         let result = create_windows_symbolic_link_with_work(
-            root.directory_handle(), &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
+            &root.directory, &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
             &mut created, || cancellation.cancel(), || set.set(true), &mut &work,
         );
         assert!(matches!(result, Err(crate::NativeTreeMaterializationError::Cancelled)));

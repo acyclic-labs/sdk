@@ -2,8 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeSemanticError};
 use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
-use crate::performance::WorkError;
-use crate::storage::{ObjectKind, ObjectStoreError};
+use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<LogicalName, crate::kernel::TreePageError> {
     LogicalName::new(NameEncoding::PosixBytes, vec![byte], 1)
@@ -85,12 +84,11 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         )
         .err()
         .ok_or("invalid persistent-tree request was admitted")?;
-        assert_eq!(*failure.work, WorkCounters::default());
         match expected {
-            "wrong-kind" => assert!(matches!(failure.error, Error::WrongRootKind)),
-            "empty" => assert!(matches!(failure.error, Error::Empty)),
-            "too-many" => assert!(matches!(failure.error, Error::TooManyMutations)),
-            "invalid-limits" => assert!(matches!(failure.error, Error::InvalidLimits)),
+            "wrong-kind" => assert!(matches!(failure, Error::WrongRootKind)),
+            "empty" => assert!(matches!(failure, Error::Empty)),
+            "too-many" => assert!(matches!(failure, Error::TooManyMutations)),
+            "invalid-limits" => assert!(matches!(failure, Error::InvalidLimits)),
             _ => unreachable!(),
         }
     }
@@ -216,30 +214,4 @@ fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn lower_layer_error_translation_is_total() {
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::AllocationFailed),
-        Error::AllocationFailed
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Allocation(
-            AllocationError::CapacityExceeded
-        )),
-        Error::Allocation(AllocationError::CapacityExceeded)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Storage(ObjectStoreError::Missing)),
-        Error::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Decode(
-            CanonicalDecodeError::Truncated
-        )),
-        Error::Decode(CanonicalDecodeError::Truncated)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Work(WorkError::Overflow)),
-        Error::Work(WorkError::Overflow)
-    ));
-}
+

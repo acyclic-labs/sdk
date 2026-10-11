@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::kernel::DecodeLimits;
@@ -1160,6 +1161,12 @@ mod native_cache {
             &self, id: ObjectId, budget: WorkBudget, token: &CancellationToken,
         ) -> ObjectResult<bool> {
             self.inner.contains(id, budget, token).await
+        }
+
+        async fn read_many(
+            &self, requests: &[ObjectReadRequest], budget: WorkBudget, token: &CancellationToken,
+        ) -> ObjectResult<Vec<ObjectRead>> {
+            self.inner.read_many(requests, budget, token).await
         }
 
         async fn read_with_native_work(

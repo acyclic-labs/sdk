@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
