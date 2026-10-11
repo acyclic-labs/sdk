@@ -26,10 +26,9 @@ use acyclic_native_runtime::{
 };
 use async_trait::async_trait;
 #[cfg(test)]
-use bytes::Bytes;
+use crate::OwnedBytes;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
-use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, watch};
@@ -1173,6 +1172,62 @@ impl LocalStream {
             into_native(result)
         })
     }
+
+    /// Append keeps its own semantic family and optional-key retention policy,
+    /// while sharing every physical frame/control engine with ordinary append.
+    async fn append_with<T, F>(
+        &self,
+        input: AppendInput,
+        meter: Option<Arc<dyn NativeReadMeter>>,
+        execute: impl FnOnce(MemoryStream, AppendInput) -> F + Send + 'static,
+    ) -> LocalCompletion<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = LocalCompletion<AppendCompletion<T>>> + Send + 'static,
+    {
+        let span = obs::OwnedSpan::new(tracing::info_span!(
+            "acyclic.stream.append",
+            items = input.request.records.len(),
+            bytes = input.request.records.iter().map(crate::OwnedBytes::len).sum::<usize>(),
+            rev = Empty,
+            outcome = Empty,
+            error.kind = Empty
+        ));
+        let observer = meter.clone();
+        let operation = span.clone();
+        span.scope(self.exclusive_observed(&span, meter, move |stream| async move {
+            let mut accepted_flush = None;
+            let mut accepted_input = None;
+            let result = async {
+                let frame = stream.prepare_observed(CommandRef::Append(&input.request), observer.as_ref())?;
+                let admission = observer.as_ref()
+                    .map(|meter| AdmittedFrameWrite::new(meter, frame.encoded.len()))
+                    .transpose()?;
+                let flush = if observer.is_some() && !deferred() {
+                    Some(stream.plan_flush(observer.as_ref())?)
+                } else { None };
+                let persist = stream.plan_persist(frame, admission, observer.as_ref())?;
+                let completion = execute(stream.inner.provider.clone(), input).await?;
+                accepted_input = completion.input;
+                if completion.persist {
+                    accepted_flush = flush;
+                    let persisted = stream.persist_planned(persist, observer.as_ref()).await;
+                    if let Some(error) = completion.error {
+                        return Err(LocalCompletionError::Native(error));
+                    }
+                    persisted?;
+                } else if let Some(error) = completion.error {
+                    return Err(LocalCompletionError::Native(error));
+                }
+                if let Some(revision) = completion.revision { obs::record(&operation, "rev", revision); }
+                Ok(completion.value)
+            }.await;
+            MutationCompletion {
+                result, flush: accepted_flush,
+                _input: accepted_input.map(|input| MutationInput::Append { _input: input }),
+            }
+        })).await
+    }
 }
 
 #[async_trait]
@@ -1542,10 +1597,20 @@ impl PreparedFrame {
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> Result<Self, LocalStreamError> {
         let journal = journal_command_observed(command, meter)?;
+        Self::encode_wire_observed(&journal.value, committed_at_millis, meter)
+    }
+
+    /// The only raw-frame encoder, consuming the same borrowed canonical graph.
+    /// Guarded payloads remain borrowed; frame construction allocates no DTO.
+    fn encode_wire_observed(
+        journal: &crate::wire_codec::CanonicalWire<'_>,
+        committed_at_millis: u64,
+        meter: Option<&Arc<dyn NativeReadMeter>>,
+    ) -> Result<Self, LocalStreamError> {
         if let Some(meter) = meter {
             meter.admit_examination(1, 0)?;
         }
-        let encoded_length = journal.value.encoded_len();
+        let encoded_length = journal.encoded_len()?;
         if let Some(meter) = meter {
             meter.record_examination(1, 0)?;
             meter.check()?;
@@ -1567,6 +1632,22 @@ impl PreparedFrame {
         if let Some(allocation) = &mut allocation {
             allocation.reconcile_capacity(encoded.capacity())?;
         }
+        Ok(Self { encoded, bytes: 0, _allocation: allocation })
+    }
+
+    /// Encodes only into already owned storage; the closed capacity bound is
+    /// checked before any copy and never silently grows a prepared frame.
+    fn write_wire_observed(
+        &mut self,
+        journal: &crate::wire_codec::CanonicalWire<'_>,
+        committed_at_millis: u64,
+        encoded_length: usize,
+        length: [u8; 4],
+        capacity: usize,
+        meter: Option<&Arc<dyn NativeReadMeter>>,
+    ) -> Result<(), LocalStreamError> {
+        if capacity > self.encoded.capacity() { return Err(LocalStreamError::InvalidLimits); }
+        self.encoded.clear();
         if let Some(meter) = meter {
             meter.admit_codec(encoded_length as u64, capacity as u64, 0)?;
         }
@@ -2713,6 +2794,187 @@ mod tests {
         Ok(())
     }
 
+    fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, StreamError> {
+        Ok(AppendRequest {
+            path: StreamPath::new(path)?,
+            records: vec![OwnedBytes::from_static(b"native-append-record")],
+            if_tail: Some(tail),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!("{path}@{tail}")))?),
+        })
+    }
+
+    #[test]
+    fn native_static_failure_transfers_original_guard_without_new_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let meter = Arc::new(LocalNativeMeter::default());
+        let original = meter.original();
+        let failure = NativeStreamFailure::new(StreamError::Capacity, ReadAllocation::empty(&original));
+        assert_eq!(failure.source(), &StreamError::Capacity);
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+        let (source, allocation) = failure.into_parts();
+        assert_eq!(source, StreamError::Capacity);
+        assert!(Arc::ptr_eq(allocation.meter(), &original));
+        assert_eq!(allocation.bytes(), 0);
+        drop(allocation);
+        meter.assert_refunded();
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn ready_wire_alias_keeps_original_payload_and_control_until_last_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let meter = Arc::new(LocalNativeMeter::default());
+        let original = meter.original();
+        let mut allocation = ReadAllocation::new(&original, 64)?;
+        let mut data = frame_buffer(64, Some(&original))?;
+        allocation.reconcile_capacity(data.capacity())?;
+        data.extend_from_slice(b"guarded-wire");
+        let value = crate::OwnedBytes::from_vec_with_guard(data, allocation, original.clone())
+            .expect("fixture uses actual funded immutable capacity");
+        let pointer = value.as_ptr();
+        let mut funding = crate::wire_codec::WireFunding::new(Some(&original));
+        let wire = funding.wire_bytes(&value)?;
+        assert_eq!(wire.as_ptr(), pointer);
+        let alias = wire.clone();
+        drop(value);
+        drop(wire);
+        drop(funding);
+        assert!(meter.memory.load(Ordering::SeqCst) >= 64);
+        assert_eq!(alias.as_ref(), b"guarded-wire");
+        drop(alias);
+        meter.assert_refunded();
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_append_capture_funds_descriptors_not_existing_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = keyed_append("native-append-capture", 0)?;
+        let meter = Arc::new(LocalNativeMeter::default());
+        let captured = AppendInput::capture(&source, &meter.original())?;
+        assert_ne!(captured.request.records.as_ptr(), source.records.as_ptr());
+        assert_eq!(captured.request.records[0].as_ptr(), source.records[0].as_ptr());
+        assert_eq!(captured.request, source);
+        assert_eq!(meter.memory.load(Ordering::SeqCst),
+            (captured.request.records.capacity() * std::mem::size_of::<OwnedBytes>()) as u64);
+        assert_eq!(meter.copied.load(Ordering::SeqCst), std::mem::size_of::<OwnedBytes>() as u64);
+        drop(captured);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_append_denial_precedes_capture_and_semantic_cas()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = keyed_append("native-append-denied", 0)?;
+        let key = request.idempotency_key.clone().ok_or("append fixture lacks a key")?;
+        let meter = Arc::new(LocalNativeMeter::default());
+        meter.deny_allocation.store(true, Ordering::SeqCst);
+        let error = provider.native_append(request.clone(), meter.original()).await.err()
+            .ok_or("native append unexpectedly captured")?;
+        assert_original_denial(&error, "allocation");
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
+        meter.deny_allocation.store(false, Ordering::SeqCst);
+        meter.deny_durability.store(true, Ordering::SeqCst);
+        let error = provider.native_append(request, meter.original()).await.err()
+            .ok_or("native append crossed its durability gate")?;
+        assert_original_denial(&error, "durability");
+        assert!(meter.hashed.load(Ordering::SeqCst) > 0);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), HEADER_BYTES as u64);
+        assert!(provider.inspect_idempotency(key).await?.is_none());
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_append_lost_ack_reopens_exact_append_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let request = keyed_append("native-append-lost-ack", 0)?;
+        let key = request.idempotency_key.clone().ok_or("append fixture lacks a key")?;
+        let meter = Arc::new(LocalNativeMeter::default());
+        meter.cancel_on_write.store(true, Ordering::SeqCst);
+        let error = provider.native_append(request.clone(), meter.original()).await.err()
+            .ok_or("accepted cancelled append fabricated an acknowledgement")?;
+        assert_original_denial(&error, "cancelled");
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 1);
+        let accepted = provider.inspect_idempotency(key.clone()).await?
+            .ok_or("accepted append identity disappeared")?;
+        let crate::IdempotencyOutcome::Append(outcome) = &accepted.outcome else {
+            return Err("native append was rewritten into the Commit family".into());
+        };
+        assert!(matches!(outcome, AppendOutcome::Committed(_)));
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.inspect_idempotency(key.clone()).await?, Some(accepted.clone()));
+        assert_eq!(reopened.append(request.clone()).await?, *outcome);
+        assert_eq!(reopened.tail(request.path.clone()).await?, 1);
+        // Reusing the same bytes/key through Commit is a different operation.
+        let wrong_family = CommitRequest {
+            conditions: vec![crate::CommitCondition::Tail { path: request.path.clone(), expected: 1 }],
+            mutations: vec![crate::CommitMutation::Append { path: request.path, records: request.records }],
+            idempotency_key: key,
+        };
+        meter.cancelled.store(false, Ordering::SeqCst);
+        let failure = reopened.native_commit(wrong_family, meter.original()).await?
+            .err().ok_or("Commit incorrectly reused an Append identity")?;
+        assert_eq!(failure.source(), &StreamError::IdempotencyMismatch);
+        drop(failure);
+        drop(reopened);
+        meter.assert_refunded();
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_append_keeps_keyed_conflict_and_does_not_journal_unkeyed_conflict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let path = StreamPath::new("native-append-conflict")?;
+        provider.append(AppendRequest {
+            path: path.clone(), records: vec![OwnedBytes::from_static(b"seed")],
+            if_tail: Some(0), idempotency_key: None,
+        }).await?;
+        let request = keyed_append(path.as_str(), 0)?;
+        let key = request.idempotency_key.clone().ok_or("append fixture lacks a key")?;
+        let meter = Arc::new(LocalNativeMeter::default());
+        let expected = AppendOutcome::TailConflict { actual_tail: 1 };
+        let conflict = provider.native_append(request.clone(), meter.original()).await??;
+        assert_eq!(conflict.value(), &expected);
+        drop(conflict);
+        let after_keyed = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
+        let mut unkeyed = request.clone();
+        unkeyed.idempotency_key = None;
+        let conflict = provider.native_append(unkeyed, meter.original()).await??;
+        assert_eq!(conflict.value(), &expected);
+        drop(conflict);
+        assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), after_keyed);
+        let accepted = provider.inspect_idempotency(key.clone()).await?
+            .ok_or("keyed conflict lost its original identity")?;
+        assert_eq!(accepted.outcome, crate::IdempotencyOutcome::Append(expected.clone()));
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
+        assert_eq!(reopened.append(request).await?, expected);
+        assert_eq!(reopened.tail(path).await?, 1);
+        drop(reopened);
+        meter.assert_refunded();
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
     fn request_control_capacity(request: &CommitRequest) -> usize {
         request.conditions.capacity() * std::mem::size_of::<crate::CommitCondition>()
             + request.mutations.capacity() * std::mem::size_of::<crate::CommitMutation>()
@@ -2721,7 +2983,7 @@ mod tests {
                     crate::CommitMutation::Append { records, .. }
                     | crate::CommitMutation::Fork { records, .. } => records,
                 };
-                records.capacity() * std::mem::size_of::<Bytes>()
+                records.capacity() * std::mem::size_of::<OwnedBytes>()
             }).sum::<usize>()
     }
 
@@ -2859,6 +3121,29 @@ mod tests {
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 1);
         assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 2);
         drop(admission);
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[test]
+    fn native_borrowed_projection_uses_the_only_canonical_frame_encoder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = keyed_commit("captured-frame", 0)?;
+        let expected = PreparedFrame::encode(CommandRef::Commit(&request), 42)?;
+        let meter = Arc::new(LocalNativeMeter::default());
+        let original = meter.original();
+        let captured = journal_command_observed(CommandRef::Commit(&request), Some(&original))?;
+        let dto_capacity = captured.allocation.as_ref().map_or(0, ReadAllocation::bytes);
+        assert_eq!(dto_capacity, 0, "borrowed payloads allocate no DTO descriptor or path copies");
+        let frame = PreparedFrame::encode_wire_observed(&captured.value, 42, Some(&original))?;
+        assert_eq!(frame.encoded, expected.encoded);
+        assert_eq!(frame.bytes, expected.bytes);
+        assert_eq!(meter.memory.load(Ordering::SeqCst),
+            (dto_capacity + frame.encoded.capacity()) as u64);
+        drop(captured);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), frame.encoded.capacity() as u64);
+        drop(frame);
+        assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
         Ok(())
     }
@@ -3164,7 +3449,7 @@ mod tests {
                         provider
                             .append(AppendRequest {
                                 path: StreamPath::new("cancelled-persist")?,
-                                records: vec![Bytes::from_static(b"record")],
+                                records: vec![OwnedBytes::from_static(b"record")],
                                 if_tail: Some(0),
                                 idempotency_key: None,
                             })
@@ -3291,7 +3576,7 @@ mod tests {
                     provider
                         .append(AppendRequest {
                             path,
-                            records: vec![Bytes::from_static(b"record")],
+                            records: vec![OwnedBytes::from_static(b"record")],
                             if_tail: Some(0),
                             idempotency_key: None,
                         })
@@ -3328,9 +3613,9 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: path.clone(),
-                records: vec![Bytes::from(format!("{path}-{tail}"))],
+                records: vec![OwnedBytes::from(format!("{path}-{tail}"))],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from(format!("{path}@{tail}")))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!("{path}@{tail}")))?,
         })
     }
 
@@ -3464,10 +3749,10 @@ mod tests {
                                 .into_iter()
                                 .map(|path| crate::CommitMutation::Append {
                                     path: path.clone(),
-                                    records: vec![Bytes::from(tail.to_le_bytes().to_vec())],
+                                    records: vec![OwnedBytes::from(tail.to_le_bytes().to_vec())],
                                 })
                                 .collect(),
-                            idempotency_key: IdempotencyKey::new(Bytes::from(format!(
+                            idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!(
                                 "joint@{tail}"
                             )))?,
                         })
@@ -3509,7 +3794,7 @@ mod tests {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
             for (tail, record) in (0..).zip(&records) {
-                assert_eq!(record.value, Bytes::from(format!("{path}-{tail}")));
+                assert_eq!(record.value, OwnedBytes::from(format!("{path}-{tail}")));
             }
             for (tail, outcome) in (0..).zip(outcomes) {
                 assert_eq!(&reopened.commit(keyed_commit(&path, tail)?).await?, outcome);
@@ -3541,9 +3826,9 @@ mod tests {
         let path = directory.path().join(JOURNAL_FILE);
         let command = Command::Append(AppendRequest {
             path: StreamPath::new("partial")?,
-            records: vec![Bytes::from_static(b"record")],
+            records: vec![OwnedBytes::from_static(b"record")],
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"partial"))?),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"partial"))?),
         });
         let frame = PreparedFrame::encode(&command, 42)?;
         for cut in 0..=frame.encoded.len() {
@@ -3571,7 +3856,7 @@ mod tests {
         }
         // A whole checksummed noncanonical command is never a torn append.
         let mut payload = 42_u64.to_le_bytes().to_vec();
-        payload.extend_from_slice(&journal_command(&command).encode_to_vec());
+        payload.extend_from_slice(&journal_command(&command).encode_to_vec()?);
         payload.extend_from_slice(&[0x78, 0]);
         let length = u32::try_from(payload.len())?.to_le_bytes();
         let mut bytes = encode_header(limits, 0)?.to_vec();
@@ -3656,9 +3941,9 @@ mod tests {
         let provider = LocalStream::open(directory.path(), limits).await?;
         let first = AppendRequest {
             path: StreamPath::new("capacity/replay")?,
-            records: vec![Bytes::from_static(b"first")],
+            records: vec![OwnedBytes::from_static(b"first")],
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"first"))?),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
         };
         let outcome = provider.append(first.clone()).await?;
         let state = provider.inner.provider.encode_state().await;
@@ -3671,7 +3956,7 @@ mod tests {
             .compact(&state)?;
         drop(provider);
         let second = AppendRequest {
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"second"))?),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"second"))?),
             if_tail: Some(1),
             ..first.clone()
         };
@@ -3708,9 +3993,9 @@ mod tests {
         .await?;
         let request = AppendRequest {
             path: StreamPath::new("retained/local")?,
-            records: vec![Bytes::from_static(b"once")],
+            records: vec![OwnedBytes::from_static(b"once")],
             if_tail: None,
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"local-once"))?),
         };
         let first = provider.append(request.clone()).await?;
         clock.0.store(u64::MAX, Ordering::SeqCst);
@@ -3745,7 +4030,7 @@ mod tests {
             provider
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::copy_from_slice(body)],
+                    records: vec![OwnedBytes::copy_from_slice(body)],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -3759,7 +4044,7 @@ mod tests {
         reopened
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"after-restart")],
+                records: vec![OwnedBytes::from_static(b"after-restart")],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -3845,9 +4130,9 @@ mod tests {
             provider
                 .append(AppendRequest {
                     path: StreamPath::new("deferred")?,
-                    records: vec![Bytes::from_static(b"record")],
+                    records: vec![OwnedBytes::from_static(b"record")],
                     if_tail: None,
-                    idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(key))?),
+                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(key))?),
                 })
                 .await?;
             Ok::<_, Box<dyn std::error::Error>>(())
@@ -3952,7 +4237,7 @@ mod tests {
                 LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
             let request = AppendRequest {
                 path: StreamPath::new("traced")?,
-                records: vec![Bytes::from_static(b"record")],
+                records: vec![OwnedBytes::from_static(b"record")],
                 if_tail: None,
                 idempotency_key: None,
             };
@@ -4002,7 +4287,7 @@ mod tests {
             provider
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::from_static(b"record")],
+                    records: vec![OwnedBytes::from_static(b"record")],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -4117,7 +4402,7 @@ mod tests {
         provider
             .append(AppendRequest {
                 path: StreamPath::new("traced/path")?,
-                records: vec![Bytes::from_static(b"body"), Bytes::from_static(b"more")],
+                records: vec![OwnedBytes::from_static(b"body"), OwnedBytes::from_static(b"more")],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -4192,9 +4477,9 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: StreamPath::new("deadline/accepted")?,
-                records: vec![Bytes::from_static(b"accepted")],
+                records: vec![OwnedBytes::from_static(b"accepted")],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"accepted"))?,
         };
         assert!(matches!(
             provider.commit_before(accepted, 11).await?,
@@ -4206,9 +4491,9 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: StreamPath::new("deadline/expired")?,
-                records: vec![Bytes::from_static(b"expired")],
+                records: vec![OwnedBytes::from_static(b"expired")],
             }],
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"expired"))?,
         };
         assert_eq!(
             provider.commit_before(expired, 10).await,
@@ -4243,9 +4528,9 @@ mod tests {
         provider
             .append(AppendRequest {
                 path: StreamPath::new("durable")?,
-                records: vec![Bytes::from_static(b"one")],
+                records: vec![OwnedBytes::from_static(b"one")],
                 if_tail: Some(0),
-                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
+                idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"append"))?),
             })
             .await?;
         drop(provider);
@@ -4273,7 +4558,7 @@ mod tests {
             provider
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+                    records: vec![OwnedBytes::copy_from_slice(&index.to_le_bytes())],
                     if_tail: Some(index),
                     idempotency_key: None,
                 })
@@ -4307,7 +4592,7 @@ mod tests {
         let valid = PreparedFrame::encode(
             &Command::Append(AppendRequest {
                 path,
-                records: vec![Bytes::from_static(b"later")],
+                records: vec![OwnedBytes::from_static(b"later")],
                 if_tail: Some(0),
                 idempotency_key: None,
             }),
@@ -4352,7 +4637,7 @@ mod tests {
             provider
                 .append(AppendRequest {
                     path: StreamPath::new("capacity")?,
-                    records: vec![Bytes::from_static(b"must-not-appear")],
+                    records: vec![OwnedBytes::from_static(b"must-not-appear")],
                     if_tail: Some(0),
                     idempotency_key: None,
                 })
@@ -4375,7 +4660,7 @@ mod tests {
         provider
             .append(AppendRequest {
                 path: StreamPath::new(path)?,
-                records: vec![Bytes::from_static(b"body")],
+                records: vec![OwnedBytes::from_static(b"body")],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
@@ -4474,11 +4759,9 @@ mod tests {
         Ok(provider
             .append(AppendRequest {
                 path: StreamPath::new("compacted")?,
-                records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+                records: vec![OwnedBytes::copy_from_slice(&index.to_le_bytes())],
                 if_tail: Some(index),
-                idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(
-                    &index.to_le_bytes(),
-                ))?),
+                idempotency_key: Some(IdempotencyKey::new(OwnedBytes::copy_from_slice(&index.to_le_bytes(),))?),
             })
             .await?)
     }

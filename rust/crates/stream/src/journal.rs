@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
 #[cfg(test)]
-use bytes::Bytes;
+use crate::OwnedBytes;
 use prost::Message;
 #[derive(Clone)]
 pub(crate) enum Command {
@@ -42,35 +42,20 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
     }
 }
 
-pub(crate) fn journal_command<'a>(command: impl Into<CommandRef<'a>>) -> JournalCommand {
-    journal_command_funded(command.into(), &mut wire_codec::WireFunding::new(None))
-        .expect("unmetered canonical conversion cannot fail")
+pub(crate) fn journal_command<'a>(
+    command: impl Into<CommandRef<'a>>,
+) -> wire_codec::CanonicalWire<'a> {
+    wire_codec::CanonicalWire::Journal(command.into())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn journal_command_observed<'a>(
     command: impl Into<CommandRef<'a>>,
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<wire_codec::ObservedWire<JournalCommand>> {
-    let mut funding = wire_codec::WireFunding::new(meter);
-    let command = journal_command_funded(command.into(), &mut funding)?;
-    Ok(funding.finish(command))
-}
-
-fn journal_command_funded(
-    command: CommandRef<'_>,
-    funding: &mut wire_codec::WireFunding<'_>,
-) -> std::io::Result<JournalCommand> {
-    let operation = match command {
-        CommandRef::Append(request) => journal_command::Operation::Append(wire_append(request, funding)?),
-        CommandRef::Fork(request) => journal_command::Operation::Fork(wire_fork(request, funding)?),
-        CommandRef::Commit(request) => {
-            journal_command::Operation::Commit(wire_codec::commit_to_wire_funded(request, funding)?)
-        }
-    };
-    Ok(JournalCommand {
-        operation: Some(operation),
-    })
+) -> std::io::Result<wire_codec::ObservedWire<wire_codec::CanonicalWire<'a>>> {
+    let funding = wire_codec::WireFunding::new(meter);
+    funding.examine(1)?;
+    Ok(funding.finish(journal_command(command)))
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
@@ -87,7 +72,7 @@ pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
         }
     }?;
     // Persist only canonical bytes emitted by the current first-party writer.
-    if journal_command(&command).encode_to_vec() != encoded {
+    if journal_command(&command).encode_to_vec().map_err(|_| StreamError::InvalidArgument)? != encoded {
         return Err(StreamError::InvalidArgument);
     }
     Ok(command)
@@ -111,29 +96,6 @@ mod journal_command {
     }
 }
 
-fn wire_append(
-    request: &AppendRequest,
-    funding: &mut wire_codec::WireFunding<'_>,
-) -> std::io::Result<crate::wire::AppendRequest> {
-    Ok(crate::wire::AppendRequest {
-        path: funding.string(request.path.as_str())?,
-        records: funding.records(&request.records)?,
-        if_tail: request.if_tail,
-        idempotency_key: request.idempotency_key.as_ref().map(|key| key.0.clone()),
-    })
-}
-
-fn wire_fork(
-    request: &ForkRequest,
-    funding: &mut wire_codec::WireFunding<'_>,
-) -> std::io::Result<crate::wire::ForkRequest> {
-    Ok(crate::wire::ForkRequest {
-        source: funding.string(request.source.as_str())?,
-        destination: funding.string(request.destination.as_str())?,
-        at_tail: request.at_tail,
-        idempotency_key: request.idempotency_key.as_ref().map(|key| key.0.clone()),
-    })
-}
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[allow(
@@ -147,9 +109,9 @@ mod tests {
     fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
         let append = Command::Append(AppendRequest {
             path: crate::StreamPath::new("codec/events")?,
-            records: vec![Bytes::from_static(b"one"), Bytes::new()],
+            records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::new()],
             if_tail: Some(0),
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
+            idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(b"key"))?),
         });
         let fork = Command::Fork(ForkRequest {
             source: crate::StreamPath::new("codec/events")?,
@@ -164,14 +126,14 @@ mod tests {
             }],
             mutations: vec![crate::CommitMutation::Append {
                 path: crate::StreamPath::new("codec/events")?,
-                records: vec![Bytes::from_static(b"two")],
+                records: vec![OwnedBytes::from_static(b"two")],
             }],
-            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"commit"))?,
+            idempotency_key: crate::IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
         });
         for command in [append, fork, commit] {
-            let encoded = journal_command(&command).encode_to_vec();
+            let encoded = journal_command(&command).encode_to_vec().map_err(|_| StreamError::Capacity)?;
             assert_eq!(
-                journal_command(&decode_command(&encoded)?).encode_to_vec(),
+                journal_command(&decode_command(&encoded)?).encode_to_vec().map_err(|_| StreamError::Capacity)?,
                 encoded
             );
             for end in 0..encoded.len() {
@@ -193,11 +155,11 @@ mod tests {
         let provider = MemoryStream::default();
         let request = AppendRequest {
             path: crate::StreamPath::new("events")?,
-            records: vec![Bytes::from_static(&[1])],
+            records: vec![OwnedBytes::from_static(&[1])],
             if_tail: None,
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"first"))?),
+            idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
         };
-        let encoded = journal_command(&Command::Append(request.clone())).encode_to_vec();
+        let encoded = journal_command(&Command::Append(request.clone())).encode_to_vec().map_err(|_| StreamError::Capacity)?;
         replay(&provider, decode_command(&encoded)?).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);

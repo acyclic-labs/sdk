@@ -3,7 +3,6 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use thiserror::Error;
 
 pub mod conformance;
@@ -311,11 +310,11 @@ impl CommitId {
 
 /// Account-scoped stable retry identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct IdempotencyKey(Bytes);
+pub struct IdempotencyKey(OwnedBytes);
 
 impl IdempotencyKey {
     /// Constructs a nonempty bounded key.
-    pub fn new(value: impl Into<Bytes>) -> Result<Self, StreamError> {
+    pub fn new(value: impl Into<OwnedBytes>) -> Result<Self, StreamError> {
         let value = value.into();
         if value.is_empty() || value.len() > MAX_IDEMPOTENCY_KEY_BYTES {
             return Err(StreamError::InvalidArgument);
@@ -336,7 +335,7 @@ pub struct Record {
     /// Zero-based sequence.
     pub sequence: u64,
     /// Shared opaque value.
-    pub value: Bytes,
+    pub value: OwnedBytes,
     /// Envelope that introduced the record.
     pub commit_id: CommitId,
     /// Stable replicated commit time in Unix microseconds.
@@ -374,7 +373,7 @@ pub struct AppendRequest {
     /// Permanent destination.
     pub path: StreamPath,
     /// Nonempty contiguous batch.
-    pub records: Vec<Bytes>,
+    pub records: Vec<OwnedBytes>,
     /// Optional exact tail condition.
     pub if_tail: Option<u64>,
     /// Optional stable recovery identity.
@@ -542,7 +541,7 @@ pub enum CommitMutation {
         /// Destination.
         path: StreamPath,
         /// Opaque records.
-        records: Vec<Bytes>,
+        records: Vec<OwnedBytes>,
     },
     /// Fork one pre-commit prefix into a new destination, then append
     /// `records` to that destination, all at the commit's one
@@ -556,7 +555,7 @@ pub enum CommitMutation {
         /// Exact source prefix end.
         at_tail: u64,
         /// Opaque records appended after the prefix; may be empty.
-        records: Vec<Bytes>,
+        records: Vec<OwnedBytes>,
     },
 }
 
@@ -768,6 +767,182 @@ impl<T> Future for NativeProviderFuture<'_, T> {
     }
 }
 
+/// A genuine prepared Commit-family ingress. Its canonical request, future
+/// and producer controls are funded before the caller starts physical action.
+///
+/// This is deliberately not Clone. The only late input is one already owned
+/// immutable record. Its existing intrinsic custody must survive every alias.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct PreparedNativeCommit {
+    future: Option<NativeProviderFuture<'static, CommitOutcome>>,
+    recovery: Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>>,
+    record: Arc<NativeCommitRecordSlot>,
+    maximum_record_bytes: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PreparedNativeCommit {
+    pub(crate) fn new(
+        future: NativeProviderFuture<'static, CommitOutcome>,
+        recovery: NativeProviderFuture<'static, Option<IdempotencyObservation>>,
+        record: Arc<NativeCommitRecordSlot>,
+        maximum_record_bytes: usize,
+    ) -> Self {
+        Self { future: Some(future), recovery: Some(recovery), record, maximum_record_bytes }
+    }
+
+    /// Transfers the already funded same-key inspection future exactly once.
+    /// Poll it only for recovery after an uncertain acknowledgement; this move
+    /// does not inspect state, allocate, admit work or check cancellation.
+    pub fn take_recovery_future(
+        &mut self,
+    ) -> Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>> {
+        self.recovery.take()
+    }
+
+    /// Supplies the unchanged canonical request's one record and transfers its
+    /// already funded future. No allocation, admission or cancellation check
+    /// occurs here, including when the supplied record exceeds its bound.
+    pub fn finish(mut self, record: OwnedBytes) -> NativeProviderFuture<'static, CommitOutcome> {
+        let record = if record.is_empty() {
+            Err(StreamError::InvalidArgument)
+        } else if record.len() > self.maximum_record_bytes {
+            Err(StreamError::LimitExceeded)
+        } else {
+            Ok(record)
+        };
+        self.record.supply(record);
+        self.future.take().expect("prepared Commit future is transferred once")
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for PreparedNativeCommit {
+    fn drop(&mut self) {
+        if self.future.is_some() { self.record.close(); }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeCommitRecordState {
+    record: Option<Result<OwnedBytes, StreamError>>,
+    closed: bool,
+    waiter: Option<std::task::Waker>,
+}
+
+/// One private ingress cell, not a journal, authority or request queue. Its
+/// descriptor and physical Arc are created before accepting external action.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NativeCommitRecordSlot {
+    state: std::sync::Mutex<NativeCommitRecordState>,
+    _allocation: acyclic_native_runtime::ReadAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeCommitRecordSlot {
+    pub(crate) fn new(
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Arc<Self>> {
+        let bytes = std::mem::size_of::<Self>();
+        let allocation = acyclic_native_runtime::ReadAllocation::new(meter, bytes)?;
+        meter.admit_codec(0, bytes as u64, 0)?;
+        let record = Arc::new(Self {
+            state: std::sync::Mutex::new(NativeCommitRecordState {
+                record: None, closed: false, waiter: None,
+            }),
+            _allocation: allocation,
+        });
+        meter.record_codec(0, bytes as u64, 0)?;
+        meter.check()?;
+        Ok(record)
+    }
+
+    pub(crate) async fn receive(&self) -> Result<OwnedBytes, StreamError> {
+        futures::future::poll_fn(|context| {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(record) = state.record.take() {
+                state.closed = true;
+                return std::task::Poll::Ready(record);
+            }
+            if state.closed { return std::task::Poll::Ready(Err(StreamError::Unavailable)); }
+            if !state.waiter.as_ref().is_some_and(|waiter| waiter.will_wake(context.waker())) {
+                state.waiter = Some(context.waker().clone());
+            }
+            std::task::Poll::Pending
+        }).await
+    }
+
+    fn supply(&self, record: Result<OwnedBytes, StreamError>) {
+        let waiter = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.record = Some(record);
+            state.waiter.take()
+        };
+        if let Some(waiter) = waiter { waiter.wake(); }
+    }
+
+    fn close(&self) {
+        let waiter = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.closed = true;
+            state.waiter.take()
+        };
+        if let Some(waiter) = waiter { waiter.wake(); }
+    }
+}
+
+/// Caller-owned Vec controls never escape an accepted SDK worker. Paths and
+/// OwnedBytes retain their existing intrinsic owners; only fresh descriptor vectors
+/// are captured here, before external physical action or detachment.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct CommitInput {
+    pub(crate) request: CommitRequest,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CommitInput {
+    pub(crate) fn ordinary(request: CommitRequest) -> Self {
+        Self { request, _allocation: None }
+    }
+
+    pub(crate) fn capture(
+        source: &CommitRequest,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
+        let mut conditions = funding.vector(source.conditions.len())?;
+        for condition in &source.conditions {
+            funding.examine(1)?;
+            funding.copy_admission(std::mem::size_of::<CommitCondition>())?;
+            conditions.push(condition.clone());
+            funding.copy_completed(std::mem::size_of::<CommitCondition>())?;
+        }
+        let mut mutations = funding.vector(source.mutations.len())?;
+        for mutation in &source.mutations {
+            funding.examine(1)?;
+            let mutation = match mutation {
+                CommitMutation::Append { path, records } => CommitMutation::Append {
+                    path: path.clone(),
+                    records: funding.records(records)?,
+                },
+                CommitMutation::Fork { source, destination, at_tail, records } => CommitMutation::Fork {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: *at_tail,
+                    records: funding.records(records)?,
+                },
+            };
+            funding.copy_admission(std::mem::size_of::<CommitMutation>())?;
+            mutations.push(mutation);
+            funding.copy_completed(std::mem::size_of::<CommitMutation>())?;
+        }
+        let captured = funding.finish(CommitRequest {
+            conditions, mutations, idempotency_key: source.idempotency_key.clone(),
+        });
+        Ok(Self { request: captured.value, _allocation: captured.allocation })
+    }
+}
 /// Heap-allocated provider future with the platform's executor bound.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
@@ -1202,14 +1377,14 @@ impl<P: StreamProvider> Stream<P> {
     }
 
     /// Unconditionally appends one record.
-    pub async fn append(&self, value: impl Into<Bytes>) -> Result<AppendOutcome, StreamError> {
+    pub async fn append(&self, value: impl Into<OwnedBytes>) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], None, None).await
     }
 
     /// Appends one record only at the exact tail.
     pub async fn append_at(
         &self,
-        value: impl Into<Bytes>,
+        value: impl Into<OwnedBytes>,
         if_tail: u64,
     ) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], Some(if_tail), None)
@@ -1219,7 +1394,7 @@ impl<P: StreamProvider> Stream<P> {
     /// Atomically appends a contiguous batch.
     pub async fn append_batch(
         &self,
-        records: Vec<Bytes>,
+        records: Vec<OwnedBytes>,
         if_tail: Option<u64>,
         idempotency_key: Option<IdempotencyKey>,
     ) -> Result<AppendOutcome, StreamError> {
@@ -1322,7 +1497,7 @@ impl<P: StreamProvider> Replay<P> {
 }
 
 fn new_idempotency_key() -> IdempotencyKey {
-    IdempotencyKey(Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()))
+    IdempotencyKey(OwnedBytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()))
 }
 
 /// Stable public failures. CAS and absence conflicts are values instead.
@@ -1534,7 +1709,7 @@ mod replay_tests {
         let mut next = 0;
         while next < records {
             let batch = (next..records.min(next + 500))
-                .map(|sequence| Bytes::from(sequence.to_be_bytes().to_vec()))
+                .map(|sequence| OwnedBytes::from(sequence.to_be_bytes().to_vec()))
                 .collect::<Vec<_>>();
             next += batch.len() as u64;
             stream.append_batch(batch, None, None).await.unwrap();
