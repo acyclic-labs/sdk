@@ -195,6 +195,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             &issuer.verifier(),
             spec(parent, &owner, &state, Orchestration::Join, None, "array"),
             IdempotencyKey::new("declare-parent")?,
+            None,
         )
         .await?;
     start(&mut coordinator, parent, true).await?;
@@ -218,6 +219,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
+                None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -432,6 +434,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "array",
             ),
             IdempotencyKey::new("declare-quorum")?,
+            None,
         )
         .await?;
     start(&mut coordinator, quorum, true).await?;
@@ -454,6 +457,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
+                None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -542,6 +546,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduction")?,
+            None,
         )
         .await?;
     start(&mut coordinator, reduction, true).await?;
@@ -563,6 +568,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduce-child")?,
+            None,
         )
         .await?;
     let fence = start(&mut coordinator, child, false).await?;

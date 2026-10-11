@@ -1726,7 +1726,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        if !owner.append_conversation(&publication, &key, write).await? {
+        if !owner.append_conversation(&publication, &key, write, &mut None, None).await? {
             return Err(Error::Conflict(
                 "task publication lost its owner or conversation tail".into(),
             ));

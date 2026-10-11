@@ -36,7 +36,7 @@ impl SourceBudget {
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Authorizes one project selection under the original current owner and an explicitly configured RootService policy.
-    #[allow(clippy::too_many_arguments, reason = "original owner, policy, snapshot and finite bounds are explicit")]
+    #[allow(clippy::too_many_arguments)]
     pub async fn authorize_project_source(
         self: &Arc<Self>, context: &crate::runtime::TaskContext,
         issuer: &AuthorityIssuer, provider: &dyn RootProjectSourceProvider,
@@ -648,7 +648,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let Some(record) = &request.read_authorization else {
             return work.retain_owned(0)
                 .map(|custody| (None, custody))
-                .map_err(|cause| Error::NativeWork { cause, custody: None });
+                .map_err(Error::from);
         };
         if request.child.parent != Some(parent)
             || request.maximum_work > record.maximum_work
