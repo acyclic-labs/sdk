@@ -1,8 +1,4 @@
 //! Bounded hypotheses over immutable authoritative references.
-//!
-//! This module performs no admission, IO, domain reduction or effect cancellation.
-//! A trusted [`Domain`] adapter supplies validated facts and correspondence.
-//! Exported hypotheses remain hypotheses; they are never accepted as evidence.
 
 #![doc = include_str!("../docs/client/README.md")]
 
@@ -16,7 +12,6 @@ use std::{
 mod wasm;
 
 /// Stable identity within an embedding application's durable namespace.
-/// The namespace must be unique; sequence allocation is monotonic within a client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct BranchId {
     /// Embedding application's session/replica identity.
@@ -62,11 +57,9 @@ pub struct Limits {
     pub branches: usize,
     /// Total resident hypothesis dependency edges.
     pub edges: usize,
-    /// Total conservatively accounted resident bytes: adapter-declared deep
-    /// allocations plus kernel/index metadata. Caller-held snapshots are external.
+    /// Total conservatively accounted resident bytes: adapter-declared deep allocations plus kernel/index metadata.
     pub bytes: usize,
-    /// Maximum adapter steps plus branch/edge visits per mutation (map lookups
-    /// additionally cost logarithmic time in bounded active demand).
+    /// Maximum adapter steps plus branch/edge visits per mutation (map lookups additionally cost logarithmic time in bounded active demand).
     pub work: usize,
     /// Maximum logical retention ticks of a hypothesis.
     pub retention: u64,
@@ -140,8 +133,7 @@ pub enum PredictionOutcome {
     Removed,
 }
 
-/// Immutable authoritative reference; `B` pins authority, generation, revision
-/// and content identity in the domain's existing typed representation.
+/// Immutable authoritative reference; `B` pins authority, generation, revision and content identity in the domain's existing typed representation.
 #[derive(Clone, Debug)]
 pub struct Fact<K, B, V> {
     /// Stable normalized domain identity.
@@ -151,12 +143,10 @@ pub struct Fact<K, B, V> {
     /// Shared domain-owned immutable projection (large bodies may be references).
     pub value: Arc<V>,
     /// Adapter-declared deep allocation bytes including cloned key/basis/value.
-    /// The kernel additionally accounts record/index metadata.
     pub bytes: usize,
 }
 
-/// Adapter-validated evidence. No raw client hypothesis can construct a fact
-/// inside the kernel; only the adapter's `observe` result is consumed.
+/// Adapter-validated evidence.
 pub struct Observation<K, B, O, V> {
     /// Updated canonical record, or none for admission/uncertainty/rejection.
     pub fact: Option<Fact<K, B, V>>,
@@ -167,15 +157,6 @@ pub struct Observation<K, B, O, V> {
 }
 
 /// Minimal typed domain boundary, not a collection of arbitrary callbacks.
-///
-/// Implementations must be deterministic, pure, bounded by `work`, verify trusted
-/// evidence against `current`, reject reordered/conflicting revisions, preserve
-/// original operation identity and use the existing domain reducer/validation.
-/// Missing evidence never implies rejection. `Basis` includes adapter-relevant
-/// authority/generation/revision/content pins. Values must be immutable and
-/// byte accounting conservative, including up to three key/operation clones in
-/// kernel indexes. These are adapter obligations, not cryptographic
-/// guarantees supplied by this generic kernel.
 pub trait Domain {
     /// Normalized record identity.
     type Key: Clone + Ord;
@@ -193,9 +174,6 @@ pub trait Domain {
     /// Pinned correspondence implementation identity/version.
     fn identity(&self) -> u128;
     /// Validate a persisted hypothesis against the restored authoritative cut.
-    /// Storage alone is not evidence: verify checkpoint provenance, adapter/pins,
-    /// dependencies and both recorded outcomes through the existing domain.
-    /// Return conservative deep bytes and actual work. Unsupported by default.
     fn restore(
         &self,
         _fact: &Fact<Self::Key, Self::Basis, Self::Value>,
@@ -205,7 +183,6 @@ pub trait Domain {
         Err(Error::Unsupported)
     }
     /// Validate a hypothesis and return accounted bytes and actual work.
-    /// No side effects, reduction or admission may occur here.
     fn validate(
         &self,
         fact: &Fact<Self::Key, Self::Basis, Self::Value>,
@@ -229,9 +206,7 @@ pub trait Domain {
     ) -> Result<(Correspondence, usize), Error>;
 }
 
-/// Data-only persistence/share representation. It carries no authoritative fact.
-/// Restoring requires fresh authoritative demand and ordinary `begin` validation;
-/// this module supplies no journal, transport or automatic import/promotion.
+/// Data-only persistence/share representation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hypothesis<K, B, O, A, V> {
     /// Stable hypothesis identity.
@@ -341,10 +316,6 @@ pub struct Changes {
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
 
-// BTreeMap/BTreeSet nodes reserve multiple inline slots even when almost empty.
-// Charge thirty-two times inline size plus node linkage per indexed item, covering
-// sparse nodes and the fixed indexes here. Deep allocations remain adapter-owned.
-// This is conservative accounting, not a claim about allocator RSS/fragmentation.
 fn metadata_bytes<T>() -> Result<usize, Error> {
     std::mem::size_of::<T>()
         .checked_add(64)
@@ -381,7 +352,6 @@ pub struct Client<D: Domain> {
 
 impl<D: Domain> Client<D> {
     /// Construct an empty client with explicit finite positive bounds.
-    /// Namespace uniqueness and recovered sequence allocation belong to the host.
     pub fn new(domain: D, namespace: u128, sequence: u64, limits: Limits) -> Result<Self, Error> {
         if [
             limits.records,
@@ -420,8 +390,7 @@ impl<D: Domain> Client<D> {
         self.sequence
     }
 
-    /// Accounted resident bytes, records, branches and edges. Caller-held views
-    /// and adapter-owned state are outside this client's residency.
+    /// Accounted resident bytes, records, branches and edges.
     pub fn residency(&self) -> (usize, usize, usize, usize) {
         (
             self.bytes,
@@ -431,8 +400,7 @@ impl<D: Domain> Client<D> {
         )
     }
 
-    /// Pure creation of a hypothesis. A dependency establishes fork provenance;
-    /// no reducer, worker, provider operation or automatic continuation runs.
+    /// Pure creation of a hypothesis.
     pub fn begin(&mut self, request: Request<D>) -> Result<BranchId, Error> {
         if self.domain.identity() != self.adapter {
             return Err(Error::Conflict);
@@ -528,8 +496,7 @@ impl<D: Domain> Client<D> {
         Ok(id)
     }
 
-    /// Select one demanded record and explicit overlays. Multiple competing
-    /// predictions are an ambiguity, never implicit last-writer-wins.
+    /// Select one demanded record and explicit overlays.
     pub fn view(
         &self,
         key: &D::Key,
@@ -572,8 +539,6 @@ impl<D: Domain> Client<D> {
     }
 
     /// Import one data-only hypothesis after restoring its authoritative record.
-    /// Identities must belong to the host's recovered allocation watermark;
-    /// dependencies are imported first. Nothing is admitted, sent or executed.
     pub fn restore(&mut self, mut branch: Branch<D>) -> Result<(), Error> {
         if self.domain.identity() != self.adapter
             || branch.adapter != self.adapter
@@ -720,8 +685,7 @@ impl<D: Domain> Client<D> {
         };
         let prediction =
             if branch.prediction == PredictionOutcome::Invalidated || branch.outcome.terminal() {
-                // Late completion cannot revive invalid dependencies. Exact duplicate
-                // terminal receipts never compare predictions to later canonical state.
+                // Late completion cannot revive invalid dependencies.
                 branch.prediction
             } else {
                 match outcome {
@@ -796,9 +760,7 @@ impl<D: Domain> Client<D> {
         Ok(roots)
     }
 
-    /// Observe trusted evidence for one explicitly demanded key. The adapter
-    /// rejects stale/reordered/conflicting evidence before atomic publication.
-    /// Returned changes support narrow notifications and expose bounded work.
+    /// Observe trusted evidence for one explicitly demanded key.
     pub fn observe(&mut self, key: D::Key, evidence: &D::Evidence) -> Result<Changes, Error> {
         if self.domain.identity() != self.adapter {
             return Err(Error::Conflict);
@@ -893,8 +855,7 @@ impl<D: Domain> Client<D> {
         })
     }
 
-    /// Discard one hypothesis and invalidate descendants. Does not cancel,
-    /// reject, undo or forget the original operation in the authoritative journal.
+    /// Discard one hypothesis and invalidate descendants.
     pub fn discard(&mut self, id: BranchId) -> Result<Vec<BranchId>, Error> {
         if !self.branches.contains_key(&id) {
             return Err(Error::Missing);
@@ -950,8 +911,7 @@ impl<D: Domain> Client<D> {
         }
     }
 
-    /// Explicit logical retention maintenance, bounded by active demand. Host
-    /// ticks are monotonic; there is no clock, timer or background worker.
+    /// Explicit logical retention maintenance, bounded by active demand.
     pub fn advance(&mut self, now: u64) -> Result<Vec<BranchId>, Error> {
         if now < self.now {
             return Err(Error::Time);
@@ -983,7 +943,6 @@ impl<D: Domain> Client<D> {
     }
 
     /// Release demanded canonical data when no hypothesis references it.
-    /// Caller snapshots remain valid; the adapter's journal is unaffected.
     pub fn release(&mut self, key: &D::Key) -> Result<(), Error> {
         if self.by_key.contains_key(key) {
             return Err(Error::Conflict);

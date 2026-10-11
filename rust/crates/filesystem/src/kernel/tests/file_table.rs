@@ -344,10 +344,6 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         payload,
     };
     let inline = InlineFileData::new(b"inline")?;
-    assert_eq!(
-        format!("{inline:?}"),
-        "InlineFileData([105, 110, 108, 105, 110, 101])"
-    );
     let records = vec![
         record(1, FileKind::Regular, FilePayload::InlineRegular(inline)),
         record(

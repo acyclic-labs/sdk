@@ -1,5 +1,4 @@
 //! Host composition for the example's one exactly approved MCP invocation.
-//! The ordinary tool/effect journals and native provider own all execution.
 
 use super::*;
 use acyclic_harness::{

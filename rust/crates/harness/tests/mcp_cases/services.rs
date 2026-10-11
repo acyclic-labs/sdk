@@ -1,6 +1,4 @@
-//! G controls use real loopback HTTP, the production protocol boundary and
-//! disk-backed execution/interaction owners. The deterministic model's token
-//! unit is a canonical byte; this does not qualify a remote model tokenizer.
+//! G controls use real loopback HTTP, the production protocol boundary and disk-backed execution/interaction owners.
 use super::{journal, request, LocalJournal};
 use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, Result,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
@@ -57,8 +55,6 @@ impl ModelProvider for ToolTurnModel {
     fn reconcile<'a>(&'a self, attempt: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> { self.0.reconcile(attempt) }
 }
 
-// Simulated participant choices pass through the real interaction journal,
-// signed responder scope and schema checks; this is not a replacement ledger.
 pub(super) struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }
 impl InteractionRouter for Participant {
     fn route<'a>(&'a self, operation: OperationId, interaction: Interaction) -> BoxProviderFuture<'a, Result<InteractionOutcome>> {

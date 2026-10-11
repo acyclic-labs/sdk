@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Portable fork arguments. `id` is the NEW child agent, never its source or
-/// the operation that prepares/admit it. Messages are retained by tool admission.
+/// Portable fork arguments.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -26,7 +25,6 @@ pub struct ForkToolArguments {
     /// Exact initial child prompt.
     pub msg: String,
     /// Explicit workspace source task; absence selects the current calling task.
-    /// This selects project data, not another agent's private transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "wasm", tsify(type = "string | undefined"))]
     pub source: Option<TaskId>,
@@ -57,9 +55,7 @@ impl ForkToolArguments {
         Ok(self.source.unwrap_or(caller))
     }
 
-    /// Selects project data without granting read authority. Foreign workspace
-    /// selection requires an explicitly empty conversation; caller-owned empty
-    /// scratch and the original history source identity are never substituted.
+    /// Selects project data without granting read authority.
     pub fn select_project(
         &self,
         caller: TaskId,
@@ -137,9 +133,7 @@ pub struct RecursiveForkConfig {
     pub history_limits: crate::store::HistoryReadLimits,
 }
 
-/// Actual selected-provider binding and canonical immutable request. No worker
-/// starts here. Consumers admit `ForkPreparationMachine` under their original
-/// parent and use its sealed token through `with_fork_preparer`.
+/// Actual selected-provider binding and canonical immutable request.
 pub struct RetainedSourceBinding<A, O> {
     /// Exact current caller snapshot; never a root binding reused for descendants.
     pub preparer: Arc<FilesystemForkPreparer<A, O>>,
@@ -147,9 +141,7 @@ pub struct RetainedSourceBinding<A, O> {
     pub request: ForkRequest,
 }
 
-/// Constructs the portable current-caller fork from actual providers and
-/// authenticated history. Foreign selection replaces only the project source;
-/// it does not grant or inject another agent's transcript or scratch.
+/// Constructs the portable current-caller fork from actual providers and authenticated history.
 #[allow(clippy::too_many_arguments, reason = "explicit provider, owner, source and finite-bound contracts")]
 pub async fn recursive_fork_source<P, A, O>(
     runtime: &super::FilesystemTaskRuntime<P, A, O>,
@@ -270,9 +262,7 @@ pub(crate) struct RecursiveForkAllocationView<'a> {
     pub inherited_references: u32,
 }
 
-/// The shared native field factory for installed configured defaults and the
-/// public ordinary recursive source constructor. Views borrow original authority;
-/// they neither allocate another configuration nor broaden caller grants.
+/// The shared native field factory for installed configured defaults and the public ordinary recursive source constructor.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments, reason = "original source and child role identities stay explicit")]
 pub(crate) fn recursive_fork_request_with_native_work(
@@ -388,9 +378,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
     Ok((request, io.into_native_custody(retained)?))
 }
 
-/// Opens a native ordinary recursive fork at the actual caller's authenticated
-/// cut. Borrowed source/configuration payloads remain caller-owned; the reducer
-/// is transferred, not cloned. Foreign selection grants no transcript access.
+/// Opens a native ordinary recursive fork at the actual caller's authenticated cut.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments, reason = "original provider, source and authority identities stay explicit")]
 pub async fn recursive_fork_source_with_native_work<P, A, O>(
@@ -445,9 +433,7 @@ where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'sta
         resolver, cancellation, work).await
 }
 
-/// Rebinds one supported original request to its exact authenticated parent
-/// checkpoint. Later conversation/configuration revisions are never substituted
-/// during retry. The existing snapshot loader must authenticate `parent`.
+/// Rebinds one supported original request to its exact authenticated parent checkpoint.
 #[allow(clippy::too_many_arguments, reason = "original owner/provider/source identities stay explicit")]
 pub async fn restore_recursive_fork_source<P, A, O>(
     filesystem: Arc<super::FilesystemHost<A, O>>,
@@ -491,7 +477,6 @@ where
 }
 
 /// Rebinds the immutable request to the original native authenticated cut.
-/// The caller transfers the reducer rather than cloning its resident history.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments, reason = "original providers and transferred custody stay explicit")]
 pub async fn restore_recursive_fork_source_with_native_work<P, A, O>(
@@ -582,8 +567,6 @@ pub struct ForkPreparationLimits {
 }
 
 /// Builds the real creator request consumed by the ordinary preparation task.
-/// Requested created-volume grants are not authority until the existing owner
-/// verifies its provider records and admits this exact child.
 pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     preparer: &FilesystemForkPreparer<A, O>,
     fork: ForkRequest,
@@ -636,10 +619,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     request.validate()?;
     Ok(request)
 }
-/// Builds the native creator request from the already issuer-authenticated child
-/// claims. Moved arguments retain their caller's original custody; the returned
-/// guard covers newly produced fields and must absorb those moved claims before
-/// publication or transfer to a different consumer.
+/// Builds the native creator request from the already issuer-authenticated child claims.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     preparer: &FilesystemForkPreparer<A, O>, fork: &ForkRequest,
@@ -663,8 +643,6 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
         return Err(super::default_tools::recursive_reject(Some(&io), crate::wire::ErrorCode::Invalid,
             "fork source, preparation, child and effect identities must remain distinct"));
     }
-    // Native source issuance already sealed these exact child capabilities.
-    // Do not rebuild the same BTreeSet or fabricate a missing child scope.
     for volume in [&fork.preparation.child_project_volume, &fork.preparation.child_private_volume]
         .into_iter().chain(fork.preparation.child_result_volume.as_ref())
     {
@@ -716,10 +694,7 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
     Ok(output)
 }
 
-
-/// One ordinary task: exact preparation input -> ref-only command -> retained
-/// report. The surrounding parent explicitly publishes and admits the child;
-/// construction never starts a worker or performs an automatic merge/writeback.
+/// One ordinary task: exact preparation input -> ref-only command -> retained report.
 pub struct ForkPreparationMachine {
     identity: MachineIdentity,
     schema: Value,
@@ -756,8 +731,6 @@ impl super::PreparationRecord for CommandResults {
     }
 }
 
-// The same closed schemas serve ordinary and observed construction. Keeping
-// their bytes static avoids creating an unobserved json! graph in native setup.
 const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase"],"properties":{"phase":{"const":"settled"}},"additionalProperties":false}]}"#;
 const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","resources","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"resources":{"type":"array","minItems":1,"items":{"type":"object"}},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
 const PREPARATION_OUTPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["request","captures","child_private_volume","child_private_generation","inherited_context","summary","inherited_through_sequence","shared_grants","reference_grants","history_witness","attachment_manifests"],"properties":{"request":{"type":"object"},"captures":{"type":"array"},"child_private_volume":{"type":"object"},"child_private_generation":{"type":"object"},"child_result_volume":{"type":["object","null"]},"child_result_generation":{"type":["object","null"]},"inherited_context":{"type":"array"},"summary":{"type":["object","null"]},"inherited_through_sequence":{"type":"integer","minimum":0},"shared_grants":{"type":"array"},"reference_grants":{"type":"array"},"history_witness":{"type":["array","null"]},"attachment_manifests":{"type":"array"}},"additionalProperties":false}"#;
@@ -792,9 +765,7 @@ impl ForkPreparationMachine {
         }
     }
 
-    /// Constructs the genuine machine on the original ledger. Known SDK fields
-    /// and the Arc constructor are admitted before creation; opaque Arc backing
-    /// is not described as exact process memory.
+    /// Constructs the genuine machine on the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
         let io = super::PreparationIo::from_native_work(work)?;
@@ -811,27 +782,8 @@ impl ForkPreparationMachine {
         let schema;
         (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA)?.into_native_parts()?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
-        custody.absorb(&mut metadata).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
-    }
-
-    /// Uses the existing native registered-definition and requirement engines.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn definition_with_native_work(
-        self: &Arc<Self>, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskDefinition<ResourcePreparationRequest, ForkReport>, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let mut schema_custody;
-        let mut output_custody;
-        let input;
-        let output;
-        (input, schema_custody) = io.decode_preparation::<Value>(PREPARATION_INPUT_SCHEMA)?.into_native_parts()?;
-        (output, output_custody) = io.decode_preparation::<Value>(PREPARATION_OUTPUT_SCHEMA)?.into_native_parts()?;
-        schema_custody.absorb(&mut output_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (definition, metadata) = TaskDefinition::resumable_with_native_work(
-            Arc::clone(self) as Arc<dyn ResumableMachine>, input, output, schema_custody, work,
-        )?;
-        definition.requires_with_native_work("host", metadata, work)
     }
 
     /// The exact request is ordinary task input, not an out-of-band authority bag.
@@ -868,7 +820,7 @@ impl ResumableMachine for ForkPreparationMachine {
         &'a self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&'a MachineIdentity> {
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         Ok(&self.identity)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -886,8 +838,6 @@ impl ResumableMachine for ForkPreparationMachine {
     fn transition_with_native_work(
         &self, state: &Value, input: Value, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        // The caller keeps input custody; this observer owns only new DTOs and
-        // the returned transition. Retire their intermediates after physical drop.
         let io = super::PreparationIo::from_native_work(work)?;
         let transition = self.transition_engine(state, &input, Some(&io))?;
         drop(input);

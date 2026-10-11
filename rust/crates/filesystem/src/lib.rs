@@ -246,10 +246,9 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
-    MaterializationActionCompletion, NativeStageUncertainty, NativePrivateStateEntry,
+    MaterializationActionCompletion, NativeStageUncertainty,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation,
-    NativeHostPrivateStateRoot, NativeStateFile, NativeStateFileMode,
     NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX,
     validate_native_preparation_location,
 };
@@ -261,8 +260,7 @@ pub use materializer::{
 pub use materializer::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
     load_native_materialization_journal, prepare_native_generation_transition,
-    publish_native_generation_transition, publish_native_generation_transition_with_work_guarded,
-    publish_native_workspace_generation,
+    publish_native_generation_transition,
 };
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};

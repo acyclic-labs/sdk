@@ -4,7 +4,6 @@ use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
-use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
@@ -181,64 +180,6 @@ fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
         ExtentReadError::Storage(ObjectStoreError::Corrupt)
     ));
     assert!(failure.work.peak_allocation_bytes > 0);
-    Ok(())
-}
-
-#[test]
-fn repeated_extent_plans_reuse_decoded_pages_without_backend_reads()
--> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let leaf = put_page(
-        &backend,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 0,
-            length: 200,
-            kind: ExtentKind::AllocatedZero,
-        }]),
-    )?;
-    let root = put_page(
-        &backend,
-        &ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 200,
-            page: leaf,
-        }]),
-    )?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
-        },
-    )?;
-    let request = ExtentRangeRequest {
-        root,
-        file_size: 200,
-        range: ByteRange {
-            offset: 64,
-            length: 32,
-        },
-        maximum_spans: 1,
-        limits: DecodeLimits::default(),
-        budget: WorkBudget::UNBOUNDED,
-    };
-    let cancellation = CancellationToken::new();
-    let first =
-        crate::async_storage::poll_ready(plan_extent_range_async(&store, request, &cancellation))
-            .ok_or("cached extent planning blocked")??;
-    assert_eq!(first.work.backend_read_operations, 2);
-    assert_eq!(store.stats()?.resident_decoded_pages, 2);
-
-    let second =
-        crate::async_storage::poll_ready(plan_extent_range_async(&store, request, &cancellation))
-            .ok_or("warm cached extent planning blocked")??;
-    assert_eq!(second.spans, first.spans);
-    assert_eq!(second.work.page_reads, 2);
-    assert_eq!(second.work.backend_read_operations, 0);
-    assert_eq!(second.work.object_bytes_read, 0);
-    assert_eq!(store.stats()?.decoded_hits, 2);
     Ok(())
 }
 

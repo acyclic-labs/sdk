@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// One registered stock turn. Provider work belongs to the existing model
-/// command adapter; this machine retains only its immutable command reference.
+/// One registered stock turn.
 pub struct StockTurnMachine {
     identity: MachineIdentity,
     state_schema: Value,
@@ -46,7 +45,6 @@ impl StockTurnMachine {
     #[must_use]
     pub fn new() -> Self {
         let command = command_schema();
-        // Checkout newline conversion must not change the portable identity.
         let implementation = include_str!("stock_turn.rs").replace("\r\n", "\n");
         Self {
             identity: MachineIdentity {
@@ -69,8 +67,6 @@ impl StockTurnMachine {
     }
 
     /// Creates the typed registered definition for the existing durable host.
-    /// The input is one ref-only `acyclic.model.v1` command, never inline media
-    /// or a separately captured model/tool execution context.
     pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<WorkflowCommand, TurnOutput>> {
         self.registered_definition()
     }

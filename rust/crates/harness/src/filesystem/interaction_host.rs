@@ -31,13 +31,10 @@ pub struct FilesystemInteractionHost<P, A, O> {
     owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
-    // Owned metadata fields physically drop before their original-ledger custody.
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-// Literal schema closure of the two actual participant DTOs below. It adds
-// no custom callback/validator diagnostics to the trusted Serde allowance.
 const INTERACTION_DIAGNOSTIC_LABEL_BYTES: u64 = {
     let labels = [
         "Interaction", "InteractionResponse", "ChoiceOption", "type", "question", "choice",
@@ -53,7 +50,6 @@ const INTERACTION_DIAGNOSTIC_LABEL_BYTES: u64 = {
     }
     bytes
 };
-
 
 impl PreparationRecord for Interaction {
     fn maximum_slot_bytes() -> u64 {
@@ -79,9 +75,6 @@ impl PreparationRecord for InteractionResponse {
 }
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O> {
-    pub(super) fn verify_responder_scope(&self, id: InteractionId, scope: &Scope) -> Result<()> {
-        self.verify_responder_scope_with_io(id, scope, None)
-    }
 
     pub(super) fn verify_responder_scope_with_io(
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
@@ -200,8 +193,6 @@ where
         )
     }
 
-    // Incoming owned metadata is already covered by the constructing
-    // execution journal's original ledger and intrinsic, last-field custody.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_io(
         stream: StreamClient<P>,
@@ -286,16 +277,6 @@ where
         let retained = io.owned_bytes()?;
         interaction_host._native_metadata = Some(io.into_native_custody(retained)?);
         Ok(interaction_host)
-    }
-
-    /// Stages the exact JSON request before admission; a staged orphan is reclaimable.
-    pub async fn stage_request(
-        &self,
-        id: InteractionId,
-        request: &Interaction,
-        deadline_unix_ms: Option<u64>,
-    ) -> Result<InteractionTicket> {
-        self.stage_request_with_io(id, request, deadline_unix_ms, None).await
     }
 
     pub(crate) async fn stage_request_with_io(
@@ -480,9 +461,7 @@ where
             .await.map(|_| ())
     }
 
-    /// Authenticates a responder, validates one typed answer against the
-    /// admitted request, stages its bytes, then CAS-resolves the conversation.
-    /// A lost acknowledgement is retried with the same operation ID.
+    /// Authenticates a responder, validates one typed answer against the admitted request, stages its bytes, then CAS-resolves the conversation.
     pub async fn resolve_answer(
         &self,
         operation_id: OperationId,
@@ -516,8 +495,6 @@ where
     }
 
     /// Resolves an approval of the ticket's exact operation and argument digest.
-    /// The complete decision, including an optional explanation, is staged as
-    /// a ref so exact retries can compare it without guessing intent.
     pub async fn resolve_approval(
         &self,
         operation_id: OperationId,
@@ -687,7 +664,7 @@ where
                 ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
                     ticket.request.volume(), VolumeOperation::Read, io)?;
                 let bytes_hold;
-                let bytes = self.host.read_pinned_owned_io(&ticket.request, self.maximum_bytes, io).await?;
+                let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode_preparation::<Interaction>(&bytes)?;
                 let mut borrowed = io.history_io();
@@ -709,11 +686,6 @@ where
         Ok(Some(request))
     }
 
-    /// Resolves only the currently admitted answer under the owner's read grant.
-    pub async fn read_answer(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_answer_with_io(id, None).await
-    }
-
     pub(crate) async fn read_answer_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<u8>>> {
@@ -731,11 +703,6 @@ where
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(bytes))
-    }
-
-    /// Reads the admitted approval decision artifact, when one was recorded.
-    pub async fn read_decision_detail(&self, id: InteractionId) -> Result<Option<Vec<u8>>> {
-        self.read_decision_detail_with_io(id, None).await
     }
 
     pub(crate) async fn read_decision_detail_with_io(
@@ -764,7 +731,7 @@ where
             Some(io) => {
                 ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
                     reference.volume(), VolumeOperation::Read, io)?;
-                self.host.read_pinned_owned_io(reference, self.maximum_bytes, io).await
+                self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
             }
             None => {
                 let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
@@ -940,9 +907,8 @@ where
             scope, maximum_bytes: self.maximum_bytes,
         };
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), &mut work,
-        ).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open_with_read_limits_with_work(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()

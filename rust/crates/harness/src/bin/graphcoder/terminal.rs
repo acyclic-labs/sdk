@@ -16,8 +16,7 @@ pub const MAX_PAGE_EVENTS: usize = 16;
 pub const MAX_DISPLAY_BYTES: usize = 262_144;
 pub const MAX_DISPLAY_PAGES: usize = 64;
 
-/// A finite, transient scrollback. Evicted pages are recovered by an explicit
-/// archival read, never by hydrating all descendant conversations.
+/// A finite, transient scrollback.
 #[derive(Default)]
 pub struct Scrollback {
     pages: std::collections::VecDeque<String>,
@@ -50,8 +49,7 @@ impl Scrollback {
     }
 }
 
-/// Dispatch exactly once. A caller must supply already scoped commands; the UI
-/// neither creates grants nor retries uncertain admission or cancellation.
+/// Dispatch exactly once.
 pub async fn dispatch(
     api: &dyn HarnessWireApi,
     frame: wire::client_frame::Frame,
@@ -77,8 +75,7 @@ pub async fn dispatch(
         }
         Request::Resume(request) => {
             validate_resume_protocol(&request)?;
-            // One delivery per user request. Never collect a live stream or
-            // hydrate a complete conversation to display an activity page.
+            // One delivery per user request.
             Ok(api
                 .replay(request)
                 .await?
@@ -107,8 +104,7 @@ pub async fn dispatch(
     }
 }
 
-/// Escape control characters from every provider-controlled string. Newlines
-/// remain readable for transcripts and diffs; no terminal escape is executable.
+/// Escape control characters from every provider-controlled string.
 pub fn text(value: &str) -> String {
     let mut output = String::new();
     for character in value.chars() {
@@ -121,8 +117,7 @@ pub fn text(value: &str) -> String {
     output
 }
 
-/// Render the durable typed outcome as received. Display never resolves an
-/// approval, interprets an effect as successful or changes the recorded bytes.
+/// Render the durable typed outcome as received.
 pub fn render(frame: &wire::ServerFrame) -> Result<String> {
     use std::fmt::Write as _;
     use wire::server_frame::Frame;
@@ -160,7 +155,6 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
             output
         }
         // Debug escapes strings and preserves unknown numeric enum values.
-        // In particular, accepted admission is never labelled completion.
         frame => format!("{frame:?}\n"),
     };
     if output.len() > MAX_DISPLAY_BYTES {
@@ -169,8 +163,7 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
     Ok(output)
 }
 
-/// Layout the existing semantic event types without resolving any referenced
-/// content, interpreting grants, or conflating task and operation identities.
+/// Layout the existing semantic event types without resolving any referenced content, interpreting grants, or conflating task and operation identities.
 fn render_payload(event_type: &str, bytes: &[u8]) -> Result<String> {
     use acyclic_harness::core::EventPayload;
     let decoded = acyclic_harness::wire_codec::decode_event_payload(event_type, bytes)?;

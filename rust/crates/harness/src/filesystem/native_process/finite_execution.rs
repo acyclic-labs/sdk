@@ -48,8 +48,6 @@ impl NativePublicationSlot {
     }
 
     fn ordinary() -> Self {
-        // The existing ordinary policy is unbounded. Preallocate the same
-        // recursive failure slot before invoking even a custom publish factory.
         Self { slot: Box::new_uninit(), failure_custody: None, custody: None }
     }
 
@@ -69,18 +67,6 @@ impl NativePublicationSlot {
     fn retain(self, failure: NativeViewPublicationError) -> Error {
         Error::NativePublication { failure: Box::write(self.slot, failure),
             custody: self.custody }
-    }
-}
-
-struct NativeCaptureBuffers {
-    buffers: Option<[Vec<u8>; 3]>,
-    scopes: Option<NativeProcessNamespaceScopes>,
-    custody: Option<NativeAllocation>,
-}
-
-impl NativeCaptureBuffers {
-    fn into_parts(self) -> (Option<[Vec<u8>; 3]>, Option<NativeProcessNamespaceScopes>, Option<NativeAllocation>) {
-        (self.buffers, self.scopes, self.custody)
     }
 }
 
@@ -107,8 +93,6 @@ where F: FnOnce() -> T + Send + 'static, T: Send + 'static {
     Ok(tokio::task::spawn_blocking(move || task.run()))
 }
 
-// This is deliberately a synchronous, non-inlined construction boundary. The
-// installed ordinary path and finite path both poll this same boxed engine.
 #[inline(never)]
 pub(super) fn execute<'a, P: StreamProvider + 'static>(
     owner: &'a Arc<TaskJournalOwner<P>>, view: &'a dyn NativeProcessView<P>,
@@ -431,9 +415,9 @@ async fn capture<P: StreamProvider + 'static>(
     let original = original.cloned();
     let cancellation = cancellation.clone();
     let runtime = tokio::runtime::Handle::current();
-    let inputs = NativeCaptureBuffers { buffers, scopes, custody };
+    let inputs = (buffers, scopes, custody);
     let (output, original_failure, custody) = spawn_capture(move || {
-        let (buffers, scopes, custody) = inputs.into_parts();
+        let (buffers, scopes, custody) = inputs;
         let mut custody = custody;
         let mut scopes = scopes;
         let mut buffers = buffers;
@@ -571,7 +555,6 @@ async fn capture<P: StreamProvider + 'static>(
             }
             Ok(output)
         })();
-        // All unused buffers have physically dropped before releasing their quota.
         drop(buffers);
         drop(scopes);
         if let Some(guard) = custody.as_mut() {

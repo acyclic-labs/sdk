@@ -176,8 +176,6 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
     Ok(())
 }
 
-// This adversarial source never simulates a successful provider operation. The
-// registry/contextless tests must fail before any source method is reachable.
 struct RejectUnexpectedSource(AtomicUsize);
 impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend> for RejectUnexpectedSource {
     fn owner<'a>(&'a self, _: &'a ToolContext, _: &'a ResumableTool, _: &'a ToolInvocation,

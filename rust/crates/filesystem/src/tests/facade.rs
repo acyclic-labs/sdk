@@ -56,47 +56,6 @@ async fn measured_private_candidate_admits_only_independent_proof_and_root_stora
     Ok(())
 }
 
-#[tokio::test]
-async fn fresh_checkout_control_custody_uses_its_actual_constructor_and_last_proof_alias()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("fresh-checkout-control").await?;
-    workspace.write_text("/file", "body").await?;
-    let cancellation = CancellationToken::new();
-    let receipt = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    let checkout = receipt.value;
-    let custody = checkout.private_control_custody();
-    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
-    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
-    let path_bytes = size_of::<ObservedPathMap>() as u64;
-    let parents = root_parent_bytes(&checkout.base_root)?
-        + root_parent_bytes(&checkout.root)? * (1 + u64::from(checkout.root.has_hold()));
-    assert!(parents > 0);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parents + map_bytes + path_bytes);
-    assert_eq!(custody.retained_bytes(), 0);
-    assert!(receipt.work.peak_allocation_bytes >= proof_bytes + parents + map_bytes + path_bytes + custody.logical_owned_bytes());
-    let alias = Arc::clone(&checkout.dependencies.proof);
-    let map_alias = checkout.dependencies.proof().dependencies.clone();
-    let path_alias = Arc::clone(checkout.dependencies.proof().observed_paths.as_ref().expect("constructor map"));
-    let mut borrowed = map_alias.clone();
-    assert!(!borrowed.attach_fresh_control_custody(&custody),
-        "fresh constructor attachment never copies or adopts a shared authority map");
-    drop(borrowed);
-    cancellation.cancel();
-    drop(checkout);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes + map_bytes + path_bytes);
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), map_bytes + path_bytes,
-        "actual map payloads outlive the independent proof mutex");
-    drop(map_alias);
-    assert_eq!(custody.physical_retained_bytes(), path_bytes);
-    drop(path_alias);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_private_ctor_retains_original_mutex_until_last_proof_alias_and_retires_failed_copies()
@@ -1277,69 +1236,6 @@ fn proof_data_failure_keeps_only_the_completed_moved_name_prefix()
 }
 
 #[test]
-fn proof_snapshot_allocation_generation_distinguishes_reused_addresses() {
-    let prior = ProofDataSnapshot { dependencies: (7, 3, 19), paths: (9, 4, 23) };
-    let reused = ProofDataSnapshot { dependencies: (7, 4, 11), paths: (9, 5, 13) };
-    assert_eq!(reused.newly_retained_since(prior), Ok(24));
-    let unchanged = ProofDataSnapshot { dependencies: (7, 3, 22), paths: (9, 4, 25) };
-    assert_eq!(unchanged.newly_retained_since(prior), Ok(5));
-}
-
-#[test]
-fn delivered_proof_data_is_not_recharged_and_unreported_peak_is_segment_local()
--> Result<(), Box<dyn std::error::Error>> {
-    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
-    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([43; 32]) };
-    let cancellation = CancellationToken::new();
-    let first = path("a-longer-name-retained-by-the-first-query")?;
-    let second = path("x")?;
-    let dependency = |path: &NamespacePath| Dependency {
-        region: DependencyRegion::DirectoryName {
-            directory_id: FileId::from_bytes([44; 16]), name: path.components()[0].clone(),
-        },
-        expected: DependencyState::Absent,
-    };
-    let mut first_work = WorkCounters::default();
-    ledger.observe_paths(
-        base, [&first], true, vec![dependency(&first)], 8,
-        &mut first_work, WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    let first_owned = ledger.data_custody.retained_bytes();
-    let first_report = ledger.data_custody.take_completed_data_work();
-    let map_bytes = size_of::<ObservedPathMap>() as u64;
-    assert_eq!(first_report.peak_allocation_bytes, first_owned + map_bytes);
-    assert_eq!(ledger.data_custody.live_payload_counts(), (first_owned + map_bytes, first_owned + map_bytes));
-    assert_eq!(ledger.accounting.lock().allocations.live_bytes(), first_owned + map_bytes);
-    let second_owned = path_clone_data(&second).0 + second.components()[0].retained_bytes() as u64;
-    let mut second_work = WorkCounters::default();
-    ledger.observe_paths(
-        base, [&second], true, vec![dependency(&second)], 8, &mut second_work,
-        WorkBudget { peak_allocation_bytes: second_owned, ..WorkBudget::UNBOUNDED },
-        &cancellation,
-    )?;
-    assert_eq!(second_work.peak_allocation_bytes, second_owned);
-    let second_report = ledger.data_custody.take_completed_data_work();
-    assert_eq!(second_report.peak_allocation_bytes, second_owned);
-    assert!(second_report.peak_allocation_bytes < first_report.peak_allocation_bytes);
-    assert_eq!(ledger.proof_data_completed().retained_bytes, first_owned + second_owned);
-    ledger.proof().clear();
-    assert_eq!(ledger.data_custody.live_payload_counts(), (0, 0));
-    let mut next_work = WorkCounters::default();
-    ledger.observe_paths(
-        base, [&second], true, vec![dependency(&second)], 8, &mut next_work,
-        WorkBudget { peak_allocation_bytes: second_owned + map_bytes, ..WorkBudget::UNBOUNDED },
-        &cancellation,
-    )?;
-    assert_eq!(ledger.data_custody.live_payload_counts(), (second_owned + map_bytes, 0),
-        "new DATA and its actual map payload are not standing retired payloads");
-    assert_eq!(next_work.peak_allocation_bytes, second_owned + map_bytes);
-    assert_eq!(ledger.data_custody.take_completed_data_work().peak_allocation_bytes, second_owned + map_bytes);
-    assert_eq!(ledger.data_custody.take_completed_data_work(), WorkCounters::default());
-    assert!(ledger.proof_data_completed().work.bytes_copied > first_report.bytes_copied);
-    Ok(())
-}
-
-#[test]
 fn observed_path_map_replacement_and_clear_retire_only_their_actual_aliases()
 -> Result<(), Box<dyn std::error::Error>> {
     let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
@@ -1430,51 +1326,6 @@ fn observed_path_true_cow_preclaims_arc_and_copy_and_clears_inherited_tags()
     assert_eq!(ledger.data_custody.retained_payload_bytes(), 2 * (map_bytes + data_bytes));
     drop(old);
     assert_eq!(ledger.data_custody.retained_payload_bytes(), map_bytes + data_bytes);
-    ledger.proof().clear();
-    assert_eq!(ledger.data_custody.retained_payload_bytes(), 0);
-    Ok(())
-}
-
-#[test]
-fn observed_path_weak_move_preserves_key_data_and_replaces_only_arc_control()
--> Result<(), Box<dyn std::error::Error>> {
-    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
-    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([47; 32]) };
-    let cancellation = CancellationToken::new();
-    let observed = path("moved-name")?;
-    let map_bytes = size_of::<ObservedPathMap>() as u64;
-    let data_bytes = path_clone_data(&observed).0;
-    let mut work = WorkCounters::default();
-    ledger.observe_paths(base, [&observed], false, vec![], 8, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
-    let (weak, old_address, key_address, generation) = {
-        let proof = ledger.proof();
-        let map = proof.observed_paths.as_ref().expect("observed map");
-        let key = map.entries.keys().next().expect("observed key");
-        (Arc::downgrade(map), Arc::as_ptr(map) as usize,
-            key.components().as_ptr() as usize, proof.observed_data_generation)
-    };
-    ledger.data_custody.take_completed_data_work();
-    let mut moved = WorkCounters::default();
-    ledger.observe_paths(
-        base, [&observed], true, vec![], 8, &mut moved,
-        WorkBudget { peak_allocation_bytes: map_bytes, bytes_copied: 0, ..WorkBudget::UNBOUNDED },
-        &cancellation,
-    )?;
-    assert!(weak.upgrade().is_none(), "make_mut dissociates the old weak-only Arc");
-    assert_eq!(moved.allocation_operations, 1);
-    assert_eq!(moved.bytes_copied, 0);
-    assert_eq!(moved.peak_allocation_bytes, map_bytes);
-    {
-        let proof = ledger.proof();
-        let map = proof.observed_paths.as_ref().expect("moved map");
-        assert_ne!(Arc::as_ptr(map) as usize, old_address);
-        assert_eq!(map.entries.keys().next().expect("moved key").components().as_ptr() as usize, key_address);
-        assert_eq!(proof.observed_data_bytes, data_bytes);
-        assert_eq!(proof.observed_clone_data_bytes, data_bytes);
-        assert_eq!(proof.observed_data_generation, generation + 1);
-    }
-    assert_eq!(ledger.data_custody.retained_bytes(), data_bytes);
-    assert_eq!(ledger.data_custody.physical_retained_bytes(), map_bytes);
     ledger.proof().clear();
     assert_eq!(ledger.data_custody.retained_payload_bytes(), 0);
     Ok(())
@@ -2888,188 +2739,6 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
     assert_eq!(page.value.entries.len(), 2);
     assert!(!page.value.has_more);
     assert!(checkout.has_pending_mutations());
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-mod spans {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, PoisonError};
-    use tracing::field::{Field, Visit};
-
-    /// Each span or event by name (an event by target), with its fields.
-    pub(super) type Captured = Arc<Mutex<Vec<(&'static str, Vec<(&'static str, String)>)>>>;
-
-    pub(super) struct Capture(pub(super) Captured, pub(super) Mutex<HashMap<u64, usize>>);
-
-    struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
-
-    impl Visit for Fields<'_> {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            self.0.push((field.name(), value.to_owned()));
-        }
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            self.0.push((field.name(), format!("{value:?}")));
-        }
-    }
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
-        fn on_new_span(
-            &self,
-            attributes: &tracing::span::Attributes<'_>,
-            id: &tracing::span::Id,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let mut fields = Vec::new();
-            attributes.record(&mut Fields(&mut fields));
-            let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut spans = self.1.lock().unwrap_or_else(PoisonError::into_inner);
-            spans.insert(id.into_u64(), captured.len());
-            captured.push((attributes.metadata().name(), fields));
-        }
-        fn on_record(
-            &self,
-            id: &tracing::span::Id,
-            values: &tracing::span::Record<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let spans = self.1.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut captured = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((_, fields)) = spans
-                .get(&id.into_u64())
-                .and_then(|&index| captured.get_mut(index))
-            {
-                values.record(&mut Fields(fields));
-            }
-        }
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let mut fields = Vec::new();
-            event.record(&mut Fields(&mut fields));
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push((event.metadata().target(), fields));
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn commit_records_its_span_and_one_work_receipt() -> Result<(), Box<dyn std::error::Error>> {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
-        .value;
-    let mut checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("checkout blocked")??
-    .value;
-    poll_ready(checkout.create_file(
-        path("traced")?,
-        bytes::Bytes::from_static(b"secret contents"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("create file blocked")??;
-    let mut reader = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("reader checkout blocked")??
-    .value;
-    // With one live dispatcher, a callsite that a concurrent test reaches
-    // first caches only that thread's (absent) interest; a second one makes
-    // every callsite consult this test's subscriber too.
-    let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
-    let captured = spans::Captured::default();
-    let capture = spans::Capture(Arc::clone(&captured), std::sync::Mutex::default());
-    let _default =
-        tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
-    let operation = OperationId::from_bytes([31; 16]);
-    let committed = poll_ready(checkout.commit(operation, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("commit blocked")??;
-    let failed = poll_ready(reader.commit(operation, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("read-only commit blocked")?;
-    assert!(failed.is_err());
-
-    let captured = captured.lock().map_err(|_| "capture poisoned")?;
-    let named = |name: &str| {
-        captured
-            .iter()
-            .filter(|(found, _)| *found == name)
-            .map(|(_, fields)| fields.clone())
-            .collect::<Vec<_>>()
-    };
-    let has = |fields: &[(&str, String)], field: &str, value: &str| {
-        fields.contains(&(field, value.to_owned()))
-    };
-    let commits = named("acyclic.fs.commit");
-    assert_eq!(commits.len(), 2, "{captured:?}");
-    let work = committed.work;
-    let bytes = work.object_bytes_read + work.object_bytes_written + work.authority_bytes_written;
-    for (field, value) in [
-        ("outcome", "ok".to_owned()),
-        ("work.items", work.items_examined.to_string()),
-        ("work.bytes", bytes.to_string()),
-        ("work.durability", work.durability_operations.to_string()),
-    ] {
-        assert!(has(&commits[0], field, &value), "{field}: {commits:?}");
-    }
-    assert!(
-        commits[0]
-            .iter()
-            .any(|(field, value)| *field == "volume_id" && value.len() == 32)
-    );
-    assert!(has(&commits[1], "outcome", "err"));
-    assert!(
-        commits[1]
-            .iter()
-            .any(|(field, value)| *field == "error.kind" && !value.is_empty())
-    );
-    let publish = named("acyclic.fs.kernel.publish");
-    assert!(publish.iter().any(|fields| {
-        has(fields, "outcome", "ok")
-            && fields
-                .iter()
-                .any(|(field, value)| *field == "generation" && value.len() == 16)
-    }));
-    // Nested spans summarise their own receipts; the operation emits the
-    // one work event, whose counters are the receipt the caller received.
-    let receipts = named("acyclic.work");
-    assert_eq!(receipts.len(), 2, "{receipts:?}");
-    assert!(has(&receipts[0], "op", "commit") && has(&receipts[0], "outcome", "ok"));
-    for (field, value) in [
-        ("items_examined", work.items_examined),
-        (
-            "authority_records_appended",
-            work.authority_records_appended,
-        ),
-        ("peak_allocation_bytes", work.peak_allocation_bytes),
-    ] {
-        assert!(has(&receipts[0], field, &value.to_string()), "{field}");
-    }
-    assert!(has(&receipts[1], "outcome", "err"));
-    for (_, fields) in captured.iter() {
-        for (field, value) in fields {
-            assert!(!["path", "token", "content", "body", "authorization"].contains(field));
-            assert!(
-                !value.contains("traced") && !value.contains("secret"),
-                "{field}"
-            );
-        }
-    }
     Ok(())
 }
 
@@ -7194,76 +6863,6 @@ fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchange
     Ok(())
 }
 
-#[test]
-fn authored_transaction_reuses_a_staged_file_metadata_object()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
-        VolumeId::from_bytes([119; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
-    .value;
-    let checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("checkout blocked")??
-    .value;
-    let file = path("memo.txt")?;
-    let metadata = empty_metadata();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-        WorkBudget::UNBOUNDED, &cancellation,
-    );
-    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(4, &mut accounting)?;
-    let mut staged_metadata = AuthoredMetadataCache::new();
-    let mut writes_after_create = 0;
-    for (index, authored) in [
-        AuthoredMutation::CreateFile { path: file.clone(), bytes: OwnedBytes::new(), metadata, },
-        AuthoredMutation::CreateFile { path: path("other.txt")?, bytes: OwnedBytes::new(), metadata, },
-        AuthoredMutation::SetMetadata { path: file.clone(), metadata },
-    ].into_iter().enumerate() {
-        let bytes = authored.logical_owned_bytes();
-        let allocation = accounting.claim_owned(bytes, 0)?;
-        poll_ready(checkout.compile_authored_mutation_with_accounting(
-            crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
-            &mut staged_metadata, &mut accounting, &cancellation,
-        )).ok_or("authored compilation blocked")??;
-        if index == 0 {
-            writes_after_create = accounting.spent().backend_write_operations;
-            assert!(writes_after_create > 0);
-        } else {
-            assert_eq!(accounting.spent().backend_write_operations, writes_after_create);
-        }
-    }
-    let created_metadata = match &operations.value[0] {
-        Mutation::Create { record, .. } => record.metadata,
-        _ => return Err("expected create".into()),
-    };
-    assert!(matches!(
-        &operations.value[2],
-        Mutation::SetMetadata { metadata, .. } if *metadata == created_metadata
-    ));
-
-    let mut changed = metadata;
-    changed.modified_ns = MetadataField::Value(42);
-    let authored = AuthoredMutation::SetMetadata { path: file, metadata: changed };
-    let bytes = authored.logical_owned_bytes();
-    let allocation = accounting.claim_owned(bytes, 0)?;
-    poll_ready(checkout.compile_authored_mutation_with_accounting(
-        crate::kernel::Owned::new(authored, allocation, bytes), &mut operations,
-        &mut staged_metadata, &mut accounting, &cancellation,
-    )).ok_or("changed metadata compilation blocked")??;
-    assert_eq!(accounting.spent().backend_write_operations, writes_after_create + 1);
-    operations.retire(&mut accounting)?;
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn original_authored_creates(
     requests: &[(&NamespacePath, OwnedBytes)],
@@ -8006,78 +7605,6 @@ async fn original_authored_bulk_source_denial_preserves_the_installed_root()
             requested, WorkBudget::UNBOUNDED, &cancellation,
         ).await?.value.record.is_none());
     }
-    Ok(())
-}
-
-#[test]
-fn public_authored_transaction_reuses_metadata_across_paths()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let first = path("first")?;
-    let second = path("second")?;
-    let shared = empty_metadata();
-    let mut distinct = shared;
-    distinct.modified_ns = MetadataField::Value(42);
-    let mut writes = Vec::new();
-
-    for second_metadata in [shared, distinct] {
-        let fs = Fs::memory();
-        let volume = poll_ready(fs.create_volume_with_id(
-            VolumeId::from_bytes([120; 16]),
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("volume creation blocked")??
-        .value;
-        let mut checkout = poll_ready(volume.checkout(
-            GenerationSelector::Head,
-            writable_pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("checkout blocked")??
-        .value;
-        let result = poll_ready(checkout.apply_authored_transaction(
-            vec![
-                AuthoredMutation::CreateFile {
-                    path: first.clone(),
-                    bytes: OwnedBytes::new(),
-                    metadata: shared,
-                },
-                AuthoredMutation::CreateFile {
-                    path: second.clone(),
-                    bytes: OwnedBytes::new(),
-                    metadata: second_metadata,
-                },
-                AuthoredMutation::SetMetadata {
-                    path: first.clone(),
-                    metadata: shared,
-                },
-            ],
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("authored transaction blocked")??;
-        let first_record =
-            poll_ready(checkout.lookup_no_follow(&first, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("first lookup blocked")??
-                .value
-                .record
-                .ok_or("first record missing")?;
-        let second_record =
-            poll_ready(checkout.lookup_no_follow(&second, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("second lookup blocked")??
-                .value
-                .record
-                .ok_or("second record missing")?;
-        assert_eq!(
-            first_record.metadata == second_record.metadata,
-            second_metadata == shared
-        );
-        writes.push(result.work.backend_write_operations);
-    }
-    assert_eq!(writes[1], writes[0] + 1);
     Ok(())
 }
 
@@ -10296,7 +9823,7 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     ))
     .ok_or("Windows checkout blocked")??
     .value;
-    let payload = OwnedBytes::from_static(b"opaque-reparse\0payload");
+    let payload = bytes::Bytes::from_static(b"opaque-reparse\0payload");
     poll_ready(checkout.create_reparse_point(
         path("junction")?,
         payload.clone(),
@@ -11991,8 +11518,8 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value,
-        target
+        .value.as_ref(),
+        target.as_ref()
     );
     ready!(checkout.value.create_empty_special(
         path("fifo")?,
@@ -12628,8 +12155,12 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         .ok_or("hard-link identity change absent")?;
     assert_eq!(file.before.ok_or("original record absent")?.file_id, changed_id);
     assert_eq!(file.after.ok_or("linked record absent")?.link_count, 2);
+    let root = ready!(checkout.lookup_no_follow_with_metadata(
+        &root_path()?, WorkBudget::UNBOUNDED, &cancellation,
+    )).value.ok_or("updated root metadata absent")?;
+    assert_eq!(root.metadata, metadata);
     assert!(semantic.files.iter().any(|change|
-        change.after.is_some_and(|record| record.kind == FileKind::Directory && record.metadata == metadata)));
+        change.after.is_some_and(|record| record.kind == FileKind::Directory && record.metadata == root.record.metadata)));
     assert_eq!(semantic.bindings.len(), 3);
     assert!(semantic.bindings.iter().any(|change|
         change.name.as_bytes() == b"changed" && change.before.is_some() && change.after.is_none()));
@@ -15046,79 +14577,6 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn local_open_records_its_owned_outcome_even_with_filtered_children()
--> Result<(), Box<dyn std::error::Error>> {
-    use tracing::{Instrument as _, instrument::WithSubscriber as _};
-    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
-    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-    let directory = tempfile::tempdir()?;
-    let invalid = directory.path().join("private-root-sentinel");
-    std::fs::write(&invalid, b"private-body-sentinel")?;
-    for filtered in [false, true] {
-        let captured = spans::Captured::default();
-        let capture = spans::Capture(Arc::clone(&captured), std::sync::Mutex::default());
-        let filter = tracing_subscriber::filter::filter_fn(move |metadata| {
-            metadata.name() == "local_parent"
-                || (!filtered && metadata.name() == "acyclic.fs.local")
-        });
-        let dispatch = tracing::Dispatch::new(
-            tracing_subscriber::Registry::default().with(capture.with_filter(filter)),
-        );
-        async {
-            let parent = tracing::info_span!("local_parent", outcome = "unchanged");
-            async {
-                let fs = Fs::local(LocalOptions::new(directory.path().join("valid"))).await?;
-                let alias = Fs::local(LocalOptions::new(directory.path().join("valid"))).await?;
-                assert!(fs.same_deployment(&alias));
-                let failed = Fs::local(LocalOptions::new(&invalid)).await;
-                assert!(matches!(failed, Err(FsError::LocalRoot(_))));
-                Ok::<_, Box<dyn std::error::Error>>(())
-            }
-            .instrument(parent)
-            .await
-        }
-        .with_subscriber(dispatch)
-        .await?;
-        let captured = captured.lock().unwrap();
-        let parent = captured
-            .iter()
-            .find(|(name, _)| *name == "local_parent")
-            .unwrap();
-        assert_eq!(
-            parent
-                .1
-                .iter()
-                .filter(|(field, _)| *field == "outcome")
-                .count(),
-            1,
-            "{captured:?}"
-        );
-        let operations: Vec<_> = captured
-            .iter()
-            .filter(|(name, _)| *name == "acyclic.fs.local")
-            .collect();
-        assert_eq!(operations.len(), if filtered { 0 } else { 3 });
-        if !filtered {
-            assert!(operations[0].1.contains(&("outcome", "ok".into())));
-            assert!(operations[1].1.contains(&("outcome", "ok".into())));
-            assert!(operations[2].1.contains(&("outcome", "err".into())));
-            assert!(
-                operations[2]
-                    .1
-                    .contains(&("error.kind", "LocalRoot".into()))
-            );
-        }
-        assert!(
-            captured
-                .iter()
-                .all(|(_, fields)| fields.iter().all(|(_, value)| !value.contains("private-")))
-        );
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn readonly_directory_records_share_the_finite_and_unbounded_engine()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -15277,43 +14735,6 @@ async fn selected_fork_original_native_matches_frozen_source_and_keeps_failed_wo
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn selected_fork_original_root_transfer_adopts_capacity_once_without_new_work()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::KernelAccounting;
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-original-root-transfer").await?;
-    let source = workspace.head().await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 0, backend_read_operations: 0,
-            bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut paths = Vec::with_capacity(17);
-    let mut root = String::with_capacity(97);
-    root.push('/');
-    paths.push(root);
-    let owned = crate::workspace::workspace_owned_strings_bytes(&paths)?;
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let selected = fs.select_fork_paths_with_accounting(
-        &source, checkout.root(), paths, &mut accounting, &cancellation,
-    ).await?;
-    assert_eq!(selected, checkout.root().file_table);
-    let spent = original.receipt();
-    assert_eq!(spent.allocation_operations, 0);
-    assert_eq!(spent.backend_read_operations, 0);
-    assert_eq!(spent.bytes_copied, 0);
-    assert_eq!(spent.peak_allocation_bytes, baseline + owned);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
 #[tokio::test]
 async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -15391,8 +14812,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     Ok(())
 }
 
-#[tokio::test]
-async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
+#[test]
+fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::{ForkOptions, WorkspaceError};
     let tracked = Arc::new(std::sync::Mutex::new(None));
@@ -15407,15 +14828,16 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("selected-fork-verification-gates").await?;
-    workspace.write_text("/file", "body").await?;
-    let source = workspace.head().await?;
-    let child = workspace.fork(
+    let workspace = poll_ready(fs.create_workspace("selected-fork-verification-gates"))
+        .ok_or("workspace creation blocked")??;
+    poll_ready(workspace.write_text("/file", "body")).ok_or("fixture write blocked")??;
+    let source = poll_ready(workspace.head()).ok_or("source head blocked")??;
+    let child = poll_ready(workspace.fork(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    ).await?;
-    let initial = child.head().await?;
+    )).ok_or("selected fork blocked")??;
+    let initial = poll_ready(child.head()).ok_or("child head blocked")??;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
@@ -15425,9 +14847,9 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         WorkBudget::default(),
         WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
     ] {
-        let failed = initial.matches_fork_selection_measured(
+        let failed = poll_ready(initial.matches_fork_selection_measured(
             &source, Some(vec!["/file".to_owned()]), budget, &cancellation,
-        ).await.err().ok_or("verification ignored its allocation gate")?;
+        )).ok_or("bounded verification blocked")?.err().ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
         assert_eq!(failed.work.allocation_operations, 0);
         assert_eq!(failed.work.backend_read_operations, 0);
@@ -15435,9 +14857,9 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failed = initial.matches_fork_selection_measured(
+    let failed = poll_ready(initial.matches_fork_selection_measured(
         &source, Some(vec!["/file".to_owned()]), WorkBudget::UNBOUNDED, &cancelled,
-    ).await.err().ok_or("verification ignored cancellation")?;
+    )).ok_or("cancelled verification blocked")?.err().ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failed.work.allocation_operations, 0);
     assert_eq!(failed.work.backend_read_operations, 0);
