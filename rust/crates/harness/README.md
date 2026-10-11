@@ -361,7 +361,6 @@ Input READ authorization uses the same file, whole-volume and directory-prefix
 capability recipes with or without the SDK-work observer. The observed route
 admits canonical digest work and actual capability-key copies before execution;
 it does not allocate temporary directory-prefix strings or grant WRITE.
-
 `Capabilities::new_with_native_work` takes borrowed names (including chained
 policy/journal iterators), examines duplicates without copying them, and retains
 known String slots plus actual UTF-8 capacity on the original ledger.

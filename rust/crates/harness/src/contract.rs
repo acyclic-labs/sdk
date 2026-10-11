@@ -1116,7 +1116,6 @@ impl Capabilities {
     pub(crate) fn from_owned_set(values: BTreeSet<String>) -> Self {
         Self(values)
     }
-
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
@@ -1771,7 +1770,6 @@ mod tests {
         assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(work.receipt().items_examined, 1);
     }
-
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
         let value = serde_json::json!({
