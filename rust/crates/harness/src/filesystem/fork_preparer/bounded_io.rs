@@ -271,6 +271,27 @@ audited_preparation_records!(
     crate::workflow::WorkflowCommand => None,
 );
 
+impl PreparationRecord for crate::Outcome<serde_json::Value> {
+    fn maximum_slot_bytes() -> u64 {
+        // Outcome is externally tagged: only Succeeded reaches Value, Failed
+        // owns one String, and Indeterminate carries one fixed operation ID.
+        // It has no internally tagged/untagged Content buffering layers.
+        [
+            std::mem::size_of::<Self>(),
+            std::mem::size_of::<serde_json::Value>(),
+            std::mem::size_of::<(String, serde_json::Value)>(),
+            std::mem::size_of::<String>(),
+            std::mem::size_of::<crate::OperationId>(),
+        ].into_iter().max().unwrap_or(0) as u64
+    }
+    fn diagnostic_label_bytes() -> u64 {
+        crate::contract::preparation_serde_diagnostic_label_bytes()
+    }
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::TaskOutcome
+    }
+}
+
 // A raw Value has no closed SDK typed visitor or expected-field inventory.
 // Its canonical full-Value decode allowance already covers diagnostics.
 impl PreparationRecord for serde_json::Value {

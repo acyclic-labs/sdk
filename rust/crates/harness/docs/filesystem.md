@@ -93,6 +93,10 @@ same prepaid custody with the original error. Raw `Value` does not acquire a
 second typed diagnostic allowance. Private containing DTOs supply their real
 literal inventory; the stock catalog is not a generic `Deserialize` guarantee.
 
+`Outcome<Value>` uses the actual externally tagged `TaskOutcome` descriptor:
+only `Succeeded` reaches JSON `Value`; failure text and operation identity keep
+their ordinary typed fields. Its slot allowance has no model-content buffering
+layers, and uses the same pre-admitted typed diagnostic inventory.
 
 Finite content and approval providers opt into genuine measured capabilities.
 Custom providers without that engine return `Unsupported` before I/O; static
