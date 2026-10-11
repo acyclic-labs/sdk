@@ -1005,6 +1005,22 @@ fn clone_child_schema_with_work(
     Ok(copied)
 }
 
+pub(crate) fn scope_metadata_boundary(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    code: crate::wire::ErrorCode, reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        _ => Error::Invalid(reason.into()),
+    }
+}
+
 /// Builds the two identities that durable hosts retain for one resumable task.
 /// This is the shared construction path for native admission and the WASM
 /// adapter; JavaScript must not reproduce the digest envelope or machine
@@ -4178,8 +4194,7 @@ impl RuntimeScope {
     }
 
     pub(crate) fn with_created_access(
-        &self,
-        admission: &TaskAdmissionRecord,
+        &self, admission: &TaskAdmissionRecord,
         access: Option<crate::resource_preparation::CreatedResourceAccess>,
     ) -> Result<Self> {
         self.with_created_access_with_work(admission, access, &mut None).map(|(scope, _)| scope)
@@ -4190,116 +4205,108 @@ impl RuntimeScope {
         access: Option<crate::resource_preparation::CreatedResourceAccess>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()).cloned() {
-            if let Some(access) = &access {
-                if !access.has_native_custody() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "native created resource seal requires its original payload custody",
-                    });
-                }
-                if access.operation != admission.operation_id
-                    || access.admission_digest != admission.canonical_digest_with_work(work)?
-                    || access.proofs != admission.resource_proofs
-                {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "created resource seal changed admission",
-                    });
-                }
-            } else if !admission.resource_proofs.is_empty() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "created resource proof is not authenticated",
-                });
-            }
-            // Use the original scalar attenuation checks without manufacturing
-            // another grant set merely to perform a borrowed subset test.
-            self.validate_narrowing_with_native_work(&self.grants, &admission.limits, &native)?;
-            if !admission.grants.iter().all(|grant| self.grants.contains(grant)
-                || access.as_ref().is_some_and(|created| created.grants.contains(grant)))
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if let Some(access) = &access {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_deref().is_some_and(|io| io.original_native_work().is_some())
+                && !access.has_native_custody()
             {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "runtime scope cannot widen ancestor authority",
-                });
+                return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                    "native created resource seal requires its original payload custody"));
             }
-            if self.extensions != admission.extensions {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "replay cannot retarget original extension admission",
-                });
-            }
-            if let Some(extensions) = &admission.extensions { extensions.validate_with_work(work)?; }
-            let proofs = access.as_ref().map_or(self.resource_proofs.as_slice(), |access| access.proofs.as_slice());
-            let (mut allocations, mut copied) = Self::native_proof_clone_recipe(proofs, &native)?;
-            let slots = proofs.len().checked_mul(
-                std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>(),
-            ).ok_or_else(Self::native_metadata_overflow)? as u64;
-            let mut owned = (std::mem::size_of::<Self>() as u64).checked_add(slots)
-                .and_then(|bytes| bytes.checked_add(copied)).ok_or_else(Self::native_metadata_overflow)?;
-            if let Some(extension) = &admission.extensions {
-                let recipe = extension.clone_work_recipe()?;
-                allocations = allocations.checked_add(recipe.0).ok_or_else(Self::native_metadata_overflow)?;
-                copied = copied.checked_add(recipe.1).ok_or_else(Self::native_metadata_overflow)?;
-                let slots = extension.selected().len()
-                    .checked_mul(std::mem::size_of::<crate::core::ExtensionDependency>())
-                    .and_then(|bytes| extension.configurations().len()
-                        .checked_mul(std::mem::size_of::<crate::core::ExtensionConfiguration>())
-                        .and_then(|configuration| bytes.checked_add(configuration)))
-                    .ok_or_else(Self::native_metadata_overflow)? as u64;
-                owned = owned.checked_add(recipe.1).and_then(|bytes| bytes.checked_add(slots))
-                    .ok_or_else(Self::native_metadata_overflow)?;
-            }
-            let grants = admission.grants.clone_with_native_work(&native)?;
-            let mut custody = native.retain_owned(owned)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            native.charge(acyclic_fs::WorkCounters {
-                allocation_operations: allocations.checked_add(u64::from(access.is_some()))
-                    .ok_or_else(Self::native_metadata_overflow)?,
-                bytes_copied: copied, ..Default::default()
-            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let resource_proofs = proofs.to_vec();
-            let created_access = access.map(Arc::new).or_else(|| self.created_access.clone());
-            let scope = Self {
-                grants: grants.0, limits: admission.limits, run_limits: self.run_limits,
-                extensions: admission.extensions.clone(), extensions_sealed: true,
-                extension_runtime: self.extension_runtime.clone(),
-                extension_schemas: self.extension_schemas.clone(), resource_proofs, created_access,
-                _native_grants_custody: Some(grants.1),
-            };
-            let scope = scope.with_run_limits_with_native_work(admission.run_limits, &native)?;
-            if let Err(cause) = custody.reconcile_capacity(scope.native_metadata_owned_bytes()?) {
-                drop(scope);
-                return Err(Error::NativeWork { cause, custody: Some(custody) });
-            }
-            let held = custody.bytes();
-            work.as_deref_mut().expect("native scope observer").absorb_native_custody(custody)?;
-            return Ok((scope, held));
-        }
-        let mut permitted = self.clone();
-        if let Some(access) = access {
             if access.operation != admission.operation_id
-                || access.admission_digest != crate::contract::canonical_json_digest(
-                    &admission.canonical_value(),
-                )?
+                || access.admission_digest != admission.canonical_digest_with_work(work)?
                 || access.proofs != admission.resource_proofs
             {
-                return Err(Error::Unauthorized("created resource seal changed admission".into()));
+                return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                    "created resource seal changed admission"));
             }
-            permitted.grants = Capabilities::new(
-                self.grants.iter().chain(access.grants.iter()),
-            );
-            permitted.resource_proofs = access.proofs.clone();
-            permitted.created_access = Some(Arc::new(access));
         } else if !admission.resource_proofs.is_empty() {
-            return Err(Error::Unauthorized("created resource proof is not authenticated".into()));
+            return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "created resource proof is not authenticated"));
         }
-        let scope = permitted.narrow(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?
-            .with_replayed_extensions(admission.extensions.clone())?;
-        Ok((scope, 0))
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            self.validate_narrowing_with_native_work(&self.grants, &admission.limits, native)?;
+        } else {
+            admission.limits.validate()?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        admission.limits.validate()?;
+        if !self.allows_authority(&self.grants, &admission.limits) {
+            return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "runtime scope cannot widen ancestor authority"));
+        }
+        for grant in admission.grants.iter() {
+            if let Some(io) = work.as_deref_mut() {
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            if !self.grants.contains(grant)
+                && !access.as_ref().is_some_and(|access| access.grants.contains(grant))
+            {
+                return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                    "runtime scope cannot widen ancestor authority"));
+            }
+        }
+        // narrow() seals the original extension selection before replay.
+        if self.extensions != admission.extensions {
+            return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Conflict,
+                "replay cannot retarget original extension admission"));
+        }
+        if let Some(extensions) = &admission.extensions { extensions.validate_with_work(work)?; }
+        let mut quota = crate::wire_codec::CodecQuota::new(
+            work, std::mem::size_of::<Self>() as u64,
+        )?;
+        let grants = crate::core::copy_capabilities(&admission.grants, &mut quota)?;
+        let proofs = access.as_ref().map_or(self.resource_proofs.as_slice(), |access| access.proofs.as_slice());
+        let resource_proofs = Self::copy_resource_proofs(proofs, &mut quota)?;
+        let extensions = admission.extensions.as_ref()
+            .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
+        let extension_schemas = self.extension_schemas.as_ref()
+            .map(|schemas| schemas.clone_with_work(quota.work())).transpose()?;
+        // The consumed seal already owns its logical Self and deep payload.
+        // Moving that paid value into an Arc is not another payload copy.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if access.is_some()
+            && let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work())
+        {
+            native.charge(acyclic_fs::WorkCounters {
+                allocation_operations: 1, ..Default::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }
+        let created_access = access.map(Arc::new).or_else(|| self.created_access.clone());
+        let scope = Self {
+            grants, limits: admission.limits, run_limits: self.run_limits,
+            extensions, extensions_sealed: true,
+            extension_runtime: self.extension_runtime.clone(), extension_schemas,
+            resource_proofs, created_access,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_grants_custody: None,
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let scope = if let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work()) {
+            scope.with_run_limits_with_native_work(admission.run_limits, native)?
+        } else {
+            scope.with_run_limits(admission.run_limits)?
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let scope = scope.with_run_limits(admission.run_limits)?;
+        if let Some(runtime) = &scope.extension_runtime {
+            runtime.validate_admission_with_work(scope.extensions.as_ref(), quota.work())?;
+            if let Some(schemas) = &scope.extension_schemas {
+                for identity in runtime.selected() {
+                    if schemas.implementation_digest_with_work(
+                        &identity.name, identity.version, quota.work(),
+                    )? != identity.digest {
+                        return Err(scope_metadata_boundary(quota.work(), crate::wire::ErrorCode::Conflict,
+                            "linked implementation differs from original admission registry"));
+                    }
+                }
+            }
+        }
+        let held = if quota.work().is_some() { quota.retained() } else { 0 };
+        quota.transfer();
+        Ok((scope, held))
     }
 
     fn resume_sealed(&self, admitted: Self, operation: OperationId) -> Result<Self> {

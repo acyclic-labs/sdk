@@ -811,22 +811,44 @@ impl ExtensionRuntime {
 
     /// Checks that a committed metadata selection agrees with linked code.
     pub fn validate_admission(&self, admission: Option<&ExtensionAdmission>) -> Result<()> {
+        self.validate_admission_with_work(admission, &mut None)
+    }
+
+    pub(crate) fn validate_admission_with_work(
+        &self, admission: Option<&ExtensionAdmission>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(admission) = admission {
-            admission.validate()?;
-            let selected = admission
-                .selected()
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            let linked = self
-                .selected
-                .iter()
-                .map(ExtensionIdentity::dependency)
-                .collect::<BTreeSet<_>>();
-            if selected != linked {
-                return Err(Error::Conflict(
-                    "extension admission differs from linked composition".into(),
-                ));
+            admission.validate_with_work(work)?;
+            let matches = |selected: &ExtensionDependency, linked: &ExtensionIdentity| {
+                selected.name == linked.name && selected.version == linked.version
+            };
+            for selected in admission.selected() {
+                let mut found = false;
+                for linked in &self.selected {
+                    if let Some(io) = work.as_deref_mut() { io.items(1)?; }
+                    if matches(selected, linked) { found = true; break; }
+                }
+                if !found {
+                    return Err(crate::runtime::scope_metadata_boundary(
+                        work, crate::wire::ErrorCode::Conflict,
+                        "extension admission differs from linked composition",
+                    ));
+                }
+            }
+            for linked in &self.selected {
+                let mut found = false;
+                for selected in admission.selected() {
+                    if let Some(io) = work.as_deref_mut() { io.items(1)?; }
+                    if matches(selected, linked) { found = true; break; }
+                }
+                if !found {
+                    return Err(crate::runtime::scope_metadata_boundary(
+                        work, crate::wire::ErrorCode::Conflict,
+                        "extension admission differs from linked composition",
+                    ));
+                }
             }
         }
         Ok(())

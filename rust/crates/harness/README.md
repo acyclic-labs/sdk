@@ -614,6 +614,11 @@ Protected preparation bootstrap uses a private coordinator-issued READ witness.
 Its task and admission come from authenticated canonical history; roots carry
 no fabricated child scratch proof. The witness cannot publish or acquire a new
 reservation, and foreign-ledger use rejects before IO.
+Created-resource scope authentication is one portable optional-observer engine.
+It verifies the original seal, borrowed grant attenuation, run ceilings and linked
+extension selection before transferring only the new scope's actual custody.
+Linked extension identity comparison borrows both selections rather than cloning
+temporary sets; a native denial keeps its original typed cause.
 
 Registered native root admission consumes the original guarded JSON input and
 the exact configured task definition and scope. It uses the ordinary durable

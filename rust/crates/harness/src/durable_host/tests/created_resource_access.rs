@@ -1362,6 +1362,45 @@ async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> 
 }
 
 #[tokio::test]
+async fn authenticated_root_scope_uses_original_quota_without_created_resource_fallback() -> Result<()> {
+    use crate::store::history::HistoryIo as _;
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let (admission, admission_custody) = fixture.host.admission_with_native_work(
+        fixture.root_lease.operation.operation_id, &work,
+    ).await?;
+    assert!(admission.resource_proofs.is_empty());
+    let mut io = crate::store::history::native_work_io(&work)
+        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let (scope, held) = fixture.root_scope.with_created_access_with_work(
+        &admission, None, &mut Some(&mut io),
+    )?;
+    assert_eq!(scope.grants(), &admission.grants);
+    assert_eq!(scope.run_limits(), admission.run_limits);
+    assert!(scope.resource_proofs().is_empty());
+    assert!(held >= std::mem::size_of::<crate::runtime::RuntimeScope>() as u64);
+    let before = work.receipt();
+    cancellation.cancel();
+    assert!(matches!(fixture.root_scope.with_created_access_with_work(
+        &admission, None, &mut Some(&mut io),
+    ), Err(Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+    })));
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    drop(scope);
+    io.release_owned(held)?;
+    drop(admission);
+    drop(admission_custody);
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_read_source_cannot_become_native_directory_execution_owner() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
