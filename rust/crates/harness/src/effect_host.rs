@@ -42,6 +42,13 @@ pub struct TaskEffectPlan {
 /// Resolves the canonical effect identity for one original task command.
 /// This identity alone grants no dispatch or observation authority.
 #[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for TaskEffectPlan {
+    fn maximum_slot_bytes() -> u64 {
+        std::mem::size_of::<Self>().max(std::mem::size_of::<serde_json::Value>()) as u64
+    }
+}
+
+#[cfg(feature = "filesystem")]
 pub fn task_effect_id(task: crate::TaskId, command: OperationId) -> Result<EffectId> {
     task_effect_id_with_work(task, command, &mut None)
 }
