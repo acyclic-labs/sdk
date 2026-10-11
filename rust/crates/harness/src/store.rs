@@ -1340,7 +1340,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Old selections and replies must be resolved through the history reader;
     /// this cache operation admits no events and grants no authority.
     pub fn compact_conversation_projection(&mut self) -> Result<()> {
-        self.reducer.compact_conversation_projection()
+        self.reducer.compact_conversation_projection(&mut None)
     }
 
     /// Installs the provider boundary that verifies every message file before admission.

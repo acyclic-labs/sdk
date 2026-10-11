@@ -2862,9 +2862,22 @@ impl FileRef {
             })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
-        self.clone_work_recipe().map(|(_, copied)| copied)
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { self.clone_work_recipe().map(|(_, copied)| copied) }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        {
+            let owner = match &self.volume.owner {
+                VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
+                VolumeOwner::Agent(_) => 0,
+            };
+            let provider = &self.volume.provider;
+            [provider.namespace().len(), provider.family().len(), provider.version().len(),
+                self.volume.id.len(), self.path.len(), self.version.len(),
+                self.descriptor.media_type.len(), self.display_name.len()]
+                .into_iter().try_fold(owner, |bytes, length| bytes.checked_add(length as u64)
+                    .ok_or_else(|| Error::Invalid("file clone ownership overflow".into())))
+        }
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

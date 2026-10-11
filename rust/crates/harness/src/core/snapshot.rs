@@ -233,7 +233,7 @@ pub(crate) fn resource_preparation_owned_bytes(
 ) -> Result<u64> {
     if let Some(observer) = work.as_deref_mut() {
         observer.check_cancellation()?;
-        observer.items(1)?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
@@ -253,7 +253,7 @@ pub(crate) fn resource_preparation_owned_bytes(
         for value in [&request.payload, &child.input, &child.input_schema, &child.output_schema] {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.items(1)?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             owned_add!(super::native_custody::value_owned_bytes(value)?);
         }
@@ -280,7 +280,7 @@ pub(crate) fn resource_preparation_owned_bytes(
         for reference in &request.resources {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.items(1)?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             owned_add!(reference.logical_owned_bytes()?);
         }
@@ -291,7 +291,7 @@ pub(crate) fn resource_preparation_owned_bytes(
         for proof in &child.resource_proofs {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.items(1)?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             owned_add!(proof.provider.logical_owned_bytes()?);
             owned_add!(proof.resource.logical_owned_bytes()?);
@@ -311,7 +311,7 @@ pub(crate) fn resource_preparation_owned_bytes(
         work, "resource preparation ownership inventory overflows"))?;
     if let Some(observer) = work.as_deref_mut() {
         observer.check_cancellation()?;
-        observer.items(inventory.slots)?;
+        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: inventory.slots })?;
     }
     inventory.bytes.checked_mul(4).ok_or_else(|| preparation_inventory_error(
         work, "resource preparation ownership inventory overflows"))

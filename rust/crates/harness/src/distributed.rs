@@ -3366,7 +3366,7 @@ impl<'a,'w> SchedulerEventJsonAdmission<'a,'w> {
         })?;
         self.work.check_cancellation()?;
         let retained = event.logical_owned_bytes()?;
-        let slack = self.maximum_owned_bytes.checked_sub(retained)
+        let slack = self.held.checked_sub(retained)
             .ok_or_else(|| scheduler_json_admission_error(native,
                 "scheduler decoder exceeds its audited schema reservation"))?;
         self.work.release_owned(slack)?;

@@ -2004,13 +2004,13 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     pub(super) fn retain(&mut self, bytes: u64) -> Result<()> {
-        if let Some(observer) = self.work.as_deref_mut() {
-            let retained = self.retained.checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("fork validation storage overflows".into()))?;
-            observer.admit_owned(bytes)?;
-            observer.retain_owned(bytes)?;
-            self.retained = retained;
-        }
+        if self.work.is_none() { return Ok(()); }
+        let retained = self.retained.checked_add(bytes)
+            .ok_or_else(|| self.invalid("fork validation storage overflows"))?;
+        let observer = self.work.as_deref_mut().expect("fork custody observer");
+        observer.admit_owned(bytes)?;
+        observer.retain_owned(bytes)?;
+        self.retained = retained;
         Ok(())
     }
 
@@ -2019,23 +2019,23 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     pub(super) fn adopt(&mut self, bytes: u64) -> Result<()> {
         if self.work.is_some() {
             self.retained = self.retained.checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("fork custody storage overflows".into()))?;
+                .ok_or_else(|| self.invalid("fork custody storage overflows"))?;
         }
         Ok(())
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> Result<()> {
-        if let Some(observer) = self.work.as_deref_mut() {
-            self.retained = self.retained.checked_sub(bytes)
-                .ok_or_else(|| Error::Invalid("fork validation storage underflows".into()))?;
-            observer.release_owned(bytes)?;
-        }
+        if self.work.is_none() { return Ok(()); }
+        let retained = self.retained.checked_sub(bytes)
+            .ok_or_else(|| self.invalid("fork validation storage underflows"))?;
+        self.work.as_deref_mut().expect("fork custody observer").release_owned(bytes)?;
+        self.retained = retained;
         Ok(())
     }
 
     pub(super) fn slots<T>(&mut self, count: usize) -> Result<()> {
         let bytes = (count as u64).checked_mul(std::mem::size_of::<T>() as u64)
-            .ok_or_else(|| Error::Invalid("fork validation slot count overflows".into()))?;
+            .ok_or_else(|| self.invalid("fork validation slot count overflows"))?;
         self.retain(bytes)
     }
 
@@ -2045,7 +2045,7 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
         )?;
         if self.work.is_some() {
             self.retained = self.retained.checked_add(bytes.capacity() as u64)
-                .ok_or_else(|| Error::Invalid("fork validation storage overflows".into()))?;
+                .ok_or_else(|| self.invalid("fork validation storage overflows"))?;
         }
         Ok(bytes)
     }
@@ -2092,22 +2092,8 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     fn stream_path(&mut self, authority: &Authority) -> Result<String> {
-        let segment = match authority.kind {
-            crate::core::AggregateKind::Agent => "agents",
-            crate::core::AggregateKind::Conversation => "conversations",
-            crate::core::AggregateKind::Session => "sessions",
-            crate::core::AggregateKind::Turn => "turns",
-            crate::core::AggregateKind::Task => "tasks",
-        };
-        let length = (authority.id.len() as u64).checked_add(12 + segment.len() as u64)
-            .ok_or_else(|| Error::Invalid("fork authority path storage overflows".into()))?;
-        let maximum = length.checked_mul(2)
-            .ok_or_else(|| Error::Invalid("fork authority path storage overflows".into()))?;
-        self.retain(maximum)?;
-        let path = authority.stream_path()?;
-        if let Some(observer) = self.work.as_deref_mut() {
-            observer.copy_bytes(path.len() as u64)?;
-        }
+        let path = authority.stream_path_with_work(self.work)?;
+        self.adopt(path.capacity() as u64)?;
         Ok(path)
     }
 }
