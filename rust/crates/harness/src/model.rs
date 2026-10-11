@@ -52,7 +52,11 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
+            .max(<crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
             .max(std::mem::size_of::<Self>() as u64)
+    }
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ToolResultContent
     }
 }
 

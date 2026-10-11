@@ -54,20 +54,6 @@ impl crate::filesystem::PreparationRecord for ProjectedToolInvocation {
     }
 }
 
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for crate::model::ToolResultContent {
-    fn maximum_slot_bytes() -> u64 {
-        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-            .max(std::mem::size_of::<Self>() as u64)
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
-    }
-}
-
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
 pub trait AttachmentListResolver: acyclic_stream::ProviderPlatform {
     /// Verifies the pinned manifest bytes and returns its complete ordered list.

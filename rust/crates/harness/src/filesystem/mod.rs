@@ -2090,12 +2090,14 @@ pub struct FilesystemProjectMergeVerifier<A, O> {
 }
 
 impl UploadRecord for JoinCommitWitness {
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
         Ok(std::mem::size_of::<Self>() as u64)
     }
 }
 
 impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<serde_json::Value>().max(std::mem::size_of::<Self>()) as u64
     }

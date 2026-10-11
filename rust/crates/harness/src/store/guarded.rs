@@ -8,15 +8,16 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
     Error::Indeterminate(operation)
 }
 
-enum GuardedBoundary {
+pub(super) enum GuardedBoundary {
     Invalid,
+    NotFound,
     Unauthorized,
     Conflict,
     Unsupported,
     Storage,
 }
 
-fn guarded_boundary(
+pub(super) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>, kind: GuardedBoundary,
     reason: &'static str,
 ) -> Error {
@@ -24,6 +25,7 @@ fn guarded_boundary(
     if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
         let code = match kind {
             GuardedBoundary::Invalid => crate::wire::ErrorCode::Invalid,
+            GuardedBoundary::NotFound => crate::wire::ErrorCode::NotFound,
             GuardedBoundary::Unauthorized => crate::wire::ErrorCode::Unauthorized,
             GuardedBoundary::Conflict => crate::wire::ErrorCode::Conflict,
             GuardedBoundary::Unsupported => crate::wire::ErrorCode::Unsupported,
@@ -34,6 +36,7 @@ fn guarded_boundary(
     let _ = work;
     match kind {
         GuardedBoundary::Invalid => Error::Invalid(reason.into()),
+        GuardedBoundary::NotFound => Error::NotFound(reason.into()),
         GuardedBoundary::Unauthorized => Error::Unauthorized(reason.into()),
         GuardedBoundary::Conflict => Error::Conflict(reason.into()),
         GuardedBoundary::Unsupported => Error::Unsupported(reason.into()),

@@ -173,9 +173,6 @@ pub struct ModelTaskCommand {
     /// Exact admitted created destination; absent retains the private writer.
     #[serde(default)]
     pub selected_output_volume: Option<crate::conversation::VolumeRef>,
-    /// Exact receive consumed in the preceding committed workflow checkpoint.
-    #[serde(default)]
-    pub mailbox_operation: Option<OperationId>,
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.

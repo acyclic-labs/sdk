@@ -1152,17 +1152,6 @@ struct StoredAllocationRecords {
     seed: acyclic_stream::OwnedBytes,
 }
 
-macro_rules! observed_preparation_records {
-    ($($record:ty),+ $(,)?) => {$(
-        impl bounded_io::PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 {
-                bounded_io::preparation_slot_bytes::<Self>()
-            }
-        }
-    )+};
-}
-observed_preparation_records!(ForkRequest, ForkReport, AllocationClaim, SeedBinding);
-
 async fn read_observed_record<A: AsyncAuthorityStore, O: AsyncObjectStore,
     T: bounded_io::PreparationRecord>(
     host: &FilesystemHost<A, O>, journal: &WorkspaceRef, path: &str,

@@ -573,7 +573,6 @@ pub struct TaskJournalOwner<P> {
     extensions: Option<crate::core::ExtensionAdmission>,
     extension_schemas: Option<crate::core::SchemaRegistry>,
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
-    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     readonly_original: Option<crate::distributed::OriginalReservationProof>,
     #[cfg(not(target_arch = "wasm32"))]
