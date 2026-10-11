@@ -15,4 +15,22 @@ An `acyclic_harness::executor::Executor` that runs a whole turn as one OpenAI Co
 The difference from `StockExecutor`: Codex owns context assembly and compaction, so `ContextPipeline` stages
 do not run.
 
+Protected native turns supply an owned `ProcessHost`, admitted `TaskContext`,
+and complete `BuiltinMediator` bindings for the pinned exec-server protocol.
+`ExecServerAuthority` checks the original task, lease and physical fence before
+each dispatch and supplies genuine provider notifications. The private
+`CODEX_EXEC_SERVER_URL` is for the Codex process only: its shell environment
+policy must exclude that URL and the MCP/proxy secrets. A configured remote
+executor has no local-tool fallback. Shutdown kills and drains the original
+Codex process group, then awaits endpoint closure and durable dispatch drain.
+The generic SDK hooks do not themselves implement a consumer's Root authority
+or qualify a live provider.
+
+Durable native machines may retain the exact canonical `Vec<u8>` turn codec
+with the existing Rust-generated `tool::schema::input/output` contracts. Decode
+`TurnInput` before admission and initialization, and encode only the actual
+executor's `TurnOutput`; do not duplicate the nested model/resource schemas.
+`TaskAdmissionRecord::runtime_scope` restores the retained effective scope and
+extension selection, but does not replace owner authority verification.
+
 See `DESIGN.md` for the design and `verify.sh` for the gates (`verify.sh e2e` runs the real pinned Codex against a scripted upstream, with no API key).
