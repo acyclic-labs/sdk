@@ -271,6 +271,10 @@ per-action read/write facades keep that selection fixed; no broader namespace
 resource escapes an attenuated READ check. The accepted marker is fixed inline
 metadata, not freshness or filesystem authority; ordinary context clones clear
 both marker and native funding.
+The marker retains all eight original producer limit scalars and the exact
+accepted request digest. Nested Stock/Durable dispatch recomputes that same
+immutable request under the original limits; stricter local execution policy
+does not rewrite its identity. A different digest or limit tuple fails closed.
 `ToolContext::original_admission_with_native_work` observes only that accepted
 invocation's protected original input, with its actual metadata custody.
 It verifies the original owner before and after reading. Input role fields

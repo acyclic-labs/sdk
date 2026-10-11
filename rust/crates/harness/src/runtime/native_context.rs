@@ -17,6 +17,7 @@ pub(super) struct NativeMetadataSource {
 pub(super) struct NativeToolAcceptance {
     task: crate::TaskId,
     operation: crate::OperationId,
+    producer_limits: Limits,
     request_digest: [u8; 32],
 }
 
@@ -389,11 +390,36 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Canonical DurableToolRunner-only: called after actual protected
+    /// Canonical Stock/DurableToolRunner-only: called after actual protected
     /// ToolStarted acceptance (or an authenticated exact replay).
     pub(crate) fn record_native_tool_acceptance(
         &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
-        request_digest: [u8; 32], work: &NativeMaterializationWork,
+        producer_limits: Limits, request_digest: [u8; 32], work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
+        let accepted = NativeToolAcceptance { task, operation, producer_limits, request_digest };
+        match self.accepted_native_tool.set(accepted) {
+            Ok(()) => Ok(()),
+            Err(replayed) if self.accepted_native_tool.get() == Some(&replayed) => Ok(()),
+            Err(_) => Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "tool context already accepted a different protected invocation")),
+        }
+    }
+
+    /// Original accepted FULL eight-dimensional limits, never execution rights.
+    /// Nested producers rehash the same immutable request under these original
+    /// limits while enforcing their own stricter execution policy separately.
+    pub(crate) fn native_tool_acceptance_limits(
+        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<Limits>> {
+        self.verify_native_tool_acceptance_identity(task, operation, call_id, work)?;
+        Ok(self.accepted_native_tool.get().map(|accepted| accepted.producer_limits))
+    }
+
+    fn verify_native_tool_acceptance_identity(
+        &self, task: crate::TaskId, operation: crate::OperationId, call_id: &str,
+        work: &NativeMaterializationWork,
     ) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
         if context.durable_task != Some(task) || self.operation_id != operation
@@ -405,13 +431,7 @@ impl ToolContext {
         work.charge(WorkCounters { bytes_examined: call_id.len() as u64,
             items_examined: 1, ..WorkCounters::default() })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let accepted = NativeToolAcceptance { task, operation, request_digest };
-        match self.accepted_native_tool.set(accepted) {
-            Ok(()) => Ok(()),
-            Err(replayed) if self.accepted_native_tool.get() == Some(&replayed) => Ok(()),
-            Err(_) => Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "tool context already accepted a different protected invocation")),
-        }
+        Ok(())
     }
 
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
