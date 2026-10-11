@@ -167,6 +167,34 @@ impl<'a> RootBootstrapContentContext<'a> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         owner.verify_root_bootstrap_context_with_native_work(original_root, binding, work).await?;
+        Self::from_authenticated_source_with_native_work(
+            original_root, owner.root_bootstrap_owner(), binding, work,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn from_verified_original_root_with_native_work<P: acyclic_stream::StreamProvider>(
+        host: &'a crate::durable_host::CoordinatorTaskHost<P>,
+        original: &'a crate::distributed::OriginalReservationProof,
+        original_root: &'a TaskAdmissionRecord,
+        binding: &'a crate::store::VerifiedRootBinding,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        host.verify_original_root_bootstrap_source_with_native_work(
+            original, original_root, binding, work,
+        )?;
+        Self::from_authenticated_source_with_native_work(
+            original_root, &original.declaration().owner, binding, work,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn from_authenticated_source_with_native_work(
+        original_root: &'a TaskAdmissionRecord,
+        owner: &'a Authority,
+        binding: &'a crate::store::VerifiedRootBinding,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
@@ -179,7 +207,7 @@ impl<'a> RootBootstrapContentContext<'a> {
         }
         let admission_digest = original_root.canonical_digest_with_work(&mut io)?;
         Ok(Self {
-            original_root, owner: owner.root_bootstrap_owner(),
+            original_root, owner,
             audience: binding.audience(), agent: binding.agent(), admission_digest,
         })
     }
