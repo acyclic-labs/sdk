@@ -78,32 +78,6 @@ struct MailEvent {
 const MAIL_SCHEMA_REVISION: u32 = 1;
 const MAIL_ROUTE_REVISION: u32 = 1;
 
-impl MailEvent {
-    fn encode(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
-        crate::contract::validate_json_byte_bound(self, maximum_bytes)?;
-        crate::contract::canonical_json_bytes(self)
-    }
-
-    fn decode(bytes: &[u8], recipient: TaskId) -> Result<Self> {
-        let value: Value = crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&value)?.as_slice() != bytes {
-            return Err(Error::Storage("mail event is not canonical JSON".into()));
-        }
-        let event: Self = serde_json::from_value(value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if event.recipient != recipient
-            || event.schema_revision != MAIL_SCHEMA_REVISION
-            || event.route_revision != MAIL_ROUTE_REVISION
-        {
-            return Err(Error::Storage(
-                "mail route or schema revision differs".into(),
-            ));
-        }
-        Ok(event)
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailLocation {
@@ -1316,7 +1290,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
 
-
     pub(crate) async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1699,7 +1672,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         quota.transfer();
         Ok(token)
     }
-
 
 
     fn execution_write(
@@ -5941,37 +5913,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
 
 
-    fn mail_location_path(
-        sender: TaskId,
-        message: OperationId,
-    ) -> Result<acyclic_stream::StreamPath> {
-        Ok(acyclic_stream::StreamPath::new(format!(
-            "harness/v3/mail/by-intent/{sender}/{message}"
-        ))?)
-    }
 
-
-
-    fn mail_location(
-        sender: TaskId,
-        recipient: TaskId,
-        message: OperationId,
-        sequence: u64,
-        bytes: &[u8],
-    ) -> Result<(MailLocation, OwnedBytes)> {
-        let location = MailLocation {
-            sender,
-            message_id: message,
-            recipient,
-            schema_revision: MAIL_SCHEMA_REVISION,
-            route_revision: MAIL_ROUTE_REVISION,
-            sequence,
-            value_digest: *blake3::hash(bytes).as_bytes(),
-        };
-        crate::contract::validate_json_byte_bound(&location, MAX_MAIL_LOCATION_BYTES as u64)?;
-        let encoded = OwnedBytes::from(crate::contract::canonical_json_bytes(&location)?);
-        Ok((location, encoded))
-    }
 
 
 
@@ -7071,70 +7013,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn bounded_mail_envelope_identity_and_missing_field_controls() -> Result<()> {
-        let payloads = MemoryPayloads::new()?;
-        let operation = OperationId::from_bytes([8; 16]);
-        let first = payloads.stage(operation, "first", b"7").await?;
-        let second = payloads.stage(operation, "second", b"8").await?;
-        let mut cases = Vec::new();
-        let mut identities = BTreeSet::new();
-        for mask in 0..64_u8 {
-            let event = MailEvent {
-                sender: TaskId::from_bytes([1 + (mask & 1); 16]),
-                recipient: TaskId::from_bytes([3 + ((mask >> 1) & 1); 16]),
-                message_id: OperationId::from_bytes([5 + ((mask >> 2) & 1); 16]),
-                schema_revision: 1 + u32::from((mask >> 3) & 1),
-                route_revision: 1 + u32::from((mask >> 4) & 1),
-                payload: if mask & 32 == 0 { first.clone() } else { second.clone() },
-            };
-            let bytes = crate::contract::canonical_json_bytes(&event)?;
-            assert!(identities.insert(bytes.clone()), "different envelopes aliased");
-            if mask & 24 == 0 {
-                let restored = MailEvent::decode(&bytes, event.recipient)?;
-                assert_eq!(crate::contract::canonical_json_bytes(&restored)?, bytes);
-            } else {
-                assert!(matches!(
-                    MailEvent::decode(&bytes, event.recipient),
-                    Err(Error::Storage(_))
-                ));
-            }
-            cases.push(event);
-        }
-        assert_eq!(identities.len(), 64);
-        for omitted in [
-            "sender", "recipient", "message_id", "schema_revision", "route_revision", "payload",
-        ] {
-            let mut broken_identities = BTreeSet::new();
-            for event in &cases {
-                let mut fields = serde_json::to_value(event)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                assert!(fields.as_object_mut().expect("mail object").remove(omitted).is_some());
-                let bytes = crate::contract::canonical_json_bytes(&fields)?;
-                assert!(matches!(
-                    MailEvent::decode(&bytes, event.recipient),
-                    Err(Error::Storage(_))
-                ), "missing field accepted: {omitted}");
-                broken_identities.insert(bytes);
-            }
-            assert_eq!(broken_identities.len(), 32, "field-removal probe: {omitted}");
-        }
-        let event = &cases[0];
-        let encoded = crate::contract::canonical_json_bytes(event)?;
-        assert_eq!(event.encode(encoded.len() as u64)?, encoded);
-        assert!(matches!(
-            event.encode(encoded.len() as u64 - 1),
-            Err(Error::Invalid(_))
-        ));
-        let mut previous = serde_json::to_value(event)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        for field in ["recipient", "schema_revision", "route_revision"] {
-            previous.as_object_mut().expect("mail object").remove(field);
-        }
-        let previous_size = crate::contract::canonical_json_bytes(&previous)?.len() as u64;
-        assert!(matches!(event.encode(previous_size), Err(Error::Invalid(_))));
-        Ok(())
-    }
 
     #[tokio::test]
     async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
@@ -7216,7 +7094,8 @@ pub(crate) mod tests {
         host.send(sender, recipient, message, payload.clone()).await?;
         let retained = host.mailbox(recipient)?.read(0, 1).await?
             .try_collect::<Vec<_>>().await?;
-        let event = MailEvent::decode(&retained[0].value, recipient)?;
+        let event = crate::contract::json_from_slice::<MailEvent>(&retained[0].value)
+                .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(event.sender, sender);
         assert_eq!(event.recipient, recipient);
         assert_eq!(event.message_id, message);
@@ -7232,7 +7111,8 @@ pub(crate) mod tests {
         for (schema_revision, route_revision) in [(2, 1), (1, 2)] {
             let altered = MailEvent {
                 schema_revision, route_revision,
-                ..MailEvent::decode(&retained[0].value, recipient)?
+                ..crate::contract::json_from_slice::<MailEvent>(&retained[0].value)
+                .map_err(|error| Error::Storage(error.to_string()))?
             };
             let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&altered)?);
             assert!(matches!(
@@ -7288,12 +7168,14 @@ pub(crate) mod tests {
                 route_revision: MAIL_ROUTE_REVISION,
                 payload: payload.clone(),
             };
-            let bytes = OwnedBytes::from(event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)?);
+            let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&event)?);
             let mailbox = host.mailbox(recipient)?;
             let sequence = mailbox.bounds().await?.tail;
-            let (location, _) = CoordinatorTaskHost::<MemoryStream>::mail_location(
-                sender, recipient, operation, sequence, &bytes,
-            )?;
+            let location = MailLocation {
+                sender, recipient, message_id: operation, sequence,
+                schema_revision: MAIL_SCHEMA_REVISION, route_revision: MAIL_ROUTE_REVISION,
+                value_digest: *blake3::hash(&bytes).as_bytes(),
+            };
             let mut receipt = serde_json::to_value(location)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             match fault {
@@ -7305,7 +7187,7 @@ pub(crate) mod tests {
                 5 => { receipt.as_object_mut().expect("location object").remove("route_revision"); }
                 _ => receipt["unexpected"] = serde_json::json!(true),
             }
-            let location_path = CoordinatorTaskHost::<MemoryStream>::mail_location_path(sender, operation)?;
+            let location_path = acyclic_stream::StreamPath::new(format!("harness/v3/mail/by-intent/{sender}/{operation}"))?;
             let committed = stream.commit(CommitRequest {
                 conditions: vec![
                     CommitCondition::Tail { path: mailbox.path().clone(), expected: sequence },
