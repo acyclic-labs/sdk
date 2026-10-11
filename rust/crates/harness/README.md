@@ -269,6 +269,16 @@ Borrowed native narrowing/run-limit validators apply those same attenuation
 checks without cloning a context; metadata custody and extension pinning are not
 issuer authentication.
 
+Native scheduler validation borrows the current projection for every original
+event variant, including cancellation acknowledgement through
+`Completed(Outcome::Cancelled)`. Ordinary and native application share that
+validator and mutation body; preflight does not clone a shadow scheduler.
+Cached declaration, reservation, checkpoint, workflow-input and outcome
+metadata retain their original per-field allocation custody after query IO
+drops. Replacing a field drops its old payload before releasing that custody.
+Capacity snapshots and work leases clone only the metadata they return;
+logical SDK tuple/String/Vec ownership excludes opaque BTree allocator nodes.
+
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
 `Bindings::local()` starts without authority or implicit providers. `HarnessBuilder::bindings` installs its scope, registries, provider boundaries, and concurrency together. An imported binding scope can only be narrowed; configure local root grants on `HarnessBuilder` before building, or construct the desired scope in the binding set before importing it. Later builder calls can register more tasks and tools.
