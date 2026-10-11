@@ -175,9 +175,22 @@ pub(crate) fn validate_json_schema_value_with_io(
     if let Some(io) = io {
         preparation_step(io)?;
     }
-    compiled.validator.validate(value).map_err(|error| {
-        json_schema_error(format_args!("{label} failed validation: {error}"), io)
-    })
+    match compiled.validator.validate(value) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(JsonSchemaDataScope::Native(custody)) = _value_scope {
+                // Ownership conversion may materialize and copy the failing
+                // instance. Its allowance was admitted before validation.
+                return Err(Error::NativeSchema {
+                    code: ErrorCode::Invalid,
+                    source: source.to_owned(),
+                    custody: Some(custody),
+                });
+            }
+            Err(json_schema_error(format_args!("{label} failed validation: {source}"), io))
+        }
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -187,13 +200,20 @@ fn preparation_step(io: &crate::filesystem::PreparationIo) -> Result<()> {
     io.charge(work)
 }
 
+#[cfg(feature = "filesystem")]
+enum JsonSchemaDataScope<'a> {
+    Observed { _reservation: crate::filesystem::DecodeReservation<'a> },
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(acyclic_fs::NativeAllocation),
+}
+
 // A conservative, scoped logical data allowance around opaque schema calls.
 // Serialization visits actual JSON nodes before the allowance is admitted.
 #[cfg(feature = "filesystem")]
 fn json_schema_scope<'a>(
     value: &serde_json::Value,
     io: Option<&'a crate::filesystem::PreparationIo>,
-) -> Result<Option<crate::filesystem::DecodeReservation<'a>>> {
+) -> Result<Option<JsonSchemaDataScope<'a>>> {
     let Some(io) = io else { return Ok(None); };
     let before = io.receipt().items_examined;
     let _bytes;
@@ -207,8 +227,15 @@ fn json_schema_scope<'a>(
 #[cfg(feature = "filesystem")]
 fn json_schema_data_scope(
     io: &crate::filesystem::PreparationIo, wire_bytes: u64, items: u64,
-) -> Result<crate::filesystem::DecodeReservation<'_>> {
-    io.reserve_decode(json_schema_data_owned(wire_bytes, items)?)
+) -> Result<JsonSchemaDataScope<'_>> {
+    let owned = json_schema_data_owned(wire_bytes, items)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        return work.retain_owned(owned)
+            .map(JsonSchemaDataScope::Native)
+            .map_err(|cause| Error::NativeWork { cause, custody: None });
+    }
+    io.reserve_decode(owned).map(|_reservation| JsonSchemaDataScope::Observed { _reservation })
 }
 
 fn json_schema_data_owned(wire_bytes: u64, items: u64) -> Result<u64> {
@@ -331,7 +358,7 @@ pub(crate) fn compile_json_schema(
 struct CompiledJsonSchema<'a> {
     validator: std::sync::Arc<jsonschema::Validator>,
     #[cfg(feature = "filesystem")]
-    _scope: Option<crate::filesystem::DecodeReservation<'a>>,
+    _scope: Option<JsonSchemaDataScope<'a>>,
     #[cfg(not(feature = "filesystem"))]
     _scope: std::marker::PhantomData<&'a ()>,
 }
@@ -403,7 +430,7 @@ fn compile_json_schema_cached(
     observer.step()?;
     let validator = Arc::new(
         jsonschema::validator_for(schema)
-            .map_err(|error| observer.error(format_args!("invalid {label} schema: {error}")))?,
+            .map_err(|source| observer.validation_error(source, label))?,
     );
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     if cache.len() >= 256 {
@@ -433,6 +460,24 @@ impl JsonSchemaObserver<'_> {
             Self::History(work) => work.codec_charge(JsonCodecCharge::Work { bytes: 0, items: 1 }),
         }
     }
+    fn validation_error(
+        &mut self,
+        source: jsonschema::ValidationError<'static>,
+        label: &str,
+    ) -> Error {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Self::Preparation(Some(io)) = self {
+            if io.original_native_work().is_some() {
+                // The compiler already owns this opaque library error. Moving
+                // it creates no SDK instance copy or diagnostic string.
+                return Error::NativeSchema {
+                    code: ErrorCode::Invalid, source, custody: None,
+                };
+            }
+        }
+        self.error(format_args!("invalid {label} schema: {source}"))
+    }
+
 
     fn error(&mut self, message: std::fmt::Arguments<'_>) -> Error {
         match self {
@@ -1090,6 +1135,18 @@ pub enum Error {
         /// Original preclaimed SDK diagnostic custody.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// Original JSON Schema failure with custody for its owned input instance.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeSchema {
+        /// Invalid at a request boundary; contextual uncertainty after dispatch.
+        code: ErrorCode,
+        /// The original validator cause, including its instance and locations.
+        #[source]
+        source: jsonschema::ValidationError<'static>,
+        /// Allowance admitted before validation, released after the cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual Stream failure in a native operation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1238,7 +1295,7 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
             | Self::NativeDecode { code, .. } | Self::NativeEncode { code, .. }
-            | Self::NativeStream { code, .. } => *code,
+            | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
@@ -1298,6 +1355,7 @@ impl Error {
             | Self::NativeDiagnostic { .. }
             | Self::NativeDecode { .. }
             | Self::NativeEncode { .. }
+            | Self::NativeSchema { .. }
             | Self::NativeStream { .. }
             | Self::NativeMcpIncomplete { .. }
             | Self::NativeSupervisor { .. }
