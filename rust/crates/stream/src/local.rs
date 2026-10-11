@@ -12,6 +12,9 @@
 //! and mandatory durability controls, cancellation cannot abandon their drain.
 //! A denial at a later partial-write boundary reports uncertainty, never an
 //! acknowledgement; reopening retains the original idempotency identity.
+//! Native append retains the genuine Append digest and recovery family;
+//! native commit and deadline-bearing commit retain their Commit family.
+//! Native semantic errors transfer original custody without re-adoption.
 
 use std::fs::{File, OpenOptions};
 use std::future::Future;
@@ -45,7 +48,7 @@ use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
-    NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult, RecordStream,
+    NativeProviderFuture, NativeRecordStream, NativeStreamFailure, NativeStreamOutput, NativeStreamResult, RecordStream,
     StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
@@ -69,6 +72,7 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 /// existing semantic projection.
 enum LocalCompletionError {
     Stream(StreamError),
+    GuardedStream(NativeStreamFailure),
     Native(std::io::Error),
 }
 
@@ -84,6 +88,9 @@ impl LocalCompletionError {
     fn ordinary(self) -> StreamError {
         match self {
             Self::Stream(error) => error,
+            // The ordinary API has no native payload. All current semantic
+            // causes are static, and only native entrypoints create this arm.
+            Self::GuardedStream(error) => error.into_parts().0,
             Self::Native(_) => StreamError::Unavailable,
         }
     }
@@ -93,13 +100,19 @@ type LocalCompletion<T> = Result<T, LocalCompletionError>;
 
 fn from_native<T>(result: NativeStreamResult<T>) -> LocalCompletion<NativeStreamOutput<T>> {
     result.map_err(LocalCompletionError::Native)?
-        .map_err(LocalCompletionError::Stream)
+        .map_err(LocalCompletionError::GuardedStream)
 }
 
-fn into_native<T>(result: LocalCompletion<NativeStreamOutput<T>>) -> NativeStreamResult<T> {
+fn into_native<T>(
+    result: LocalCompletion<NativeStreamOutput<T>>,
+    meter: &Arc<dyn NativeReadMeter>,
+) -> NativeStreamResult<T> {
     match result {
         Ok(value) => Ok(Ok(value)),
-        Err(LocalCompletionError::Stream(error)) => Ok(Err(error)),
+        Err(LocalCompletionError::Stream(error)) => Ok(Err(NativeStreamFailure::new(
+            error, ReadAllocation::empty(meter),
+        ))),
+        Err(LocalCompletionError::GuardedStream(error)) => Ok(Err(error)),
         Err(LocalCompletionError::Native(error)) => Err(error),
     }
 }
@@ -119,7 +132,7 @@ fn finish_native<T>(
 ) -> NativeStreamResult<T> {
     match &result {
         Ok(Ok(_)) => { let _ = obs::finish(span, Ok::<(), StreamError>(())); }
-        Ok(Err(error)) => obs::failed(span, error.code()),
+        Ok(Err(error)) => obs::failed(span, error.source().code()),
         Err(_) => obs::failed(span, "native_work"),
     }
     result
@@ -409,13 +422,49 @@ struct MutationCompletion<T> {
     result: LocalCompletion<T>,
     flush: Option<JournalFlushPlan>,
     // Keep SDK-owned request controls alive through accepted durability drain.
-    _input: Option<CommitInput>,
+    _input: Option<MutationInput>,
 }
 
 struct CommitCompletion<T> {
     value: T,
     error: Option<std::io::Error>,
     input: Option<CommitInput>,
+}
+
+enum MutationInput {
+    Append { _input: AppendInput },
+    Commit { _input: CommitInput },
+}
+
+struct AppendInput {
+    request: AppendRequest,
+    _allocation: Option<ReadAllocation>,
+}
+
+impl AppendInput {
+    fn ordinary(request: AppendRequest) -> Self {
+        Self { request, _allocation: None }
+    }
+
+    fn capture(source: &AppendRequest, meter: &Arc<dyn NativeReadMeter>) -> std::io::Result<Self> {
+        let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
+        let records = funding.records(&source.records)?;
+        let captured = funding.finish(AppendRequest {
+            path: source.path.clone(),
+            records,
+            if_tail: source.if_tail,
+            idempotency_key: source.idempotency_key.clone(),
+        });
+        Ok(Self { request: captured.value, _allocation: captured.allocation })
+    }
+}
+
+struct AppendCompletion<T> {
+    value: T,
+    error: Option<std::io::Error>,
+    persist: bool,
+    revision: Option<u64>,
+    input: Option<AppendInput>,
 }
 
 /// Caller-owned request controls never escape into an accepted detached task.
@@ -702,14 +751,22 @@ impl LocalStream {
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> LocalCompletion<PreparedFrame> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
-        if let (CommandRef::Commit(request), Some(meter)) = (command, meter) {
-            let length = crate::memory::commit_encoded_len_observed(request, Some(meter))?;
-            // One length-delimited JournalCommand operation wraps the request.
-            let mut rest = length;
-            let mut prefix = 1;
-            while rest >= 128 { rest >>= 7; prefix += 1; }
-            if length.checked_add(prefix + 1).is_none_or(|length| length > MAX_COMMAND_BYTES) {
-                return Err(StreamError::Capacity.into());
+        if let Some(meter) = meter {
+            let length = match command {
+                CommandRef::Append(request) =>
+                    Some(crate::memory::append_encoded_len_observed(request, Some(meter))?),
+                CommandRef::Commit(request) =>
+                    Some(crate::memory::commit_encoded_len_observed(request, Some(meter))?),
+                CommandRef::Fork(_) => None,
+            };
+            if let Some(length) = length {
+                // One length-delimited JournalCommand operation wraps the request.
+                let mut rest = length;
+                let mut prefix = 1;
+                while rest >= 128 { rest >>= 7; prefix += 1; }
+                if length.checked_add(prefix + 1).is_none_or(|length| length > MAX_COMMAND_BYTES) {
+                    return Err(StreamError::Capacity.into());
+                }
             }
         }
         let frame = PreparedFrame::encode_observed(command, committed_at_millis, meter)
@@ -1033,6 +1090,8 @@ impl LocalStream {
             match &result {
                 Ok(_) => { let _ = obs::finish(&operation, Ok::<(), StreamError>(())); }
                 Err(LocalCompletionError::Stream(error)) => obs::failed(&operation, error.code()),
+                Err(LocalCompletionError::GuardedStream(error)) =>
+                    obs::failed(&operation, error.source().code()),
                 Err(LocalCompletionError::Native(_)) => obs::failed(
                     &operation,
                     if observer.is_some() { "native_work" } else { StreamError::Unavailable.code() },
@@ -1089,7 +1148,7 @@ impl LocalStream {
         read: impl Future<Output = NativeStreamResult<T>>,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> NativeStreamResult<T> {
-        into_native(self.visible_observed(async { from_native(read.await) }, Some(meter)).await)
+        into_native(self.visible_observed(async { from_native(read.await) }, Some(meter)).await, meter)
     }
 
     /// The ordinary and native calls share frame preparation, visibility,
@@ -1137,7 +1196,10 @@ impl LocalStream {
                 persisted?;
                 Ok(completion.value)
             }.await;
-            MutationCompletion { result, flush: accepted_flush, _input: accepted_input }
+            MutationCompletion {
+                result, flush: accepted_flush,
+                _input: accepted_input.map(|input| MutationInput::Commit { _input: input }),
+            }
         })).await
     }
 
@@ -1157,6 +1219,7 @@ impl LocalStream {
             // They must be physically gone before the SDK-owned worker detaches.
             drop(request);
             let execute_meter = Arc::clone(&observer);
+            let failure_meter = Arc::clone(&observer);
             let result = self.commit_with(
                 input, deadline, Some(observer),
                 move |provider, mut input, deadline| async move {
@@ -1169,7 +1232,7 @@ impl LocalStream {
                     })
                 },
             ).await;
-            into_native(result)
+            into_native(result, &failure_meter)
         })
     }
 
@@ -1249,31 +1312,16 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
-            "acyclic.stream.append",
-            items = request.records.len(),
-            bytes = request.records.iter().map(bytes::Bytes::len).sum::<usize>(),
-            rev = Empty,
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            let operation = span.clone();
-            self.exclusive(&span, move |stream| async move {
-                let frame = stream.prepare(CommandRef::Append(&request))?;
-                let retain_conflict = request.idempotency_key.is_some();
-                let outcome = stream.inner.provider.append(request).await?;
-                if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
-                    stream.persist(frame).await?;
-                }
-                if let AppendOutcome::Committed(receipt) = &outcome {
-                    obs::record(&operation, "rev", receipt.tail);
-                }
-                Ok(outcome)
-            })
-            .await
-        })
-        .await
+        self.append_with(AppendInput::ordinary(request), None, |provider, input| async move {
+            let retain_conflict = input.request.idempotency_key.is_some();
+            let value = provider.append(input.request).await?;
+            let persist = matches!(value, AppendOutcome::Committed(_)) || retain_conflict;
+            let revision = match &value {
+                AppendOutcome::Committed(receipt) => Some(receipt.tail),
+                _ => None,
+            };
+            Ok(AppendCompletion { value, error: None, persist, revision, input: None })
+        }).await.map_err(LocalCompletionError::ordinary)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -1426,6 +1474,42 @@ impl StreamProvider for LocalStream {
                 self.inner.provider.native_inspect_idempotency(key, Arc::clone(&observer)),
                 &observer,
             ).await
+        })
+    }
+
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, AppendOutcome> {
+        let observer = Arc::clone(&meter);
+        NativeProviderFuture::new(&meter, async move {
+            let input = AppendInput::capture(&request, &observer)?;
+            // Caller-paid Vec controls do not escape into the detached worker.
+            // The fresh descriptor Vec and immutable aliases have SDK custody.
+            drop(request);
+            let execute_meter = Arc::clone(&observer);
+            let failure_meter = Arc::clone(&observer);
+            let result = self.append_with(
+                input, Some(observer), move |provider, mut input| async move {
+                    let retain_conflict = input.request.idempotency_key.is_some();
+                    let completion = provider.native_append_completion_borrowed_inner(
+                        &mut input.request, execute_meter,
+                    ).await.map_err(LocalCompletionError::Native)?
+                        .map_err(LocalCompletionError::Stream)?;
+                    let persist = matches!(completion.outcome.value(), AppendOutcome::Committed(_))
+                        || retain_conflict;
+                    let revision = match completion.outcome.value() {
+                        AppendOutcome::Committed(receipt) => Some(receipt.tail),
+                        _ => None,
+                    };
+                    Ok(AppendCompletion {
+                        value: completion.outcome, error: completion.error,
+                        persist, revision, input: Some(input),
+                    })
+                },
+            ).await;
+            into_native(result, &failure_meter)
         })
     }
 
@@ -2975,6 +3059,7 @@ mod tests {
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
         Ok(())
     }
+
     fn request_control_capacity(request: &CommitRequest) -> usize {
         request.conditions.capacity() * std::mem::size_of::<crate::CommitCondition>()
             + request.mutations.capacity() * std::mem::size_of::<crate::CommitMutation>()
@@ -3253,7 +3338,7 @@ mod tests {
         // The caller entered at 99. Frame hashing moves trusted time to 100
         // after capture; the real CAS must reject despite commit-time pinning.
         let expired = provider.native_commit_before(request.clone(), 100, meter.original()).await?;
-        assert!(matches!(expired, Err(StreamError::DeadlineElapsed)));
+        assert!(matches!(expired.as_ref().map_err(NativeStreamFailure::source), Err(StreamError::DeadlineElapsed)));
         assert_eq!(clock.0.load(Ordering::SeqCst), 100);
         assert_eq!(std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(), HEADER_BYTES as u64);
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);

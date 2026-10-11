@@ -563,7 +563,9 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 return None;
             }
         }
-        state.retained.push_back(Retained { replay, commit });
+        state.retained.push_back(Retained {
+            replay, commit, _allocation: super::MemoryAllocation::default(),
+        });
     }
     Some(())
 }

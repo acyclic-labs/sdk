@@ -100,7 +100,6 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("commit", "commit"),
     ("commits/read", "envelope"),
     ("tokens/create", "token"),
-    ("delivery/acknowledge", "empty"),
 ];
 
 /// Canonical operation vocabulary accepted by Stream access-token grants.
@@ -688,10 +687,57 @@ impl<T> NativeStreamOutput<T> {
     }
 }
 
+/// A native semantic cause with custody of its actual SDK-owned payload.
+///
+/// The cause drops before its existing original-ledger claim. This does not
+/// infer opaque provider/library capacity, allocator overhead or process RSS.
+/// The current closed StreamError vocabulary is entirely static; a zero-byte
+/// original-meter guard is therefore valid for those causes.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NativeStreamFailure {
+    source: StreamError,
+    allocation: acyclic_native_runtime::ReadAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeStreamFailure {
+    /// Transfers custody already funded before any known SDK payload creation.
+    /// This performs no allocation, admission, adoption or cancellation check.
+    pub fn new(source: StreamError, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self { source, allocation }
+    }
+
+    /// Borrows the semantic cause without detaching its physical owner.
+    pub fn source(&self) -> &StreamError { &self.source }
+
+    /// Transfers the cause and its claim together; preserve their drop order
+    /// or transfer the claim with the cause into the next owned carrier.
+    pub fn into_parts(self) -> (StreamError, acyclic_native_runtime::ReadAllocation) {
+        (self.source, self.allocation)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl fmt::Debug for NativeStreamFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeStreamFailure").field("source", &self.source).finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl fmt::Display for NativeStreamFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.source, f) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::error::Error for NativeStreamFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.source) }
+}
+
 /// Preserves original observer failure separately from the provider's error.
 #[cfg(not(target_arch = "wasm32"))]
 pub type NativeStreamResult<T> =
-    std::io::Result<Result<NativeStreamOutput<T>, StreamError>>;
+    std::io::Result<Result<NativeStreamOutput<T>, NativeStreamFailure>>;
 
 /// One original-native record and the storage actually produced for it.
 #[cfg(not(target_arch = "wasm32"))]
@@ -700,7 +746,7 @@ pub type NativeObservedRecord = NativeStreamOutput<Record>;
 /// A finite cursor preserves late original failures after its actual prefix.
 #[cfg(not(target_arch = "wasm32"))]
 pub type NativeRecordStream =
-    BoxProviderStream<'static, std::io::Result<Result<NativeObservedRecord, StreamError>>>;
+    BoxProviderStream<'static, std::io::Result<Result<NativeObservedRecord, NativeStreamFailure>>>;
 
 /// Object-safe provider future whose real heap frame is admitted before boxing.
 /// A denied allocation or unsupported provider returns inline, without a box.
@@ -1035,8 +1081,24 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         key: IdempotencyKey,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        let _ = (key, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = key;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
+    }
+
+    /// Executes the genuine append family on the original native work owner.
+    /// Retry identities remain IdempotencyOutcome::Append, not Commit.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, AppendOutcome> {
+        let _ = request;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Canonical tail observation on the original ledger.
@@ -1046,8 +1108,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         path: StreamPath,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
-        let _ = (path, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = path;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Canonical retained-window observation on the original ledger.
@@ -1057,8 +1121,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         path: StreamPath,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, StreamBounds> {
-        let _ = (path, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = path;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Canonical finite read; original causes and output custody are retained.
@@ -1068,8 +1134,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         request: ReadRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
-        let _ = (request, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = request;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Canonical commit with allocation admission before its future frame.
@@ -1079,8 +1147,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         request: CommitRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let _ = (request, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = request;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Executes the same canonical commit with the provider's trusted clock
@@ -1092,8 +1162,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         deadline_unix_millis: u64,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let _ = (request, deadline_unix_millis, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = (request, deadline_unix_millis);
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 
     /// Canonical immutable-envelope read against original native work.
@@ -1103,8 +1175,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         commit_id: CommitId,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommittedEnvelope> {
-        let _ = (commit_id, meter);
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+        let _ = commit_id;
+        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
+            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
+        ))))
     }
 }
 
@@ -1212,6 +1286,16 @@ impl<P: StreamProvider> StreamClient<P> {
         self.provider.native_inspect_idempotency(key, meter)
     }
 
+    /// Forwards genuine native append without changing its recovery family.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, AppendOutcome> {
+        self.provider.native_append(request, meter)
+    }
+
     /// Forwards an already owned path to the original canonical tail producer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn native_tail(
@@ -1276,24 +1360,6 @@ impl<P: StreamProvider> StreamClient<P> {
 
 #[cfg(feature = "grpc")]
 impl StreamClient<grpc::Client> {
-    /// Disables automatic hosted transport receipts without changing records.
-    #[must_use]
-    pub fn without_delivery_acknowledgements(self) -> Self {
-        Self::new(Arc::new(
-            self.provider.as_ref().clone().without_delivery_acknowledgements(),
-        ))
-    }
-
-    /// Explicitly acknowledges a hosted frame at its issuing endpoint index.
-    /// This receipt is not application consumption, billing, or a checkpoint.
-    pub async fn acknowledge_delivery(
-        &self,
-        endpoint: usize,
-        delivery_token: impl AsRef<[u8]>,
-    ) -> Result<(), StreamError> {
-        self.provider.acknowledge_delivery(endpoint, delivery_token).await
-    }
-
     /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
     pub async fn connect(
         endpoint: impl AsRef<str>,
@@ -1315,7 +1381,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Connects the high-level API trusting exclusively the caller-supplied private CA.
+    /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
     pub async fn connect_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -1327,7 +1393,7 @@ impl StreamClient<grpc::Client> {
         )))
     }
 
-    /// Eagerly connects trusting exclusively the caller-pinned private CA.
+    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
     pub async fn connect_eager_with_ca_certificate(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
