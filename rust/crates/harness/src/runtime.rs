@@ -7896,23 +7896,24 @@ impl TaskContext {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<OperationId>> {
         self.require_original_native_work(work)?;
-        self.authorize_tool_pending_with_work(definition, invocation, Some(work)).await
+        self.authorize_tool_pending_with_work(definition, invocation, Some(work), None).await
     }
 
     // Only a successfully routed, durably pending outcome becomes a wait.
     pub(crate) async fn authorize_tool_pending(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
     ) -> Result<Option<OperationId>> {
-        self.authorize_tool_pending_with_work(definition, invocation, None).await
+        self.authorize_tool_pending_with_work(definition, invocation, None, None).await
     }
 
     async fn authorize_tool_pending_with_work(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
-        work: Option<&ToolPolicyWork>,
+        work: Option<&ToolPolicyWork>, command_router: Option<&dyn InteractionRouter>,
     ) -> Result<Option<OperationId>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.remaining()?;
+            if let Some(router) = command_router { router.supports_native_interactions(work)?; }
             for (_, policy) in self.stock_tool_policy_binding().into_iter().chain(self.stock_tool_policy_overrides()) {
                 policy.supports_native_policy(work)?;
             }
@@ -7938,8 +7939,8 @@ impl TaskContext {
                 let outcome = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
-                        let (value, custody) = self.interact_with_native_work(
-                            approval_id, request, custody.expect("native approval retains its prompt"), work,
+                        let (value, custody) = self.interact_with_native_work_and_router(
+                            approval_id, request, custody.expect("native approval retains its prompt"), work, command_router,
                         ).await?;
                         PaidPolicyValue { value, custody: Some(custody) }
                     }
@@ -8211,6 +8212,16 @@ impl TaskContext {
         request_custody: acyclic_fs::NativeAllocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
+        self.interact_with_native_work_and_router(operation_id, interaction, request_custody, work, None).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn interact_with_native_work_and_router(
+        &self, operation_id: OperationId, interaction: Interaction,
+        request_custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+        command_router: Option<&dyn InteractionRouter>,
+    ) -> Result<(InteractionOutcome, acyclic_fs::NativeAllocation)> {
         let paid = NativePolicyPayload { value: interaction, custody: request_custody };
         self.require_original_native_work(work)?;
         if !paid.custody.work().shares_ledger(work) {
@@ -8223,11 +8234,11 @@ impl TaskContext {
                     reason: "approval request does not retain its original prompt" });
             }
         }
-        let router = if self.durable_task.is_some() {
-            self.owned_interactions.as_ref()
+        let router = command_router.or_else(|| if self.durable_task.is_some() {
+            self.owned_interactions.as_ref().map(|router| router.as_ref())
         } else {
-            self.harness.interactions.as_ref()
-        };
+            self.harness.interactions.as_ref().map(|router| router.as_ref())
+        });
         let state = if router.is_none() && self.durable_task.is_some() {
             Some(self.harness.state.as_ref().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, reason: "durable task state is not bound",
@@ -9799,6 +9810,34 @@ impl ToolContext {
         self.task().scope()
     }
 
+    /// Uses this command's SDK-owned route without cloning its task or policies.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn authorize_tool_with_native_work(
+        &self, definition: &ToolDefinition, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        match self.authorize_tool_pending_with_native_work(definition, invocation, work).await? {
+            Some(operation) => Err(Error::Indeterminate(operation)),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn authorize_tool_pending_with_native_work(
+        &self, definition: &ToolDefinition, invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<OperationId>> {
+        let task = self.task();
+        task.require_original_native_work(work)?;
+        if invocation.operation_id != self.operation_id() || invocation.call_id != self.call_id() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "native policy invocation differs from its original command" });
+        }
+        task.authorize_tool_pending_with_work(
+            definition, invocation, Some(work), self.stock_native_interactions(),
+        ).await
+    }
+
     /// Returns the exact call identity.
     #[must_use]
     pub fn call_id(&self) -> &str {
@@ -11052,6 +11091,17 @@ mod tests {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
                 .expect("native policy source ledger");
+            struct OpaqueCommandRouter;
+            impl InteractionRouter for OpaqueCommandRouter {
+                fn route<'a>(
+                    &'a self, _: OperationId, _: Interaction,
+                ) -> BoxFuture<'a, Result<InteractionOutcome>> { panic!("ordinary command route must not run"); }
+            }
+            let before = work.receipt();
+            assert!(matches!(narrowed.authorize_tool_pending_with_work(
+                &definition, &invocation, Some(&work), Some(&OpaqueCommandRouter),
+            ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
+            assert_eq!(work.receipt(), before);
             assert!(narrowed.policy_approval_with_work(policy.as_ref(),
                 Some((identity, "runtime policy identity changed after binding")),
                 &definition, &invocation, Some(&work)).await?.is_none());
