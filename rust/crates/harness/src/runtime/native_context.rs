@@ -42,15 +42,19 @@ pub struct NativeTaskContext {
 impl TaskContext {
     /// Called only after the SDK context producer has completed every observed
     /// metadata allocation and retained the corresponding original guards.
-    pub(crate) fn mark_native_metadata_source(
+    pub(super) fn mark_native_metadata_source(
         &mut self,
         work: &NativeMaterializationWork,
-        bytes: u64,
+        custody: &NativeAllocation,
     ) -> Result<()> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !custody.work().shares_ledger(work) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "issued task metadata custody belongs to another original ledger"));
+        }
         self.native_metadata_source = Some(NativeMetadataSource {
-            work: work.clone(), bytes, dispatch_source: false,
+            work: work.clone(), bytes: custody.bytes(), dispatch_source: false,
         });
         Ok(())
     }
@@ -68,6 +72,43 @@ impl TaskContext {
         }
         Ok(())
     }
+    pub(crate) fn require_original_native_dispatch(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_original_native_work(work)?;
+        if !self.native_metadata_source.as_ref().is_some_and(|source| source.dispatch_source) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "native task metadata was not issued for fresh dispatch"));
+        }
+        Ok(())
+    }
+    pub(crate) fn original_host_binding_matches(
+        &self, host: &dyn super::DurableTaskHost, policy: Option<&dyn super::ToolPolicy>,
+    ) -> bool {
+        self.harness.original_host_binding_matches(host, policy)
+    }
+
+
+    /// Borrows the original SDK mailbox binding without copying its fence or
+    /// deriving a principal from the task identity.
+    pub fn owned_task_binding_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<(crate::TaskId, &crate::scheduler::LeaseFence)> {
+        self.require_original_native_work(work)?;
+        let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| boundary(
+            crate::wire::ErrorCode::Unauthorized, "native task has no original SDK mailbox",
+        ))?;
+        mailbox.validate_scope_with_native_work(&self.scope, work)?;
+        let (task, fence) = mailbox.task_binding().ok_or_else(|| boundary(
+            crate::wire::ErrorCode::Unauthorized, "native mailbox has no original task binding",
+        ))?;
+        if self.durable_task != Some(task) || !mailbox.matches_task_binding(task, fence) {
+            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                "native context differs from its original mailbox binding"));
+        }
+        Ok((task, fence))
+    }
+
 
     /// Checks stock scope restrictions against the issued source before copying
     /// metadata or constructing a callback. Candidate metadata grants no issuer.
@@ -129,13 +170,13 @@ impl NativeTaskContext {
 
     /// Builds an original-owner READ facade over this same shared context.
     /// Neither the owner nor the context is reconstructed or metadata-cloned.
-    pub fn content_residency_verifier_with_native_work(
+    pub fn content_residency_verifier_with_native_work<P: acyclic_stream::StreamProvider + 'static>(
         self: &Arc<Self>,
-        owner: Arc<TaskJournalOwner>,
+        owner: Arc<TaskJournalOwner<P>>,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<dyn ContentResidencyVerifier>> {
-        let (task, fence) = owner.task_binding();
-        if !self.context.original_task_binding_matches(task, fence) {
+        let (task, _) = owner.task_binding();
+        if self.context.durable_task != Some(task) || self.context.task_id != owner.operation_id() {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ owner differs from the issued task context"));
         }
@@ -143,7 +184,8 @@ impl NativeTaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ facade lacks original shared metadata custody"));
         }
-        let custody = work.claim(std::mem::size_of::<NativeContextVerifier>() as u64)
+        owner.require_mail_scope_with_native_work(self.context.scope(), work)?;
+        let custody = work.claim(std::mem::size_of::<NativeContextVerifier<P>>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(NativeContextVerifier {
             context: Arc::clone(self), owner, custody,
@@ -332,20 +374,21 @@ impl ToolContext {
     }
 }
 
-struct NativeContextVerifier {
+struct NativeContextVerifier<P: acyclic_stream::StreamProvider> {
     context: Arc<NativeTaskContext>,
-    owner: Arc<TaskJournalOwner>,
+    owner: Arc<TaskJournalOwner<P>>,
     custody: NativeAllocation,
 }
 
-impl NativeContextVerifier {
+impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
     fn original_binding(&self) -> Result<()> {
-        let (task, fence) = self.owner.task_binding();
-        if !self.context.context.original_task_binding_matches(task, fence) {
+        let (task, _) = self.owner.task_binding();
+        let context = self.context.context();
+        if context.durable_task != Some(task) || context.task_id != self.owner.operation_id() {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ owner differs from the issued task context"));
         }
-        Ok(())
+        self.owner.require_mail_scope_with_native_work(context.scope(), self.custody.work())
     }
 
     async fn authorize_native(
@@ -374,7 +417,7 @@ impl NativeContextVerifier {
     }
 }
 
-impl ContentResidencyVerifier for NativeContextVerifier {
+impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for NativeContextVerifier<P> {
     fn verify<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             self.authorize(reference).await?;

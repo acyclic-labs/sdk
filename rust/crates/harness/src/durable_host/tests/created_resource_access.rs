@@ -1205,3 +1205,35 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     assert_eq!(denied.receipt().backend_read_operations, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let witness = fixture.host.task_admission_readonly_witness_with_native_work(
+        fixture.root, &work,
+    ).await?;
+    assert_eq!(witness.task(), fixture.root);
+    assert_eq!(witness.admission_operation(), fixture.root_lease.operation.operation_id);
+    assert!(witness.scratch_proof().is_none());
+    assert!(witness._native_custody.bytes() > 0);
+    witness.verify_with_native_work(&work).await?;
+    let foreign = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let before = foreign.receipt();
+    assert!(matches!(witness.verify_with_native_work(&foreign).await,
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(foreign.receipt(), before);
+    cancellation.cancel();
+    let before = work.receipt();
+    assert!(matches!(witness.verify_with_native_work(&work).await,
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    drop(witness);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}

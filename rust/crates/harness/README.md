@@ -475,3 +475,11 @@ intent. They require the parent's retained lease and `operation:cancel`, and
 bind the cancellation operation to the exact child across retries and restart.
 A successful request does not prove provider stop or release an uncertain
 effect's reservation; reconciliation still uses the original effect journals.
+Native scope recovery, owned admission and reconciliation have explicit
+original-ledger callbacks. Custom providers reject unsupported callbacks before
+allocating a future or starting IO. Owned requests and parent fences retain their
+funded metadata until the canonical producer consumes them.
+Protected preparation bootstrap uses a private coordinator-issued READ witness.
+Its task and admission come from authenticated canonical history; roots carry
+no fabricated child scratch proof. The witness cannot publish or acquire a new
+reservation, and foreign-ledger use rejects before IO.

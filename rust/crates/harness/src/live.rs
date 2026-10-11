@@ -74,10 +74,26 @@ struct GroupAdmission {
     active: BTreeMap<OperationId, AbortHandle>,
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+type GroupWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+type GroupWork<'a> = Option<&'a ()>;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct GroupChildCustody {
+    _previous: Option<Box<GroupChildCustody>>,
+    allocation: acyclic_fs::NativeAllocation,
+}
+
 struct GroupState {
     semaphore: Arc<Semaphore>,
     admission: Mutex<GroupAdmission>,
     children: Mutex<Vec<Weak<GroupState>>>,
+    _parent: Option<Arc<GroupState>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    children_custody: Mutex<Option<Box<GroupChildCustody>>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Controls admission and lifetime for related live tasks.
@@ -90,38 +106,116 @@ impl TaskGroup {
     /// Creates a task group with bounded concurrency.
     #[must_use]
     pub fn new(max_concurrency: usize) -> Self {
-        Self {
+        Self::new_observed(max_concurrency, None)
+            .expect("ordinary task-group construction has no observer")
+    }
+
+    fn new_observed(max_concurrency: usize, work: GroupWork<'_>) -> crate::Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = if let Some(work) = work {
+            let bytes = (std::mem::size_of::<GroupState>() + std::mem::size_of::<Semaphore>()) as u64;
+            let custody = work.retain_owned(bytes)
+                .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+            work.charge(acyclic_fs::WorkCounters {
+                allocation_operations: 2, ..Default::default()
+            }).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+            Some(custody)
+        } else { None };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = work;
+        Ok(Self {
             state: Arc::new(GroupState {
                 semaphore: Arc::new(Semaphore::new(max_concurrency.max(1))),
-                admission: Mutex::new(GroupAdmission {
-                    closed: false,
-                    active: BTreeMap::new(),
-                }),
+                admission: Mutex::new(GroupAdmission { closed: false, active: BTreeMap::new() }),
                 children: Mutex::new(Vec::new()),
+                _parent: None,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                children_custody: Mutex::new(None),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                _native_custody: custody,
             }),
-        }
+        })
     }
 
     /// Creates an independently bounded child retained in this cancellation tree.
     #[must_use]
     pub fn child(&self, max_concurrency: usize) -> Self {
-        let child = Self::new(max_concurrency);
+        self.attach_child(Self::new(max_concurrency), None)
+            .expect("ordinary task-group attachment has no observer")
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn child_with_native_work(
+        &self, max_concurrency: usize, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<Self> {
+        self.attach_child(Self::new_observed(max_concurrency, Some(work))?, Some(work))
+    }
+
+    fn attach_child(&self, mut child: Self, work: GroupWork<'_>) -> crate::Result<Self> {
+        Arc::get_mut(&mut child.state).expect("new unattached task group")._parent =
+            Some(Arc::clone(&self.state));
         let admission = self
             .state
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.state
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Arc::downgrade(&child.state));
+        let mut children = self.state.children.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            if children.len() == children.capacity() {
+                let old = children.capacity();
+                let target = old.checked_mul(2).unwrap_or(usize::MAX).max(4);
+                let bytes = target.checked_sub(old)
+                    .and_then(|slots| slots.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
+                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GroupChildCustody>()))
+                    .ok_or(crate::Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+                        custody: None,
+                    })? as u64;
+                let custody = work.retain_owned(bytes)
+                    .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+                work.charge(acyclic_fs::WorkCounters {
+                    allocation_operations: 1, ..Default::default()
+                }).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+                let mut retained = self.state.children_custody.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let previous = retained.take();
+                *retained = Some(Box::new(GroupChildCustody { _previous: previous, allocation: custody }));
+                let growth = work.charge(acyclic_fs::WorkCounters {
+                    allocation_operations: 1, ..Default::default()
+                }).map_err(|cause| crate::Error::NativeWork { cause, custody: None })
+                    .and_then(|()| {
+                        let extra = target - children.len();
+                        children.try_reserve_exact(extra).map_err(|cause| crate::Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),
+                            custody: None,
+                        })
+                    });
+                if let Err(error) = growth {
+                    let mut unused = retained.take().expect("installed child-vector custody");
+                    *retained = unused._previous.take();
+                    drop(unused);
+                    return Err(error);
+                }
+                let actual = ((children.capacity() - old) * std::mem::size_of::<Weak<GroupState>>()
+                    + std::mem::size_of::<GroupChildCustody>()) as u64;
+                retained.as_mut().expect("installed child-vector custody").allocation
+                    .reconcile_capacity(actual)
+                    .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+            }
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = work;
+        children.push(Arc::downgrade(&child.state));
+        drop(children);
         let closed = admission.closed;
         drop(admission);
         if closed {
-            child.cancel();
+            child.state.admission.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner).closed = true;
         }
-        child
+        Ok(child)
     }
 
     /// Admits one live task.
@@ -462,6 +556,46 @@ fn recursive_sum_boxed(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn grandchildren_retain_the_original_cancellation_parent() {
+        let root = TaskGroup::new(2);
+        let parent = root.child(2);
+        let grandchild = parent.child(1);
+        drop(parent);
+        root.cancel();
+        assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
+            Admission::Rejected { .. }));
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn native_groups_pay_before_allocation_and_keep_parent_vector_custody() -> crate::Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget {
+            allocation_operations: 64, peak_allocation_bytes: 65_536,
+            ..Default::default()
+        };
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..budget }, &cancellation,
+        ).map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
+        let root = TaskGroup::new(2);
+        assert!(root.child_with_native_work(1, &denied).is_err());
+        assert_eq!(denied.receipt().allocation_operations, 0);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
+        let parent = root.child_with_native_work(2, &work)?;
+        let grandchild = parent.child_with_native_work(1, &work)?;
+        drop(parent);
+        root.cancel();
+        assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
+            Admission::Rejected { .. }));
+        drop(grandchild);
+        assert!(work.live_allocation_bytes() > 0);
+        drop(root);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn recursive_work_joins_to_expected_value() {
