@@ -83,6 +83,21 @@ pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
     .await
 }
 
+pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    names: &[LogicalName],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Vec<Option<TreeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
+        store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
+    ).await.map(|(receipt, allocation)| (receipt.values, allocation)).map_err(map_accounting_failure)
+}
+
 fn to_batch(receipt: persistent_batch::Receipt<TreeEntry>) -> TreeBatchLookup {
     TreeBatchLookup {
         entries: receipt.values,
@@ -151,13 +166,50 @@ pub async fn lookup_tree_entry_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<TreeLookup, TreeReadFailure> {
-    persistent_point::lookup_async::<S, TreeFormat>(store, root, name, limits, budget, cancellation)
+    lookup_tree_entry_async_with_custody(store, root, name, limits, budget, cancellation, None).await
+}
+
+pub(crate) async fn lookup_tree_entry_async_with_custody<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    name: &LogicalName,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<TreeLookup, TreeReadFailure> {
+    persistent_point::lookup_async::<S, TreeFormat>(store, root, name, limits, budget, cancellation, data_custody)
         .await
         .map(|receipt| TreeLookup {
             entry: receipt.value,
             work: receipt.work,
         })
         .map_err(map_batch_failure)
+}
+
+/// Uses the same authenticated point walk on the caller's original accounting.
+pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    name: &LogicalName,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Option<TreeEntry>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_point::lookup_async_with_accounting::<S, TreeFormat>(
+        store, root, name, limits, accounting, cancellation, data_custody,
+    ).await.map_err(map_accounting_failure)
+}
+
+fn map_accounting_failure(error: crate::FsError) -> crate::FsError {
+    match error {
+        crate::FsError::FileRecord(error) => {
+            let error = map_batch_error(super::file_table::unmap_batch_error(error));
+            super::PathLookupError::Tree(error).into()
+        }
+        error => error,
+    }
 }
 
 /// Sparse authenticated tree failure retaining exact spent work.

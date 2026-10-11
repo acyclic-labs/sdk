@@ -156,9 +156,9 @@ fn grouping_search_and_child_routing_cover_every_boundary() -> Result<(), Box<dy
         .enumerate()
         .map(|(ordinal, key)| IndexedKey { ordinal, key })
         .collect::<Vec<_>>();
-    assert_eq!(equal_group(&indexed, 0, indexed.len()), (2, 2));
-    assert_eq!(equal_group(&indexed, 2, indexed.len()), (3, 1));
-    assert_eq!(equal_group(&indexed, 3, indexed.len()), (4, 0));
+    assert_eq!(equal_group(&indexed, 0, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (2, 2));
+    assert_eq!(equal_group(&indexed, 2, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (3, 1));
+    assert_eq!(equal_group(&indexed, 3, indexed.len(), |_| Ok::<_, crate::FsError>(()))?, (4, 0));
 
     let values = [entry(2)?, entry(4)?, entry(6)?];
     assert_eq!(search::<AttributeFormat>(&values, &name(2)?), (Ok(0), 2));
@@ -211,45 +211,29 @@ fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn
 
 #[test]
 fn allocation_and_page_io_error_translation_is_total() {
-    for allocation in [
-        AllocationError::Overflow,
-        AllocationError::ReleaseInvariant,
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        assert!(matches!(
-            map_allocation(allocation),
-            Error::AllocationFailed
-        ));
-    }
     assert!(matches!(
-        map_allocation(AllocationError::Work(WorkError::Overflow)),
-        Error::Work(WorkError::Overflow)
+        project_failure(crate::FsError::PendingMutationAllocationFailed),
+        Error::AllocationFailed
     ));
 
     assert!(matches!(
-        map_io(persistent_io::Error::AllocationFailed),
+        project_failure(crate::FsError::Decode(CanonicalDecodeError::AllocationFailed)),
         Error::AllocationFailed
     ));
     assert!(matches!(
-        map_io(persistent_io::Error::Allocation(
-            AllocationError::CapacityExceeded
-        )),
+        project_failure(query_error(Error::AllocationFailed)),
         Error::AllocationFailed
     ));
     assert!(matches!(
-        map_io(persistent_io::Error::Storage(ObjectStoreError::Missing)),
+        project_failure(crate::FsError::Object(ObjectStoreError::Missing)),
         Error::Storage(ObjectStoreError::Missing)
     ));
     assert!(matches!(
-        map_io(persistent_io::Error::Decode(
-            CanonicalDecodeError::Truncated
-        )),
+        project_failure(crate::FsError::Decode(CanonicalDecodeError::Truncated)),
         Error::Decode(CanonicalDecodeError::Truncated)
     ));
     assert!(matches!(
-        map_io(persistent_io::Error::Work(WorkError::Overflow)),
+        project_failure(crate::FsError::Work(WorkError::Overflow)),
         Error::Work(WorkError::Overflow)
     ));
 }
@@ -257,116 +241,77 @@ fn allocation_and_page_io_error_translation_is_total() {
 #[test]
 fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
-    let key = name(1)?;
-    let keys = [key];
+    let keys = [name(1)?];
     let root = ObjectId {
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
     };
-    let wrong = ObjectId {
-        kind: ObjectKind::Blob,
-        digest: Digest::from_bytes([2; 32]),
-    };
+    let wrong = ObjectId { kind: ObjectKind::Blob, digest: Digest::from_bytes([2; 32]) };
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
-        Machine::<AttributeFormat>::new(
-            wrong,
-            &keys,
-            1,
-            DecodeLimits::default(),
-            WorkBudget::UNBOUNDED,
-        ),
-        Err(OperationFailure {
-            error: Error::WrongRootKind,
-            ..
-        })
+        Machine::<AttributeFormat>::new(wrong, &keys, 1, DecodeLimits::default(), &mut accounting),
+        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::WrongRootKind))
     ));
-    let invalid = DecodeLimits {
-        maximum_page_height: 0,
-        ..DecodeLimits::default()
-    };
+    let invalid = DecodeLimits { maximum_page_height: 0, ..DecodeLimits::default() };
     assert!(matches!(
-        Machine::<AttributeFormat>::new(root, &keys, 1, invalid, WorkBudget::UNBOUNDED),
-        Err(OperationFailure {
-            error: Error::InvalidLimits,
-            ..
-        })
+        Machine::<AttributeFormat>::new(root, &keys, 1, invalid, &mut accounting),
+        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::InvalidHeightLimit))
     ));
+    let mut cycle = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
+    cycle.visit(root, &mut accounting)?;
+    assert!(matches!(
+        cycle.visit(root, &mut accounting),
+        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::Cycle))
+    ));
+    cycle.abort_cleanup(&mut accounting)?;
+    assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 0);
 
-    let mut cycle = Machine::<AttributeFormat>::new(
-        root,
-        &keys,
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    cycle.visit(root)?;
+    let mut corrupt = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
+    corrupt.requests.value.get_mut(0).ok_or(Error::InvalidRouting)?.request.nested_bytes = u64::MAX;
     assert!(matches!(
-        cycle.visit(root),
-        Err(OperationFailure {
-            error: Error::CycleOrAlias,
-            ..
-        })
+        corrupt.abort_cleanup(&mut accounting),
+        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::InvalidRouting))
     ));
+    Ok(())
+}
 
-    let mut overflow = Machine::<AttributeFormat>::new(
-        root,
-        &keys,
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    overflow.requests[0].nested_bytes = u64::MAX;
-    overflow.requests.push(Request {
-        page: root,
-        lower: None,
-        upper: None,
-        queries: 0..1,
-        height: 1,
-        nested_bytes: 1,
-    });
-    assert!(matches!(
-        overflow.abort_cleanup(),
-        Err(OperationFailure {
-            error: Error::AllocationFailed,
-            ..
-        })
-    ));
+#[test]
+fn machine_cleanup_preserves_the_callers_existing_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let keys = [name(1)?];
+    let root = ObjectId { kind: ObjectKind::AttributePage, digest: Digest::from_bytes([1; 32]) };
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let existing = Owned::<Vec<u8>>::allocate(1, &mut accounting)?;
+    let machine = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
+    machine.abort_cleanup(&mut accounting)?;
+    assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 1);
+    let machine = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
+    let (receipt, allocation) = machine.finish(&mut accounting)?;
+    let bytes = usize_to_u64(receipt.values.capacity() * std::mem::size_of::<Option<crate::kernel::AttributeEntry>>());
+    Owned::new(receipt.values, allocation, bytes).retire(&mut accounting)?;
+    assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 1);
+    existing.retire(&mut accounting)?;
+    Ok(())
+}
 
-    let mut dirty_abort = Machine::<AttributeFormat>::new(
-        root,
-        &keys,
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    dirty_abort
-        .allocations
-        .claim_bytes(1, 0, &mut dirty_abort.work, WorkBudget::UNBOUNDED)?;
-    assert!(matches!(
-        dirty_abort.abort_cleanup(),
-        Err(OperationFailure {
-            error: Error::InvalidRouting,
-            ..
-        })
-    ));
-
-    let mut dirty_finish = Machine::<AttributeFormat>::new(
-        root,
-        &keys,
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    dirty_finish.requests.clear();
-    dirty_finish
-        .allocations
-        .claim_bytes(1, 0, &mut dirty_finish.work, WorkBudget::UNBOUNDED)?;
-    assert!(matches!(
-        dirty_finish.finish(),
-        Err(OperationFailure {
-            error: Error::InvalidRouting,
-            ..
-        })
-    ));
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_batch_denial_keeps_its_actual_constructor_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let keys = [name(1)?, name(2)?];
+    let root = ObjectId { kind: ObjectKind::AttributePage, digest: Digest::from_bytes([1; 32]) };
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 2, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    assert!(Machine::<AttributeFormat>::new(root, &keys, 2, DecodeLimits::default(), &mut accounting).is_err());
+    assert_eq!(original.receipt().allocation_operations, 2);
+    assert_eq!(original.receipt().items_examined, 1);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }

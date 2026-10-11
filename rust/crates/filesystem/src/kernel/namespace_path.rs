@@ -53,12 +53,21 @@ impl NamespacePath {
         lengths: impl IntoIterator<Item = usize>,
         limits: VolumeLimits,
     ) -> Result<u32, NamespacePathError> {
+        Self::validate_component_lengths_with_steps(lengths, limits, || Ok(()))
+    }
+
+    fn validate_component_lengths_with_steps<E: From<NamespacePathError>>(
+        lengths: impl IntoIterator<Item = usize>,
+        limits: VolumeLimits,
+        mut component_step: impl FnMut() -> Result<(), E>,
+    ) -> Result<u32, E> {
         let mut depth = 0;
         let mut encoded_bytes = 1;
         for length in lengths {
-            append_encoded_length(&mut depth, &mut encoded_bytes, length, limits)?;
+            component_step()?;
+            append_encoded_length(&mut depth, &mut encoded_bytes, length, limits).map_err(E::from)?;
         }
-        finish_encoded_lengths(depth, encoded_bytes, limits)
+        finish_encoded_lengths(depth, encoded_bytes, limits).map_err(E::from)
     }
 
     /// Converts a strict UTF-8 portable path without losing information.
@@ -372,6 +381,28 @@ impl NamespacePath {
         Self::copy_names_with_ledger(names, None, encoded_bytes, ledger, work, budget, cancellation)
     }
 
+    /// Copies a borrowed validated-name sequence through the same bounded
+    /// constructor. Each bounds visit is charged before its predicate so an
+    /// invalid prefix never reports work for unvisited trailing components.
+    pub(crate) fn names_with_steps<E: From<NamespacePathError>>(
+        names: &[LogicalName],
+        limits: VolumeLimits,
+        cancellation: &CancellationToken,
+        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
+        let encoded_bytes = Self::validate_component_lengths_with_steps(
+            names.iter().map(|name| name.as_bytes().len()), limits, || {
+                cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
+                steps(NamespacePathStep::Charge(&WorkCounters {
+                    source_path_components: 1, items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                }))
+            },
+        )?;
+        Self::copy_names_with_steps(names, None, encoded_bytes, cancellation, steps)
+    }
+
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -409,7 +440,7 @@ impl NamespacePath {
         for name in &self.components {
             cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
             steps(NamespacePathStep::Charge(&WorkCounters {
-                items_examined: 1, ..WorkCounters::UNCHARGED,
+                items_examined: 1, ..WorkCounters::UNCHARGED
             }))?;
             let bytes = name.unicode_utf8_bytes()
                 .ok_or_else(|| E::from(NamespacePathError::NonUnicodeProjection))?;
@@ -434,7 +465,7 @@ impl NamespacePath {
         if self.is_root() {
             output.push('/');
             steps(NamespacePathStep::Performed(&WorkCounters {
-                bytes_encoded: 1, output_bytes: 1, ..WorkCounters::UNCHARGED,
+                bytes_encoded: 1, output_bytes: 1, ..WorkCounters::UNCHARGED
             }))?;
         }
         for name in &self.components {
@@ -445,7 +476,7 @@ impl NamespacePath {
                 .map_err(|error| E::from(NamespacePathError::Name(error)))?;
             let encoded = (output.len() - before) as u64;
             steps(NamespacePathStep::Performed(&WorkCounters {
-                bytes_encoded: encoded, output_bytes: encoded, ..WorkCounters::UNCHARGED,
+                bytes_encoded: encoded, output_bytes: encoded, ..WorkCounters::UNCHARGED
             }))?;
         }
         Ok(output)
@@ -711,21 +742,21 @@ impl From<NamespacePathError> for crate::FsError {
     }
 }
 
-/// One aggregate claim follows the physically owned path, rather than an
-/// independently allocated list of per-name guards.
-struct NamespacePathAccounting<'a, 'b> {
+/// One aggregate claim follows the physically owned name/path output, rather
+/// than an independently allocated list of per-buffer guards.
+pub(super) struct NamespacePathAccounting<'a, 'b> {
     accounting: &'a mut KernelAccounting<'b>,
     allocation: KernelOwnedAllocation,
     owned_bytes: u64,
 }
 
 impl<'a, 'b> NamespacePathAccounting<'a, 'b> {
-    fn new(accounting: &'a mut KernelAccounting<'b>) -> Result<Self, crate::FsError> {
+    pub(super) fn new(accounting: &'a mut KernelAccounting<'b>) -> Result<Self, crate::FsError> {
         let allocation = accounting.claim_owned(0, 0)?;
         Ok(Self { accounting, allocation, owned_bytes: 0 })
     }
 
-    fn observe(&mut self, step: NamespacePathStep<'_>) -> Result<(), crate::FsError> {
+    pub(super) fn observe(&mut self, step: NamespacePathStep<'_>) -> Result<(), crate::FsError> {
         match step {
             NamespacePathStep::Admit(delta) => self.accounting.admit(*delta),
             NamespacePathStep::Charge(delta) => self.accounting.charge(*delta),
@@ -771,7 +802,7 @@ impl<'a, 'b> NamespacePathAccounting<'a, 'b> {
         }
     }
 
-    fn finish<T>(
+    pub(super) fn finish<T>(
         self,
         result: Result<T, crate::FsError>,
     ) -> Result<(T, KernelOwnedAllocation), crate::FsError> {

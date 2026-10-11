@@ -1,18 +1,21 @@
 //! Object-store-backed authenticated dependency probes.
+//!
+//! Async probes and captures share one canonical original/standalone accounting
+//! engine. Cache summaries own their actual capacity guards; semantic outputs
+//! retain their guards across every backend await.
 
 use super::{
     AsyncRebaseProbe, BlobReadError, DecodeLimits, Dependency, DependencyError, DependencyRegion,
     DependencyState, DirectoryReadError, ExtentKind, ExtentReadError, ExtentSeekRequest,
     ExtentSeekTarget, FilePayload, FileRecord, FileRecordReadError, GenerationRoot, ProbeReceipt,
-    RebaseProbe, TreeReadError, decode_generation_root, encode_tree_page, list_tree_entries,
-    list_tree_entries_async, lookup_file_record, lookup_file_record_async, lookup_tree_entry,
-    lookup_tree_entry_async, plan_extent_range, plan_extent_range_async, read_blob_range,
-    read_blob_range_async, seek_extent, seek_extent_async,
+    RebaseProbe, TreeReadError, decode_generation_root, list_tree_entries,
+    lookup_file_record, lookup_tree_entry, plan_extent_range, read_blob_range, seek_extent,
 };
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::persistent_point::{Owned, retire_allocation};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{Digest, FileId, GenerationId, usize_to_u64};
-use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
 use std::collections::HashMap;
@@ -67,8 +70,11 @@ pub fn capture_content_range_bytes(
 pub struct AuthenticatedGenerationProbe<'a, S> {
     store: &'a S,
     limits: ProbeLimits,
+    data_custody: Option<&'a super::ProofDataCustody>,
     generations: Mutex<HashMap<GenerationId, GenerationRoot>>,
     records: Mutex<HashMap<(GenerationId, FileId), Option<FileRecord>>>,
+    async_generations: Mutex<ProbeSummaryCache<GenerationId, ObjectId>>,
+    async_records: Mutex<ProbeSummaryCache<(GenerationId, FileId), Option<FileRecord>>>,
 }
 
 /// Hard bounds for one disposable authenticated dependency probe.
@@ -120,34 +126,69 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         Ok(Self {
             store,
             limits,
+            data_custody: None,
             generations: Mutex::new(HashMap::new()),
             records: Mutex::new(HashMap::new()),
+            async_generations: Mutex::new(ProbeSummaryCache::new()),
+            async_records: Mutex::new(ProbeSummaryCache::new()),
         })
     }
 
+    /// Constructs the same resolver on the caller's original accounting context.
+    /// Empty caches allocate nothing; later actual cache capacities retain their
+    /// own guards. The returned constructor guard therefore owns zero bytes.
+    pub(crate) fn new_with_accounting(
+        store: &'a S,
+        limits: ProbeLimits,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        accounting.with_owned_allocations(|accounting| {
+            let allocation = accounting.claim_owned(0, 0)?;
+            let probe = Self::new(store, limits).map_err(crate::FsError::from)?;
+            Ok((probe, allocation))
+        })
+    }
+
+    /// Destroys cached buffers before releasing their original physical claims.
+    pub(crate) fn retire_with_accounting(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let Self { generations, records, async_generations, async_records, .. } = self;
+        drop(generations);
+        drop(records);
+        let generations = async_generations.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = async_records.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generations = generations.retire(accounting);
+        let records = records.retire(accounting);
+        generations?;
+        records
+    }
+
+    /// Attributes reached async frame allocations to this observer's custody.
+    /// The borrowed control token retains no proof map or generation root.
+    pub(crate) fn with_data_custody(mut self, custody: Option<&'a super::ProofDataCustody>) -> Self {
+        self.data_custody = custody;
+        self
+    }
+
     fn validate_region(&self, region: &DependencyRegion) -> Result<FileId, ProbeFailure> {
-        region.validate().map_err(|error| {
-            failed(
-                AuthenticatedProbeError::InvalidDependency(error),
-                WorkCounters::default(),
-            )
-        })?;
+        self.validate_region_shape(region)
+            .map_err(|error| failed(error, WorkCounters::UNCHARGED))
+    }
+
+    fn validate_region_shape(&self, region: &DependencyRegion) -> Result<FileId, AuthenticatedProbeError> {
+        region.validate()?;
         match region {
             DependencyRegion::ContentRange { length, .. }
                 if *length > self.limits.maximum_content_payload_bytes =>
             {
-                return Err(failed(
-                    AuthenticatedProbeError::ContentRangeTooLarge,
-                    WorkCounters::default(),
-                ));
+                return Err(AuthenticatedProbeError::ContentRangeTooLarge);
             }
-            DependencyRegion::DirectoryRange {
-                maximum_entries, ..
-            } if *maximum_entries > self.limits.maximum_directory_entries => {
-                return Err(failed(
-                    AuthenticatedProbeError::DirectoryPageTooLarge,
-                    WorkCounters::default(),
-                ));
+            DependencyRegion::DirectoryRange { maximum_entries, .. }
+                if *maximum_entries > self.limits.maximum_directory_entries =>
+            {
+                return Err(AuthenticatedProbeError::DirectoryPageTooLarge);
             }
             _ => {}
         }
@@ -250,27 +291,36 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
 pub(crate) fn capture_file_record_state(
     record: FileRecord,
     budget: WorkBudget,
-    mut work: WorkCounters,
+    work: WorkCounters,
+    data_custody: Option<&super::ProofDataCustody>,
+    standing: u64,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<ProbeReceipt, ProbeFailure> {
-    let encoded =
-        super::file_table::encode_file_table_leaf_records(std::slice::from_ref(&record), 1)
-            .map_err(|error| failed(error.into(), work))?;
-    let domain = b"acyclic-fs-dependency-file-record-v1\0";
-    let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    work = work
-        .checked_add(WorkCounters {
-            bytes_encoded: usize_to_u64(encoded.len()),
-            bytes_hashed: usize_to_u64(encoded.len())
-                .saturating_add(usize_to_u64(domain.len()))
-                .saturating_add(8),
-            allocation_operations: 1,
-            peak_allocation_bytes: usize_to_u64(encoded.capacity()),
-            ..WorkCounters::default()
-        })
+    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
+    let standing = standing.max(cached);
+    let _scope = ProbeNameResidency::new(data_custody, standing - cached)
         .map_err(|error| failed(error.into(), work))?;
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), work))?;
-    Ok(ProbeReceipt { value, work })
+    project_accounted_capture(budget, work, standing, cancellation, |accounting| {
+        capture_file_record_state_with_accounting(record, accounting, cancellation, data_custody)
+    })
+}
+
+/// Captures the canonical record state using the caller's original ledger.
+pub(crate) fn capture_file_record_state_with_accounting(
+    record: FileRecord,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: Option<&CancellationToken>,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<DependencyState, crate::FsError> {
+    cancellation.map_or(Ok(()), CancellationToken::check)?;
+    let (bytes, allocation) = super::file_table::encode_file_table_leaf_records_with_accounting_and_custody(
+        std::slice::from_ref(&record), 1, accounting, data_custody,
+    )?;
+    let capacity = usize_to_u64(bytes.capacity());
+    capture_encoded_state_with_accounting(
+        Owned::new(bytes, allocation, capacity),
+        b"acyclic-fs-dependency-file-record-v1\0", accounting, cancellation, data_custody,
+    )
 }
 
 pub(crate) fn capture_sparse_seek_state(
@@ -279,6 +329,13 @@ pub(crate) fn capture_sparse_seek_state(
     budget: WorkBudget,
     mut work: WorkCounters,
 ) -> Result<ProbeReceipt, ProbeFailure> {
+    let domain = b"acyclic-fs-dependency-sparse-seek-v1\0";
+    let completed = work.checked_add(WorkCounters {
+        bytes_encoded: 10,
+        bytes_hashed: 10 + usize_to_u64(domain.len()) + 8,
+        ..WorkCounters::default()
+    }).map_err(|error| failed(error.into(), work))?;
+    completed.verify(budget).map_err(|error| failed(error.into(), work))?;
     let mut encoded = [0_u8; 10];
     encoded[0] = match target {
         ExtentSeekTarget::Data => 0,
@@ -288,19 +345,8 @@ pub(crate) fn capture_sparse_seek_state(
         encoded[1] = 1;
         encoded[2..].copy_from_slice(&offset.to_le_bytes());
     }
-    let domain = b"acyclic-fs-dependency-sparse-seek-v1\0";
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    work = work
-        .checked_add(WorkCounters {
-            bytes_encoded: usize_to_u64(encoded.len()),
-            bytes_hashed: usize_to_u64(encoded.len())
-                .saturating_add(usize_to_u64(domain.len()))
-                .saturating_add(8),
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), work))?;
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), work))?;
+    work = completed;
     Ok(ProbeReceipt { value, work })
 }
 
@@ -308,6 +354,8 @@ fn capture_file_length_state(
     record: FileRecord,
     budget: WorkBudget,
     mut work: WorkCounters,
+    data_custody: Option<&super::ProofDataCustody>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<ProbeReceipt, ProbeFailure> {
     let logical_bytes = match record.payload {
         FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
@@ -317,48 +365,208 @@ fn capture_file_length_state(
         | FilePayload::Device { .. }
         | FilePayload::Empty
         | FilePayload::ReparsePoint { .. } => {
-            return capture_file_record_state(record, budget, work);
+            return capture_file_record_state(record, budget, work, data_custody, 0, cancellation);
         }
     };
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(failed(AuthenticatedProbeError::Cancelled, work));
+    }
     let domain = b"acyclic-fs-dependency-file-length-v1\0";
     let encoded = logical_bytes.to_le_bytes();
+    let delta = WorkCounters {
+        bytes_encoded: usize_to_u64(encoded.len()),
+        bytes_hashed: usize_to_u64(encoded.len())
+            .saturating_add(usize_to_u64(domain.len()))
+            .saturating_add(8),
+        ..WorkCounters::default()
+    };
+    work.charge(&delta, &budget).map_err(|error| failed(error.into(), work))?;
+    if let Some(owner) = data_custody {
+        owner.record_completed_leaf_work(delta).map_err(|error| failed(error.into(), work))?;
+    }
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    work = work
-        .checked_add(WorkCounters {
-            bytes_encoded: usize_to_u64(encoded.len()),
-            bytes_hashed: usize_to_u64(encoded.len())
-                .saturating_add(usize_to_u64(domain.len()))
-                .saturating_add(8),
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), work))?;
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), work))?;
     Ok(ProbeReceipt { value, work })
 }
 
 pub(crate) fn capture_directory_name_state(
     entry: &super::TreeEntry,
     budget: WorkBudget,
-    mut work: WorkCounters,
+    work: WorkCounters,
+    data_custody: Option<&super::ProofDataCustody>,
+    standing: u64,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<ProbeReceipt, ProbeFailure> {
-    let encoded = super::tree::encode_tree_leaf_entries(std::slice::from_ref(entry), 1)
+    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
+    let external = standing.max(cached);
+    let standing = external.checked_add(usize_to_u64(entry.name.retained_bytes()))
+        .ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
+    let _name = ProbeNameResidency::new(data_custody, external - cached)
         .map_err(|error| failed(error.into(), work))?;
-    let domain = b"acyclic-fs-dependency-directory-name-v1\0";
-    let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    work = work
-        .checked_add(WorkCounters {
-            bytes_encoded: usize_to_u64(encoded.len()),
-            bytes_hashed: usize_to_u64(encoded.len())
-                .saturating_add(usize_to_u64(domain.len()))
-                .saturating_add(8),
-            allocation_operations: 1,
-            peak_allocation_bytes: usize_to_u64(encoded.capacity()),
+    project_accounted_capture(budget, work, standing, cancellation, |accounting| {
+        capture_directory_name_state_with_accounting(entry, accounting, cancellation, data_custody)
+    })
+}
+
+/// Captures a borrowed directory binding without copying its owned name.
+pub(crate) fn capture_directory_name_state_with_accounting(
+    entry: &super::TreeEntry,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: Option<&CancellationToken>,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<DependencyState, crate::FsError> {
+    cancellation.map_or(Ok(()), CancellationToken::check)?;
+    let _name = ProbeNameResidency::new(data_custody, usize_to_u64(entry.name.retained_bytes()))?;
+    let (bytes, allocation) = super::tree::encode_tree_leaf_entries_with_accounting(
+        std::slice::from_ref(entry), 1, accounting, None, data_custody,
+    )?;
+    let capacity = usize_to_u64(bytes.capacity());
+    capture_encoded_state_with_accounting(
+        Owned::new(bytes, allocation, capacity),
+        b"acyclic-fs-dependency-directory-name-v1\0", accounting, cancellation, data_custody,
+    )
+}
+
+fn project_accounted_capture(
+    budget: WorkBudget, mut work: WorkCounters, standing: u64,
+    cancellation: Option<&CancellationToken>,
+    capture: impl FnOnce(&mut KernelAccounting<'_>) -> Result<DependencyState, crate::FsError>,
+) -> Result<ProbeReceipt, ProbeFailure> {
+    let unobserved = CancellationToken::new();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    allocations.claim_bytes(standing, 0, &mut work, budget)
+        .map_err(|error| failed(error.into_work_or(AuthenticatedProbeError::AllocationFailed), work))?;
+    let result = capture(&mut KernelAccounting::borrowed_standalone(
+        &mut allocations, &mut work, budget, cancellation.unwrap_or(&unobserved),
+    ));
+    result.map(|value| ProbeReceipt { value, work }).map_err(|error| {
+        let error = match error {
+            crate::FsError::Probe(error) => error,
+            crate::FsError::Decode(error) => AuthenticatedProbeError::Decode(error),
+            crate::FsError::Work(error) => AuthenticatedProbeError::Work(error),
+            crate::FsError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
+            _ => unreachable!("standalone capture leaves return only typed decode, work, probe, native or cancellation errors"),
+        };
+        failed(error, work)
+    })
+}
+
+fn capture_encoded_state_with_accounting(
+    encoded: Owned<Vec<u8>>, domain: &[u8], accounting: &mut KernelAccounting<'_>,
+    cancellation: Option<&CancellationToken>, data_custody: Option<&super::ProofDataCustody>,
+) -> Result<DependencyState, crate::FsError> {
+    let result = (|| {
+        cancellation.map_or(Ok(()), CancellationToken::check)?;
+        let hash = WorkCounters {
+            bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(usize_to_u64(domain.len()))
+                .and_then(|bytes| bytes.checked_add(8)).ok_or(WorkError::Overflow)?,
             ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), work))?;
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), work))?;
+        };
+        accounting.admit(hash)?;
+        let value = DependencyState::Present(semantic_digest(domain, &encoded.value));
+        let completed = accounting.record_completed(hash);
+        let attributed = data_custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(hash));
+        completed?;
+        attributed?;
+        Ok(value)
+    })();
+    // The canonical digest is scalar; only the real temporary encoder is owned.
+    let retired = encoded.retire(accounting);
+    match result {
+        Err(error) => Err(error),
+        Ok(value) => { retired?; Ok(value) }
+    }
+}
+fn state_encoding_budget(work: WorkCounters, budget: WorkBudget, standing: u64) -> Result<WorkBudget, ProbeFailure> {
+    let mut remaining = work.remaining(budget).map_err(|error| failed(error.into(), work))?;
+    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(standing)
+        .ok_or_else(|| failed(WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes", observed: standing, maximum: budget.peak_allocation_bytes,
+        }.into(), work))?;
+    Ok(remaining)
+}
+
+fn capture_directory_page_encoding(
+    entries: Vec<super::TreeEntry>, has_more: bool, maximum_entries: u32,
+    budget: WorkBudget, work: WorkCounters, data_custody: Option<&super::ProofDataCustody>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<ProbeReceipt, ProbeFailure> {
+    let owned = usize_to_u64(entries.capacity()).checked_mul(size_of::<super::TreeEntry>() as u64)
+        .and_then(|bytes| entries.iter().try_fold(bytes, |total, entry| {
+            total.checked_add(usize_to_u64(entry.name.retained_bytes()))
+        })).ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
+    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
+    let standing = cached.checked_add(owned).ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
+    let _scope = ProbeNameResidency::new(data_custody, owned).map_err(|error| failed(error.into(), work))?;
+    // The moved entries are declared after their report guard: actual buffers
+    // are destroyed before their operation-residency registration retires.
+    let entries = entries;
+    let remaining = state_encoding_budget(work, budget, standing)?;
+    let encoded = super::tree::encode_tree_leaf_entries_measured(
+        &entries, maximum_entries, remaining, cancellation, 0, Some(u8::from(has_more)),
+    ).map_err(|failure| {
+        let completed = match work.with_backend(*failure.work, standing) {
+            Ok(completed) => completed,
+            Err(error) => return failed(error.into(), work),
+        };
+        if let Some(owner) = data_custody {
+            if let Err(error) = owner.record_completed_leaf_work(*failure.work) {
+                return failed(error.into(), completed);
+            }
+        }
+        let error = match failure.error {
+            super::TreePageEncodeError::Canonical(error) => error.into(),
+            super::TreePageEncodeError::Work(error) => error.into(),
+            super::TreePageEncodeError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+        };
+        failed(error, completed)
+    })?;
+    capture_encoded_state(encoded, b"acyclic-fs-dependency-directory-page-v1\0", budget, work, standing, data_custody, cancellation)
+}
+
+
+struct ProbeNameResidency<'a> {
+    token: Option<&'a super::ProofDataCustody>,
+    bytes: u64,
+}
+
+impl<'a> ProbeNameResidency<'a> {
+    fn new(token: Option<&'a super::ProofDataCustody>, bytes: u64) -> Result<Self, WorkError> {
+        if let Some(token) = token { token.add_operation_cache_bytes(bytes)?; }
+        Ok(Self { token, bytes })
+    }
+}
+
+impl Drop for ProbeNameResidency<'_> {
+    fn drop(&mut self) {
+        if let Some(token) = self.token { token.release_operation_cache_bytes(self.bytes); }
+    }
+}
+
+fn capture_encoded_state(
+    encoded: crate::OperationReceipt<Vec<u8>>, domain: &[u8], budget: WorkBudget,
+    work: WorkCounters, standing: u64, data_custody: Option<&super::ProofDataCustody>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<ProbeReceipt, ProbeFailure> {
+    if let Some(owner) = data_custody {
+        owner.record_completed_leaf_work(encoded.work).map_err(|error| failed(error.into(), work))?;
+    }
+    let mut work = work.with_backend(encoded.work, standing).map_err(|error| failed(error.into(), work))?;
+    work.verify(budget).map_err(|error| failed(error.into(), work))?;
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(failed(AuthenticatedProbeError::Cancelled, work));
+    }
+    let hash = WorkCounters {
+        bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(usize_to_u64(domain.len()))
+            .and_then(|bytes| bytes.checked_add(8)).ok_or_else(|| failed(WorkError::Overflow.into(), work))?,
+        ..WorkCounters::default()
+    };
+    work.charge(&hash, &budget).map_err(|error| failed(error.into(), work))?;
+    if let Some(owner) = data_custody {
+        owner.record_completed_leaf_work(hash).map_err(|error| failed(error.into(), work))?;
+    }
+    let value = DependencyState::Present(semantic_digest(domain, &encoded.value));
     Ok(ProbeReceipt { value, work })
 }
 
@@ -379,7 +587,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
             extents,
         } = record.payload
         else {
-            return capture_file_record_state(record, budget, work);
+            return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
         };
         let range = ByteRange { offset, length };
         let hash_work = WorkCounters {
@@ -454,7 +662,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
             | FilePayload::Empty
             | FilePayload::Device { .. }
             | FilePayload::ReparsePoint { .. } => {
-                return capture_file_record_state(record, budget, work);
+                return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
             }
         };
         capture_sparse_seek_state(target, result, budget, work)
@@ -586,7 +794,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
         mut work: WorkCounters,
     ) -> Result<ProbeReceipt, ProbeFailure> {
         let FilePayload::Directory { entries } = record.payload else {
-            return capture_file_record_state(record, budget, work);
+            return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
         };
         let remaining = work
             .remaining(budget)
@@ -603,642 +811,502 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
         work = work
             .checked_add(page.work)
             .map_err(|error| failed(error.into(), work))?;
-        let mut encoded = encode_tree_page(&super::TreePage::Leaf(page.entries), maximum_entries)
-            .map_err(|error| failed(error.into(), work))?;
-        encoded.push(u8::from(page.has_more));
-        let domain = b"acyclic-fs-dependency-directory-page-v1\0";
-        let digest = semantic_digest(domain, &encoded);
-        work = work
-            .checked_add(WorkCounters {
-                bytes_encoded: usize_to_u64(encoded.len()),
-                bytes_hashed: usize_to_u64(encoded.len())
-                    .saturating_add(usize_to_u64(domain.len()))
-                    .saturating_add(8),
-                allocation_operations: 1,
-                peak_allocation_bytes: usize_to_u64(encoded.capacity()),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| failed(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        Ok(ProbeReceipt {
-            value: DependencyState::Present(digest),
-            work,
-        })
+        capture_directory_page_encoding(page.entries, page.has_more, maximum_entries, budget, work, self.data_custody, None)
+    }
+}
+
+/// Scalar immutable summaries keep their actual backing before its guard.
+/// Generation parents are never cloned merely to cache a file-table frontier.
+struct ProbeSummaryCache<K, V> {
+    entries: Owned<Vec<(K, V)>>,
+}
+
+impl<K: Copy + Eq, V: Copy> ProbeSummaryCache<K, V> {
+    fn new() -> Self {
+        Self { entries: Owned::new(Vec::new(), KernelOwnedAllocation::Standalone, 0) }
+    }
+
+    fn check_scope(&self, accounting: &KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.entries.bytes != 0 {
+            let valid = match (&self.entries.allocation, accounting.native_work()) {
+                (KernelOwnedAllocation::Standalone, None) => true,
+                (KernelOwnedAllocation::NativeOriginal(guard), Some(original)) =>
+                    guard.work().shares_ledger(original),
+                _ => false,
+            };
+            if !valid { return Err(crate::NativeTreeMaterializationError::InvalidLayout.into()); }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = accounting;
+        Ok(())
+    }
+
+    fn get_with_accounting(
+        &self, key: &K, accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<V>, crate::FsError> {
+        self.check_scope(accounting)?;
+        for (existing, value) in &self.entries.value {
+            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            if existing == key { return Ok(Some(*value)); }
+        }
+        Ok(None)
+    }
+
+    fn insert_with_accounting(
+        &mut self, key: K, value: V, maximum: u32, accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        self.check_scope(accounting)?;
+        let maximum = usize::try_from(maximum).map_err(|_| WorkError::Overflow)?;
+        if self.entries.value.len() >= maximum { self.entries.value.clear(); }
+        if self.entries.value.len() == self.entries.value.capacity() {
+            let capacity = self.entries.value.capacity().saturating_mul(2).max(1).min(maximum);
+            let mut next = Owned::allocate(capacity, accounting)?;
+            let copied = WorkCounters {
+                bytes_copied: usize_to_u64(self.entries.value.len().checked_mul(size_of::<(K, V)>())
+                    .ok_or(WorkError::Overflow)?),
+                ..WorkCounters::UNCHARGED
+            };
+            if let Err(error) = accounting.charge(copied) {
+                next.retire(accounting)?;
+                return Err(error);
+            }
+            next.value.extend_from_slice(&self.entries.value);
+            let previous = std::mem::replace(&mut self.entries, next);
+            if previous.bytes == 0 { drop(previous); } else { previous.retire(accounting)?; }
+        }
+        self.entries.value.push((key, value));
+        Ok(())
+    }
+
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        if self.entries.bytes == 0 { drop(self); Ok(()) } else { self.entries.retire(accounting) }
     }
 }
 
 impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
-    /// Captures a bounded set of exact regions through one shared immutable
-    /// generation and file-record cache.
-    ///
-    /// Regions are admitted as a complete batch before allocation or backend
-    /// access. Input order and duplicates are preserved; repeated regions and
-    /// regions sharing a file identity reuse the same authenticated frontiers.
+    fn standalone_accounting<'c>(
+        &self, budget: WorkBudget, cancellation: &'c CancellationToken, input_bytes: u64,
+    ) -> Result<KernelAccounting<'c>, ProbeFailure> {
+        let cached = self.async_generations.lock()
+            .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, WorkCounters::UNCHARGED))?
+            .entries.bytes.checked_add(self.async_records.lock()
+                .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, WorkCounters::UNCHARGED))?
+                .entries.bytes).ok_or_else(|| failed(WorkError::Overflow.into(), WorkCounters::UNCHARGED))?;
+        let standing = cached.checked_add(self.data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes))
+            .and_then(|bytes| bytes.checked_add(input_bytes))
+            .ok_or_else(|| failed(WorkError::Overflow.into(), WorkCounters::UNCHARGED))?;
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        accounting.with_allocations(|accounting| {
+            accounting.claim_owned(standing, 0).map(drop)
+        }).map_err(|error| failed(project_probe_error(error), accounting.spent()))?;
+        Ok(accounting)
+    }
+
+    /// Captures a bounded batch, preserving order, duplicates and moved names.
     ///
     /// # Errors
     ///
-    /// Rejects a zero/exceeded batch bound, malformed region, allocation,
-    /// cancellation, authentication, storage, or exact-work failure.
+    /// Rejects invalid regions or bounds before semantic backend access, and
+    /// preserves authentication, cancellation and exact accounting failures.
     pub async fn capture_many_async(
-        &self,
-        generation: GenerationId,
-        regions: Vec<DependencyRegion>,
-        maximum_regions: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        &self, generation: GenerationId, regions: Vec<DependencyRegion>, maximum_regions: u32,
+        budget: WorkBudget, cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
-        in_heap(move || async move {
-            cancellation
-                .check()
-                .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::default()))?;
-            validate_capture_batch(regions.len(), maximum_regions)?;
-            for region in &regions {
-                self.validate_region(region)?;
-            }
-            let (mut captured, mut work) = allocate_capture_output(&regions, budget)?;
-
-            for region in regions {
-                let receipt = self
-                    .probe_async(
-                        generation,
-                        &region,
-                        work.remaining(budget)
-                            .map_err(|error| failed(error.into(), work))?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = work
-                    .checked_add(receipt.work)
-                    .map_err(|error| failed(error.into(), work))?;
-                captured.push(Dependency {
-                    region,
-                    expected: receipt.value,
-                });
-            }
-            Ok(OperationReceipt {
-                value: captured,
-                work,
-            })
-        })
-        .await
-    }
-
-    /// Captures a bounded batch from records already authenticated by the
-    /// caller's path or identity frontier, without rereading the generation or
-    /// file table.
-    ///
-    /// Input order and duplicates are preserved. Every present record must own
-    /// its region; absence is an explicit authenticated caller fact.
-    ///
-    /// # Errors
-    ///
-    /// Rejects the complete batch before semantic backend access when its
-    /// bound, region, record identity, allocation, cancellation, or work is
-    /// invalid.
-    pub async fn capture_records_many_async(
-        &self,
-        regions: Vec<(Option<FileRecord>, DependencyRegion)>,
-        maximum_regions: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
-        cancellation
-            .check()
-            .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::default()))?;
+        cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
         validate_capture_batch(regions.len(), maximum_regions)?;
-        for (record, region) in &regions {
-            let expected_file_id = self.validate_region(region)?;
-            if record.is_some_and(|record| record.file_id != expected_file_id) {
-                return Err(failed(
-                    AuthenticatedProbeError::RecordIdentityMismatch,
-                    WorkCounters::default(),
-                ));
+        for region in &regions { self.validate_region(region)?; }
+        let input_bytes = capture_input_bytes(&regions, |region| region)?;
+        let mut accounting = self.standalone_accounting(budget, cancellation, input_bytes)?;
+        let result = self.capture_many_with_accounting(
+            generation, regions, maximum_regions, &mut accounting, cancellation,
+        ).await;
+        let work = accounting.spent();
+        result.map(|(value, _)| OperationReceipt { value, work })
+            .map_err(|error| failed(project_probe_error(error), work))
+    }
+
+    /// Captures through the original context while incoming vector/name custody
+    /// remains with the caller. The output guard owns only its new backing.
+    pub(crate) async fn capture_many_with_accounting(
+        &self, generation: GenerationId, regions: Vec<DependencyRegion>, maximum_regions: u32,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(Vec<Dependency>, KernelOwnedAllocation), crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        validate_capture_batch_error(regions.len(), maximum_regions)?;
+        for region in &regions { self.validate_region_error(region)?; }
+        let mut captured = Owned::<Vec<Dependency>>::allocate(regions.len(), accounting)?;
+        let result = async {
+            for region in regions {
+                let expected = self.probe_async_with_accounting(
+                    generation, &region, accounting, cancellation,
+                ).await?;
+                let returned = WorkCounters {
+                    bytes_copied: usize_to_u64(size_of::<Dependency>()),
+                    items_returned: 1,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(returned)?;
+                captured.value.push(Dependency { region, expected });
+                let completed = accounting.record_completed(returned);
+                let traced = self.data_custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(returned));
+                completed?;
+                traced?;
             }
-        }
-
-        let (mut captured, mut work) = allocate_capture_output(&regions, budget)?;
-
-        for (record, region) in regions {
-            let receipt = self
-                .capture_validated_record_async(
-                    record,
-                    &region,
-                    work.remaining(budget)
-                        .map_err(|error| failed(error.into(), work))?,
-                    WorkCounters::default(),
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = work
-                .checked_add(receipt.work)
-                .map_err(|error| failed(error.into(), work))?;
-            captured.push(Dependency {
-                region,
-                expected: receipt.value,
-            });
-        }
-        Ok(OperationReceipt {
-            value: captured,
-            work,
-        })
+            Ok(())
+        }.await;
+        if let Err(error) = result { captured.retire(accounting)?; return Err(error); }
+        Ok((captured.value, captured.allocation))
     }
 
-    async fn generation_async(
-        &self,
-        generation: GenerationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(GenerationRoot, WorkCounters), ProbeFailure> {
-        cancellation
-            .check()
-            .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::default()))?;
-        if let Some(root) = self
-            .generations
-            .lock()
-            .map_err(|_| {
-                failed(
-                    AuthenticatedProbeError::CachePoisoned,
-                    WorkCounters::default(),
-                )
-            })?
-            .get(&generation)
-            .cloned()
-        {
-            return Ok((root, WorkCounters::default()));
-        }
-        let object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
-        let receipt = AsyncObjectStore::read(
-            self.store,
-            object,
-            self.limits.decode.maximum_object_bytes,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), Into::into))?;
-        let root = decode_generation_root(&receipt.value, self.limits.decode)
-            .map_err(|error| failed(error.into(), receipt.work))?;
-        let mut generations = self
-            .generations
-            .lock()
-            .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, receipt.work))?;
-        clear_at_capacity(&mut generations, self.limits.maximum_cached_generations);
-        generations.insert(generation, root.clone());
-        Ok((root, receipt.work))
-    }
-
-    async fn record_async(
-        &self,
-        generation: GenerationId,
-        file_id: FileId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(Option<FileRecord>, WorkCounters), ProbeFailure> {
-        in_heap(move || async move {
-            if let Some(record) = self
-                .records
-                .lock()
-                .map_err(|_| {
-                    failed(
-                        AuthenticatedProbeError::CachePoisoned,
-                        WorkCounters::default(),
-                    )
-                })?
-                .get(&(generation, file_id))
-                .copied()
-            {
-                return Ok((record, WorkCounters::default()));
-            }
-            let (root, mut work) = self
-                .generation_async(generation, budget, cancellation)
-                .await?;
-            let remaining = work
-                .remaining(budget)
-                .map_err(|error| failed(error.into(), work))?;
-            let lookup = lookup_file_record_async(
-                self.store,
-                root.file_table,
-                file_id,
-                self.limits.decode,
-                remaining,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = work
-                .checked_add(lookup.work)
-                .map_err(|error| failed(error.into(), work))?;
-            let mut records = self
-                .records
-                .lock()
-                .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, work))?;
-            clear_at_capacity(&mut records, self.limits.maximum_cached_records);
-            records.insert((generation, file_id), lookup.record);
-            Ok((lookup.record, work))
-        })
-        .await
-    }
-
-    async fn content_state_async(
-        &self,
-        record: FileRecord,
-        offset: u64,
-        length: u64,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        in_heap(move || async move {
-            if let FilePayload::InlineRegular(data) = record.payload {
-                return Self::inline_content_state(data, offset, length, budget, work);
-            }
-            let FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } = record.payload
-            else {
-                return capture_file_record_state(record, budget, work);
-            };
-            let range = ByteRange { offset, length };
-            let hash_work = WorkCounters {
-                bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len())
-                    .saturating_add(8)
-                    .saturating_add(length),
-                ..WorkCounters::default()
-            };
-            let reserved = work
-                .checked_add(hash_work)
-                .map_err(|error| failed(error.into(), work))?;
-            reserved
-                .verify(budget)
-                .map_err(|error| failed(error.into(), work))?;
-            let remaining = reserved
-                .remaining(budget)
-                .map_err(|error| failed(error.into(), work))?;
-            let plan = plan_extent_range_async(
-                self.store,
-                super::ExtentRangeRequest {
-                    root: extents,
-                    file_size: logical_bytes,
-                    range,
-                    maximum_spans: self.limits.maximum_extent_spans,
-                    limits: self.limits.decode,
-                    budget: remaining,
-                },
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = work
-                .checked_add(plan.work)
-                .map_err(|error| failed(error.into(), work))?;
-            self.hash_content_spans_async(plan.spans, length, hash_work, budget, work, cancellation)
-                .await
-        })
-        .await
-    }
-
-    async fn sparse_seek_state_async(
-        &self,
-        record: FileRecord,
-        offset: u64,
-        target: ExtentSeekTarget,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let result = match record.payload {
-            FilePayload::InlineRegular(data) => inline_seek_result(data, offset, target),
-            FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } if offset <= logical_bytes => {
-                let receipt = seek_extent_async(
-                    self.store,
-                    ExtentSeekRequest {
-                        root: extents,
-                        file_size: logical_bytes,
-                        offset,
-                        target,
-                        limits: self.limits.decode,
-                        budget: work
-                            .remaining(budget)
-                            .map_err(|error| failed(error.into(), work))?,
-                    },
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                work = work
-                    .checked_add(receipt.work)
-                    .map_err(|error| failed(error.into(), work))?;
-                receipt.value
-            }
-            FilePayload::Regular { .. } => None,
-            FilePayload::Directory { .. }
-            | FilePayload::SymbolicLink { .. }
-            | FilePayload::Empty
-            | FilePayload::Device { .. }
-            | FilePayload::ReparsePoint { .. } => {
-                return capture_file_record_state(record, budget, work);
-            }
-        };
-        capture_sparse_seek_state(target, result, budget, work)
-    }
-
-    async fn hash_content_spans_async(
-        &self,
-        spans: Vec<super::ExtentSlice>,
-        length: u64,
-        hash_work: WorkCounters,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(CONTENT_RANGE_DOMAIN);
-        hasher.update(&length.to_le_bytes());
-        for span in spans {
-            cancellation
-                .check()
-                .map_err(|_| failed(AuthenticatedProbeError::Cancelled, work))?;
-            match span.kind {
-                ExtentKind::Hole | ExtentKind::AllocatedZero => {
-                    let mut remaining_zeroes = span.length;
-                    while remaining_zeroes != 0 {
-                        cancellation
-                            .check()
-                            .map_err(|_| failed(AuthenticatedProbeError::Cancelled, work))?;
-                        let count = usize::try_from(
-                            remaining_zeroes.min(usize_to_u64(ZERO_HASH_BLOCK.len())),
-                        )
-                        .unwrap_or(ZERO_HASH_BLOCK.len());
-                        // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
-                        // as computed immediately above (the `unwrap_or` branch
-                        // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
-                        // ZERO_HASH_BLOCK.len()` always holds.
-                        #[allow(
-                            clippy::indexing_slicing,
-                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
-                        )]
-                        hasher.update(&ZERO_HASH_BLOCK[..count]);
-                        remaining_zeroes -= usize_to_u64(count);
-                    }
-                }
-                ExtentKind::Content {
-                    object,
-                    object_offset,
-                } => {
-                    let reserved = work
-                        .checked_add(hash_work)
-                        .map_err(|error| failed(error.into(), work))?;
-                    let remaining = reserved
-                        .remaining(budget)
-                        .map_err(|error| failed(error.into(), work))?;
-                    let read = read_blob_range_async(
-                        self.store,
-                        object,
-                        ByteRange {
-                            offset: object_offset,
-                            length: span.length,
-                        },
-                        self.limits.decode,
-                        remaining,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                    work = work
-                        .checked_add(read.work)
-                        .map_err(|error| failed(error.into(), work))?;
-                    hasher.update(&read.bytes);
-                }
-            }
-        }
-        work = work
-            .checked_add(hash_work)
-            .map_err(|error| failed(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        Ok(ProbeReceipt {
-            value: DependencyState::Present(Digest::from_bytes(*hasher.finalize().as_bytes())),
-            work,
-        })
-    }
-
-    async fn directory_page_state_async(
-        &self,
-        record: FileRecord,
-        after: Option<&super::LogicalName>,
-        maximum_entries: u32,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let FilePayload::Directory { entries } = record.payload else {
-            return capture_file_record_state(record, budget, work);
-        };
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let page = list_tree_entries_async(
-            self.store,
-            entries,
-            after,
-            maximum_entries,
-            self.limits.decode,
-            remaining,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(page.work)
-            .map_err(|error| failed(error.into(), work))?;
-        let mut encoded = encode_tree_page(&super::TreePage::Leaf(page.entries), maximum_entries)
-            .map_err(|error| failed(error.into(), work))?;
-        encoded.push(u8::from(page.has_more));
-        let domain = b"acyclic-fs-dependency-directory-page-v1\0";
-        let digest = semantic_digest(domain, &encoded);
-        work = work
-            .checked_add(WorkCounters {
-                bytes_encoded: usize_to_u64(encoded.len()),
-                bytes_hashed: usize_to_u64(encoded.len())
-                    .saturating_add(usize_to_u64(domain.len()))
-                    .saturating_add(8),
-                allocation_operations: 1,
-                peak_allocation_bytes: usize_to_u64(encoded.capacity()),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| failed(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        Ok(ProbeReceipt {
-            value: DependencyState::Present(digest),
-            work,
-        })
-    }
-
-    /// Resolves one exact dependency through nonblocking immutable-object I/O.
-    ///
-    /// This is the browser/remote equivalent of [`RebaseProbe::probe`] and
-    /// shares all canonical decoders and frontier machines with it.
+    /// Captures records already authenticated by the caller without rereading
+    /// their generation or file table. Owned region names move into the output.
     ///
     /// # Errors
     ///
-    /// Returns exact typed authentication, cancellation, and work failures.
+    /// Rejects malformed batches and identities before semantic backend access,
+    /// retaining exact authentication, cancellation and accounting causes.
+    pub async fn capture_records_many_async(
+        &self, regions: Vec<(Option<FileRecord>, DependencyRegion)>, maximum_regions: u32,
+        budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<Vec<Dependency>>, ProbeFailure> {
+        cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
+        validate_capture_batch(regions.len(), maximum_regions)?;
+        for (record, region) in &regions { self.validate_record(*record, region)?; }
+        let input_bytes = capture_input_bytes(&regions, |(_, region)| region)?;
+        let mut accounting = self.standalone_accounting(budget, cancellation, input_bytes)?;
+        let result = self.capture_records_many_with_accounting(
+            regions, maximum_regions, &mut accounting, cancellation, self.data_custody,
+        ).await;
+        let work = accounting.spent();
+        result.map(|(value, _)| OperationReceipt { value, work })
+            .map_err(|error| failed(project_probe_error(error), work))
+    }
+
+    /// Uses the original ledger and incoming custody. Only the newly allocated
+    /// output backing belongs to the returned guard; names move unchanged and
+    /// remain in the caller's incoming payload custody.
+    pub(crate) async fn capture_records_many_with_accounting(
+        &self, regions: Vec<(Option<FileRecord>, DependencyRegion)>, maximum_regions: u32,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        custody: Option<&super::ProofDataCustody>,
+    ) -> Result<(Vec<Dependency>, KernelOwnedAllocation), crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        validate_capture_batch_error(regions.len(), maximum_regions)?;
+        for (record, region) in &regions { self.validate_record_error(*record, region)?; }
+        let mut captured = Owned::<Vec<Dependency>>::allocate(regions.len(), accounting)?;
+        let result = async {
+            for (record, region) in regions {
+                let expected = self.capture_validated_record_with_accounting(
+                    record, &region, accounting, cancellation, custody,
+                ).await?;
+                let returned = WorkCounters {
+                    bytes_copied: usize_to_u64(size_of::<Dependency>()),
+                    items_returned: 1,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(returned)?;
+                captured.value.push(Dependency { region, expected });
+                let completed = accounting.record_completed(returned);
+                let traced = custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(returned));
+                completed?;
+                traced?;
+            }
+            Ok(())
+        }.await;
+        if let Err(error) = result { captured.retire(accounting)?; return Err(error); }
+        Ok((captured.value, captured.allocation))
+    }
+
+    fn validate_region_error(&self, region: &DependencyRegion) -> Result<FileId, crate::FsError> {
+        self.validate_region_shape(region).map_err(crate::FsError::Probe)
+    }
+
+    fn validate_record(
+        &self, record: Option<FileRecord>, region: &DependencyRegion,
+    ) -> Result<(), ProbeFailure> {
+        self.validate_record_error(record, region)
+            .map_err(|error| failed(project_probe_error(error), WorkCounters::UNCHARGED))
+    }
+
+    fn validate_record_error(
+        &self, record: Option<FileRecord>, region: &DependencyRegion,
+    ) -> Result<(), crate::FsError> {
+        let expected = self.validate_region_error(region)?;
+        if record.is_some_and(|record| record.file_id != expected) {
+            return Err(AuthenticatedProbeError::RecordIdentityMismatch.into());
+        }
+        Ok(())
+    }
+
+    async fn generation_with_accounting(
+        &self, generation: GenerationId, accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ObjectId, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        if let Some(root) = self.async_generations.lock()
+            .map_err(|_| crate::FsError::Probe(AuthenticatedProbeError::CachePoisoned))?
+            .get_with_accounting(&generation, accounting)? {
+            return Ok(root);
+        }
+        let object = ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() };
+        let (root, allocation) = super::generation::read_generation_root_with_limits_and_accounting(
+            self.store, object, self.limits.decode, accounting, cancellation,
+        ).await?;
+        let retained = usize_to_u64(root.parents.capacity().checked_mul(size_of::<GenerationId>())
+            .ok_or(WorkError::Overflow)?);
+        let root = Owned::new(root, allocation, retained);
+        let file_table = root.value.file_table;
+        root.retire(accounting)?;
+        self.async_generations.lock()
+            .map_err(|_| crate::FsError::Probe(AuthenticatedProbeError::CachePoisoned))?
+            .insert_with_accounting(generation, file_table, self.limits.maximum_cached_generations, accounting)?;
+        Ok(file_table)
+    }
+
+    async fn record_with_accounting(
+        &self, generation: GenerationId, file_id: FileId, accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileRecord>, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        if let Some(record) = self.async_records.lock()
+            .map_err(|_| crate::FsError::Probe(AuthenticatedProbeError::CachePoisoned))?
+            .get_with_accounting(&(generation, file_id), accounting)? {
+            return Ok(record);
+        }
+        let file_table = self.generation_with_accounting(generation, accounting, cancellation).await?;
+        let (record, allocation) = super::file_table::lookup_file_record_async_with_accounting(
+            self.store, file_table, file_id, self.limits.decode, accounting, cancellation, self.data_custody,
+        ).await?;
+        // A file record is scalar, including its fixed-capacity inline payload.
+        retire_allocation(allocation, 0, accounting)?;
+        self.async_records.lock()
+            .map_err(|_| crate::FsError::Probe(AuthenticatedProbeError::CachePoisoned))?
+            .insert_with_accounting((generation, file_id), record, self.limits.maximum_cached_records, accounting)?;
+        Ok(record)
+    }
+
+    /// Resolves the full exact-region algorithm through nonblocking canonical I/O.
+    ///
+    /// # Errors
+    ///
+    /// Preserves typed authentication, cancellation and exact-work failures.
     pub async fn probe_async(
-        &self,
-        generation: GenerationId,
-        region: &DependencyRegion,
-        budget: WorkBudget,
+        &self, generation: GenerationId, region: &DependencyRegion, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<ProbeReceipt, ProbeFailure> {
-        in_heap(move || async move {
-            cancellation
-                .check()
-                .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::default()))?;
-            let file_id = self.validate_region(region)?;
-            let (record, work) = self
-                .record_async(generation, file_id, budget, cancellation)
-                .await?;
-            self.capture_validated_record_async(record, region, budget, work, cancellation)
-                .await
-        })
-        .await
+        cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
+        self.validate_region(region)?;
+        let mut accounting = self.standalone_accounting(budget, cancellation, region_owned_bytes(region))?;
+        let result = self.probe_async_with_accounting(generation, region, &mut accounting, cancellation).await;
+        let work = accounting.spent();
+        result.map(|value| ProbeReceipt { value, work })
+            .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    /// Captures one exact region from a file record already authenticated by
-    /// the caller's generation/path frontier.
-    ///
-    /// This is the zero-reread mutation/read precondition path. The region is
-    /// validated and must name the supplied record identity. `None` represents
-    /// an authenticated absent identity.
+    /// Original and standalone callers execute this same semantic region resolver.
+    pub(crate) async fn probe_async_with_accounting(
+        &self, generation: GenerationId, region: &DependencyRegion,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<DependencyState, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let file_id = self.validate_region_error(region)?;
+        let record = self.record_with_accounting(generation, file_id, accounting, cancellation).await?;
+        self.capture_validated_record_with_accounting(
+            record, region, accounting, cancellation, self.data_custody,
+        ).await
+    }
+
+    /// Captures an already authenticated record without rereading its frontier.
     ///
     /// # Errors
     ///
-    /// Returns a typed identity mismatch, malformed region, cancellation,
-    /// storage, authentication, allocation, or exact-work failure.
+    /// Rejects a mismatched identity and preserves typed semantic/backend errors.
     pub async fn capture_record_async(
-        &self,
-        record: Option<FileRecord>,
-        region: &DependencyRegion,
-        budget: WorkBudget,
+        &self, record: Option<FileRecord>, region: &DependencyRegion, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<ProbeReceipt, ProbeFailure> {
-        cancellation
-            .check()
-            .map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::default()))?;
-        let expected_file_id = self.validate_region(region)?;
-        if record.is_some_and(|record| record.file_id != expected_file_id) {
-            return Err(failed(
-                AuthenticatedProbeError::RecordIdentityMismatch,
-                WorkCounters::default(),
-            ));
-        }
-        self.capture_validated_record_async(
-            record,
-            region,
-            budget,
-            WorkCounters::default(),
-            cancellation,
-        )
-        .await
+        cancellation.check().map_err(|_| failed(AuthenticatedProbeError::Cancelled, WorkCounters::UNCHARGED))?;
+        self.validate_record(record, region)?;
+        let mut accounting = self.standalone_accounting(budget, cancellation, region_owned_bytes(region))?;
+        let result = self.capture_validated_record_with_accounting(
+            record, region, &mut accounting, cancellation, self.data_custody,
+        ).await;
+        let work = accounting.spent();
+        result.map(|value| ProbeReceipt { value, work })
+            .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    async fn capture_validated_record_async(
-        &self,
-        record: Option<FileRecord>,
-        region: &DependencyRegion,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        in_heap(move || async move {
-            let Some(record) = record else {
-                return Ok(ProbeReceipt {
-                    value: DependencyState::Absent,
-                    work,
-                });
-            };
-            let value = match region {
-                DependencyRegion::FileRecord(_) => {
-                    return capture_file_record_state(record, budget, work);
-                }
-                DependencyRegion::Metadata(_) => DependencyState::Present(record.metadata.digest),
-                DependencyRegion::FileLength(_) => {
-                    return capture_file_length_state(record, budget, work);
-                }
-                DependencyRegion::DirectoryName { name, .. } => {
-                    let FilePayload::Directory { entries } = record.payload else {
-                        return capture_file_record_state(record, budget, work);
-                    };
-                    let remaining = work
-                        .remaining(budget)
-                        .map_err(|error| failed(error.into(), work))?;
-                    let lookup = lookup_tree_entry_async(
-                        self.store,
-                        entries,
-                        name,
-                        self.limits.decode,
-                        remaining,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                    work = work
-                        .checked_add(lookup.work)
-                        .map_err(|error| failed(error.into(), work))?;
-                    match lookup.entry {
-                        None => DependencyState::Absent,
-                        Some(entry) => {
-                            return capture_directory_name_state(&entry, budget, work);
+    async fn capture_validated_record_with_accounting(
+        &self, record: Option<FileRecord>, region: &DependencyRegion,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        custody: Option<&super::ProofDataCustody>,
+    ) -> Result<DependencyState, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let Some(record) = record else { return Ok(DependencyState::Absent); };
+        match region {
+            DependencyRegion::FileRecord(_) => {
+                capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody)
+            }
+            DependencyRegion::Metadata(_) => Ok(DependencyState::Present(record.metadata.digest)),
+            DependencyRegion::FileLength(_) => {
+                let length = match record.payload {
+                    FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
+                    FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+                    _ => return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody),
+                };
+                capture_stack_state_with_accounting(
+                    || length.to_le_bytes(), b"acyclic-fs-dependency-file-length-v1\0",
+                    accounting, cancellation, custody,
+                )
+            }
+            DependencyRegion::DirectoryName { name, .. } => {
+                let FilePayload::Directory { entries } = record.payload else {
+                    return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody);
+                };
+                let (entry, allocation) = super::read::lookup_tree_entry_async_with_accounting(
+                    self.store, entries, name, self.limits.decode, accounting, cancellation, custody,
+                ).await?;
+                let retained = entry.as_ref().map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
+                let entry = Owned::new(entry, allocation, retained);
+                let result = match &entry.value {
+                    Some(entry) => capture_directory_name_state_with_accounting(
+                        entry, accounting, Some(cancellation), custody,
+                    ),
+                    None => Ok(DependencyState::Absent),
+                };
+                entry.retire(accounting)?;
+                result
+            }
+            DependencyRegion::ContentRange { offset, length, .. } => {
+                self.content_state_with_accounting(record, *offset, *length, accounting, cancellation, custody).await
+            }
+            DependencyRegion::SparseSeek { offset, target, .. } => {
+                let result = match record.payload {
+                    FilePayload::InlineRegular(data) => inline_seek_result(data, *offset, *target),
+                    FilePayload::Regular { logical_bytes, extents } if *offset <= logical_bytes => {
+                        super::range::seek_extent_with_accounting(
+                            self.store, ExtentSeekRequest {
+                                root: extents, file_size: logical_bytes, offset: *offset, target: *target,
+                                limits: self.limits.decode, budget: WorkBudget::UNCHARGED,
+                            }, accounting, cancellation,
+                        ).await?
+                    }
+                    FilePayload::Regular { .. } => None,
+                    _ => return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody),
+                };
+                capture_stack_state_with_accounting(
+                    || {
+                        let [a, b, c, d, e, f, g, h] = result.unwrap_or(0).to_le_bytes();
+                        [
+                            match target { ExtentSeekTarget::Data => 0, ExtentSeekTarget::Hole => 1 },
+                            u8::from(result.is_some()), a, b, c, d, e, f, g, h,
+                        ]
+                    },
+                    b"acyclic-fs-dependency-sparse-seek-v1\0", accounting, cancellation, custody,
+                )
+            }
+            DependencyRegion::DirectoryRange { after, maximum_entries, .. } => {
+                let FilePayload::Directory { entries } = record.payload else {
+                    return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody);
+                };
+                let (page, allocation) = super::list::list_tree_entries_async_with_accounting(
+                    self.store, entries, after.as_ref(), *maximum_entries, self.limits.decode,
+                    accounting, cancellation, custody,
+                ).await?;
+                let retained = directory_entries_bytes(&page.entries)?;
+                let page = Owned::new(page, allocation, retained);
+                let result = capture_directory_page_with_accounting(
+                    &page.value.entries, page.value.has_more, *maximum_entries, accounting, cancellation, custody,
+                );
+                page.retire(accounting)?;
+                result
+            }
+        }
+    }
+
+    async fn content_state_with_accounting(
+        &self, record: FileRecord, offset: u64, length: u64,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        custody: Option<&super::ProofDataCustody>,
+    ) -> Result<DependencyState, crate::FsError> {
+        if let FilePayload::InlineRegular(data) = record.payload {
+            let invalid = || AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange);
+            let end = offset.checked_add(length).ok_or_else(invalid)?;
+            let start = usize::try_from(offset).map_err(|_| invalid())?;
+            let end = usize::try_from(end).map_err(|_| invalid())?;
+            let bytes = data.as_bytes().get(start..end).ok_or_else(invalid)?;
+            let hash = content_hash_work(length)?;
+            accounting.charge(hash)?;
+            let value = DependencyState::Present(semantic_digest(CONTENT_RANGE_DOMAIN, bytes));
+            if let Some(owner) = custody { owner.record_completed_leaf_work(hash)?; }
+            return Ok(value);
+        }
+        let FilePayload::Regular { logical_bytes, extents } = record.payload else {
+            return capture_file_record_state_with_accounting(record, accounting, Some(cancellation), custody);
+        };
+        accounting.admit(content_hash_work(length)?)?;
+        let (plan, allocation) = super::range::plan_extent_range_with_accounting(
+            self.store, super::ExtentRangeRequest {
+                root: extents, file_size: logical_bytes, range: ByteRange { offset, length },
+                maximum_spans: self.limits.maximum_extent_spans, limits: self.limits.decode,
+                budget: WorkBudget::UNCHARGED,
+            }, accounting, cancellation,
+        ).await?;
+        let retained = plan.retained_allocation_bytes;
+        let plan = Owned::new(plan, allocation, retained);
+        let result = async {
+            let mut hasher = blake3::Hasher::new();
+            hash_probe_bytes(&mut hasher, CONTENT_RANGE_DOMAIN, accounting, cancellation, custody)?;
+            hash_probe_bytes(&mut hasher, &length.to_le_bytes(), accounting, cancellation, custody)?;
+            for span in &plan.value.spans {
+                cancellation.check()?;
+                match span.kind {
+                    ExtentKind::Hole | ExtentKind::AllocatedZero => {
+                        let mut remaining = span.length;
+                        while remaining != 0 {
+                            let count = usize::try_from(remaining.min(usize_to_u64(ZERO_HASH_BLOCK.len())))
+                                .map_err(|_| WorkError::Overflow)?;
+                            let zeroes = ZERO_HASH_BLOCK.get(..count).ok_or(WorkError::Overflow)?;
+                            hash_probe_bytes(&mut hasher, zeroes, accounting, cancellation, custody)?;
+                            remaining -= usize_to_u64(count);
                         }
                     }
+                    ExtentKind::Content { object, object_offset } => {
+                        let read = super::blob::read_blob_range_with_accounting(
+                            self.store, object, ByteRange { offset: object_offset, length: span.length },
+                            self.limits.decode, accounting, cancellation,
+                        ).await?;
+                        let result = hash_probe_bytes(&mut hasher, &read.bytes, accounting, cancellation, custody);
+                        let retained = read.logical_owned_bytes;
+                        drop(read);
+                        super::file_read::release_standalone_read_bytes(retained, accounting)?;
+                        result?;
+                    }
                 }
-                DependencyRegion::ContentRange { offset, length, .. } => {
-                    return self
-                        .content_state_async(record, *offset, *length, budget, work, cancellation)
-                        .await;
-                }
-                DependencyRegion::SparseSeek { offset, target, .. } => {
-                    return self
-                        .sparse_seek_state_async(
-                            record,
-                            *offset,
-                            *target,
-                            budget,
-                            work,
-                            cancellation,
-                        )
-                        .await;
-                }
-                DependencyRegion::DirectoryRange {
-                    after,
-                    maximum_entries,
-                    ..
-                } => {
-                    return self
-                        .directory_page_state_async(
-                            record,
-                            after.as_ref(),
-                            *maximum_entries,
-                            budget,
-                            work,
-                            cancellation,
-                        )
-                        .await;
-                }
-            };
-            Ok(ProbeReceipt { value, work })
-        })
-        .await
+            }
+            Ok(DependencyState::Present(Digest::from_bytes(*hasher.finalize().as_bytes())))
+        }.await;
+        plan.retire(accounting)?;
+        result
+    }
+}
+
+impl<S: AsyncObjectStore> super::rebase::AccountingRebaseProbe for AuthenticatedGenerationProbe<'_, S> {
+    type Error = crate::FsError;
+
+    async fn probe_with_accounting(
+        &self, generation: GenerationId, region: &DependencyRegion,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<DependencyState, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        self.probe_async_with_accounting(generation, region, accounting, cancellation).await
+            .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
     }
 }
 
@@ -1276,15 +1344,15 @@ impl<S: crate::ImmediateObjectStore> RebaseProbe for AuthenticatedGenerationProb
         };
         let value = match region {
             DependencyRegion::FileRecord(_) => {
-                return capture_file_record_state(record, budget, work);
+                return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
             }
             DependencyRegion::Metadata(_) => DependencyState::Present(record.metadata.digest),
             DependencyRegion::FileLength(_) => {
-                return capture_file_length_state(record, budget, work);
+                return capture_file_length_state(record, budget, work, self.data_custody, None);
             }
             DependencyRegion::DirectoryName { name, .. } => {
                 let FilePayload::Directory { entries } = record.payload else {
-                    return capture_file_record_state(record, budget, work);
+                    return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
                 };
                 let remaining = work
                     .remaining(budget)
@@ -1298,7 +1366,7 @@ impl<S: crate::ImmediateObjectStore> RebaseProbe for AuthenticatedGenerationProb
                 match lookup.entry {
                     None => DependencyState::Absent,
                     Some(entry) => {
-                        return capture_directory_name_state(&entry, budget, work);
+                        return capture_directory_name_state(&entry, budget, work, self.data_custody, 0, None);
                     }
                 }
             }
@@ -1384,65 +1452,124 @@ fn failed(error: AuthenticatedProbeError, work: WorkCounters) -> ProbeFailure {
 }
 
 fn validate_capture_batch(count: usize, maximum: u32) -> Result<(), ProbeFailure> {
-    if maximum == 0 {
-        return Err(failed(
-            AuthenticatedProbeError::ZeroBatchLimit,
-            WorkCounters::default(),
-        ));
-    }
+    validate_capture_batch_error(count, maximum)
+        .map_err(|error| failed(project_probe_error(error), WorkCounters::UNCHARGED))
+}
+
+fn validate_capture_batch_error(count: usize, maximum: u32) -> Result<(), crate::FsError> {
+    if maximum == 0 { return Err(AuthenticatedProbeError::ZeroBatchLimit.into()); }
     if u32::try_from(count).unwrap_or(u32::MAX) > maximum {
-        return Err(failed(
-            AuthenticatedProbeError::TooManyRegions { maximum },
-            WorkCounters::default(),
-        ));
+        return Err(AuthenticatedProbeError::TooManyRegions { maximum }.into());
     }
     Ok(())
 }
 
-fn allocate_capture_output<T>(
-    input: &Vec<T>,
-    budget: WorkBudget,
-) -> Result<(Vec<Dependency>, WorkCounters), ProbeFailure> {
-    let input_bytes = input
-        .capacity()
-        .checked_mul(size_of::<T>())
-        .map(usize_to_u64)
-        .ok_or_else(|| {
-            failed(
-                AuthenticatedProbeError::AllocationFailed,
-                WorkCounters::default(),
-            )
-        })?;
-    let mut captured = Vec::new();
-    captured.try_reserve_exact(input.len()).map_err(|_| {
-        failed(
-            AuthenticatedProbeError::AllocationFailed,
-            WorkCounters::default(),
-        )
-    })?;
-    let output_bytes = captured
-        .capacity()
-        .checked_mul(size_of::<Dependency>())
-        .map(usize_to_u64)
-        .ok_or_else(|| {
-            failed(
-                AuthenticatedProbeError::AllocationFailed,
-                WorkCounters::default(),
-            )
-        })?;
-    let work = WorkCounters {
-        allocation_operations: u64::from(!captured.is_empty()),
-        peak_allocation_bytes: input_bytes.checked_add(output_bytes).ok_or_else(|| {
-            failed(
-                AuthenticatedProbeError::AllocationFailed,
-                WorkCounters::default(),
-            )
-        })?,
-        ..WorkCounters::default()
+fn region_owned_bytes(region: &DependencyRegion) -> u64 {
+    match region {
+        DependencyRegion::DirectoryName { name, .. } => usize_to_u64(name.retained_bytes()),
+        DependencyRegion::DirectoryRange { after: Some(name), .. } => usize_to_u64(name.retained_bytes()),
+        _ => 0,
+    }
+}
+
+fn capture_input_bytes<T>(
+    regions: &Vec<T>, region: impl Fn(&T) -> &DependencyRegion,
+) -> Result<u64, ProbeFailure> {
+    let backing = regions.capacity().checked_mul(size_of::<T>()).map(usize_to_u64)
+        .ok_or_else(|| failed(WorkError::Overflow.into(), WorkCounters::UNCHARGED))?;
+    regions.iter().try_fold(backing, |bytes, value| {
+        bytes.checked_add(region_owned_bytes(region(value)))
+    }).ok_or_else(|| failed(WorkError::Overflow.into(), WorkCounters::UNCHARGED))
+}
+
+fn directory_entries_bytes(entries: &Vec<super::TreeEntry>) -> Result<u64, crate::FsError> {
+    let backing = entries.capacity().checked_mul(size_of::<super::TreeEntry>()).map(usize_to_u64)
+        .ok_or(WorkError::Overflow)?;
+    entries.iter().try_fold(backing, |bytes, entry| {
+        bytes.checked_add(usize_to_u64(entry.name.retained_bytes()))
+    }).ok_or_else(|| WorkError::Overflow.into())
+}
+
+fn content_hash_work(length: u64) -> Result<WorkCounters, crate::FsError> {
+    Ok(WorkCounters {
+        bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len()).checked_add(8)
+            .and_then(|bytes| bytes.checked_add(length)).ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    })
+}
+
+fn hash_probe_bytes(
+    hasher: &mut blake3::Hasher, bytes: &[u8], accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
+) -> Result<(), crate::FsError> {
+    cancellation.check()?;
+    let work = WorkCounters { bytes_hashed: usize_to_u64(bytes.len()), ..WorkCounters::UNCHARGED };
+    accounting.charge(work)?;
+    hasher.update(bytes);
+    if let Some(owner) = custody { owner.record_completed_leaf_work(work)?; }
+    Ok(())
+}
+
+fn capture_stack_state_with_accounting<const N: usize>(
+    encode: impl FnOnce() -> [u8; N], domain: &[u8], accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
+) -> Result<DependencyState, crate::FsError> {
+    cancellation.check()?;
+    let encoded_work = WorkCounters { bytes_encoded: usize_to_u64(N), ..WorkCounters::UNCHARGED };
+    let hash_work = WorkCounters {
+        bytes_hashed: usize_to_u64(N).checked_add(usize_to_u64(domain.len()))
+            .and_then(|bytes| bytes.checked_add(8)).ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
     };
-    work.verify(budget)
-        .map_err(|error| failed(error.into(), WorkCounters::default()))?;
-    Ok((captured, work))
+    accounting.admit(encoded_work.checked_add(hash_work)?)?;
+    let encoded = encode();
+    let completed = accounting.record_completed(encoded_work);
+    let traced = custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(encoded_work));
+    completed?;
+    traced?;
+    cancellation.check()?;
+    accounting.admit(hash_work)?;
+    let value = DependencyState::Present(semantic_digest(domain, &encoded));
+    let completed = accounting.record_completed(hash_work);
+    let traced = custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(hash_work));
+    completed?;
+    traced?;
+    Ok(value)
+}
+
+fn capture_directory_page_with_accounting(
+    entries: &Vec<super::TreeEntry>, has_more: bool, maximum_entries: u32,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    custody: Option<&super::ProofDataCustody>,
+) -> Result<DependencyState, crate::FsError> {
+    cancellation.check()?;
+    let _entries = ProbeNameResidency::new(custody, directory_entries_bytes(entries)?)?;
+    let (encoded, allocation) = super::tree::encode_tree_leaf_entries_with_accounting(
+        entries, maximum_entries, accounting, Some(u8::from(has_more)), custody,
+    )?;
+    let bytes = usize_to_u64(encoded.capacity());
+    capture_encoded_state_with_accounting(
+        Owned::new(encoded, allocation, bytes), b"acyclic-fs-dependency-directory-page-v1\0",
+        accounting, Some(cancellation), custody,
+    )
+}
+
+fn project_probe_error(error: crate::FsError) -> AuthenticatedProbeError {
+    match error {
+        crate::FsError::Probe(error) => error,
+        crate::FsError::Object(error) => AuthenticatedProbeError::Storage(error),
+        crate::FsError::Decode(error) => AuthenticatedProbeError::Decode(error),
+        crate::FsError::Work(error) => AuthenticatedProbeError::Work(error),
+        crate::FsError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+        crate::FsError::FileRecord(error) => AuthenticatedProbeError::FileRecord(error),
+        crate::FsError::Path(super::PathLookupError::Tree(error)) => AuthenticatedProbeError::Tree(error),
+        crate::FsError::Directory(error) => AuthenticatedProbeError::Directory(error),
+        crate::FsError::FileRead(super::FileRangeReadError::Extent(error)) => AuthenticatedProbeError::Extent(error),
+        crate::FsError::BlobRead(error) => AuthenticatedProbeError::Blob(error),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
+        error => AuthenticatedProbeError::Context(Box::new(error)),
+    }
 }
 
 /// Authenticated generation-probe failures.
@@ -1505,6 +1632,9 @@ pub enum AuthenticatedProbeError {
     /// Exact work exceeded or overflowed its budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// A shared accounting boundary retains its typed facade cause.
+    #[error(transparent)]
+    Context(Box<crate::FsError>),
 }
 
 #[cfg(all(test, feature = "memory"))]

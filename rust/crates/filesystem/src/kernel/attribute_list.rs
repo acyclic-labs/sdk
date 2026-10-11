@@ -72,10 +72,28 @@ pub async fn list_attributes_async<S: AsyncObjectStore>(
         limits,
         budget,
         cancellation,
+        None,
     )
     .await
     .map(to_listing)
     .map_err(map_failure)
+}
+
+/// Executes the canonical cursor machine with actual original-owned results.
+pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
+    store: &S, root: ObjectId, after: Option<&AttributeName>, maximum_entries: u32,
+    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(AttributeListing, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_pagination::paginate_async_with_accounting::<S, AttributeFormat>(
+        store, root, after, maximum_entries, limits, accounting, cancellation, data_custody,
+    ).await.map(|(receipt, allocation)| (to_listing(receipt), allocation))
+        .map_err(|error| match error {
+            crate::FsError::Directory(error) => crate::FsError::AttributeList(map_error(
+                persistent_pagination::project_failure(crate::FsError::Directory(error)),
+            )),
+            error => error,
+        })
 }
 
 fn to_listing(receipt: persistent_pagination::Receipt<AttributeEntry>) -> AttributeListing {

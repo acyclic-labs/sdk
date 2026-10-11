@@ -1,11 +1,12 @@
 //! Bounded authenticated named-attribute lookup.
 
-use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
+use super::allocation::{AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::attribute::attribute_page_decode_shape;
 use super::attribute_mutation::AttributeFormat;
 use super::codec::DecodedPageKind;
 use super::persistent_batch;
 use super::persistent_btree::within_bounds;
+use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     AttributeChild, AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
@@ -91,6 +92,24 @@ pub async fn lookup_attributes_async<S: AsyncObjectStore>(
     .map_err(map_batch_failure)
 }
 
+pub(crate) async fn lookup_attributes_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    names: &[AttributeName],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Vec<Option<AttributeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_batch::lookup_async_with_accounting::<S, AttributeFormat>(
+        store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
+    ).await.map(|(receipt, allocation)| (receipt.values, allocation)).map_err(|error| match error {
+        crate::FsError::FileRecord(error) => map_batch_error(super::file_table::unmap_batch_error(error)).into(),
+        error => error,
+    })
+}
+
 fn to_batch(receipt: persistent_batch::Receipt<AttributeEntry>) -> AttributeBatchLookup {
     AttributeBatchLookup {
         entries: receipt.values,
@@ -163,105 +182,95 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<AttributeLookup, AttributeLookupFailure> {
-    if cancellation.is_cancelled() {
-        return Err(OperationFailure::before_work(
-            AttributeLookupError::Cancelled,
-        ));
-    }
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    lookup_attribute_async_with_accounting(store, root, name, limits, &mut accounting, cancellation)
+        .await
+        .map(|(lookup, _)| lookup)
+        .map_err(|error| failed(project_scalar_error(error), accounting.spent()))
+}
+
+/// Runs the existing scalar frontier on the selected original accounting context.
+pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    name: &AttributeName,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(AttributeLookup, KernelOwnedAllocation), crate::FsError> {
+    cancellation.check()?;
+    accounting.check()?;
     if root.kind != ObjectKind::AttributePage {
-        return Err(OperationFailure::before_work(
-            AttributeLookupError::WrongRootKind,
-        ));
+        return Err(AttributeLookupError::WrongRootKind.into());
     }
     if !limits.page_limits_valid(1) {
-        return Err(OperationFailure::before_work(
-            AttributeLookupError::InvalidLimits,
-        ));
+        return Err(AttributeLookupError::InvalidLimits.into());
     }
-
-    let mut allocations = AllocationLedger::default();
-    let mut work = WorkCounters::default();
-    let mut visited = VisitedObjectSet::new(
-        usize::from(limits.maximum_page_height).min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| OperationFailure::before_work(AttributeLookupError::InvalidLimits))?,
-        ),
-        &mut allocations,
-        &mut work,
-        budget,
-    )
-    .map_err(|error| failed(map_allocation(error), work))?;
+    let maximum_visited = usize::from(limits.maximum_page_height).min(
+        usize::try_from(limits.maximum_visited_pages)
+            .map_err(|_| AttributeLookupError::InvalidLimits)?,
+    );
+    let mut visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)
+        .map_err(map_visited_error)?;
     let mut page = root;
     let mut routing = RoutingState::default();
-
-    for _ in 0..limits.maximum_page_height {
-        let inserted = visited
-            .insert(page, &mut allocations, &mut work, &budget)
-            .map_err(|error| failed(map_allocation(error), work))?;
-        if !inserted.inserted {
-            return Err(failed(AttributeLookupError::CycleOrAlias, work));
-        }
-
-        let decoded = read_page(
-            store,
-            page,
-            limits,
-            budget,
-            cancellation,
-            &mut allocations,
-            &mut work,
-        )
-        .await?;
-        let decoded_bytes = decoded.logical_bytes;
-
-        match decoded.page {
-            AttributePage::Leaf(mut entries) => {
-                let first = entries.first().map(|entry| &entry.name);
-                let last = entries.last().map(|entry| &entry.name);
-                if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
-                    return Err(failed(AttributeLookupError::ChildBoundsMismatch, work));
+    let result: Result<(Option<AttributeEntry>, KernelOwnedAllocation), crate::FsError> = async {
+        for _ in 0..limits.maximum_page_height {
+            let inserted = VisitedObjectSet::insert_with_accounting(&mut visited, page, accounting)
+                .map_err(map_visited_error)?;
+            if !inserted.inserted {
+                return Err(AttributeLookupError::CycleOrAlias.into());
+            }
+            let decoded = read_page(store, page, limits, cancellation, accounting).await?;
+            let DecodedAttributePage { page: decoded_page, mut allocation, logical_bytes } = decoded;
+            match decoded_page {
+                AttributePage::Leaf(mut entries) => {
+                    let step = (|| -> Result<_, crate::FsError> {
+                        let first = entries.first().map(|entry| &entry.name);
+                        let last = entries.last().map(|entry| &entry.name);
+                        if !within_bounds(first, last, routing.lower.as_ref().map(|bound| &bound.value), routing.upper.as_ref().map(|bound| &bound.value)) {
+                            return Err(AttributeLookupError::ChildBoundsMismatch.into());
+                        }
+                        let position = search_entries_with_accounting(&entries, name, accounting)?;
+                        accounting.charge(WorkCounters { items_returned: u64::from(position.is_ok()), ..WorkCounters::default() })?;
+                        let entry_bytes = position.ok().map_or(0, |index| {
+                            entries.get(index).map_or(0, |entry| owned_name_bytes(&entry.name, &allocation))
+                        });
+                        let selected_allocation = split_allocation(&mut allocation, entry_bytes)?;
+                        let entry = position.ok().map(|index| entries.swap_remove(index));
+                        Ok((entry, selected_allocation, entry_bytes))
+                    })();
+                    drop(entries);
+                    let released = logical_bytes.checked_sub(step.as_ref().map_or(0, |(_, _, bytes)| *bytes))
+                        .ok_or(WorkError::Overflow)?;
+                    retire_allocation(allocation, released, accounting)?;
+                    let (entry, selected_allocation, _) = step?;
+                    return Ok((entry, selected_allocation));
                 }
-                let (position, comparisons) = search_entries(&entries, name);
-                charge_items(&mut work, comparisons, budget)?;
-                let entry = position.ok().map(|index| entries.swap_remove(index));
-                work = work
-                    .checked_add(WorkCounters {
-                        items_returned: u64::from(entry.is_some()),
-                        ..WorkCounters::default()
-                    })
-                    .map_err(|error| failed(error.into(), work))?;
-                work.verify(budget)
-                    .map_err(|error| failed(error.into(), work))?;
-                allocations
-                    .release(routing.logical_bytes)
-                    .and_then(|()| allocations.release(decoded_bytes))
-                    .map_err(|error| failed(map_allocation(error), work))?;
-                visited
-                    .release(&mut allocations)
-                    .map_err(|error| failed(map_allocation(error), work))?;
-                return Ok(AttributeLookup { entry, work });
-            }
-            AttributePage::Internal(children) => {
-                page = advance_internal(
-                    children,
-                    name,
-                    &mut routing,
-                    decoded_bytes,
-                    &mut allocations,
-                    &mut work,
-                    budget,
-                )?;
+                AttributePage::Internal(children) => {
+                    page = advance_internal(children, name, &mut routing, logical_bytes, allocation, accounting)?;
+                }
             }
         }
-    }
-    Err(failed(AttributeLookupError::HeightExceeded, work))
+        Err(AttributeLookupError::HeightExceeded.into())
+    }.await;
+    routing.retire(accounting)?;
+    visited.retire(accounting).map_err(map_visited_error)?;
+    result.map(|(entry, allocation)| (AttributeLookup { entry, work: accounting.spent() }, allocation))
 }
 
 #[derive(Default)]
 struct RoutingState {
-    lower: Option<AttributeName>,
-    upper: Option<AttributeName>,
-    logical_bytes: u64,
+    lower: Option<Owned<AttributeName>>,
+    upper: Option<Owned<AttributeName>>,
+}
+
+impl RoutingState {
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        if let Some(lower) = self.lower { lower.retire(accounting)?; }
+        if let Some(upper) = self.upper { upper.retire(accounting)?; }
+        Ok(())
+    }
 }
 
 fn advance_internal(
@@ -269,64 +278,123 @@ fn advance_internal(
     name: &AttributeName,
     routing: &mut RoutingState,
     decoded_bytes: u64,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<ObjectId, AttributeLookupFailure> {
+    mut allocation: KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<ObjectId, crate::FsError> {
     let first = children.first().map(|child| &child.first_name);
     let last = children.last().map(|child| &child.first_name);
-    if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
-        return Err(failed(AttributeLookupError::ChildBoundsMismatch, *work));
-    }
-    let (partition, comparisons) = upper_bound_children(&children, name);
-    charge_items(work, comparisons, budget)?;
-    let selected = partition.saturating_sub(1);
+    let step = (|| -> Result<_, crate::FsError> {
+        if !within_bounds(first, last, routing.lower.as_ref().map(|bound| &bound.value), routing.upper.as_ref().map(|bound| &bound.value)) {
+            return Err(AttributeLookupError::ChildBoundsMismatch.into());
+        }
+        let partition = upper_bound_children_with_accounting(&children, name, accounting)?;
+        let selected = partition.saturating_sub(1);
+        let child = children.get(selected).ok_or(AttributeLookupError::InvalidRouting)?;
+        let lower_bytes = routing_name_bytes(&child.first_name, &allocation);
+        let upper_bytes = children.get(selected + 1)
+            .map(|next| routing_name_bytes(&next.first_name, &allocation));
+        let retained = lower_bytes.checked_add(upper_bytes.unwrap_or(0)).ok_or(WorkError::Overflow)?;
+        decoded_bytes.checked_sub(retained).ok_or(WorkError::Overflow)?;
+        Ok((selected, lower_bytes, upper_bytes, retained))
+    })();
+    let (selected, lower_bytes, upper_bytes, retained) = match step {
+        Ok(step) => step,
+        Err(error) => {
+            drop(children);
+            retire_allocation(allocation, decoded_bytes, accounting)?;
+            return Err(error);
+        }
+    };
     let mut selected_children = children.into_iter().skip(selected);
-    let child = selected_children
-        .next()
-        .ok_or_else(|| failed(AttributeLookupError::InvalidRouting, *work))?;
+    let child = selected_children.next().ok_or(AttributeLookupError::InvalidRouting)?;
     let next_upper = selected_children.next().map(|next| next.first_name);
-    let inherited_upper = routing.upper.take();
-    let old_lower_bytes = nested_name_bytes(routing.lower.as_ref());
-    let inherited_upper_bytes = nested_name_bytes(inherited_upper.as_ref());
-    let new_lower_bytes = nested_name_bytes(Some(&child.first_name));
-    let decoded_retained = nested_name_bytes(next_upper.as_ref())
-        .checked_add(new_lower_bytes)
-        .ok_or_else(|| failed(AttributeLookupError::AllocationFailed, *work))?;
-    allocations
-        .release(old_lower_bytes)
-        .and_then(|()| {
-            if next_upper.is_some() {
-                allocations.release(inherited_upper_bytes)
-            } else {
-                Ok(())
-            }
-        })
-        .and_then(|()| {
-            decoded_bytes
-                .checked_sub(decoded_retained)
-                .ok_or(AllocationError::ReleaseInvariant)
-                .and_then(|released| allocations.release(released))
-        })
-        .map_err(|error| failed(map_allocation(error), *work))?;
-    routing.lower = Some(child.first_name);
-    routing.upper = next_upper.or(inherited_upper);
-    routing.logical_bytes = new_lower_bytes
-        .checked_add(nested_name_bytes(routing.upper.as_ref()))
-        .ok_or_else(|| failed(AttributeLookupError::AllocationFailed, *work))?;
-    Ok(child.page)
+    drop(selected_children);
+    let next_page = child.page;
+    let mut lower = Owned::new(child.first_name, KernelOwnedAllocation::Standalone, lower_bytes);
+    let mut upper = next_upper.zip(upper_bytes)
+        .map(|(name, bytes)| Owned::new(name, KernelOwnedAllocation::Standalone, bytes));
+    lower.allocation = split_allocation(&mut allocation, lower_bytes)?;
+    if let Some(upper) = &mut upper {
+        upper.allocation = split_allocation(&mut allocation, upper.bytes)?;
+    }
+    if let Some(previous) = routing.lower.replace(lower) { previous.retire(accounting)?; }
+    if let Some(upper) = upper {
+        if let Some(previous) = routing.upper.replace(upper) { previous.retire(accounting)?; }
+    }
+    retire_allocation(allocation, decoded_bytes.checked_sub(retained).ok_or(WorkError::Overflow)?, accounting)?;
+    Ok(next_page)
 }
 
-fn nested_name_bytes(name: Option<&AttributeName>) -> u64 {
-    name.map_or(0, |bound| usize_to_u64(bound.as_bytes().len()))
+fn owned_name_bytes(name: &AttributeName, allocation: &KernelOwnedAllocation) -> u64 {
+    match allocation {
+        KernelOwnedAllocation::Standalone => 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(_) => usize_to_u64(name.retained_bytes()),
+    }
+}
+
+fn routing_name_bytes(name: &AttributeName, allocation: &KernelOwnedAllocation) -> u64 {
+    match allocation {
+        KernelOwnedAllocation::Standalone => usize_to_u64(name.as_bytes().len()),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(_) => usize_to_u64(name.retained_bytes()),
+    }
 }
 
 struct DecodedAttributePage {
     page: AttributePage,
+    allocation: KernelOwnedAllocation,
     logical_bytes: u64,
 }
 
 async fn read_page<S: AsyncObjectStore>(
+    store: &S,
+    page: ObjectId,
+    limits: DecodeLimits,
+    cancellation: &CancellationToken,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<DecodedAttributePage, crate::FsError> {
+    match accounting {
+        KernelAccounting::Standalone { allocations, work, budget, .. } => {
+            read_page_standalone(store, page, limits, *budget, cancellation, allocations, work)
+                .await.map_err(|failure| { *work = *failure.work; failure.error.into() })
+        }
+        KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } => {
+            read_page_standalone(store, page, limits, *budget, cancellation, allocations, work)
+                .await.map_err(|failure| { **work = *failure.work; failure.error.into() })
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => {
+            cancellation.check()?;
+            accounting.charge(WorkCounters { page_reads: 1, ..WorkCounters::default() })?;
+            let original = accounting.native_work().expect("native accounting retains its original work");
+            let read = store.read_with_native_work(page, limits.maximum_page_object_bytes(), original, cancellation)
+                .await.map_err(|error| match error {
+                    ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
+                    error => crate::FsError::AttributeLookup(map_storage(error)),
+                })?.into_read();
+            let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
+            let decoded = super::attribute::decode_attribute_page_with_steps::<crate::FsError>(
+                &read, limits, &mut |step| scope.observe(step)
+                    .map_err(super::file_read::ReadDecodeError::into_original_fs_error),
+            );
+            let allocation = scope.into_allocation();
+            drop(read);
+            match decoded {
+                Ok(page) => {
+                    let logical_bytes = match &allocation {
+                        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.bytes(),
+                        KernelOwnedAllocation::Standalone => unreachable!("original decoder retains original custody"),
+                    };
+                    Ok(DecodedAttributePage { page, allocation, logical_bytes })
+                }
+                Err(error) => { drop(allocation); Err(error) }
+            }
+        }
+    }
+}
+
+async fn read_page_standalone<S: AsyncObjectStore>(
     store: &S,
     page: ObjectId,
     limits: DecodeLimits,
@@ -408,7 +476,28 @@ async fn read_page<S: AsyncObjectStore>(
     Ok(DecodedAttributePage {
         page,
         logical_bytes,
+        allocation: KernelOwnedAllocation::Standalone,
     })
+}
+
+fn project_scalar_error(error: crate::FsError) -> AttributeLookupError {
+    match error {
+        crate::FsError::AttributeLookup(error) => error,
+        crate::FsError::Cancelled(_) => AttributeLookupError::Cancelled,
+        crate::FsError::Work(error) => AttributeLookupError::Work(error),
+        crate::FsError::Object(error) => map_storage(error),
+        crate::FsError::Decode(error) => AttributeLookupError::Decode(error),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => AttributeLookupError::Storage(ObjectStoreError::Native(error)),
+        _ => unreachable!("scalar attribute leaves return only typed attribute, object, decode, work or cancellation errors"),
+    }
+}
+
+fn map_visited_error(error: crate::FsError) -> crate::FsError {
+    match error {
+        crate::FsError::PendingMutationAllocationFailed => AttributeLookupError::AllocationFailed.into(),
+        error => error,
+    }
 }
 
 fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<usize, usize>, u64) {
@@ -417,6 +506,30 @@ fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<u
 
 fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (usize, u64) {
     counted_partition_point(children, |child| child.first_name <= *name)
+}
+
+fn search_entries_with_accounting(
+    entries: &[AttributeEntry], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
+) -> Result<Result<usize, usize>, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if accounting.native_work().is_some() {
+        return super::search::binary_search_with_accounting(entries, accounting, |entry| entry.name.cmp(name));
+    }
+    let (position, comparisons) = search_entries(entries, name);
+    accounting.charge(WorkCounters { items_examined: comparisons, ..WorkCounters::UNCHARGED })?;
+    Ok(position)
+}
+
+fn upper_bound_children_with_accounting(
+    children: &[AttributeChild], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
+) -> Result<usize, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if accounting.native_work().is_some() {
+        return super::search::partition_point_with_accounting(children, accounting, |child| child.first_name <= *name);
+    }
+    let (partition, comparisons) = upper_bound_children(children, name);
+    accounting.charge(WorkCounters { items_examined: comparisons, ..WorkCounters::UNCHARGED })?;
+    Ok(partition)
 }
 
 fn charge_items(

@@ -212,3 +212,29 @@ fn every_invalid_extent_page_shape_rejects_before_identity() {
         .is_err()
     );
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_extent_decode_records_only_the_completed_item_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let page = ExtentPage::Leaf(vec![
+        Extent { offset: 0, length: 1, kind: ExtentKind::Hole },
+        Extent { offset: 1, length: 1, kind: ExtentKind::AllocatedZero },
+    ]);
+    let mut bytes = encode_extent_page(&page, 8)?;
+    let _ = bytes.pop();
+    let cancellation = crate::CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let error = decode_extent_page_with_accounting(&bytes, DecodeLimits::default(), &mut accounting)
+        .err().ok_or("truncated extent item was accepted")?;
+    assert!(matches!(error, crate::FsError::FileRead(super::super::FileRangeReadError::Extent(
+        super::super::ExtentReadError::Decode(_)
+    ))));
+    assert_eq!(original.receipt().items_examined, 1);
+    assert_eq!(original.receipt().bytes_copied, 40);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
