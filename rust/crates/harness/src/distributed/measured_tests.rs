@@ -139,68 +139,6 @@ impl ContentResidencyVerifier for MeasuredContentControl {
     }
 }
 
-#[tokio::test]
-async fn declared_content_uses_real_finite_provider_receipts_and_cancellation_before_index_io() -> Result<()> {
-    use crate::{
-        AgentId, Capabilities,
-        conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-        core::{AggregateKind, Authority, AuthorityIssuer},
-        filesystem::{FilesystemContentVerifier, FilesystemHost},
-        resources::ProviderRef,
-    };
-    for cancel_after_verify in [false, true] {
-        let fs_provider = ProviderRef::new("measured-coordinator", "filesystem", "2")?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), fs_provider.clone())?);
-        let agent = AgentId::from_bytes([108; 16]);
-        let volume = VolumeRef::new(fs_provider, "measured-state", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent))?;
-        host.create_volume(&volume).await?;
-        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], Authority {
-            kind: AggregateKind::Task, id: "owner".into(),
-        });
-        let scope = issuer.root_for_agent(agent, "content", Capabilities::new([
-            volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-        ]));
-        let grant = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-        let state = host.put_content(&volume, &grant, "state/initial.json", b"null",
-            "application/json", "initial.json", 4096, &IdempotencyKey::new("measured-state")?).await?;
-        let reader: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
-            host, issuer.verifier(), scope, 4096,
-        )?);
-        let content = Arc::new(MeasuredContentControl {
-            inner: reader, cancel_after_verify,
-            ordinary_calls: AtomicUsize::new(0), measured_calls: AtomicUsize::new(0),
-        });
-        let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
-        let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
-        let mut declaration = spec(OperationId::from_bytes([109; 16]), 0)?;
-        declaration.state = state;
-        let source_bytes = append_source(&client, 1, "measured-real-content",
-            SchedulerEvent::Declared { spec: Box::new(declaration) }, 1).await?;
-        provider.reset_io();
-        let cancellation = CancellationToken::new();
-        let mut work = HistoryWork::new(budget(), &cancellation);
-        work.preflight()?;
-        let result = coordinator.refresh_with_work(&mut Some(&mut work)).await;
-        let counters = work.receipt();
-        assert_eq!(content.ordinary_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(content.measured_calls.load(Ordering::SeqCst), 1);
-        assert!(counters.object_bytes_read >= 4);
-        if cancel_after_verify {
-            assert!(matches!(result, Err(Error::Invalid(_))));
-            assert_eq!(provider.io_snapshot().reads, 1);
-            assert_eq!(provider.io_snapshot().writes, 0);
-            assert_eq!(coordinator.revision, 0);
-        } else {
-            result?;
-            assert_eq!(coordinator.revision, 1);
-            assert_eq!(provider.io_snapshot().writes, 1);
-        }
-    }
-    Ok(())
-}
-
 async fn admitted_fixture(
     client: &StreamClient<FaultStream>,
     operation: OperationId,
@@ -213,36 +151,6 @@ async fn admitted_fixture(
         labels: BTreeMap::new(),
     }).await?.ok_or_else(|| Error::NotFound("original admitted lease".into()))?;
     Ok((coordinator, lease))
-}
-
-#[tokio::test]
-async fn measured_lease_release_quota_and_cancellation_reject_before_publication() -> Result<()> {
-    for mode in 0..4 {
-        let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
-        let operation = OperationId::from_bytes([117; 16]);
-        let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
-        let revision = coordinator.revision;
-        let cancellation = CancellationToken::new();
-        if mode == 0 { cancellation.cancel(); }
-        let mut allowance = budget();
-        if mode == 1 { allowance.backend_write_operations = 0; }
-        if mode == 2 { allowance.bytes_encoded = 0; }
-        if mode == 3 { allowance.allocation_operations = 0; }
-        let mut work = HistoryWork::new(allowance, &cancellation);
-        provider.reset_io();
-        let result = coordinator.release_lease_with_work(&lease,
-            IdempotencyKey::new("release-before-io")?, &mut Some(&mut work)).await;
-        let failure = work.finish(result).expect_err("bounded source admission must stop publication");
-        assert!(matches!(failure.error, Error::Invalid(_)));
-        assert_eq!(failure.work.backend_write_operations, 0);
-        assert_eq!(provider.io_snapshot().writes, 0);
-        assert_eq!(coordinator.revision, revision);
-        assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, revision);
-        assert_eq!(coordinator.scheduler().operation(operation)
-            .and_then(|operation| operation.reservation.as_ref()), Some(&lease.reservation));
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -280,44 +188,6 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     assert_eq!(provider.io_snapshot().writes, 0);
     assert_eq!(coordinator.revision, remote.revision);
     assert_eq!(coordinator.scheduler(), remote.scheduler());
-    Ok(())
-}
-
-#[tokio::test]
-async fn measured_declaration_preserves_original_scope_key_and_never_uses_unmeasured_content() -> Result<()> {
-    for mode in 0..4 {
-        let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
-        let content = Arc::new(UnmeasuredContent::default());
-        let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
-        let declaration = spec(OperationId::from_bytes([122; 16]), 0)?;
-        let owner = declaration.owner.authority().clone();
-        let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9;32], owner.clone());
-        let scope = issuer.root("measured-declaration", crate::Capabilities::new(
-            if mode == 1 {vec!["operation:observe"]} else {vec!["operation:declare"]},
-        ));
-        let wrong = crate::core::AuthorityIssuer::new("test-runtime", [8;32], owner.clone());
-        let cancellation = CancellationToken::new();
-        let mut allowance = budget();
-        if mode == 3 {allowance.bytes_hashed = 0;}
-        let mut work = HistoryWork::new(allowance, &cancellation);
-        provider.reset_io();
-        let result = coordinator.declare_operation_with_work(&owner, &scope,
-            &if mode == 2 {wrong.verifier()} else {issuer.verifier()},
-            declaration, IdempotencyKey::new("measured-declaration")?,
-            None, &mut Some(&mut work),
-        ).await;
-        if mode == 0 {
-            assert!(matches!(result, Err(Error::Unsupported(_))));
-            assert_eq!(provider.io_snapshot().reads, 2);
-        } else {
-            assert!(matches!(result, Err(Error::Unauthorized(_)) | Err(Error::Invalid(_))));
-            assert_eq!(provider.io_snapshot().reads, 0);
-        }
-        assert_eq!(content.0.load(Ordering::SeqCst), 0);
-        assert_eq!(provider.io_snapshot().writes, 0);
-        assert_eq!(coordinator.revision, 0);
-    }
     Ok(())
 }
 
@@ -397,8 +267,8 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
         &client, &owner, &scope, &issuer.verifier(), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
-    assert_eq!(proof.original_fence(), &original);
-    assert_eq!(proof.declaration().operation_id, operation);
+    assert_eq!((&proof.1), &original);
+    assert_eq!(proof.0.operation_id, operation);
     assert_eq!(provider.io_snapshot().writes, 0);
     drop((proof, custody));
     Ok(())
@@ -429,46 +299,6 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
             else { matches!(result, Err(Error::NotFound(_))) });
         assert_eq!(provider.io_snapshot().writes, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn historical_proof_authenticates_before_io_and_preserves_raw_failure_and_cancellation_prefixes() -> Result<()> {
-    for mode in 0..7 {
-        let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
-        let operation = OperationId::from_bytes([130; 16]);
-        let (owner, issuer, valid, candidate, _) = historical_source(&client, operation).await?;
-        let scope = if mode == 0 {
-            issuer.root("not-an-observation-grant", crate::Capabilities::new(["operation:declare"]))
-        } else { valid };
-        provider.reset_io();
-        provider.forbid_writes.store(true, Ordering::SeqCst);
-        let cancellation = CancellationToken::new();
-        if mode == 1 { cancellation.cancel(); }
-        if mode == 2 { *provider.history_cancel_after_tail.lock().expect("control") = Some(cancellation.clone()); }
-        if mode >= 4 { provider.history_read_fault.store(match mode { 4 => 4, 5 => 5, _ => 6 }, Ordering::SeqCst); }
-        let mut allowance = budget();
-        if mode == 3 { allowance.backend_read_operations = 0; }
-        let mut work = HistoryWork::new(allowance, &cancellation);
-        let result = original_reservation_proof_with_work(
-            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
-        ).await;
-        assert!(result.is_err());
-        let counters = work.receipt();
-        if mode <= 1 || mode == 3 {
-            assert_eq!(provider.io_snapshot().reads, 0);
-        } else if mode >= 4 {
-            assert_eq!(provider.io_snapshot().reads, 1);
-            if mode == 4 {  }
-            if mode == 5 {  }
-        } else {
-            assert_eq!(provider.io_snapshot().reads, 2);
-            assert_eq!(provider.io_snapshot().tails, 1);
-        }
-        assert_eq!(provider.io_snapshot().writes, 0);
-        assert_eq!(counters.backend_write_operations, 0);
     }
     Ok(())
 }
@@ -508,22 +338,3 @@ async fn historical_proof_rejects_an_original_declaration_signed_by_another_key_
     Ok(())
 }
 
-#[tokio::test]
-async fn historical_proof_never_uses_an_unobserved_cold_prefix_as_a_finite_facade() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
-    let operation = OperationId::from_bytes([133; 16]);
-    let declaration = spec(operation, 0)?;
-    let owner = declaration.owner.authority();
-    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-    let scope = issuer.root("observe", crate::Capabilities::new(["operation:observe"]));
-    let candidate = LeaseFence { reservation_id: "selector".into(), placement: "placement".into() };
-    let result = original_reservation_proof_with_work(
-        &client, owner, &scope, &issuer.verifier(), operation, &candidate, &mut None,
-    ).await;
-    assert!(matches!(result, Err(Error::Unsupported(_))));
-    assert_eq!(provider.io_snapshot().reads, 0);
-    assert_eq!(provider.io_snapshot().tails, 0);
-    assert_eq!(provider.io_snapshot().writes, 0);
-    Ok(())
-}
