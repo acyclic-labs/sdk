@@ -1859,19 +1859,98 @@ fn remove_leaf_kind_with_work<W: NativeHostWork>(
     require_leaf(name)?;
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd as _;
-        unix_name_with_work(name.as_os_str(), work, |name, work| loop {
-            let delta = WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED };
-            work.admit(delta)?;
-            work.record(delta)?;
-            // SAFETY: held directory and terminated single-component name remain live.
-            if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), if directory { libc::AT_REMOVEDIR } else { 0 }) } == 0 { return Ok(()); }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted { return Err(error.into()); }
-        })
+        unix_name_with_work(name.as_os_str(), work, |name, work|
+            remove_unix_named_leaf_with_work(parent, name, directory, work))
     }
     #[cfg(windows)]
     { with_wide_path_with_work(name, work, |name, work| remove_windows_leaf_with_work(parent, name, directory, work)) }
+}
+
+#[cfg(unix)]
+fn remove_unix_named_leaf_with_work<W: NativeHostWork>(
+    parent: &Dir, name: &std::ffi::CStr, directory: bool, work: &mut W,
+) -> Result<(), W::Error> {
+    use std::os::fd::AsRawFd as _;
+    loop {
+        let delta = WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED };
+        work.started_io(delta)?;
+        // SAFETY: the held directory and terminated single-component name
+        // remain live throughout the existing unlink operation.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(),
+            if directory { libc::AT_REMOVEDIR } else { 0 }) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted { return Err(error.into()); }
+    }
+}
+
+/// An SDK-generated ASCII leaf prepared before its owner's physical birth.
+/// Both representations stay inline; cleanup never creates a path buffer.
+#[derive(Debug)]
+pub(crate) struct NativePreparedAsciiLeaf<const N: usize> {
+    #[cfg(unix)]
+    bytes: [u8; N],
+    #[cfg(windows)]
+    wide: [u16; N],
+}
+
+impl<const N: usize> NativePreparedAsciiLeaf<N> {
+    pub(crate) fn new(
+        bytes: [u8; N], work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, crate::NativeTreeMaterializationError> {
+        if N < 2 || bytes[N - 1] != 0 {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+        }
+        #[cfg(windows)]
+        let encoded = (N - 1).checked_mul(std::mem::size_of::<u16>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        let copied = work.reserve_work(WorkCounters {
+            items_examined: (N - 1) as u64,
+            #[cfg(windows)]
+            bytes_encoded: encoded,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let mut copied = copied;
+        #[cfg(windows)]
+        let mut wide = [0u16; N];
+        for index in 0..N - 1 {
+            work.check()?;
+            let byte = bytes[index];
+            let valid = byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':');
+            #[cfg(windows)]
+            { wide[index] = u16::from(byte); }
+            copied.record_completed(WorkCounters {
+                items_examined: 1,
+                #[cfg(windows)]
+                bytes_encoded: std::mem::size_of::<u16>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if !valid { return Err(crate::NativeTreeMaterializationError::InvalidLayout); }
+        }
+        if &bytes[..N - 1] == b"." || &bytes[..N - 1] == b".." {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+        }
+        Ok(Self {
+            #[cfg(unix)]
+            bytes,
+            #[cfg(windows)]
+            wide,
+        })
+    }
+}
+
+pub(crate) fn remove_prepared_ascii_leaf_with_work<W: NativeHostWork, const N: usize>(
+    parent: &Dir, name: &NativePreparedAsciiLeaf<N>, work: &mut W,
+) -> Result<(), W::Error> {
+    #[cfg(unix)]
+    {
+        let name = std::ffi::CStr::from_bytes_with_nul(&name.bytes)
+            .map_err(|_| W::invalid_request())?;
+        remove_unix_named_leaf_with_work(parent, name, false, work)
+    }
+    #[cfg(windows)]
+    { remove_windows_leaf_with_work(parent, &name.wide[..N - 1], false, work) }
 }
 
 #[cfg(unix)]
@@ -7365,6 +7444,106 @@ pub(crate) fn create_windows_provisional_overlapped_file_with_work<W: NativeHost
     create_windows_wide_at_measured(parent, name, false, true, false, true, work)
 }
 
+/// Creates through the same held-parent FILE_CREATE engine. The caller owns
+/// the real provisional capability before the second namespace effect, so
+/// denial/error never substitutes a pathname or loses the created prefix.
+#[cfg(windows)]
+pub(crate) fn create_windows_symbolic_link_with_work<W: NativeHostWork>(
+    parent: &Dir, name: &[u16], target: &[u16], directory: bool,
+    created: &mut Option<File>, on_created: impl FnOnce(), on_reparse_set: impl FnOnce(), work: &mut W,
+) -> Result<(), W::Error> {
+    if created.is_some() { return Err(W::invalid_request()); }
+    with_windows_symlink_packet(target, work, |buffer, work| {
+        *created = Some(create_windows_wide_at_measured(parent, name, directory, false, false, true, work)?);
+        on_created();
+        let file = created.as_ref().expect("FILE_CREATE capability installed before reparse mutation");
+        set_windows_symlink_packet_with_work(file, buffer, work)?;
+        on_reparse_set();
+        keep_windows_created_file_with_work(file, work)
+    })
+}
+
+/// The single measured fixed-ABI encoder shared by ordinary demand work and
+/// the native held-owner producer. Raw SET requires the OS symlink privilege:
+/// https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_reparse_point
+#[cfg(windows)]
+fn with_windows_symlink_packet<W: NativeHostWork, T>(
+    target: &[u16], work: &mut W, operation: impl FnOnce(&[u8], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
+    use windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK;
+    if target.is_empty() { return Err(W::invalid_request()); }
+    for unit in target {
+        let examined = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+        work.admit(examined)?;
+        let invalid = *unit == 0;
+        work.record(examined)?;
+        if invalid { return Err(W::invalid_request()); }
+    }
+    let slash = u16::from(b'\\');
+    let drive = target.len() >= 3 && target[1] == u16::from(b':') && target[2] == slash;
+    let unc = target.starts_with(&[slash, slash]) && !target.starts_with(&[slash, slash, u16::from(b'?'), slash]);
+    let extended = target.starts_with(&[slash, slash, u16::from(b'?'), slash]);
+    let nt = target.starts_with(&[slash, u16::from(b'?'), u16::from(b'?'), slash]);
+    // Root-/drive-relative spellings need an ambient drive resolver. This
+    // held-parent primitive never silently substitutes that authority.
+    if !drive && !unc && !extended && !nt
+        && (target[0] == slash || (target.len() >= 2 && target[1] == u16::from(b':')))
+    { return Err(W::invalid_request()); }
+    let prefix: &[u16] = if unc { &[92, 63, 63, 92, 85, 78, 67, 92] }
+        else if drive || extended { &[92, 63, 63, 92] } else { &[] };
+    let substituted = if unc { &target[2..] } else if extended { &target[4..] } else { target };
+    let substitute_units = prefix.len().checked_add(substituted.len()).ok_or(crate::WorkError::Overflow)?;
+    let substitute_bytes = substitute_units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let print_bytes = target.len().checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let size = 20_usize.checked_add(substitute_bytes).and_then(|size| size.checked_add(print_bytes))
+        .and_then(|size| size.checked_add(4)).ok_or(crate::WorkError::Overflow)?;
+    if size > MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize { return Err(W::invalid_request()); }
+    let encoded = WorkCounters { bytes_encoded: size as u64, ..WorkCounters::UNCHARGED };
+    work.admit(encoded)?;
+    let mut storage = std::mem::MaybeUninit::<[u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize]>::uninit();
+    // Exact fixed ABI stack storage, not a heap allocation or an RSS claim.
+    let pointer = storage.as_mut_ptr().cast::<u8>();
+    let mut header = [0_u8; 20];
+    header[..4].copy_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
+    header[4..6].copy_from_slice(&((size - 8) as u16).to_le_bytes());
+    header[10..12].copy_from_slice(&(substitute_bytes as u16).to_le_bytes());
+    header[12..14].copy_from_slice(&((substitute_bytes + 2) as u16).to_le_bytes());
+    header[14..16].copy_from_slice(&(print_bytes as u16).to_le_bytes());
+    header[16..20].copy_from_slice(&(u32::from(!(drive || unc || extended || nt))).to_le_bytes());
+    // SAFETY: the complete header fits the fixed ABI storage; the untouched
+    // suffix remains MaybeUninit until each following UTF-16 unit is written.
+    unsafe { pointer.copy_from_nonoverlapping(header.as_ptr(), header.len()); }
+    let mut offset = 20;
+    for unit in prefix.iter().chain(substituted).copied().chain(std::iter::once(0))
+        .chain(target.iter().copied()).chain(std::iter::once(0))
+    {
+        // SAFETY: checked exact size includes both terminated target names.
+        unsafe { pointer.add(offset).cast::<[u8; 2]>().write(unit.to_le_bytes()); }
+        offset += 2;
+    }
+    // SAFETY: every byte in this exact prefix has now been initialized.
+    let buffer = unsafe { std::slice::from_raw_parts(pointer, size) };
+    work.record(encoded)?;
+    operation(buffer, work)
+}
+
+#[cfg(windows)]
+fn set_windows_symlink_packet_with_work<W: NativeHostWork>(
+    file: &File, buffer: &[u8], work: &mut W,
+) -> Result<(), W::Error> {
+    use std::os::windows::io::AsRawHandle as _;
+    native_attempt(work, WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, || {
+        // SAFETY: the real creation handle and fully initialized exact ABI
+        // packet survive this same synchronous mutation for both work shapes.
+        unsafe { windows::Win32::System::IO::DeviceIoControl(
+            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+            windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
+            Some(buffer.as_ptr().cast()), buffer.len() as u32, None, 0, None, None) }
+            .map_err(Into::into)
+    })
+}
+
 #[cfg(windows)]
 pub(crate) fn open_windows_leaf_with_options_measured<W: crate::demand::SourceDemandReadWork>(parent: &Dir, name: &[u16], options: &NativeOpenOptions, work: &mut W) -> Result<File, DemandError> {
     open_windows_leaf_with_options_with_work(parent, name, options, work)
@@ -7615,48 +7794,9 @@ fn link_windows_wide_measured<W: crate::demand::SourceDemandReadWork>(file: &Fil
 
 #[cfg(windows)]
 fn set_windows_symlink_wide_measured<W: crate::demand::SourceDemandReadWork>(file: &File, target: &[u16], work: &mut W) -> Result<(), DemandError> {
-    use std::os::windows::io::AsRawHandle as _;
-    for unit in target {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        if *unit == 0 { return Err(DemandError::InvalidRequest); }
-    }
-    let drive = target.len() >= 3 && target[1] == 58 && target[2] == 92;
-    let unc = target.starts_with(&[92, 92]);
-    let extended = target.starts_with(&[92, 92, 63, 92]);
-    let relative = !drive && !unc && !target.starts_with(&[92]);
-    let (prefix, tail): (&[u16], &[u16]) = if extended { (&[92, 63, 63, 92], &target[4..]) }
-        else if unc { (&[92, 63, 63, 92, 85, 78, 67, 92], &target[2..]) }
-        else if drive { (&[92, 63, 63, 92], target) } else { (&[], target) };
-    let substitute_units = prefix.len().checked_add(tail.len()).ok_or(crate::WorkError::Overflow)?;
-    let substitute_bytes = substitute_units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-    let print_bytes = target.len().checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-    let data_bytes = 12usize.checked_add(substitute_bytes).and_then(|n| n.checked_add(print_bytes)).ok_or(crate::WorkError::Overflow)?;
-    let total = data_bytes.checked_add(8).ok_or(crate::WorkError::Overflow)?;
-    if total > 16 * 1024 { return Err(DemandError::InvalidRequest); }
-    native_buffer(work, total as u64, (substitute_bytes + print_bytes) as u64, 0)?;
-    let mut storage = vec![0_u8; total];
-    let result = (|| {
-        storage[..4].copy_from_slice(&0xA000000Cu32.to_le_bytes());
-        storage[4..6].copy_from_slice(&(data_bytes as u16).to_le_bytes());
-        storage[10..12].copy_from_slice(&(substitute_bytes as u16).to_le_bytes());
-        storage[12..14].copy_from_slice(&(substitute_bytes as u16).to_le_bytes());
-        storage[14..16].copy_from_slice(&(print_bytes as u16).to_le_bytes());
-        storage[16..20].copy_from_slice(&u32::from(relative).to_le_bytes());
-        for (index, unit) in prefix.iter().chain(tail).chain(target).enumerate() {
-            storage[20 + index * 2..22 + index * 2].copy_from_slice(&unit.to_le_bytes());
-        }
-        native_write(work)?;
-        // SAFETY: live synchronous handle and complete validated symlink reparse buffer.
-        unsafe { windows::Win32::System::IO::DeviceIoControl(
-            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-            windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
-            Some(storage.as_ptr().cast()), total as u32, None, 0, None, None)
-            .map_err(io::Error::from)?; }
-        Ok(())
-    })();
-    drop(storage);
-    work.release(total as u64)?;
-    result
+    with_windows_symlink_packet(target, work, |buffer, work| {
+        set_windows_symlink_packet_with_work(file, buffer, work)
+    })
 }
 
 #[cfg(windows)]
@@ -10183,6 +10323,66 @@ mod windows_clone_tests {
             before
         );
         assert_eq!(std::fs::read(outside.join("target"))?, b"outside");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_link_set_denial_retains_real_created_prefix_and_prepaid_close() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = HostRoot::open(temporary.path())?;
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_write_operations: 2, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(error, _)| error)?;
+        let mut close = work.reserve_work(WorkCounters {
+            backend_write_operations: 1, ..WorkCounters::UNCHARGED
+        })?;
+        let mut created = None;
+        let published = std::cell::Cell::new(false);
+        let set = std::cell::Cell::new(false);
+        let result = create_windows_symbolic_link_with_work(
+            root.directory_handle(), &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
+            &mut created, || published.set(true), || set.set(true), &mut &work,
+        );
+        assert!(result.is_err());
+        assert!(published.get() && !set.get());
+        assert_eq!(work.receipt().backend_write_operations, 1);
+        assert!(created.is_some());
+        assert_eq!(close.remaining_work().backend_write_operations, 1);
+        close.started_drop_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED });
+        drop(created.take());
+        assert_eq!(work.receipt().backend_write_operations, 2);
+        assert!(!temporary.path().join("link").try_exists()?);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_link_original_cancellation_after_create_does_not_erase_capability() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = HostRoot::open(temporary.path())?;
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut close = work.reserve_work(WorkCounters {
+            backend_write_operations: 1, ..WorkCounters::UNCHARGED
+        })?;
+        let mut created = None;
+        let set = std::cell::Cell::new(false);
+        let result = create_windows_symbolic_link_with_work(
+            root.directory_handle(), &[108, 105, 110, 107], &[116, 97, 114, 103, 101, 116], false,
+            &mut created, || cancellation.cancel(), || set.set(true), &mut &work,
+        );
+        assert!(matches!(result, Err(crate::NativeTreeMaterializationError::Cancelled)));
+        assert!(created.is_some() && !set.get());
+        assert_eq!(work.receipt().backend_write_operations, 1);
+        assert!(cancellation.is_cancelled());
+        close.started_drop_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED });
+        drop(created.take());
+        assert_eq!(work.receipt().backend_write_operations, 2);
+        assert!(cancellation.is_cancelled());
+        assert!(!temporary.path().join("link").try_exists()?);
         Ok(())
     }
 

@@ -1008,6 +1008,9 @@ impl crate::native_host::NativeHostWork for CacheHostWork<'_, '_> {
     fn check(&self) -> Result<(), Self::Error> { self.meter.check() }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.meter.admit(delta) }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.meter.record(delta) }
+    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
+        self.meter.accounting.charge(delta).map_err(projected_error)
+    }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
         let allocation = self.meter.accounting.claim_owned(bytes, u64::from(bytes != 0))
             .map_err(projected_error)?;
@@ -1030,11 +1033,11 @@ impl crate::native_host::NativeHostWork for CacheHostWork<'_, '_> {
     }
     fn attempt_io<T>(&mut self, delta: WorkCounters, operation: impl FnOnce() -> std::io::Result<T>)
         -> Result<T, Self::Error> {
-        self.admit(delta)?;
-        let result = operation();
-        let recorded = self.record(delta);
-        recorded?;
-        result.map_err(Into::into)
+        self.started_io(delta)?;
+        match operation() {
+            Ok(value) => { self.check()?; Ok(value) }
+            Err(error) => Err(error.into()),
+        }
     }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         self.check()?;
@@ -1099,10 +1102,11 @@ fn cache_host_attempt<T>(
     callback: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, PathIndexError> {
     use crate::native_host::NativeHostWork as _;
-    meter.admit(delta)?;
-    let result = callback();
-    meter.record(delta)?;
-    result.map_err(Into::into)
+    meter.started_io(delta)?;
+    match callback() {
+        Ok(value) => { meter.check()?; Ok(value) }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -1972,6 +1976,30 @@ mod tests {
         assert!(index.load([0; 32]).is_none());
         assert_eq!(std::fs::read_dir(directory.path()).expect("native entries")
             .count(), MAXIMUM_PATH_INDEX_ENTRIES);
+    }
+
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[test]
+    fn cache_host_preserves_physical_failure_after_late_cancellation() {
+        let directory = tempfile::tempdir().expect("held cache fixture");
+        let missing = directory.path().join("missing");
+        let token = CancellationToken::new();
+        let mut ledger = AllocationLedger::default();
+        let mut work = WorkCounters::default();
+        let budget = WorkBudget { backend_read_operations: 1, ..WorkBudget::default() };
+        let mut accounting = KernelAccounting::borrowed_standalone(&mut ledger, &mut work, budget, &token);
+        let mut meter = CacheHostWork { meter: PathIndexWork::new(&mut accounting, &token).expect("meter") };
+        let error = cache_host_attempt(&mut meter, WorkCounters {
+            backend_read_operations: 1, ..WorkCounters::UNCHARGED
+        }, || {
+            let result = std::fs::metadata(&missing);
+            token.cancel();
+            result
+        }).expect_err("actual missing entry wins over later cancellation");
+        assert!(matches!(error, PathIndexError::Io(error)
+            if error.kind() == std::io::ErrorKind::NotFound));
+        assert_eq!(meter.meter.accounting.spent().backend_read_operations, 1);
+        meter.meter.accounting.spent().verify(budget).expect("actual attempted prefix");
     }
 
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]

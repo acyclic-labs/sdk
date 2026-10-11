@@ -218,6 +218,9 @@ the watch feature. Windows exchange paths use the standard-library UTF-16
 decoder after reserving a conservative three-byte-per-unit logical output bound.
 Actual encoded length and capacity are recorded before late refusal; hidden
 decoder allocation and CPU behavior are opaque, not fabricated SDK attempts.
+Local path-index host attempts consume their original operation credit immediately
+before the actual syscall. A physical error retains that attempted prefix and is
+not replaced by a later cancellation.
 
 Lazy publication retains its original basis, source, overlay, shadows, configuration,
 candidate and permit in the same authenticated canonical DATA record. Pending and
