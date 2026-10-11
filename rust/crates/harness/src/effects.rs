@@ -168,6 +168,70 @@ pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result
     Ok(schema)
 }
 
+/// Validates the original schema without letting an unguarded Value escape.
+pub(crate) fn validate_effect_schema_bytes_with_work(
+    reference: &FileRef, bytes: &[u8],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() {
+        return validate_schema_bytes(reference, bytes).map(drop);
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        reference.validate_with_work(work)?;
+        if reference.descriptor().media_type() != "application/schema+json" {
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "effect result schema must be JSON Schema content"));
+        }
+        reference.descriptor().verify_with_work(bytes, work)?;
+        let original = work.as_deref().and_then(|io| io.original_native_work())
+            .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
+        let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
+        let schema = decode.decode_preparation::<Value>(bytes)?;
+        drop(crate::contract::compile_json_schema_with_io(
+            &schema, "effect result", Some(&decode))?);
+        return Ok(());
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    Err(Error::Unsupported("native effect schema validation is unavailable".into()))
+}
+
+/// Shared store/registry result admission. Source bytes stay caller-guarded;
+/// decoded schema and result own their original reservations through validation.
+pub(crate) fn validate_effect_result_bytes_with_work(
+    schema_reference: &FileRef, schema_bytes: &[u8], result: &FileRef, bytes: &[u8],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if work.is_none() {
+        let schema = validate_schema_bytes(schema_reference, schema_bytes)?;
+        return validate_result_bytes(&schema, result, bytes);
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        schema_reference.validate_with_work(work)?;
+        result.validate_with_work(work)?;
+        if schema_reference.descriptor().media_type() != "application/schema+json" {
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "effect result schema must be JSON Schema content"));
+        }
+        if result.descriptor().media_type() != "application/json" {
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "effect result must be JSON content"));
+        }
+        schema_reference.descriptor().verify_with_work(schema_bytes, work)?;
+        result.descriptor().verify_with_work(bytes, work)?;
+        let original = work.as_deref().and_then(|io| io.original_native_work())
+            .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
+        let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
+        let schema = decode.decode_preparation::<Value>(schema_bytes)?;
+        let value = decode.decode_preparation::<Value>(bytes)?;
+        return crate::contract::validate_json_schema_value_with_io(
+            &schema, &value, "effect result", Some(&decode));
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    Err(Error::Unsupported("native effect result validation is unavailable".into()))
+}
+
 impl EffectRegistry {
     /// Installs the owner-mediated byte boundary required to validate successful results.
     #[must_use]
@@ -433,32 +497,13 @@ impl EffectRegistry {
                 let schema_bytes = content.work().as_deref_mut().expect("observer")
                     .read_content(resolver.as_ref(), &effect.result_schema).await?;
                 content.adopt(schema_bytes.capacity() as u64)?;
-                if result.descriptor().media_type() != "application/json"
-                    || effect.result_schema.descriptor().media_type() != "application/schema+json"
-                {
-                    return Err(crate::effect_host::effect_error(content.work(),
-                        crate::wire::ErrorCode::Invalid, "effect result or schema media type differs"));
-                }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                {
-                    result.descriptor().verify_with_work(&bytes, content.work())?;
-                    effect.result_schema.descriptor().verify_with_work(&schema_bytes, content.work())?;
-                    let io = content.work().as_deref_mut().expect("observer");
-                    let native = io.original_native_work().ok_or_else(||
-                        Error::Unsupported("effect result observer has no original native ledger".into()))?;
-                    let decode = crate::filesystem::PreparationIo::from_native_work(native)?;
-                    let schema = decode.decode_preparation::<Value>(&schema_bytes)?;
-                    let value = decode.decode_preparation::<Value>(&bytes)?;
-                    crate::contract::validate_json_schema_value_with_io(
-                        &schema, &value, "effect result", Some(&decode))?;
-                }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                return Err(Error::Unsupported("native effect content is unavailable".into()));
+                validate_effect_result_bytes_with_work(
+                    &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {
                 let bytes = resolver.read(result).await?;
                 let schema_bytes = resolver.read(&effect.result_schema).await?;
-                let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
-                validate_result_bytes(&schema, result, &bytes)?;
+                validate_effect_result_bytes_with_work(
+                    &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
         issuer.attest_effect_with_work(
