@@ -50,6 +50,8 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_future;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
@@ -119,6 +121,8 @@ pub use contract::{
     json_from_slice_bounded_trusted,
     is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use native_future::NativeFutureBundle;
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
     ExtensionRuntime, NativeExtension, NativeExtensionBundle,

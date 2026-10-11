@@ -391,6 +391,14 @@ Harness `Result`: `Error::NativeWork` preserves the original native cause and
 any already-admitted diagnostic custody; owner/source rejection keeps its
 original Harness error. No string-parsed or flattened storage error replaces it.
 
+Native content and creator callbacks return `Result<NativeFutureBundle<T>>`
+before awaiting. The canonical bundle admits the actual concrete future's
+payload size and one allocation attempt on the original ledger before building
+or boxing it; zero-sized futures require no heap allocation. Its boxed future
+drops before its separate allocation guard, so custody spans the physical
+future deallocation. Cancellation and exhausted allocation allowance return
+inline before the builder executes. Ordinary callback ABIs are unchanged.
+
 `ResourceCreationProvider::verify_with_native_work` verifies the same original
 creator request, allocation, report and seed using that supplied ledger/token.
 The Filesystem provider shares ordinary verification's canonical receipt
