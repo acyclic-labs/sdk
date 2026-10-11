@@ -106,6 +106,21 @@ pub(super) const fn arc_control_bytes<T>() -> u64 {
     (payload_offset + std::mem::size_of::<T>()) as u64
 }
 
+/// Transfers a genuine before-birth terminal allowance into the existing
+/// original reservation engine. Ordinary watchers keep their ordinary engine.
+#[cfg(windows)]
+pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
+    work: &mut W, maximum: WorkCounters,
+) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
+    work.check()?;
+    if !work.is_native_original() { return Ok(None); }
+    let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
+    let original = source.materialization_work()?.allocation_work();
+    original.reserve_work(maximum)
+        .map(Some)
+        .map_err(crate::native_name::original_name_error)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn reserve_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) -> Result<(), DemandError> {
     use acyclic_native_runtime::NativeOperationKind::{Read, Write};
@@ -431,7 +446,7 @@ impl Delivery {
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
-        let original = work.native_source_work().map(|work| work.original_demand_work());
+        let original = work.native_source_work().map(|work| work.original_demand_work().allocation_work());
         let controls = |work: &mut DemandWork| (work.budget, work.cancellation().clone());
         let (budget, cancellation) = if original.is_some() {
             work.with_original_leaf(controls)
@@ -668,6 +683,45 @@ impl SourceWatchStartupFailure {
         self.stop_with_work(&mut NativeSourceWork::from_native_materialization_work(work))
     }
 
+    /// Retires the retained original watch using only its birth-paid cleanup.
+    /// Independent cancellation or unavailable custody keeps the same owner.
+    ///
+    /// # Errors
+    /// Preserves the actual shutdown cause and physical owner for retry. A
+    /// poisoned custody slot is reported even if native retirement succeeds.
+    pub fn stop_with_cleanup_wait(&self, wait: &crate::CancellationToken) -> Result<(), DemandError> {
+        self.stop_original_with_wait(Some(wait))
+    }
+
+    /// Retires only the retained owner's already-accepted physical resources.
+    /// This creates no new work allowance or observer cancellation token.
+    ///
+    /// # Errors
+    /// Retains the same unresolved native owner and original failure cause.
+    pub fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.stop_original_with_wait(None)
+    }
+
+    fn stop_original_with_wait(&self, wait: Option<&crate::CancellationToken>) -> Result<(), DemandError> {
+        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
+        let (owner, poisoned) = match self.watch.try_lock() {
+            Ok(mut custody) => (custody.take(), false),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => (poisoned.into_inner().take(), true),
+        };
+        let Some(owner) = owner else {
+            return if poisoned { Err(DemandError::OriginalWorkPoisoned) }
+                else if self.is_stopped() { Ok(()) } else { Err(DemandError::WorkerUnavailable) };
+        };
+        let lease = FailedWatchLease { owner: Some(owner), failure: self };
+        let native = lease.owner.as_ref().expect("the original lease retains the native owner");
+        let result = match wait {
+            Some(wait) => native.stop_with_cleanup_wait(wait),
+            None => native.stop_accepted_cleanup(),
+        };
+        if poisoned { result.and(Err(DemandError::OriginalWorkPoisoned)) } else { result }
+    }
+
     /// Uses the same retained-owner lease and original native cleanup engine.
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &self, work: &mut W,
@@ -899,6 +953,17 @@ impl NativeSourceWatch {
         &self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         self.platform.stop_with_work(work)
+    }
+
+    /// Uses the platform's existing original birth cleanup and native stop
+    /// suffix. No caller budget, new root, or replacement watcher is created.
+    pub(crate) fn stop_with_cleanup_wait(&self, wait: &crate::CancellationToken) -> Result<(), DemandError> {
+        self.platform.stop_with_cleanup_wait(wait)
+    }
+
+    /// Consumes only this watch's genuine original birth-paid stop custody.
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.platform.stop_accepted_cleanup()
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {

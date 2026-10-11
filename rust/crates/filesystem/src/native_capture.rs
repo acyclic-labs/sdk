@@ -1679,7 +1679,7 @@ pub(crate) fn capture_runtime_meter_owner(
 
 impl acyclic_native_runtime::NativeReadMeter for CapturedRuntimeReadMeter {
     fn allocation_owner(&self) -> Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
-        Some(std::sync::Arc::clone(&self.base))
+        Some(self.base.allocation_owner().unwrap_or_else(|| std::sync::Arc::clone(&self.base)))
     }
     fn check(&self) -> std::io::Result<()> { self.base.check() }
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {

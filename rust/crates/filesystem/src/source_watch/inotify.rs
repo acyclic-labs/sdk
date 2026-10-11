@@ -90,6 +90,8 @@ struct Shared {
     /// Published only after actual native quiescence and full physical cleanup.
     completed: AtomicBool,
     controller_alive: AtomicBool,
+    #[cfg(test)]
+    polling: AtomicBool,
     cleanup: Mutex<StartupCleanup>,
     ownership: SourcePayloadOwnership,
     delivery: Arc<Delivery>,
@@ -190,6 +192,24 @@ impl StartupCleanup {
         };
         if missing != WorkCounters::UNCHARGED { self.extend(missing, work)?; }
         Ok(())
+    }
+}
+
+/// Explicit cleanup callers do not block before acquiring stop custody.
+/// After native stop starts, eventual OS/callback liveness is required: no
+/// timeout or cancelled waiter can stand in for actual physical quiescence.
+fn stop_custody<'a, T>(
+    mutex: &'a Mutex<T>, wait: Option<&crate::CancellationToken>,
+) -> Result<std::sync::MutexGuard<'a, T>, DemandError> {
+    if let Some(wait) = wait {
+        if wait.is_cancelled() { return Err(DemandError::Cancelled); }
+        match mutex.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => Err(DemandError::WorkerUnavailable),
+        }
+    } else {
+        Ok(mutex.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -487,7 +507,9 @@ extern "C" fn run_reader(payload: *mut libc::c_void) -> *mut libc::c_void {
     // SAFETY: startup transfers one Arc reference to this entrypoint.
     let reader = unsafe { Arc::from_raw(payload.cast::<Shared>()) };
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.run())).is_err() {
-        reader.delivery.abandon();
+        // A panicked sink must not be invoked again outside this ABI unwind
+        // boundary. Fail closed, then let the same reader retire its payload.
+        reader.delivery.exact.store(false, Ordering::Release);
     }
     if reader.delivery.original.is_some() {
         reader.finish_native_reader();
@@ -566,6 +588,8 @@ impl PlatformWatch {
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
+                #[cfg(test)]
+                polling: AtomicBool::new(false),
                 cleanup: Mutex::new(StartupCleanup::default()),
                 ownership,
                 delivery,
@@ -824,24 +848,71 @@ impl PlatformWatch {
         self.stop_admitted(&mut thread, work)
     }
 
-    fn stop_from_birth_prepaid(&self) -> Result<(), DemandError> {
+    pub(super) fn stop_with_cleanup_wait(
+        &self, wait: &crate::CancellationToken,
+    ) -> Result<(), DemandError> {
+        // Only the original owner carries credits accepted before native birth.
+        // The caller's token controls waiting, never that owner's authority.
+        self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
+        if wait.is_cancelled() { return Err(DemandError::Cancelled); }
+        self.stop_from_birth_prepaid_with_wait(Some(wait))?;
+        if wait.is_cancelled() { return Err(DemandError::Cancelled); }
+        Ok(())
+    }
+
+    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.stop_from_birth_prepaid_with_wait(None)
+    }
+
+    fn stop_from_birth_prepaid_with_wait(
+        &self, wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
-        if self.is_stopped() {
-            let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
-            let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-            return self.join_completed(&mut thread, &mut crate::demand::NativeSourceWork::from_original_work(original));
-        }
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         let mut work = crate::demand::NativeSourceWork::from_original_work(original);
-        let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
-        let reading = self.shared.reading.lock().unwrap_or_else(PoisonError::into_inner);
-        let watches = self.shared.lock_watches();
-        let ancestors = self.shared.ancestors.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut thread = stop_custody(&self.thread, wait)?;
+        if wait.is_some_and(crate::CancellationToken::is_cancelled) {
+            return Err(DemandError::Cancelled);
+        }
+        if self.is_stopped() {
+            let cleanup = stop_custody(&self.shared.cleanup, wait)?;
+            if cleanup.reads < u64::from(thread.is_some()) {
+                return Err(DemandError::NativeWorkUnavailable);
+            }
+            drop(cleanup);
+            if wait.is_some_and(crate::CancellationToken::is_cancelled) {
+                return Err(DemandError::Cancelled);
+            }
+            return self.join_completed(&mut thread, &mut work);
+        }
+        let reading = stop_custody(&self.shared.reading, wait)?;
+        let watches = stop_custody(&self.shared.watches, wait)?;
+        let ancestors = stop_custody(&self.shared.ancestors, wait)?;
+        let records = reading.cleanup.len().checked_add(watches.entries.len())
+            .and_then(|count| count.checked_add(ancestors.len())).ok_or(WorkError::Overflow)?;
+        let descriptors = [&self.shared.inotify, &self.shared.wake, &self.shared.root]
+            .into_iter().filter(|descriptor| descriptor.as_raw_fd() >= 0).count() as u64;
+        let suffix = WorkCounters {
+            backend_read_operations: u64::from(thread.is_some()),
+            backend_write_operations: descriptors
+                + u64::from(thread.is_some() && self.shared.wake.as_raw_fd() >= 0),
+            items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        // Do not top up, consult root cancellation, or begin any native I/O
+        // when the existing owner's remaining escrow cannot cover this suffix.
+        if !stop_custody(&self.shared.cleanup, wait)?.covers(suffix) {
+            return Err(DemandError::NativeWorkUnavailable);
+        }
+        if wait.is_some_and(crate::CancellationToken::is_cancelled) {
+            return Err(DemandError::Cancelled);
+        }
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.reading_changed.notify_all();
         drop(ancestors);
         drop(watches);
         drop(reading);
+        // Once started, real quiescence is mandatory even if wait is cancelled.
         self.stop_admitted(&mut thread, &mut work)
     }
 
@@ -857,6 +928,9 @@ impl PlatformWatch {
             let reading = self.shared.reading.lock().unwrap_or_else(PoisonError::into_inner);
             let descriptor = self.shared.wake.as_raw_fd();
             let wake_error = if descriptor >= 0 {
+                self.shared.ensure_cleanup_covered(WorkCounters {
+                    backend_write_operations: 1, ..WorkCounters::UNCHARGED
+                }, work)?;
                 let one = 1_u64.to_ne_bytes();
                 // SAFETY: the existing read custody lock excludes terminal
                 // descriptor retirement throughout this actual wake attempt.
@@ -872,6 +946,9 @@ impl PlatformWatch {
                 // Preserve join/descriptor custody for a subsequent stop attempt.
                 return result.and(Err(error.into()));
             }
+            self.shared.ensure_cleanup_covered(WorkCounters {
+                backend_read_operations: 1, ..WorkCounters::UNCHARGED
+            }, work)?;
             // SAFETY: this is the one joinable worker returned by pthread_create.
             let joined = unsafe { libc::pthread_join(worker, std::ptr::null_mut()) };
             result = result.and(self.shared.record_cleanup(WorkCounters {
@@ -887,9 +964,9 @@ impl PlatformWatch {
         if self.shared.delivery.original.is_none() || !self.shared.completed.load(Ordering::Acquire) {
             result = result.and(self.shared.clear_measured(work));
             self.shared.delivery.exact.store(false, Ordering::Release);
-            self.shared.completed.store(true, Ordering::Release);
+            self.shared.completed.store(self.shared.physically_cleared(), Ordering::Release);
         }
-        self.shared.cancel_cleanup(work);
+        if self.is_stopped() { self.shared.cancel_cleanup(work); }
         result
     }
 
@@ -898,6 +975,9 @@ impl PlatformWatch {
     ) -> Result<(), DemandError> {
         let mut result = Ok(());
         if let Some(worker) = *thread {
+            self.shared.ensure_cleanup_covered(WorkCounters {
+                backend_read_operations: 1, ..WorkCounters::UNCHARGED
+            }, work)?;
             // SAFETY: terminal publication follows physical cleanup, but this
             // controller still owns the one joinable pthread returned at birth.
             let joined = unsafe { libc::pthread_join(worker, std::ptr::null_mut()) };
@@ -934,7 +1014,7 @@ impl Drop for PlatformWatch {
                 self.shared.reading_changed.notify_all();
                 return;
             }
-            let _ = self.stop_from_birth_prepaid();
+            let _ = self.stop_accepted_cleanup();
             let completed = {
                 let _cleanup = self.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
                 self.shared.controller_alive.store(false, Ordering::Release);
@@ -967,6 +1047,12 @@ impl Shared {
         let result = self.clear_measured(&mut work);
         if let Err(error) = result { self.delivery.failed_with_work(error, &mut work); }
         self.delivery.exact.store(false, Ordering::Release);
+        if !self.physically_cleared() {
+            // The exited worker is joinable, but failed admission retained its
+            // actual descriptor/record owners for a later controller attempt.
+            self.reading_changed.notify_all();
+            return;
+        }
         let detach = {
             let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
             let keep = u64::from(self.controller_alive.load(Ordering::Acquire));
@@ -999,6 +1085,9 @@ impl Shared {
     fn detach_terminal_thread<W: SourceDemandReadWork>(
         &self, worker: libc::pthread_t, work: &mut W,
     ) -> Result<(), DemandError> {
+        self.ensure_cleanup_covered(WorkCounters {
+            backend_write_operations: 1, ..WorkCounters::UNCHARGED
+        }, work)?;
         // SAFETY: cleanup's controller-alive decision selected this sole
         // terminal bookkeeping owner; no live controller can join this thread.
         let detached = unsafe { libc::pthread_detach(worker) };
@@ -1022,7 +1111,7 @@ impl Shared {
 
     fn record_cleanup<W: SourceDemandReadWork>(&self, delta: WorkCounters, work: &mut W) -> Result<(), DemandError> {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        if (self.birth_matches(work) || self.delivery.original.is_none()) && cleanup.covers(delta) {
+        if self.birth_matches(work) || (self.delivery.original.is_none() && cleanup.covers(delta)) {
             cleanup.record(delta, work)
         } else {
             work.record(delta)
@@ -1038,18 +1127,45 @@ impl Shared {
         }
     }
 
+    fn ensure_cleanup_covered<W: SourceDemandReadWork>(
+        &self, delta: WorkCounters, work: &W,
+    ) -> Result<(), DemandError> {
+        if self.birth_matches(work)
+            && !self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).covers(delta)
+        {
+            return Err(DemandError::NativeWorkUnavailable);
+        }
+        Ok(())
+    }
+
+    fn physically_cleared(&self) -> bool {
+        self.retained_variable_bytes.load(Ordering::Acquire) == 0
+            && [&self.inotify, &self.wake, &self.root]
+                .into_iter().all(|descriptor| descriptor.as_raw_fd() < 0)
+    }
+
     fn reserve_record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
-        if self.birth_matches(work) {
+        if let Some(original) = &self.delivery.original {
+            // Every retained record belongs to this native owner, even if a
+            // different caller requested admission. Fund its mandatory drop
+            // from that owner's immutable original before record birth.
+            self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)
+                .reserve_record(&mut crate::demand::NativeSourceWork::from_original_work(original))?;
+        } else if self.birth_matches(work) {
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reserve_record(work)?;
         }
         Ok(())
     }
 
     fn cancel_record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) {
-        if !self.birth_matches(work) { return; }
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        cleanup.records -= 1;
-        work.with_original_leaf(|work| work.budget.items_examined += 1);
+        if let Some(original) = &self.delivery.original {
+            cleanup.records -= 1;
+            original.meter().with_original_leaf(|work| work.refund_pending_items(1));
+        } else if self.birth_matches(work) {
+            cleanup.records -= 1;
+            work.with_original_leaf(|work| work.refund_pending_items(1));
+        }
     }
 
     /// Called only without a worker or after its successful join. No owned
@@ -1058,6 +1174,14 @@ impl Shared {
         let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
         let mut watches = self.lock_watches();
         let mut ancestors = self.ancestors.lock().unwrap_or_else(PoisonError::into_inner);
+        let records = reading.cleanup.len().checked_add(watches.entries.len())
+            .and_then(|count| count.checked_add(ancestors.len())).ok_or(WorkError::Overflow)?;
+        self.ensure_cleanup_covered(WorkCounters {
+            backend_write_operations: [&self.inotify, &self.wake, &self.root]
+                .into_iter().filter(|descriptor| descriptor.as_raw_fd() >= 0).count() as u64,
+            items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        }, work)?;
         let retired_bytes = self.retained_variable_bytes.load(Ordering::Acquire);
         let mut result = Ok(());
         for descriptor in [&self.inotify, &self.wake, &self.root] {
@@ -1393,8 +1517,12 @@ impl Shared {
                 self.delivery.failed_with_work(error, &mut work);
                 return;
             }
+            #[cfg(test)]
+            self.polling.store(true, Ordering::Release);
             // SAFETY: two initialized pollfd records in a live array.
             let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            #[cfg(test)]
+            self.polling.store(false, Ordering::Release);
             if ready < 0 {
                 let error = last_error();
                 if error.kind() == io::ErrorKind::Interrupted { continue; }
@@ -1624,19 +1752,34 @@ impl Shared {
                         }
                     }
                     let delivered = if self.delivery.events.is_some() {
-                        self.delivery.event_with_work(&path, mask, cookie, work)
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.delivery.event_with_work(&path, mask, cookie, work)
+                        }))
                     } else {
                         let change = if mask & (REBINDING | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 {
                             HostChange::Rebound(path)
                         } else {
                             HostChange::Altered(path)
                         };
-                        let answer = self.delivery.deliver_with_work(std::slice::from_ref(&change), work);
+                        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.delivery.deliver_with_work(std::slice::from_ref(&change), work)
+                        }));
                         path = match change {
                             HostChange::Rebound(path) | HostChange::Altered(path) => path,
                             HostChange::Everything => unreachable!("constructed path change"),
                         };
                         answer
+                    };
+                    let delivered = match delivered {
+                        Ok(result) => result,
+                        Err(panic) => {
+                            drop(path);
+                            if cleanup_needed { self.cancel_record_cleanup(work); }
+                            if let Err(error) = work.release(bytes as u64) {
+                                self.delivery.failed_with_work(error, work);
+                            }
+                            std::panic::resume_unwind(panic);
+                        }
                     };
                     if delivered.is_err() {
                         drop(path);
@@ -2875,6 +3018,248 @@ mod admission_tests {
         Ok(())
     }
 
+    #[test]
+    fn cleanup_wait_rejects_an_ordinary_owner_before_native_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let watch = watcher(root.path())?;
+        let bytes = watch.logical_owned_bytes();
+        assert!(matches!(watch.stop_with_cleanup_wait(&CancellationToken::new()),
+            Err(DemandError::NativeWorkUnavailable)));
+        assert!(!watch.shared.stopping.load(Ordering::Acquire));
+        assert!(!watch.is_stopped());
+        assert_eq!(watch.logical_owned_bytes(), bytes);
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let host = crate::native_host::HostRoot::open(root.path())?;
+        let cancellation = CancellationToken::new();
+        let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
+            WorkBudget {
+                backend_read_operations: 128, backend_write_operations: 128,
+                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
+                items_examined: 4096, allocation_operations: 128,
+                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
+            }, &cancellation,
+        ))));
+        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
+        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let records = retained_records(&watch);
+        let paused = watch.paused();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.shared.polling.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(watch.shared.polling.load(Ordering::Acquire));
+        cancellation.cancel();
+        let prefix = original.lock().receipt();
+        let bytes = watch.logical_owned_bytes();
+        let wait = CancellationToken::new();
+        wait.cancel();
+        assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
+        assert!(matches!(watch.stop_with_cleanup_wait(&CancellationToken::new()),
+            Err(DemandError::WorkerUnavailable)));
+        assert_eq!(original.lock().receipt(), prefix);
+        assert!(!watch.shared.stopping.load(Ordering::Acquire));
+        assert!(!watch.is_stopped());
+        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_some());
+        assert_eq!(watch.logical_owned_bytes(), bytes);
+        for descriptor in [&watch.shared.inotify, &watch.shared.wake, &watch.shared.root] {
+            assert!(descriptor.as_raw_fd() >= 0);
+        }
+        drop(paused);
+        // Withhold the already-owned join cursor, then restore that exact
+        // cursor. Neither denial nor retry creates additional native credit.
+        let reads = {
+            let mut cleanup = watch.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut cleanup.reads)
+        };
+        let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
+        watch.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reads = reads;
+        assert!(matches!(denied, Err(DemandError::NativeWorkUnavailable)));
+        assert_eq!(original.lock().receipt(), prefix);
+        assert!(!watch.shared.stopping.load(Ordering::Acquire));
+        assert!(!watch.is_stopped());
+        assert_eq!(watch.logical_owned_bytes(), bytes);
+        let wait = CancellationToken::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match watch.stop_with_cleanup_wait(&wait) {
+                Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                result => { result?; break; }
+            }
+        }
+        assert!(watch.is_stopped());
+        assert!(watch.shared.physically_cleared());
+        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
+        let terminal = original.lock().receipt();
+        assert_eq!(terminal.backend_read_operations - prefix.backend_read_operations, 1);
+        assert!((3..=4).contains(&(terminal.backend_write_operations - prefix.backend_write_operations)));
+        assert_eq!(terminal.items_examined - prefix.items_examined, records);
+        assert_eq!(terminal.allocation_operations, prefix.allocation_operations);
+        assert_eq!(terminal.bytes_copied, prefix.bytes_copied);
+        watch.stop_with_cleanup_wait(&wait)?;
+        assert_eq!(original.lock().receipt(), terminal);
+        drop(watch);
+        assert_eq!(Arc::strong_count(&original), 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let host = crate::native_host::HostRoot::open(root.path())?;
+        let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
+            WorkBudget {
+                backend_read_operations: 128, backend_write_operations: 128,
+                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
+                items_examined: 4096, allocation_operations: 128,
+                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
+            }, &CancellationToken::new(),
+        ))));
+        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
+        let watch = Arc::new(PlatformWatch::start_with_work(&host, delivery, &mut work)?);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.shared.polling.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(watch.shared.polling.load(Ordering::Acquire));
+        let wait = CancellationToken::new();
+        // Holding only the test's accounting leaf delays recording a genuine
+        // wake/retirement, without inventing a mock native completion.
+        let state = original.lock();
+        let prefix = state.receipt();
+        let stopping = Arc::clone(&watch);
+        let caller_wait = wait.clone();
+        let (finished, received) = std::sync::mpsc::channel();
+        let stopper = std::thread::spawn(move || {
+            let result = stopping.stop_with_cleanup_wait(&caller_wait);
+            finished.send(result).expect("live test controller");
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.shared.stopping.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let started = watch.shared.stopping.load(Ordering::Acquire);
+        wait.cancel();
+        let premature = received.try_recv();
+        let terminal_before_release = watch.is_stopped();
+        drop(state);
+        let result = match premature {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
+            Err(error) => return Err(error.into()),
+        };
+        stopper.join().expect("actual native stop controller");
+        assert!(started);
+        assert!(!terminal_before_release);
+        assert!(matches!(result, Err(DemandError::Cancelled)));
+        assert!(watch.is_stopped());
+        assert!(watch.shared.physically_cleared());
+        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
+        let terminal = original.lock().receipt();
+        assert_eq!(terminal.backend_read_operations - prefix.backend_read_operations, 1);
+        assert_eq!(terminal.backend_write_operations - prefix.backend_write_operations, 4);
+        assert_eq!(terminal.allocation_operations, prefix.allocation_operations);
+        assert!(terminal.items_examined > prefix.items_examined);
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct PanicsAfterRelease {
+            entered: std::sync::mpsc::Sender<()>,
+            release: Mutex<bool>,
+            changed: Condvar,
+        }
+        impl HostChangeSink for PanicsAfterRelease {
+            fn logical_owned_bytes(&self) -> u64 { 0 }
+            fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
+                Err(DemandError::NativeWorkUnavailable)
+            }
+            fn host_changed_with_native_work(
+                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+            ) -> Result<(), DemandError> {
+                work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+                self.entered.send(()).expect("live callback controller");
+                let mut release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
+                while !*release {
+                    release = self.changed.wait(release).unwrap_or_else(PoisonError::into_inner);
+                }
+                panic!("controlled native callback unwind");
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let host = crate::native_host::HostRoot::open(root.path())?;
+        let cancellation = CancellationToken::new();
+        let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
+            WorkBudget {
+                backend_read_operations: 128, backend_write_operations: 128,
+                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
+                items_examined: 4096, items_returned: 4096,
+                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
+                ..WorkBudget::default()
+            }, &cancellation,
+        ))));
+        let (entered, receive) = std::sync::mpsc::channel();
+        let sink = Arc::new(PanicsAfterRelease {
+            entered, release: Mutex::new(false), changed: Condvar::new(),
+        });
+        let mut work = crate::demand::NativeSourceWork::new(&original);
+        let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
+        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let retained_control = original.lock().live_allocation_bytes()
+            - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+        std::fs::write(root.path().join("reported"), b"changed")?;
+        receive.recv_timeout(std::time::Duration::from_secs(5))?;
+        cancellation.cancel();
+        let prefix = original.lock().receipt();
+        let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
+        let pending_terminal = watch.is_stopped();
+        *sink.release.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        sink.changed.notify_all();
+        assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
+        assert!(!pending_terminal);
+        assert_eq!(prefix.items_returned, 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.is_stopped() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(watch.is_stopped(), "callback unwind is not itself terminal evidence");
+        watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+        assert!(watch.shared.physically_cleared());
+        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
+        assert!(!watch.delivery().is_exact());
+        let state = original.lock();
+        assert_eq!(state.receipt().items_returned, 1, "the panicked sink is never re-entered");
+        assert_eq!(state.live_allocation_bytes(), retained_control);
+        assert!(state.receipt().backend_read_operations > prefix.backend_read_operations);
+        assert_eq!(state.receipt().backend_write_operations - prefix.backend_write_operations, 3);
+        drop(state);
+        drop(watch);
+        assert_eq!(Arc::strong_count(&original), 1);
+        Ok(())
+    }
+
     #[cfg(feature = "native-mount")]
     #[test]
     fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiescence()
@@ -2944,7 +3329,16 @@ mod admission_tests {
         let prefix = original.lock().receipt();
         assert!(matches!(watch.delivery().take_failure(&mut work), Ok(()) | Err(DemandError::Cancelled)));
         assert_eq!(original.lock().receipt(), prefix);
-        watch.stop_from_birth_prepaid()?;
+        let wait = CancellationToken::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match watch.stop_with_cleanup_wait(&wait) {
+                Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                result => { result?; break; }
+            }
+        }
         assert!(watch.is_stopped());
         assert_eq!(watch.logical_owned_bytes(), arc_control_bytes::<Shared>());
         assert_eq!(original.lock().receipt().items_returned, 1);
@@ -2955,7 +3349,7 @@ mod admission_tests {
 
     #[cfg(feature = "native-mount")]
     #[test]
-    fn fresh_cleanup_charges_current_io_and_refunds_only_unused_birth_credits()
+    fn fresh_cleanup_charges_its_controller_io_and_preserves_the_original_worker_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path())?;
@@ -2972,8 +3366,17 @@ mod admission_tests {
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut startup)?);
         let watch = PlatformWatch::start_with_work(&host, delivery, &mut startup)?;
         let records = retained_records(&watch);
+        let paused = watch.paused();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.shared.polling.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(watch.shared.polling.load(Ordering::Acquire));
         cancellation.cancel();
-        let (prefix, held_budget) = birth.with_original_leaf(|work| (work.receipt(), work.budget));
+        let prefix = birth.with_original_leaf(|work| work.receipt());
+        drop(paused);
         let current = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             stop_budget(records), &CancellationToken::new(),
         ))));
@@ -2981,15 +3384,19 @@ mod admission_tests {
         watch.stop_with_work(&mut cleanup)?;
         assert!(watch.is_stopped());
         assert_eq!(current.lock().receipt(), WorkCounters {
-            backend_read_operations: 1, backend_write_operations: 4,
-            items_examined: records, ..WorkCounters::UNCHARGED
+            backend_read_operations: 1, backend_write_operations: 1,
+            ..WorkCounters::UNCHARGED
         });
         assert_eq!(current.lock().live_allocation_bytes(), 0);
         birth.with_original_leaf(|work| {
-            assert_eq!(work.receipt(), prefix);
-            assert_eq!(work.budget.backend_read_operations, held_budget.backend_read_operations + 2);
-            assert_eq!(work.budget.backend_write_operations, held_budget.backend_write_operations + 5);
-            assert_eq!(work.budget.items_examined, held_budget.items_examined + records);
+            assert_eq!(work.receipt(), WorkCounters {
+                backend_write_operations: prefix.backend_write_operations + 3,
+                items_examined: prefix.items_examined + records,
+                ..prefix
+            });
+            assert_eq!(work.budget.backend_read_operations, 128);
+            assert_eq!(work.budget.backend_write_operations, 128);
+            assert_eq!(work.budget.items_examined, 4096);
         });
         assert_eq!(watch.logical_owned_bytes(), arc_control_bytes::<Shared>());
         Ok(())

@@ -29,11 +29,11 @@
 //! undelivered ([`HostChange::Unconfirmed`]): every remembered fact is
 //! verified against the source at its next use.
 //!
-//! The native reader retains the full original resource view through actual
-//! cancellation and read completion, then retires its directory, completion
-//! event and buffer before publishing terminal state. A live controller still
-//! waits for and closes its thread handle. Final controller drop in delivery
-//! relinquishes only that handle; the existing reader owns physical cleanup.
+//! The original reader retains its resource view, completes accepted kernel IO
+//! and drains source callbacks before retiring directory/event/buffer custody.
+//! It then closes its opaque thread handle before publishing managed-driver
+//! retirement, not OS thread exit or join. Its real Shared/root/G ownership
+//! survives that flag through the final physical data drop on the same worker.
 
 #![allow(
     unsafe_code,
@@ -95,7 +95,7 @@ struct Shared {
     /// system decides once.
     extended: AtomicBool,
     /// Whether the file system reports every change or its loss (NTFS).
-    complete: bool,
+    complete: AtomicBool,
     recursive: bool,
     reads: Mutex<Reads>,
     buffer_owned: AtomicBool,
@@ -105,11 +105,28 @@ struct Shared {
     fence_delivered: Condvar,
     stopping: AtomicBool,
     stop_completed: AtomicBool,
-    controller_alive: AtomicBool,
     ownership: crate::demand::SourcePayloadOwnership,
-    cleanup: Mutex<(u64, u64)>,
+    native_cleanup: Mutex<NativeCleanup>,
+    native_thread: Mutex<Option<OwnedHandle>>,
+    native_ready: AtomicBool,
+    native_retiring: AtomicBool,
+    native_entered_retirement: AtomicBool,
+    native_attempt_finished: AtomicBool,
+    native_resources_retired: AtomicBool,
+    native_drop_requested: AtomicBool,
+    native_failure: Mutex<Option<DemandError>>,
+    #[cfg(test)]
+    native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,
     original_cleanup: bool,
     delivery: Arc<Delivery>,
+}
+
+/// Both partitions come from one accepted original before the first handle
+/// (the existing retirement worker) is born. Only real attempted IO consumes
+/// them; a failed explicit suffix cannot spend the last-owner partition.
+struct NativeCleanup {
+    active: Option<crate::materializer::NativeWorkReservation>,
+    terminal: Option<crate::materializer::NativeWorkReservation>,
 }
 
 /// The one read in flight. Its buffer and `OVERLAPPED` stay in place until
@@ -127,35 +144,47 @@ struct Reads {
 }
 
 /// Exactly-once native custody, independently retireable after quiescence.
-struct WatchHandle(AtomicPtr<std::ffi::c_void>);
+struct WatchHandle {
+    raw: AtomicPtr<std::ffi::c_void>,
+    ordinary: bool,
+}
 
 impl WatchHandle {
-    fn new(handle: OwnedHandle) -> Self { Self(AtomicPtr::new(handle.into_raw_handle())) }
-    fn is_open(&self) -> bool { !self.0.load(Ordering::Acquire).is_null() }
+    fn empty(ordinary: bool) -> Self {
+        Self { raw: AtomicPtr::new(std::ptr::null_mut()), ordinary }
+    }
+    fn install(&self, handle: OwnedHandle) {
+        assert!(!self.is_open(), "one original handle is installed once");
+        self.raw.store(handle.into_raw_handle(), Ordering::Release);
+    }
+    fn is_open(&self) -> bool { !self.raw.load(Ordering::Acquire).is_null() }
     fn close_with_record<W: SourceDemandReadWork>(
         &self, work: &mut W, record: impl FnOnce(&mut W) -> Result<(), DemandError>,
     ) -> Result<(), DemandError> {
-        let handle = self.0.load(Ordering::Acquire);
+        let handle = self.raw.load(Ordering::Acquire);
         if handle.is_null() { return Ok(()); }
         // SAFETY: close is serialized after the native reader quiesces.
         let result = unsafe { CloseHandle(HANDLE(handle)) }
             .map_err(io::Error::from).map_err(DemandError::from);
         if result.is_ok() {
-            self.0.store(std::ptr::null_mut(), Ordering::Release);
+            self.raw.store(std::ptr::null_mut(), Ordering::Release);
         }
         result.and(record(work))
     }
 }
 
 impl std::os::windows::io::AsRawHandle for WatchHandle {
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle { self.0.load(Ordering::Acquire) }
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle { self.raw.load(Ordering::Acquire) }
 }
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
-        let handle = *self.0.get_mut();
+        let handle = *self.raw.get_mut();
+        // Native custody cannot reach field Drop while a handle is unresolved:
+        // the original reader retains this actual Shared in its quarantine wait.
+        assert!(self.ordinary || handle.is_null(), "native handle outlived its physical retirement owner");
         if !handle.is_null() {
-            // SAFETY: ordinary fallback for a still-owned native handle.
+            // SAFETY: ordinary fallback has no native original accounting grant.
             let _ = unsafe { CloseHandle(HANDLE(handle)) };
         }
     }
@@ -178,6 +207,21 @@ fn close_owned_measured<W: SourceDemandReadWork>(
         let _ = handle.take().expect("closed native handle").into_raw_handle();
     }
     result.and(shared.record_cleanup(work, 0, 1))
+}
+
+fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) -> Result<OwnedHandle, DemandError> {
+    work.preflight(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
+    work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
+    let parameter = Arc::into_raw(Arc::clone(reader));
+    // SAFETY: success transfers this real Shared to the existing reader.
+    match unsafe { CreateThread(None, 0, Some(reader_thread), Some(parameter.cast()), Default::default(), None) } {
+        Ok(thread) => Ok(unsafe { OwnedHandle::from_raw_handle(thread.0) }),
+        Err(error) => {
+            // SAFETY: failed native creation transferred no callback owner.
+            drop(unsafe { Arc::from_raw(parameter) });
+            Err(io::Error::from(error).into())
+        }
+    }
 }
 
 // SAFETY: the read's buffer and `OVERLAPPED` are touched only under the
@@ -242,13 +286,20 @@ impl PlatformWatch {
         let native_original = work.is_native_original();
         let mut shared = None;
         let mut owned_bytes = 0_u64;
-        let mut cleanup_reserved = false;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
         let result = (|| {
-            // One prepaid suffix covers every possible native startup prefix
-            // and remains resident for the original watch's eventual shutdown.
-            reserve_cleanup(work, 2, 5)?;
-            cleanup_reserved = true;
+            // One original reservation funds the explicit suffix and one
+            // known last-owner physical suffix. No runtime IO escrow is also
+            // reserved for these same operations.
+            let mut active = super::prepare_native_cleanup_credit(work, WorkCounters {
+                backend_read_operations: 3, backend_write_operations: 10,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let terminal = active.as_mut().map(|credit| credit.partition_work(WorkCounters {
+                backend_read_operations: 1, backend_write_operations: 5,
+                ..WorkCounters::UNCHARGED
+            })).transpose().map_err(crate::native_name::original_name_error)?;
+            if !native_original { reserve_cleanup(work, 2, 5)?; }
             let overlapped_bytes = size_of::<OVERLAPPED>() as u64;
             work.allocate(overlapped_bytes)?;
             owned_bytes += overlapped_bytes;
@@ -262,9 +313,9 @@ impl PlatformWatch {
             owned_bytes += shared_bytes;
             ownership.retain(owned_bytes, work)?;
             shared = Some(Arc::new(Shared {
-                directory: WatchHandle(AtomicPtr::new(std::ptr::null_mut())),
-                completed: WatchHandle(AtomicPtr::new(std::ptr::null_mut())), delivery,
-                extended: AtomicBool::new(true), complete: complete.unwrap_or(false), recursive,
+                directory: WatchHandle::empty(!native_original),
+                completed: WatchHandle::empty(!native_original), delivery,
+                extended: AtomicBool::new(true), complete: AtomicBool::new(complete.unwrap_or(false)), recursive,
                 reads: Mutex::new(Reads {
                     overlapped, buffer: Some(buffer), pending: false, requested: 0,
                     filled: 0, cursor: 0, loss: false, blocked: false,
@@ -273,20 +324,31 @@ impl PlatformWatch {
                 reading_changed: Condvar::new(), fenced: Mutex::new(0),
                 fence_delivered: Condvar::new(), stopping: AtomicBool::new(false),
                 stop_completed: AtomicBool::new(false),
-                controller_alive: AtomicBool::new(true),
-                cleanup: Mutex::new(if native_original { (2, 5) } else { (0, 0) }),
+                native_cleanup: Mutex::new(NativeCleanup { active, terminal }),
+                native_thread: Mutex::new(None), native_ready: AtomicBool::new(false),
+                native_retiring: AtomicBool::new(false), native_entered_retirement: AtomicBool::new(false),
+                native_attempt_finished: AtomicBool::new(false), native_resources_retired: AtomicBool::new(false),
+                native_drop_requested: AtomicBool::new(false), native_failure: Mutex::new(None),
+                #[cfg(test)]
+                native_wait_cancellation: Mutex::new(None),
                 original_cleanup: native_original, ownership,
             }));
-            let state = Arc::get_mut(shared.as_mut().expect("prepared read state"))
-                .expect("startup has sole custody before callback exposure");
-            state.directory = WatchHandle::new(open_for_changes_handle(root, pin_name, work)?);
+            let state = shared.as_ref().expect("prepared read state");
+            if native_original {
+                // The existing retirement owner is the first native birth.
+                // Until ready it parks on the already-funded state/condition
+                // variable, so every later startup prefix has a real owner.
+                let thread = create_reader(state, work)?;
+                *state.native_thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
+            }
+            state.directory.install(open_for_changes_handle(root, pin_name, work)?);
             if complete.is_none() {
-                state.complete = crate::native_host::reports_every_change_with_work(&state.directory, work)?;
+                state.complete.store(crate::native_host::reports_every_change_with_work(&state.directory, work)?, Ordering::Release);
             }
             work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: an unnamed manual-reset event, exclusively owned here.
             let event = unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
-            state.completed = WatchHandle::new(unsafe { OwnedHandle::from_raw_handle(event.0) });
+            state.completed.install(unsafe { OwnedHandle::from_raw_handle(event.0) });
             let reader = shared.as_ref().expect("constructed read state");
             let mut reads = reader.lock_reads();
             if let Err(error) = reader.issue_read(&mut reads, Some(&mut *work)) {
@@ -297,33 +359,18 @@ impl PlatformWatch {
                 reader.issue_read(&mut reads, Some(&mut *work))?;
             }
             drop(reads);
-            work.preflight(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
-            work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
-            let parameter = Arc::into_raw(Arc::clone(reader));
-            // SAFETY: successful native creation transfers exactly this Arc.
-            let thread = match unsafe {
-                CreateThread(None, 0, Some(reader_thread), Some(parameter.cast()), Default::default(), None)
-            } {
-                Ok(thread) => unsafe { OwnedHandle::from_raw_handle(thread.0) },
-                Err(error) => {
-                    // SAFETY: no native callback was created.
-                    drop(unsafe { Arc::from_raw(parameter) });
-                    return Err(io::Error::from(error).into());
-                }
-            };
+            let thread = if native_original { None } else { Some(create_reader(reader, work)?) };
+            reader.native_ready.store(true, Ordering::Release);
+            reader.reading_changed.notify_all();
             Ok(Self {
                 shared: shared.take().expect("constructed read state"),
-                thread: Mutex::new(Some(thread)),
+                thread: Mutex::new(thread),
             })
         })();
         // Ordinary invocation custody is transferred as before; native custody
         // keeps the original shutdown credits withheld until actual attempts.
         if !native_original {
             work.with_original_leaf(|work| work.budget = original_budget);
-        } else if shared.is_none() && result.is_err() && cleanup_reserved {
-            work.with_original_leaf(|work| super::cancel_cleanup_credits(work, WorkCounters {
-                backend_read_operations: 2, backend_write_operations: 5, ..WorkCounters::UNCHARGED
-            }));
         }
         let result = match result {
             Ok(watch) => Ok(watch),
@@ -362,28 +409,65 @@ impl PlatformWatch {
         self.stop_engine(work, false)
     }
 
+    /// Completes an already-owned native cleanup suffix without introducing a
+    /// caller token, root, resource allowance or namespace authority.
+    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        if !self.shared.original_cleanup { return Err(DemandError::NativeWorkUnavailable); }
+        let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
+        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        self.stop_engine_wait(&mut work, true, None)
+    }
+
+    /// Retires only this watch's original birth-paid native suffix. The caller's
+    /// token may decline before stop starts, but cannot revoke a pending kernel
+    /// buffer or turn a still-running reader into a completed stop.
+    pub(super) fn stop_with_cleanup_wait(
+        &self, wait: &crate::CancellationToken,
+    ) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        let birth = self.shared.delivery.original.as_ref()
+            .ok_or(DemandError::NativeWorkUnavailable)?;
+        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        self.stop_engine_wait(&mut work, true, Some(wait))
+    }
+
     fn stop_engine<W: SourceDemandReadWork>(
         &self, work: &mut W, retiring: bool,
     ) -> Result<(), DemandError> {
+        self.stop_engine_wait(work, retiring, None)
+    }
+
+    fn stop_engine_wait<W: SourceDemandReadWork>(
+        &self, work: &mut W, retiring: bool, wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), DemandError> {
         if !retiring { work.check()?; }
         self.shared.delivery.ensure_stop_available()?;
-        let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut reads = self.shared.lock_reads();
+        if self.shared.original_cleanup { return self.stop_native_engine(work, wait); }
+        let mut thread = if wait.is_some() {
+            match self.thread.try_lock() {
+                Ok(thread) => thread,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            }
+        } else {
+            self.thread.lock().unwrap_or_else(PoisonError::into_inner)
+        };
+        let mut reads = if wait.is_some() {
+            match self.shared.reads.try_lock() {
+                Ok(reads) => reads,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            }
+        } else {
+            self.shared.lock_reads()
+        };
         let running = thread.is_some();
         let pending = reads.pending;
         let required_reads = u64::from(pending) + u64::from(running);
         let required_writes = u64::from(pending) + u64::from(running) * 2
             + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
-        if self.shared.birth_work(work) {
-            let mut cleanup = self.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-            let reads = required_reads.saturating_sub(cleanup.0);
-            let writes = required_writes.saturating_sub(cleanup.1);
-            if !retiring && (reads != 0 || writes != 0) {
-                reserve_cleanup(work, reads, writes)?;
-                cleanup.0 += reads;
-                cleanup.1 += writes;
-            }
-        } else if !retiring {
+        if wait.is_some() { return Err(DemandError::NativeWorkUnavailable); }
+        if !retiring {
             work.preflight(WorkCounters {
                 backend_write_operations: required_writes, backend_read_operations: required_reads,
                 ..WorkCounters::default()
@@ -394,7 +478,6 @@ impl PlatformWatch {
         // and continue through late accounting failures. Native completion
         // and thread join assume eventual OS liveness, not a hard time bound.
         let mut result = Ok(());
-        self.shared.stopping.store(true, Ordering::Release);
         self.shared.delivery.exact.store(false, Ordering::Release);
         if pending {
             // SAFETY: cancellation/completion retain the original buffers.
@@ -410,15 +493,24 @@ impl PlatformWatch {
             // SAFETY: the original OVERLAPPED and buffer remain live through completion.
             let completed = unsafe { GetOverlappedResult(HANDLE(self.shared.directory.as_raw_handle()),
                 &raw const *reads.overlapped, &mut transferred, true) };
-            reads.pending = completed.as_ref().err()
-                .is_some_and(|error| error.code() == ERROR_IO_INCOMPLETE.to_hresult());
+            reads.pending = !matches!(&completed, Ok(()))
+                && !completed.as_ref().err().is_some_and(|error|
+                    error.code() == ERROR_OPERATION_ABORTED.to_hresult()
+                        || error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult());
             if let Err(error) = completed {
                 if error.code() != ERROR_OPERATION_ABORTED.to_hresult() {
                     result = result.and(Err(DemandError::from(io::Error::from(error))));
                 }
             }
             result = result.and(self.shared.record_cleanup(work, 1, 0));
+            if reads.pending {
+                // An unsuccessful completion query is not proof that the
+                // kernel relinquished OVERLAPPED or its buffer. Keep the same
+                // reader and every native-visible allocation for the caller.
+                return result;
+            }
         }
+        self.shared.stopping.store(true, Ordering::Release);
         if running && self.shared.completed.is_open() {
             // SAFETY: the existing completion event wakes the original reader.
             let signalled = unsafe { SetEvent(HANDLE(self.shared.completed.as_raw_handle())) }
@@ -454,11 +546,104 @@ impl PlatformWatch {
         self.shared.buffer_owned.store(false, Ordering::Release);
         reads.filled = 0;
         reads.cursor = 0;
-        self.shared.cancel_cleanup(work);
         if thread.is_none() && !self.shared.directory.is_open() && !self.shared.completed.is_open() {
             self.shared.stop_completed.store(true, Ordering::Release);
         }
+        if let Some(wait) = wait {
+            result = result.and(wait.check().map_err(|_| DemandError::Cancelled));
+        }
         result
+    }
+
+    /// Native completion means retirement of this managed driver's accepted
+    /// IO, callbacks and handles, not a claim that the OS thread has exited.
+    /// The same reader closes its opaque thread handle after its last source
+    /// callback and retains actual Shared/G custody through its final data drop.
+    fn stop_native_engine<W: SourceDemandReadWork>(
+        &self, work: &mut W, wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), DemandError> {
+        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
+        if !self.shared.birth_work(work) { return Err(DemandError::NativeWorkUnavailable); }
+        if self.is_stopped() { return Ok(()); }
+        let mut reads = if wait.is_some() {
+            match self.shared.reads.try_lock() {
+                Ok(reads) => reads,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            }
+        } else { self.shared.lock_reads() };
+        let thread = if wait.is_some() {
+            match self.shared.native_thread.try_lock() {
+                Ok(thread) => thread,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
+            }
+        } else {
+            self.shared.native_thread.lock().unwrap_or_else(PoisonError::into_inner)
+        };
+        if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
+        if self.shared.native_retiring.load(Ordering::Acquire) {
+            return Err(if self.shared.native_attempt_finished.load(Ordering::Acquire) {
+                DemandError::NativeWorkUnavailable
+            } else { DemandError::WorkerUnavailable });
+        }
+        let running = thread.is_some();
+        let wake = running && self.shared.native_ready.load(Ordering::Acquire)
+            && self.shared.completed.is_open();
+        let required_reads = u64::from(reads.pending);
+        let required_writes = u64::from(reads.pending) + u64::from(wake) + u64::from(running)
+            + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
+        {
+            let cleanup = self.shared.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+            let active = cleanup.active.as_ref().ok_or(DemandError::NativeWorkUnavailable)?.remaining_work();
+            if active.backend_read_operations < required_reads || active.backend_write_operations < required_writes {
+                return Err(DemandError::NativeWorkUnavailable);
+            }
+        }
+        self.shared.native_retiring.store(true, Ordering::Release);
+        self.shared.stopping.store(true, Ordering::Release);
+        self.shared.delivery.exact.store(false, Ordering::Release);
+        drop(thread);
+        if wake {
+            self.shared.native_start(false, 0, 1)?;
+            // SAFETY: admission still holds this original native state lock;
+            // the worker cannot release the completion event during its wake.
+            let signalled = unsafe { SetEvent(HANDLE(self.shared.completed.as_raw_handle())) };
+            #[cfg(test)]
+            if let Some(wait) = self.shared.native_wait_cancellation.lock()
+                .unwrap_or_else(PoisonError::into_inner).take()
+            { wait.cancel(); }
+            if let Err(error) = signalled {
+                self.shared.note_native_failure(self.shared.native_os_error(error));
+                drop(reads);
+                self.shared.reading_changed.notify_all();
+                let failure = self.shared.native_failure.lock().unwrap_or_else(PoisonError::into_inner).take()
+                    .unwrap_or(DemandError::NativeWorkUnavailable);
+                return Err(work.with_original_leaf(DemandWork::take_native_io_failure).unwrap_or(failure));
+            }
+        }
+        self.shared.reading_changed.notify_all();
+        if !running {
+            // Failed creation of the first native worker has no born native
+            // handles or pending kernel request. Retire only actual Rust data.
+            drop(reads);
+            self.shared.finish_native_reader();
+            reads = self.shared.lock_reads();
+        }
+        while !self.shared.native_attempt_finished.load(Ordering::Acquire) {
+            reads = self.shared.reading_changed.wait(reads).unwrap_or_else(PoisonError::into_inner);
+        }
+        let failure = self.shared.native_failure.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let failure = work.with_original_leaf(DemandWork::take_native_io_failure).or(failure);
+        if !self.is_stopped() {
+            return Err(failure.unwrap_or(DemandError::NativeWorkUnavailable));
+        }
+        drop(reads);
+        let result = failure.map_or(Ok(()), Err);
+        match wait {
+            Some(wait) => result.and(wait.check().map_err(|_| DemandError::Cancelled)),
+            None => result,
+        }
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -528,7 +713,7 @@ impl PlatformWatch {
         drop(reads);
         if matches!(result, Ok(false)) {
             self.shared.delivery.deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
-        } else if matches!(result, Ok(true)) && !self.shared.complete {
+        } else if matches!(result, Ok(true)) && !self.shared.complete.load(Ordering::Acquire) {
             self.shared.delivery.deliver_wide_with_work(&[HostChangeWide::Unconfirmed], work)?;
             return Ok(false);
         }
@@ -548,34 +733,33 @@ impl PlatformWatch {
 
 impl Drop for PlatformWatch {
     fn drop(&mut self) {
-        if self.is_stopped() && self.shared.delivery.original.is_none() { return; }
-        if self.shared.delivery.original.is_some() && self.shared.delivery.ensure_stop_available().is_err() {
-            self.shared.controller_alive.store(false, Ordering::Release);
+        if self.is_stopped() { return; }
+        if self.shared.original_cleanup {
+            // The existing native reader owns the same Shared and every
+            // original resource. Last controller drop transfers only its
+            // before-birth final disposal request, never a new executor/Root.
+            self.shared.native_drop_requested.store(true, Ordering::Release);
+            let terminal_wake = self.shared.native_retiring.swap(true, Ordering::AcqRel);
             self.shared.stopping.store(true, Ordering::Release);
-            self.shared.reading_changed.notify_all();
-            let mut work = self.shared.delivery.callback_work();
-            let thread = self.thread.get_mut().unwrap_or_else(PoisonError::into_inner);
-            // Closing this controller's thread handle is bookkeeping, not a
-            // claim of quiescence. The running reader retains actual Shared.
-            if let Err(error) = close_owned_measured(thread, &self.shared, &mut work) {
-                self.shared.delivery.failed_with_work(error, &mut work);
+            let in_callback = self.shared.delivery.ensure_stop_available().is_err();
+            let reads = if in_callback { None } else { Some(self.shared.lock_reads()) };
+            if !self.shared.native_entered_retirement.load(Ordering::Acquire)
+                && self.shared.native_ready.load(Ordering::Acquire)
+                && self.shared.completed.is_open()
+            {
+                if let Err(error) = self.shared.native_start(terminal_wake, 0, 1) {
+                    self.shared.note_native_failure(error);
+                } else if let Err(error) = unsafe { SetEvent(HANDLE(self.shared.completed.as_raw_handle())) } {
+                    self.shared.note_native_failure(self.shared.native_os_error(error));
+                }
             }
+            drop(reads);
+            self.shared.reading_changed.notify_all();
             return;
         }
         let mut work = self.shared.delivery.callback_work();
         if let Err(error) = self.stop_engine(&mut work, true) {
             self.shared.delivery.failed_with_work(error, &mut work);
-        }
-        if self.shared.delivery.original.is_some() {
-            let mut cleanup = self.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-            self.shared.controller_alive.store(false, Ordering::Release);
-            if self.shared.stop_completed.load(Ordering::Acquire) {
-                let (reads, writes) = std::mem::take(&mut *cleanup);
-                work.with_original_leaf(|work| super::cancel_cleanup_credits(work, WorkCounters {
-                    backend_read_operations: reads, backend_write_operations: writes,
-                    ..WorkCounters::UNCHARGED
-                }));
-            }
         }
     }
 }
@@ -588,17 +772,20 @@ unsafe extern "system" fn reader_thread(parameter: *mut std::ffi::c_void) -> u32
         reader.stopping.store(true, Ordering::Release);
         {
             let mut reads = reader.lock_reads();
-            if reads.pending {
-                // SAFETY: cancellation and completion happen while both kernel
-                // buffers remain alive; no decoding or sink callback is needed.
-                unsafe {
+            if reads.pending && reader.delivery.original.is_none() {
+                // SAFETY: the original storage remains live until a real
+                // completed or aborted query proves kernel quiescence.
+                let completed = unsafe {
                     let _ = CancelIoEx(HANDLE(reader.directory.as_raw_handle()),
                         Some(&raw const *reads.overlapped));
                     let mut transferred = 0;
-                    let _ = GetOverlappedResult(HANDLE(reader.directory.as_raw_handle()),
-                        &raw const *reads.overlapped, &mut transferred, true);
-                }
-                reads.pending = false;
+                    GetOverlappedResult(HANDLE(reader.directory.as_raw_handle()),
+                        &raw const *reads.overlapped, &mut transferred, true)
+                };
+                reads.pending = !matches!(&completed, Ok(()))
+                    && !completed.as_ref().err().is_some_and(|error|
+                        error.code() == ERROR_OPERATION_ABORTED.to_hresult()
+                            || error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult());
                 let mut work = reader.delivery.callback_work();
                 let _ = reader.record_cleanup(&mut work, 1, 1);
             }
@@ -618,62 +805,155 @@ unsafe extern "system" fn reader_thread(parameter: *mut std::ffi::c_void) -> u32
 
 impl Shared {
     fn finish_native_reader(&self) {
+        self.native_entered_retirement.store(true, Ordering::Release);
         self.stopping.store(true, Ordering::Release);
-        let mut work = self.delivery.callback_work();
-        let mut reads = self.lock_reads();
-        let mut result = Ok(());
-        if reads.pending {
-            // SAFETY: the worker retains its actual kernel-visible buffers
-            // through cancellation and synchronous completion.
-            let cancelled = unsafe { CancelIoEx(HANDLE(self.directory.as_raw_handle()),
-                Some(&raw const *reads.overlapped)) };
-            if let Err(error) = cancelled {
-                if error.code() != ERROR_NOT_FOUND.to_hresult() {
-                    result = Err(DemandError::from(io::Error::from(error)));
-                }
-            }
-            result = result.and(self.record_cleanup(&mut work, 0, 1));
-            let mut transferred = 0;
-            let completed = unsafe { GetOverlappedResult(HANDLE(self.directory.as_raw_handle()),
-                &raw const *reads.overlapped, &mut transferred, true) };
-            reads.pending = completed.as_ref().err()
-                .is_some_and(|error| error.code() == ERROR_IO_INCOMPLETE.to_hresult());
-            if let Err(error) = completed {
-                if error.code() != ERROR_OPERATION_ABORTED.to_hresult() {
-                    result = result.and(Err(DemandError::from(io::Error::from(error))));
-                }
-            }
-            result = result.and(self.record_cleanup(&mut work, 1, 0));
-        }
-        if reads.pending {
-            self.delivery.failed_with_work(io::Error::from(io::ErrorKind::WouldBlock).into(), &mut work);
-            return;
-        }
-        result = result.and(self.directory.close_with_record(&mut work, |work| self.record_cleanup(work, 0, 1)));
-        result = result.and(self.completed.close_with_record(&mut work, |work| self.record_cleanup(work, 0, 1)));
-        if let Some(buffer) = reads.buffer.take() {
-            drop(buffer);
-            result = result.and(self.ownership.retire(size_of::<[u64; BUFFER_WORDS]>() as u64));
-        }
-        self.buffer_owned.store(false, Ordering::Release);
-        reads.filled = 0;
-        reads.cursor = 0;
-        if let Err(error) = result { self.delivery.failed_with_work(error, &mut work); }
         self.delivery.exact.store(false, Ordering::Release);
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        let alive = u64::from(self.controller_alive.load(Ordering::Acquire));
-        let reads = cleanup.0.min(alive);
-        let writes = cleanup.1.min(alive * 2);
-        work.with_original_leaf(|work| super::cancel_cleanup_credits(work, WorkCounters {
-            backend_read_operations: cleanup.0 - reads, backend_write_operations: cleanup.1 - writes,
-            ..WorkCounters::UNCHARGED
-        }));
-        *cleanup = (reads, writes);
-        if !self.directory.is_open() && !self.completed.is_open() {
-            self.stop_completed.store(true, Ordering::Release);
+        let mut terminal = false;
+        loop {
+            let mut reads = self.lock_reads();
+            let mut result = Ok(());
+            if reads.pending {
+                if let Err(error) = self.native_start(terminal, 0, 1) {
+                    result = Err(error);
+                } else {
+                    // SAFETY: the same worker and original storage retain
+                    // custody through cancellation and real completion.
+                    if let Err(error) = unsafe { CancelIoEx(HANDLE(self.directory.as_raw_handle()),
+                        Some(&raw const *reads.overlapped)) }
+                        && error.code() != ERROR_NOT_FOUND.to_hresult()
+                    {
+                        result = Err(self.native_os_error(error));
+                    }
+                    if let Err(error) = self.native_start(terminal, 1, 0) {
+                        result = result.and(Err(error));
+                    } else {
+                        let mut transferred = 0;
+                        let completed = unsafe { GetOverlappedResult(HANDLE(self.directory.as_raw_handle()),
+                            &raw const *reads.overlapped, &mut transferred, true) };
+                        reads.pending = !matches!(&completed, Ok(()))
+                            && !completed.as_ref().err().is_some_and(|error|
+                                error.code() == ERROR_OPERATION_ABORTED.to_hresult()
+                                    || error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult());
+                        if let Err(error) = completed
+                            && error.code() != ERROR_OPERATION_ABORTED.to_hresult()
+                        {
+                            result = result.and(Err(self.native_os_error(error)));
+                        }
+                    }
+                }
+            }
+            if !reads.pending {
+                result = result.and(self.close_native_watch(&self.directory, terminal));
+                result = result.and(self.close_native_watch(&self.completed, terminal));
+                if !self.directory.is_open() && !self.completed.is_open() {
+                    if let Some(buffer) = reads.buffer.take() {
+                        drop(buffer);
+                        result = result.and(self.ownership.retire(size_of::<[u64; BUFFER_WORDS]>() as u64));
+                    }
+                    self.buffer_owned.store(false, Ordering::Release);
+                    reads.filled = 0;
+                    reads.cursor = 0;
+                    self.native_resources_retired.store(true, Ordering::Release);
+                    result = result.and(self.close_native_thread(terminal));
+                }
+            }
+            if let Err(error) = result { self.note_native_failure(error); }
+            self.native_attempt_finished.store(true, Ordering::Release);
+            self.reading_changed.notify_all();
+            self.fence_delivered.notify_all();
+            if self.native_resources_retired.load(Ordering::Acquire) {
+                if self.native_thread.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
+                    self.release_native_cleanup();
+                    self.stop_completed.store(true, Ordering::Release);
+                    self.reading_changed.notify_all();
+                    return;
+                }
+            }
+            // One already-funded final attempt may follow the explicit
+            // failure. Further refusal parks this real existing worker with
+            // its actual Shared, buffers, root/resource/capture and cause.
+            // No forgotten Arc, new worker, registry, or IO retry is created.
+            while terminal || !self.native_drop_requested.load(Ordering::Acquire) {
+                reads = self.reading_changed.wait(reads).unwrap_or_else(PoisonError::into_inner);
+            }
+            terminal = true;
         }
-        self.reading_changed.notify_all();
-        self.fence_delivered.notify_all();
+    }
+
+    fn native_start(&self, terminal: bool, reads: u64, writes: u64) -> Result<(), DemandError> {
+        let actual = WorkCounters {
+            backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::UNCHARGED
+        };
+        let mut cleanup = self.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        let credit = if terminal { &mut cleanup.terminal } else { &mut cleanup.active };
+        let credit = credit.as_mut().ok_or(DemandError::NativeWorkUnavailable)?;
+        let remaining = credit.remaining_work();
+        if remaining.backend_read_operations < reads || remaining.backend_write_operations < writes {
+            return Err(DemandError::NativeWorkUnavailable);
+        }
+        // Mandatory owned disposal START is recorded before the SDK boundary.
+        // Poison preserves the real prefix and original first cause; it cannot
+        // abandon this actual disposal or introduce another allowance.
+        credit.started_drop_io(actual);
+        Ok(())
+    }
+
+    fn native_os_error(&self, error: windows::core::Error) -> DemandError {
+        let error = io::Error::from(error);
+        let original = error.raw_os_error().map(io::Error::from_raw_os_error)
+            .unwrap_or_else(|| io::Error::from(error.kind()));
+        if let Some(birth) = &self.delivery.original {
+            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
+                work.record_native_io_failure(DemandError::Io(original));
+                work.poison_native_original_work();
+            });
+        }
+        DemandError::Io(error)
+    }
+
+    fn close_native_watch(&self, handle: &WatchHandle, terminal: bool) -> Result<(), DemandError> {
+        let raw = handle.raw.load(Ordering::Acquire);
+        if raw.is_null() { return Ok(()); }
+        self.native_start(terminal, 0, 1)?;
+        // SAFETY: the original worker owns the quiesced handle; no accounting
+        // lock is held over this actual native close.
+        unsafe { CloseHandle(HANDLE(raw)) }.map_err(|error| self.native_os_error(error))?;
+        handle.raw.store(std::ptr::null_mut(), Ordering::Release);
+        Ok(())
+    }
+
+    fn close_native_thread(&self, terminal: bool) -> Result<(), DemandError> {
+        let mut thread = self.native_thread.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(handle) = thread.as_ref() else { return Ok(()); };
+        self.native_start(terminal, 0, 1)?;
+        // SAFETY: closing this original opaque handle is bookkeeping, not a
+        // claim of a completed join. Failure keeps exactly this owned handle.
+        unsafe { CloseHandle(HANDLE(handle.as_raw_handle())) }.map_err(|error| self.native_os_error(error))?;
+        let _ = thread.take().expect("closed original native thread handle").into_raw_handle();
+        Ok(())
+    }
+
+    fn note_native_failure(&self, error: DemandError) {
+        if let Some(birth) = &self.delivery.original {
+            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
+                if matches!(&error, DemandError::NativeWorkUnavailable) {
+                    work.record_native_io_failure(DemandError::NativeWorkUnavailable);
+                }
+                work.poison_native_original_work();
+            });
+        }
+        let mut failure = self.native_failure.lock().unwrap_or_else(PoisonError::into_inner);
+        if failure.is_none() { *failure = Some(error); }
+    }
+
+    fn release_native_cleanup(&self) {
+        let cleanup = {
+            let mut cleanup = self.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+            (cleanup.active.take(), cleanup.terminal.take())
+        };
+        // Genuine token Drop refunds only its own unused partitions after the
+        // same owner's native resources have physically retired.
+        drop(cleanup);
     }
 
     fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
@@ -681,33 +961,24 @@ impl Shared {
     }
 
     fn record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W, reads: u64, writes: u64) -> Result<(), DemandError> {
-        let delta = WorkCounters { backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::default() };
-        if !self.birth_work(work) { return work.record(delta); }
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        if cleanup.0 < reads || cleanup.1 < writes { return work.record(delta); }
-        cleanup.0 -= reads;
-        cleanup.1 -= writes;
-        work.with_original_leaf(|work| super::record_cleanup_credits(work, delta))
+        assert!(!self.original_cleanup, "native disposal uses its birth-paid START token");
+        work.record(WorkCounters {
+            backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::default()
+        })
     }
 
-    fn cancel_cleanup<W: SourceDemandReadWork>(&self, _work: &mut W) {
-        let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        let (reads, writes) = std::mem::take(&mut *cleanup);
-        if let Some(birth) = &self.delivery.original {
-            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
-                super::cancel_cleanup_credits(work, WorkCounters {
-                    backend_read_operations: reads, backend_write_operations: writes,
-                    ..WorkCounters::UNCHARGED
-                });
-            });
-        }
-    }
 
     fn lock_reads(&self) -> MutexGuard<'_, Reads> {
         self.reads.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn run(&self) {
+        if self.original_cleanup {
+            let mut reads = self.lock_reads();
+            while !self.native_ready.load(Ordering::Acquire) && !self.stopping.load(Ordering::Acquire) {
+                reads = self.reading_changed.wait(reads).unwrap_or_else(PoisonError::into_inner);
+            }
+        }
         loop {
             if self.stopping.load(Ordering::Acquire) { return; }
             // The original service owns this idle native wait; callback work
@@ -826,6 +1097,7 @@ impl Shared {
         &self, reads: &mut Reads, deadline: Option<(std::time::Instant, Duration)>, work: &mut W,
     ) -> Result<bool, DemandError> {
         loop {
+            if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             work.check()?;
             if deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout) { return Ok(false); }
             if reads.loss {
@@ -833,16 +1105,18 @@ impl Shared {
                 reads.loss = false;
             }
             if !self.deliver_page_measured(reads, deadline, work)? { return Ok(false); }
+            if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if reads.pending {
                 if !self.finish_read_measured(reads, false, false, work)? {
                     return Ok(self.delivery.is_exact());
                 }
                 continue;
             }
-            // Admit mandatory native cancellation/completion before issuing
-            // a new read. Unused cleanup allowance is never reported as work.
+            // Native custody already owns the pending-read disposal token
+            // from before birth. Ordinary invocations retain their existing
+            // temporary admission; never duplicate original native escrow.
             let budget = work.with_original_leaf(|work| work.budget);
-            reserve_cleanup(work, 1, 1)?;
+            if !self.original_cleanup { reserve_cleanup(work, 1, 1)?; }
             let issued = (|| {
                 work.preflight(WorkCounters {
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
@@ -851,7 +1125,7 @@ impl Shared {
                 self.issue_read(reads, Some(&mut *work))?;
                 self.finish_read_measured(reads, false, false, work)
             })();
-            work.with_original_leaf(|work| work.budget = budget);
+            if !self.original_cleanup { work.with_original_leaf(|work| work.budget = budget); }
             match issued {
                 Ok(false) => return Ok(self.delivery.is_exact()),
                 Ok(true) => {}
@@ -880,6 +1154,7 @@ impl Shared {
                 std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength))
         };
         while reads.cursor < reads.filled {
+            if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout) { return Ok(false); }
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             // SAFETY: only the completed page is exposed, under the read lock.
@@ -1219,6 +1494,12 @@ mod tests {
         let completed = watch.platform.shared.completed.as_raw_handle();
         let owned = watch.logical_owned_bytes();
         assert!(!watch.is_stopped());
+        assert!(matches!(
+            watch.platform.stop_with_cleanup_wait(&CancellationToken::new()),
+            Err(DemandError::NativeWorkUnavailable),
+        ));
+        assert!(matches!(watch.platform.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)));
+        assert_eq!(watch.logical_owned_bytes(), owned);
         let reads = watch.platform.shared.lock_reads();
         let observed = std::thread::scope(|scope| {
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -1320,9 +1601,17 @@ mod tests {
                 &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
             ) -> T { self.inner.with_native_read_meter(operation) }
             fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                self.inner.with_original_leaf(operation)
+                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let result = self.inner.with_original_leaf(operation);
+                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                if !self.triggered && after > before {
+                    self.triggered = true;
+                    self.cancellation.cancel();
+                }
+                result
             }
             fn is_native_original(&self) -> bool { true }
+            fn native_source_work(&self) -> Option<NativeSourceWork<'_>> { Some(self.inner) }
         }
 
         for late_error in [false, true] {
@@ -1387,6 +1676,280 @@ mod tests {
             drop(retained);
             original.with_original_leaf(|work| work.release(8))?;
         }
+        // Birth this real directory, read and reader under the same finite
+        // original, rather than using a later measured cleanup grant.
+        for late_wait in [false, true] {
+            let root = tempfile::tempdir()?;
+            let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
+            let root_cancellation = CancellationToken::new();
+            let budget = WorkBudget {
+                backend_read_operations: 64, backend_write_operations: 64,
+                items_examined: 4096, allocation_operations: 128,
+                peak_allocation_bytes: 4 * 1024 * 1024, bytes_copied: 4 * 1024 * 1024,
+                ..WorkBudget::default()
+            };
+            let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
+            let mut startup = NativeSourceWork::new(&birth);
+            let delivery = Arc::new(Delivery::new_with_work(Arc::new(Quiet), &mut startup)?);
+            let watch = super::PlatformWatch::start_directory_with_work(
+                &held, delivery, true, &mut startup,
+            )?;
+            let owned = watch.logical_owned_bytes();
+            let before = birth.with_original_leaf(|work| work.work);
+            let held_budget = birth.with_original_leaf(|work| work.budget);
+            let wait = CancellationToken::new();
+            let declined = CancellationToken::new();
+            declined.cancel();
+            assert!(matches!(watch.stop_with_cleanup_wait(&declined), Err(DemandError::Cancelled)));
+            assert!(!watch.is_stopped());
+            assert!(watch.shared.directory.is_open());
+            assert!(watch.shared.completed.is_open());
+            assert_eq!(watch.logical_owned_bytes(), owned);
+            assert_eq!(birth.with_original_leaf(|work| (work.work, work.budget)), (before, held_budget));
+            let paused = watch.paused();
+            assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::WorkerUnavailable)));
+            drop(paused);
+            assert_eq!(birth.with_original_leaf(|work| work.work), before);
+            root_cancellation.cancel();
+            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&birth)), Err(DemandError::Cancelled)));
+            if late_wait {
+                *watch.shared.native_wait_cancellation.lock().map_err(|_| "poisoned wait control")? =
+                    Some(wait.clone());
+                assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
+                assert!(wait.is_cancelled(), "the independent token cancels after actual SetEvent");
+            } else {
+                watch.stop_with_cleanup_wait(&wait)?;
+            }
+            assert!(watch.is_stopped());
+            assert!(!watch.shared.directory.is_open());
+            assert!(!watch.shared.completed.is_open());
+            assert!(watch.shared.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
+            let stopped = birth.with_original_leaf(|work| {
+                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1);
+                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5);
+                assert_eq!(work.work.allocation_operations, before.allocation_operations);
+                assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
+                assert_eq!(work.budget, budget);
+                assert!(work.cancellation().is_cancelled());
+                assert!(matches!(work.check(), Err(DemandError::Cancelled)));
+                work.work
+            });
+            watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+            watch.stop_accepted_cleanup()?;
+            drop(watch);
+            assert_eq!(birth.with_original_leaf(|work| work.work), stopped);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    struct NativeQuiet;
+
+    #[cfg(feature = "native-mount")]
+    impl super::super::HostChangeSink for NativeQuiet {
+        fn logical_owned_bytes(&self) -> u64 { 0 }
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> {
+            work.check()
+        }
+        fn host_changed_wide_with_native_work(
+            &self, _: &[HostChangeWide<'_>], work: &mut crate::demand::NativeSourceWork<'_>,
+        ) -> Result<(), DemandError> { crate::native_host::NativeHostWork::check(work) }
+    }
+
+    #[cfg(feature = "native-mount")]
+    fn native_control_budget() -> crate::WorkBudget {
+        crate::WorkBudget {
+            backend_read_operations: 64, backend_write_operations: 64,
+            items_examined: 4096, allocation_operations: 128,
+            peak_allocation_bytes: 4 * 1024 * 1024, bytes_copied: 4 * 1024 * 1024,
+            source_bytes_read: 4 * 1024 * 1024, ..crate::WorkBudget::default()
+        }
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use std::sync::{Arc, Mutex};
+        let root = tempfile::tempdir()?;
+        let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
+        let mut budget = native_control_budget();
+        budget.backend_write_operations = 9;
+        let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(
+            budget, &crate::CancellationToken::new(),
+        ))));
+        let mut work = NativeSourceWork::new(&birth);
+        let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
+        let delivery_lifetime = Arc::downgrade(&delivery);
+        assert!(matches!(super::PlatformWatch::start_directory_with_work(
+            &held, delivery, true, &mut work,
+        ), Err(DemandError::Work(_))));
+        assert!(delivery_lifetime.upgrade().is_none(), "no native worker/handle was born");
+        birth.with_original_leaf(|work| {
+            assert_eq!(work.work.backend_read_operations, 0);
+            assert_eq!(work.work.backend_write_operations, 0);
+            assert_eq!(work.budget, budget);
+        });
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn accepted_cleanup_and_poisoned_last_drop_use_the_same_born_worker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use std::sync::{Arc, Mutex};
+        for poisoned_drop in [false, true] {
+            let root = tempfile::tempdir()?;
+            let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
+            let cancellation = crate::CancellationToken::new();
+            let budget = native_control_budget();
+            let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancellation))));
+            let mut work = NativeSourceWork::new(&birth);
+            let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
+            let watch = super::PlatformWatch::start_directory_with_work(&held, delivery, true, &mut work)?;
+            let completion = Arc::clone(&watch.shared);
+            let reads = completion.lock_reads();
+            let pending = u64::from(reads.pending);
+            let before = birth.with_original_leaf(|work| work.work);
+            let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
+            cancellation.cancel();
+            if poisoned_drop { birth.with_original_leaf(DemandWork::poison_native_original_work); }
+            drop(reads);
+            if !poisoned_drop {
+                watch.stop_accepted_cleanup()?;
+                assert!(watch.is_stopped());
+            }
+            drop(watch);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !completion.stop_completed.load(super::Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            { std::thread::sleep(std::time::Duration::from_millis(1)); }
+            assert!(completion.stop_completed.load(super::Ordering::Acquire));
+            assert!(!completion.directory.is_open());
+            assert!(!completion.completed.is_open());
+            assert!(completion.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
+            assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
+            birth.with_original_leaf(|work| {
+                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, pending);
+                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 4 + pending);
+                assert_eq!(work.work.allocation_operations, before.allocation_operations);
+                assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
+                assert_eq!(work.budget, budget);
+                assert!(work.live_allocation_bytes() > 0, "Shared/control custody is not zeroed at the retirement flag");
+                assert!(work.live_allocation_bytes() < live, "only the physically dropped buffer retires early");
+                if poisoned_drop {
+                    assert!(matches!(work.take_native_io_failure(), Some(DemandError::OriginalWorkPoisoned)));
+                }
+            });
+            drop(completion);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-mount")]
+    #[test]
+    fn actual_close_failure_parks_the_same_owner_and_preserves_the_original_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use std::sync::{Arc, Mutex};
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::{
+            HANDLE, HANDLE_FLAGS, HANDLE_FLAG_PROTECT_FROM_CLOSE, STILL_ACTIVE, SetHandleInformation,
+        };
+        use windows::Win32::System::Threading::GetExitCodeThread;
+        struct CloseProtection(Arc<Shared>);
+        impl Drop for CloseProtection {
+            fn drop(&mut self) {
+                let _reads = self.0.lock_reads();
+                // Fixture flag restoration changes no ownership or identity.
+                // The original directory is still genuinely open and owned.
+                unsafe { SetHandleInformation(HANDLE(self.0.directory.as_raw_handle()),
+                    HANDLE_FLAG_PROTECT_FROM_CLOSE.0, HANDLE_FLAGS(0)) }
+                    .expect("clear actual owned-directory fixture protection");
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
+        let cancellation = crate::CancellationToken::new();
+        let budget = native_control_budget();
+        let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancellation))));
+        let mut work = NativeSourceWork::new(&birth);
+        // The distinct actual status probe is funded from the same original
+        // before watcher birth. Handle-protection setup/restoration below are
+        // fixture operations outside the watcher's operation receipt.
+        let mut control = super::super::prepare_native_cleanup_credit(&mut work, crate::WorkCounters {
+            backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+        })?.ok_or("missing original test-control credit")?;
+        let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
+        let watch = super::PlatformWatch::start_directory_with_work(&held, delivery, true, &mut work)?;
+        let completion = Arc::clone(&watch.shared);
+        let owner = Arc::downgrade(&watch.shared);
+        let reads = completion.lock_reads();
+        let pending = u64::from(reads.pending);
+        let directory = completion.directory.as_raw_handle();
+        let cursor = reads.cursor;
+        unsafe { SetHandleInformation(HANDLE(directory), HANDLE_FLAG_PROTECT_FROM_CLOSE.0,
+            HANDLE_FLAG_PROTECT_FROM_CLOSE) }.map_err(std::io::Error::from)?;
+        let protection = CloseProtection(Arc::clone(&completion));
+        let before = birth.with_original_leaf(|work| work.work);
+        cancellation.cancel();
+        drop(reads);
+        let failure = watch.stop_with_cleanup_wait(&crate::CancellationToken::new())
+            .err().ok_or("a protected original directory cannot become a completed stop")?;
+        assert!(matches!(failure, DemandError::Io(error) if error.raw_os_error().is_some()),
+            "the original SDK close error is returned, not a synthetic refusal");
+        assert!(!watch.is_stopped());
+        assert!(owner.upgrade().is_some());
+        assert!(completion.directory.is_open());
+        assert_eq!(completion.directory.as_raw_handle(), directory, "failed close preserves actual identity");
+        assert!(completion.buffer_owned.load(super::Ordering::Acquire));
+        assert_eq!(completion.lock_reads().cursor, cursor);
+        assert!(matches!(watch.stop_with_cleanup_wait(&crate::CancellationToken::new()),
+            Err(DemandError::NativeWorkUnavailable)));
+        {
+            let thread = completion.native_thread.lock().map_err(|_| "poisoned retained native thread")?;
+            let thread = thread.as_ref().ok_or("the original quarantine worker must remain owned")?;
+            control.started_drop_io(crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            });
+            let mut exit = 0;
+            unsafe { GetExitCodeThread(HANDLE(thread.as_raw_handle()), &mut exit) }.map_err(std::io::Error::from)?;
+            assert_eq!(exit, STILL_ACTIVE.0 as u32, "the original worker genuinely parks with its same Shared/root/G");
+        }
+        birth.with_original_leaf(|work| {
+            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 3 + pending);
+            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
+            assert!(matches!(work.check(), Err(DemandError::OriginalWorkPoisoned)));
+            assert_eq!(work.work.allocation_operations, before.allocation_operations);
+            assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
+        });
+        // Clear only the fixture protection, never replace/adopt/close the raw
+        // identity. The same worker performs one born final directory/thread
+        // close suffix, consuming no late allowance despite original poison.
+        drop(protection);
+        drop(watch);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !completion.stop_completed.load(super::Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        { std::thread::sleep(std::time::Duration::from_millis(1)); }
+        assert!(completion.stop_completed.load(super::Ordering::Acquire));
+        assert!(!completion.directory.is_open());
+        assert!(!completion.completed.is_open());
+        assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
+        assert!(completion.native_thread.lock().map_err(|_| "poisoned retired native thread")?.is_none());
+        birth.with_original_leaf(|work| {
+            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5 + pending);
+            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
+            assert_eq!(work.budget, budget);
+            assert!(work.live_allocation_bytes() > 0, "actual Shared/G data still has its funded owner after the flag");
+        });
+        drop(completion);
+        while owner.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(owner.upgrade().is_none(), "the real owner disappears only after its physical data drop");
         Ok(())
     }
 
