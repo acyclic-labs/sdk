@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Preserve portable Harness execution alongside native adapters: use canonical physical-copy and observation engines, retain original typed error causes, and release failed codec output custody after dropping its payload.
 - Add native stock executor and model-provider companions on the existing durable execution loop, retaining original task authority, configured scope attenuation, direct funded SDK request copies and typed native failure custody. The first-party deterministic model provider supplies actual native generation, reconciliation and token-accounting bodies.
 - Update the current JavaScript toolchain and protobuf/Connect dependencies and pin maintained GitHub Actions to their audited releases. Preserve the native binding load-error patch on NAPI CLI 3.10.8, whose upstream cause chain does not replace the existing `AggregateError.errors` surface. Browser Actors conformance now builds Actors WASM before compiling its real client.
 - Move the public Objects SDK, Stream contract and native Filesystem Objects composition to the sole v1 contract. Remove historical clients, readers and compatibility artifacts. Local roots with obsolete format discriminators fail closed without upgrade or overwrite.
