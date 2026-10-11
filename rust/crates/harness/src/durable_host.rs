@@ -589,15 +589,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.task_id
     }
 
-    /// Checks the original task's current authority before a fresh dispatch.
-    pub async fn verify_dispatch(&self) -> Result<()> {
-        self.verify(false).await
-    }
-
-    /// Checks retained settlement authority, including cancellation recovery.
-    pub async fn verify_settlement(&self) -> Result<()> {
-        self.verify(true).await
-    }
     pub(crate) fn require_mail_scope(&self, scope: &RuntimeScope) -> Result<()> {
         self.require_mail_scope_with_work(scope, &mut None)
     }
@@ -667,17 +658,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             && context.scope().extensions() == self.extensions.as_ref())
     }
 
-    pub(crate) fn require_task_context_binding(
-        &self, context: &crate::runtime::TaskContext,
-    ) -> Result<()> {
-        if !self.task_context_binding_matches(context, &mut None)? {
-            return Err(Error::Unauthorized(
-                "read context differs from its original SDK owner admission".into(),
-            ));
-        }
-        Ok(())
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require_task_context_binding_with_native_work(
         &self, context: &crate::runtime::TaskContext,
@@ -719,69 +699,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             && self.workflow.request_digest == other.workflow.request_digest
             && self.fence == other.fence
             && self.input_agent == other.input_agent
-    }
-
-
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn for_tool_workflow_with_native_work(
-        mut self,
-        context: &crate::runtime::ToolContext,
-        tool: &crate::durable_tool::ResumableTool,
-        invocation: &crate::tool::ToolInvocation,
-        cancellation: &acyclic_fs::CancellationToken,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        context.task().require_original_native_dispatch(work)?;
-        let (task, fence) = context.task().owned_task_binding_with_native_work(work)?;
-        if !self.matches_task_binding(task, fence) || invocation.operation_id == self.operation_id() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "tool workflow differs from the original native task owner" });
-        }
-        self.require_mail_scope_with_native_work(context.task().scope(), work)?;
-        let admission = self.host.observe_admission_with_native_work(self.task_id, work).await?;
-        if !admission.1.matches_work(work)
-            || context.task().scope().run_limits() != admission.0.run_limits
-            || context.task().scope().extensions() != admission.0.extensions.as_ref()
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "tool workflow changed its original native admission policy" });
-        }
-        drop(admission);
-        self.verify_with_native_work(false, work).await?;
-        let mut workflow = tool.workflow_admission_with_native_work(context, invocation, work)?;
-        if !workflow.1.matches_work(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "tool workflow belongs to another original metadata ledger" });
-        }
-        use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
-        quota.retain(std::mem::size_of::<Value>() as u64)?;
-        let schema = crate::core::copy_value(&tool.definition.output_schema, &mut quota)?;
-        quota.transfer();
-        drop(quota);
-        drop(observed);
-        let mut schema_custody = io.into_custody();
-        let custody = self._native_custody.as_mut().expect("authenticated native owner custody");
-        custody.absorb(&mut workflow.1)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        custody.absorb(&mut schema_custody)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let prior_workflow = std::mem::replace(&mut self.workflow, workflow.0);
-        let prior_schema = std::mem::replace(&mut self.output_schema, schema);
-        self.invocation_cancellation = Some(cancellation.clone());
-        drop(prior_workflow);
-        drop(prior_schema);
-        let owned = self.native_owned_bytes()?;
-        let custody = self._native_custody.as_mut().expect("authenticated native owner custody");
-        let retired = custody.bytes().checked_sub(owned).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "tool workflow lost its original metadata custody",
-        })?;
-        drop(custody.split_off(retired).map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        Ok(self)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -891,7 +808,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         drop(bytes_hold);
         Ok(true)
     }
-
 
     pub(crate) fn validate_native_configuration(
         &self,
@@ -1133,31 +1049,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn require_interaction_grant_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        self.require_interaction_grant_with_work(&mut Some(&mut io))
-    }
-
     pub(crate) fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence) {
         (self.task_id, &self.fence)
-    }
-
-
-    pub(crate) async fn suspend_quiescent_execution(
-        &self,
-        execution: OperationId,
-        tail: u64,
-        revision: u64,
-        command: OperationId,
-    ) -> Result<()> {
-        self.suspend_quiescent_execution_with_work(
-            execution, tail, revision, command, &mut None,
-        ).await
     }
 
     pub(crate) async fn suspend_quiescent_execution_with_work(
@@ -1324,27 +1217,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         record: &crate::workflow::WorkflowRecord,
     ) -> Result<()> {
         self.validate_workflow_record_with_io(record, None)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn validate_workflow_record_with_native_work(
-        &self, record: &crate::workflow::WorkflowRecord,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let held = self._native_custody.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "workflow proof owner has no original native custody",
-        })?;
-        if !held.work().shares_ledger(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "workflow proof belongs to another native owner ledger",
-            });
-        }
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.validate_workflow_record_with_io(record, Some(&io));
-        let (_, _temporary_custody) = crate::workflow::finish_native_io(result, io, 0)?;
-        Ok(())
     }
 
     pub(crate) fn validate_workflow_record_with_io(
@@ -1643,7 +1515,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify_write_measured(crate::distributed::JournalWrite::Fresh, budget, cancellation).await
     }
 
-
     async fn verify_write_measured(
         &self,
         write: crate::distributed::JournalWrite,
@@ -1903,14 +1774,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
         }
-    }
-
-    pub(crate) async fn verify_execution(
-        &self,
-        operation: OperationId,
-        event: &crate::executor::ExecutionEvent,
-    ) -> Result<()> {
-        self.verify_execution_with_work(operation, event, &mut None).await
     }
 
     pub(crate) async fn verify_execution_with_work(
@@ -2416,8 +2279,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        let (outcome, retained) = crate::distributed::commit_prepared_with_work_and_phase(
-            &self.stream, request, publication.operation_id, phase,
+        let (outcome, retained) = crate::distributed::commit_prepared(
+            &self.stream, request, publication.operation_id, phase, None, None
         ).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
@@ -2435,19 +2298,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         drop(outcome);
         drop(received);
         result
-    }
-
-    pub(crate) async fn append_execution(
-        &self,
-        operation: OperationId,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: OwnedBytes,
-        event: &crate::executor::ExecutionEvent,
-    ) -> Result<bool> {
-        self.append_execution_with_work(
-            operation, expected_tail, key, bytes, event, &mut None,
-        ).await
     }
 
     pub(crate) async fn append_execution_with_work(
@@ -2468,21 +2318,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "execution record exceeds canonical Stream byte bound",
             ));
         }
-        let path = crate::distributed::execution_path_with_work(operation, work)?;
+        let path = crate::distributed::execution_path(operation, work)?;
         self.append_with_work(
             path, expected_tail, key, bytes,
             Self::execution_write(operation, event), work,
         ).await
-    }
-
-    pub(crate) async fn append_workflow(
-        &self,
-        admission: bool,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: OwnedBytes,
-    ) -> Result<bool> {
-        self.append_workflow_with_work(admission, expected_tail, key, bytes, &mut None).await
     }
 
     pub(crate) async fn append_workflow_with_work(
@@ -2677,8 +2517,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let request = self
             .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let (outcome, retained) = crate::distributed::commit_prepared_with_work(
-            &self.stream, request, self.operation_id(),
+        let (outcome, retained) = crate::distributed::commit_prepared(
+            &self.stream, request, self.operation_id(), None, None, None
         ).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
@@ -3524,25 +3364,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         self.suspend_workflow_command_guarded(task, fence, revision, waiting_command, None)
             .await
-    }
-
-    /// Releases a passive command's slot only while its existing execution journal is empty, atomically with the scheduler publication.
-    pub async fn suspend_workflow_command_if_execution_idle(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-        command: OperationId,
-        execution: OperationId,
-    ) -> Result<()> {
-        self.suspend_workflow_command_guarded(
-            task,
-            fence,
-            revision,
-            Some(command),
-            Some((execution, 0)),
-        )
-        .await
     }
 
     async fn suspend_workflow_command_guarded(
@@ -4809,16 +4630,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(Arc::new(self))
     }
 
-    /// Constructs the original default clock after the native cancellation gate.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn system_clock_with_native_work(
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<dyn UnixMillisClock>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(Arc::new(acyclic_stream::SystemUnixMillisClock))
-    }
-
     /// Current trusted wall clock shared by admission, workers and effect gates.
     #[must_use]
     pub fn now_unix_millis(&self) -> u64 {
@@ -5754,7 +5565,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-
     async fn read_retained_admission_counted(
         &self, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -5775,7 +5585,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Err(error) => Err(error),
         }
     }
-
 
     async fn read_declared_admission_counted(
         &self, spec: &OperationSpec,
@@ -6322,19 +6131,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    /// Observes the original atomic mail receipt; never publishes another send.
-    #[cfg(feature = "filesystem")]
-    pub(crate) async fn reconcile_sent_mail(
-        self: &Arc<Self>,
-        sender: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        recipient: TaskId,
-        message: OperationId,
-        payload: FileRef,
-    ) -> Result<bool> {
-        self.reconcile_sent_mail_with_io(sender, &fence, recipient, message, payload, None).await
-    }
-
     fn mail_location_path(
         sender: TaskId,
         message: OperationId,
@@ -6699,7 +6495,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             expected_tail,
             key,
             operation_id,
-            "control identity",
+            "control identity", &mut None
         )
         .await?;
         match outcome {
@@ -6910,7 +6706,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(None)
     }
-
 
     fn supports_batch_cancellation(&self) -> bool {
         true
@@ -7555,19 +7350,6 @@ pub(crate) mod tests {
         workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine},
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
-
-    #[test]
-    fn timer_path_preserves_exact_canonical_task_identity() -> Result<()> {
-        let task = TaskId::from_bytes([137; 16]);
-        let (path, owned) = CoordinatorTaskHost::<MemoryStream>::timer_path_with_work(task, &mut None)?;
-        assert_eq!(owned, 0);
-        assert_eq!(path.as_str(), format!("harness/v2/timers/{task}"));
-        assert_eq!(path.as_str().as_bytes(),
-            &CoordinatorTaskHost::<MemoryStream>::timer_path_text(task));
-        let retry = path.clone();
-        assert_eq!(retry, path);
-        Ok(())
-    }
 
     #[cfg(feature = "filesystem")]
     mod resource_preparation;
@@ -9882,7 +9664,7 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                crate::distributed::commit_prepared_with_work(&stream, approval_pending, operation_id).await?,
+                crate::distributed::commit_prepared(&stream, approval_pending, operation_id, None, None, None).await?,
                 (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(
@@ -9960,7 +9742,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared_with_work(&stream, original_pending, operation_id).await?,
+                    crate::distributed::commit_prepared(&stream, original_pending, operation_id, None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
@@ -10020,7 +9802,7 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
+                        crate::distributed::commit_prepared(&stream, execution_pending, operation_id, None, None, None).await?,
                         (acyclic_stream::CommitOutcome::Conflict(_), 0)
                     ),
                     "lease replacement must atomically fence execution publication"
@@ -10073,7 +9855,7 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
+                    crate::distributed::commit_prepared(&stream, execution_pending, operation_id, None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation must atomically fence execution publication"
@@ -10278,7 +10060,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared_with_work(&stream, pending, operation_id).await?,
+                    crate::distributed::commit_prepared(&stream, pending, operation_id, None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation after preflight must atomically prevent publication"
@@ -10314,7 +10096,7 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                crate::distributed::commit_prepared_with_work(&stream, cancellation_approval_pending, operation_id).await?,
+                crate::distributed::commit_prepared(&stream, cancellation_approval_pending, operation_id, None, None, None).await?,
                 (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(

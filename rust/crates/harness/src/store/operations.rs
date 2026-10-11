@@ -840,7 +840,7 @@ impl IndexedPublication {
     ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
         let key_owned = if work.as_deref().is_some_and(|observer|
             !original_native_decode_mode(observer)) { 32 } else { 0 };
-        let mut request = crate::distributed::PreparedCommitRequest::new_with_retained_key(
+        let mut request = crate::distributed::PreparedCommitRequest::new(
             key, key_owned, work);
         let target = self.target_condition_with_work(client, request.work()).await?;
         request.push_condition(target)?;

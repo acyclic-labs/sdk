@@ -1098,7 +1098,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed_with_work(
+                crate::distributed::append_keyed(
                     (&stream, &self.stream), bytes, Some(tail), key, operation_id,
                     "execution journal retry identity", &mut Some(&mut borrowed),
                 ).await
@@ -1444,7 +1444,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         P: StreamProvider,
     {
         self.stream
-            .stream(crate::distributed::execution_path(operation_id)?.as_str())
+            .stream(crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
