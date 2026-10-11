@@ -1,28 +1,30 @@
 //! Authenticated fixed-size blob chunks and sparse range reads.
 
-use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
+use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items_with_steps,
+    allocate_read_buffer, completed_read_work, owned_read_bytes, read_object_with_accounting, release_read_allocation};
+use crate::FsError;
 use super::codec::{
-    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
+    CanonicalDecodeError, DecodeLimits, Decoder, Encoder,
 };
-use super::frontier;
-use super::frontier::Machine as _;
-use crate::async_storage::{
-    AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
-};
+use super::codec::ReadAllocationStep;
+#[cfg(test)]
+use super::codec::{DecodedPageKind, DecodedPageShape};
+use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
-    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectStore, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest,
+    ObjectReadRetention, ObjectStore, ObjectStoreError, object_digest,
 };
 use bytes::Bytes;
 use std::future::Future;
 use std::io::Read;
 use std::mem::size_of;
-use std::sync::Arc;
 use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSBLB";
@@ -145,8 +147,29 @@ pub fn encode_blob_page(
     page: &BlobPage,
     maximum_items: u32,
 ) -> Result<Vec<u8>, CanonicalDecodeError> {
+    encode_blob_page_with_steps(
+        page, maximum_items, |_| Ok(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )
+}
+
+/// Observes the real reserve/capacity/header boundaries of the same canonical writer.
+pub(crate) fn encode_blob_page_with_steps<E: From<CanonicalDecodeError>>(
+    page: &BlobPage,
+    maximum_items: u32,
+    observe: impl FnMut(super::codec::EncodeAllocationStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E> {
     let encoded_length = blob_page_encoded_length(page, maximum_items)?;
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
+    let encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, encoded_length, observe, allocation_error,
+    )?;
+    encode_blob_page_body(page, encoder).map_err(Into::into)
+}
+
+fn encode_blob_page_body(
+    page: &BlobPage, mut encoder: Encoder,
+) -> Result<Vec<u8>, CanonicalDecodeError> {
     encoder.u64(page.first_offset);
     encoder.u64(page.end_offset);
     match &page.node {
@@ -181,6 +204,7 @@ fn blob_page_encoded_length(
         BlobNode::Leaf(items) => items.len(),
         BlobNode::Internal(items) => items.len(),
     };
+    count(items)?;
     items
         .checked_mul(BLOB_PAGE_ITEM_BYTES)
         .and_then(|bytes| BLOB_PAGE_HEADER_BYTES.checked_add(bytes))
@@ -196,54 +220,93 @@ pub fn decode_blob_page(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<BlobPage, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let first_offset = decoder.u64()?;
-    let end_offset = decoder.u64()?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    decode_blob_page_with_steps(bytes, limits, &mut |_| Ok(()))
+}
+
+pub(crate) fn decode_blob_page_with_accounting(
+    bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
+) -> Result<(BlobPage, u64, KernelOwnedAllocation), FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = accounting.native_work().is_some();
+    let mut observed = super::file_read::OriginalReadAccounting::new(accounting)?;
+    let decoded = decode_blob_page_with_steps::<ReadDecodeError>(
+        bytes, limits, &mut |step| observed.observe(step),
+    );
+    let page = match decoded {
+        Ok(page) => page,
+        Err(error) => {
+            observed.release_failed()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native {
+                return Err(match error.into_original_fs_error() {
+                    FsError::Decode(error) => BlobReadError::Decode(error).into(),
+                    error => error,
+                });
+            }
+            return Err(read_decode_error(error));
+        }
+    };
+    let owner = ReadOwned { value: page, custody: observed.into_allocation() };
+    let bytes = match &owner.value.node {
+        BlobNode::Leaf(items) => items.capacity() * size_of::<BlobChunkRef>(),
+        BlobNode::Internal(items) => items.capacity() * size_of::<BlobChild>(),
+    };
+    Ok((owner.value, usize_to_u64(bytes), owner.custody))
+}
+
+pub(crate) fn decode_blob_page_with_steps<E: From<CanonicalDecodeError>>(
+    bytes: &[u8], limits: DecodeLimits,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<BlobPage, E> {
+    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let first_offset = decoder.u64_with_steps(observe)?;
+    let end_offset = decoder.u64_with_steps(observe)?;
+    let tag = decoder.u8_with_steps(observe)?;
+    let item_count = decoder.u32_with_steps(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
             maximum: limits.maximum_page_items,
-        });
+        }.into());
     }
     let mut leaf = Vec::new();
     let mut internal = Vec::new();
     match tag {
         1 => {
-            leaf.try_reserve_exact(capacity(item_count)?)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
+            reserve_decoded_items_with_steps(&mut leaf, capacity(item_count)?, observe)?;
             for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
                 leaf.push(BlobChunkRef {
-                    first_offset: decoder.u64()?,
-                    end_offset: decoder.u64()?,
+                    first_offset: decoder.u64_with_steps(observe)?,
+                    end_offset: decoder.u64_with_steps(observe)?,
                     chunk: ObjectId {
                         kind: ObjectKind::BlobChunk,
-                        digest: crate::foundation::Digest::from_bytes(decoder.fixed()?),
+                        digest: crate::foundation::Digest::from_bytes(decoder.fixed_with_steps::<32, E>(observe)?),
                     },
                 });
+                observe(ReadAllocationStep::Item)?;
             }
         }
         2 => {
-            internal
-                .try_reserve_exact(capacity(item_count)?)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
+            reserve_decoded_items_with_steps(&mut internal, capacity(item_count)?, observe)?;
             for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
                 internal.push(BlobChild {
-                    first_offset: decoder.u64()?,
-                    end_offset: decoder.u64()?,
+                    first_offset: decoder.u64_with_steps(observe)?,
+                    end_offset: decoder.u64_with_steps(observe)?,
                     page: ObjectId {
                         kind: ObjectKind::Blob,
-                        digest: crate::foundation::Digest::from_bytes(decoder.fixed()?),
+                        digest: crate::foundation::Digest::from_bytes(decoder.fixed_with_steps::<32, E>(observe)?),
                     },
                 });
+                observe(ReadAllocationStep::Item)?;
             }
         }
         tag => {
             return Err(CanonicalDecodeError::UnknownTag {
                 field: "blob_page",
                 tag,
-            });
+            }.into());
         }
     }
     decoder.finish()?;
@@ -260,6 +323,7 @@ pub fn decode_blob_page(
     Ok(page)
 }
 
+#[cfg(test)]
 fn blob_page_decode_shape(
     bytes: &[u8],
     limits: DecodeLimits,
@@ -350,6 +414,61 @@ pub struct OwnedSourceChunk {
     pub bytes: Bytes,
     /// Payload capacity retained by these bytes, not their visible length.
     pub logical_owned_bytes: u64,
+    ownership: SourceChunkOwnership,
+}
+
+#[derive(Debug)]
+enum SourceChunkOwnership {
+    Claimed,
+    #[cfg(not(target_arch = "wasm32"))]
+    Intrinsic { _allocation: Option<crate::NativeAllocation> },
+}
+
+impl OwnedSourceChunk {
+    /// Borrows the supplied bytes without detaching their native custody.
+    #[must_use]
+    pub fn bytes(&self) -> &Bytes { &self.bytes }
+
+    /// Exact backing capacity reported by the physical source producer.
+    #[must_use]
+    pub const fn logical_owned_bytes(&self) -> u64 { self.logical_owned_bytes }
+
+    /// Bytes whose retained capacity is accounted by the ordinary caller.
+    pub fn claimed(bytes: Bytes, logical_owned_bytes: u64) -> Self {
+        Self { bytes, logical_owned_bytes, ownership: SourceChunkOwnership::Claimed }
+    }
+
+    /// Bytes already retained by their original native allocation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn intrinsic(
+        bytes: Bytes, logical_owned_bytes: u64, allocation: Option<crate::NativeAllocation>,
+    ) -> Self {
+        Self {
+            bytes, logical_owned_bytes,
+            ownership: SourceChunkOwnership::Intrinsic { _allocation: allocation },
+        }
+    }
+
+    /// Whether native ownership already accounts for this chunk's capacity.
+    pub fn is_intrinsic(&self) -> bool {
+        match &self.ownership {
+            SourceChunkOwnership::Claimed => false,
+            #[cfg(not(target_arch = "wasm32"))]
+            SourceChunkOwnership::Intrinsic { .. } => true,
+        }
+    }
+
+    /// Transfers bytes and native custody without releasing the allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_owned_parts(self) -> (Bytes, u64, bool, Option<crate::NativeAllocation>) {
+        let Self { bytes, logical_owned_bytes, ownership } = self;
+        match ownership {
+            SourceChunkOwnership::Claimed => (bytes, logical_owned_bytes, false, None),
+            SourceChunkOwnership::Intrinsic { _allocation } => {
+                (bytes, logical_owned_bytes, true, _allocation)
+            }
+        }
+    }
 }
 
 /// Nonblocking bounded byte source for browser, network, and native streams.
@@ -372,6 +491,25 @@ pub trait AsyncBlobSource {
         async { Ok(None) }
     }
 
+    /// Reads directly under the original invocation; custom sources reject before I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_with_native_work<'a>(
+        &'a mut self, _destination: &'a mut [u8],
+        _original: &'a crate::NativeMaterializationWork,
+        _cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<usize, FsError>> {
+        async { Err(BlobBuildError::NativeSourceUnavailable.into()) }
+    }
+
+    /// Returns intrinsically guarded bytes without transferring their allocation twice.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_owned_with_native_work(
+        &mut self, _maximum: usize, _original: &crate::NativeMaterializationWork,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<Option<OwnedSourceChunk>, FsError>> {
+        async { Ok(None) }
+    }
+
     /// Drains exact work performed by the preceding read, when the source
     /// already measures its own I/O. Returning `Some` replaces the builder's
     /// inferred source-byte count for that read; `None` retains that count.
@@ -380,7 +518,9 @@ pub trait AsyncBlobSource {
     }
 }
 
-impl<T: Read> AsyncBlobSource for T {
+struct ImmediateBlobSource<'a, T>(&'a mut T);
+
+impl<T: Read> AsyncBlobSource for ImmediateBlobSource<'_, T> {
     async fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
@@ -397,8 +537,98 @@ impl<T: Read> AsyncBlobSource for T {
         if maximum == 0 && !destination.is_empty() {
             return Err(std::io::Error::other("blob source byte budget exhausted"));
         }
-        Read::read(self, destination.get_mut(..maximum)
+        Read::read(self.0, destination.get_mut(..maximum)
             .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
+    }
+}
+
+impl<T: AsRef<[u8]>> AsyncBlobSource for std::io::Cursor<T> {
+    async fn read<'a>(
+        &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
+        cancellation: &'a CancellationToken,
+    ) -> std::io::Result<usize> {
+        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work<'a>(
+        &'a mut self, destination: &'a mut [u8],
+        original: &'a crate::NativeMaterializationWork,
+        cancellation: &'a CancellationToken,
+    ) -> Result<usize, FsError> {
+        cancellation.check()?;
+        let remaining = self.get_ref().as_ref().len()
+            .saturating_sub(usize::try_from(self.position()).unwrap_or(usize::MAX));
+        let maximum = destination.len().min(remaining);
+        let delta = WorkCounters {
+            source_bytes_read: usize_to_u64(maximum),
+            bytes_copied: usize_to_u64(maximum),
+            ..WorkCounters::UNCHARGED
+        };
+        original.admit(delta)?;
+        let read = Read::read(self, destination)
+            .map_err(BlobBuildError::Source)?;
+        original.spent(WorkCounters {
+            source_bytes_read: usize_to_u64(read),
+            bytes_copied: usize_to_u64(read),
+            ..WorkCounters::UNCHARGED
+        })?;
+        Ok(read)
+    }
+}
+
+impl AsyncBlobSource for &[u8] {
+    async fn read<'a>(
+        &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
+        cancellation: &'a CancellationToken,
+    ) -> std::io::Result<usize> {
+        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work<'a>(
+        &'a mut self, destination: &'a mut [u8],
+        original: &'a crate::NativeMaterializationWork, cancellation: &'a CancellationToken,
+    ) -> Result<usize, FsError> {
+        cancellation.check()?;
+        let maximum = destination.len().min(self.len());
+        let delta = WorkCounters { source_bytes_read: usize_to_u64(maximum),
+            bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
+        original.admit(delta)?;
+        let read = Read::read(self, destination).map_err(BlobBuildError::Source)?;
+        original.spent(WorkCounters { source_bytes_read: usize_to_u64(read),
+            bytes_copied: usize_to_u64(read), ..WorkCounters::UNCHARGED })?;
+        Ok(read)
+    }
+}
+
+impl AsyncBlobSource for std::fs::File {
+    async fn read<'a>(
+        &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
+        cancellation: &'a CancellationToken,
+    ) -> std::io::Result<usize> {
+        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work<'a>(
+        &'a mut self, destination: &'a mut [u8],
+        original: &'a crate::NativeMaterializationWork, cancellation: &'a CancellationToken,
+    ) -> Result<usize, FsError> {
+        cancellation.check()?;
+        let maximum = destination.len().min(
+            usize::try_from(original.remaining()?.source_bytes_read).unwrap_or(usize::MAX),
+        );
+        if maximum == 0 && !destination.is_empty() {
+            original.admit(WorkCounters { source_bytes_read: 1, ..WorkCounters::UNCHARGED })?;
+        }
+        original.admit(WorkCounters { source_bytes_read: usize_to_u64(maximum),
+            ..WorkCounters::UNCHARGED })?;
+        let destination = destination.get_mut(..maximum).ok_or(BlobBuildError::TooLarge)?;
+        let read = Read::read(self, destination).map_err(BlobBuildError::Source)?;
+        original.spent(WorkCounters { source_bytes_read: usize_to_u64(read),
+            ..WorkCounters::UNCHARGED })?;
+        Ok(read)
     }
 }
 
@@ -418,7 +648,7 @@ pub fn build_blob<S: crate::ImmediateObjectStore, R: Read>(
     let cancellation = CancellationToken::new();
     crate::async_storage::poll_immediate(build_blob_async(
         store,
-        source,
+        &mut ImmediateBlobSource(source),
         options,
         budget,
         &cancellation,
@@ -433,880 +663,646 @@ pub fn build_blob<S: crate::ImmediateObjectStore, R: Read>(
 /// Returns the same receipt-bearing failures as [`build_blob`], including
 /// cooperative cancellation before the next source or object-store operation.
 pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
-    store: &S,
-    source: &mut R,
-    options: BlobBuildOptions,
-    budget: WorkBudget,
+    store: &S, source: &mut R, options: BlobBuildOptions, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, BlobBuildFailure> {
-    let chunk_capacity = validate_blob_build(options, cancellation)?;
-    let (mut batching, mut work) = BlobBatchStore::new(store, budget)?;
-    let mut index = BlobIndexBuilder::new(options);
-    let mut logical_bytes = 0_u64;
-    loop {
-        let detection_bytes = options
-            .maximum_blob_bytes
-            .saturating_sub(logical_bytes)
-            .saturating_add(1);
-        let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
-        let retained = batching.retained_bytes();
-        let owned = source.read_owned(
-            allocation,
-            source_read_budget(work, budget, retained.saturating_add(index.live_allocation_bytes))?,
-            cancellation,
-        ).await;
-        let source_work = source.take_work();
-        if let Some(measured) = source_work {
-            work = charge_source_work(
-                work,
-                measured,
-                retained.saturating_add(index.live_allocation_bytes),
-                budget,
-            )?;
-        }
-        let owned = owned.map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
-        if let Some(chunk) = owned {
-            if chunk.bytes.is_empty() {
-                break;
-            }
-            let filled = chunk.bytes.len();
-            (logical_bytes, work) = accept_owned_blob_chunk(
-                &mut batching,
-                &mut index,
-                chunk,
-                allocation,
-                retained,
-                source_work.is_none(),
-                logical_bytes,
-                options.maximum_blob_bytes,
-                budget,
-                work,
-                cancellation,
-            )
-            .await?;
-            if filled < allocation {
-                break;
-            }
-            continue;
-        }
-        let (bytes, filled, retained_capacity, simultaneous, next_work) = read_blob_chunk(
-            source,
-            allocation,
-            index.live_allocation_bytes,
-            retained,
-            work,
-            budget,
-            cancellation,
-        )
-        .await?;
-        work = next_work;
-        if filled == 0 {
-            break;
-        }
-        let bytes = if filled == bytes.len() {
-            Bytes::from(bytes)
-        } else {
-            Bytes::copy_from_slice(
-                bytes
-                    .get(..filled)
-                    .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?,
-            )
-        };
-        (logical_bytes, work) = accept_owned_blob_chunk(
-            &mut batching,
-            &mut index,
-            bytes,
-            allocation,
-            retained,
-            false,
-            logical_bytes,
-            options.maximum_blob_bytes,
-            budget,
-            work,
-            cancellation,
-        )
-        .await?;
-        let _ = (retained_capacity, simultaneous);
-        if filled < allocation {
-            break;
-        }
-    }
-    let root = index
-        .finish(&mut batching, budget, &mut work, cancellation)
-        .await?;
-    work = finish_blob_batch(&mut batching, work, budget, cancellation).await?;
-    Ok(BlobBuild {
-        root,
-        logical_bytes,
-        work,
-    })
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    build_blob_with_accounting(store, source, options, &mut accounting, cancellation).await
+        .map_err(|error| build_failed(blob_build_error(error), accounting.spent()))
 }
 
-fn source_read_budget(
-    work: WorkCounters,
-    budget: WorkBudget,
-    live_bytes: u64,
-) -> Result<WorkBudget, BlobBuildFailure> {
-    let mut remaining = work.remaining(budget)
-        .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live_bytes)
-        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-    Ok(remaining)
+/// The canonical streaming producer, borrowing either standalone or original accounting.
+pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
+    store: &S, source: &mut R, options: BlobBuildOptions,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<BlobBuild, FsError> {
+    accounting.check()?;
+    if options.chunk_bytes == 0 || effective_page_width(options).is_none()
+        || options.maximum_blob_bytes == 0
+    {
+        return Err(BlobBuildError::InvalidOptions.into());
+    }
+    let chunk_capacity = usize::try_from(options.chunk_bytes)
+        .map_err(|_| BlobBuildError::InvalidOptions)?;
+    let mut batching = BlobBatchStore::new(store, accounting)?;
+    let mut index = BlobIndexBuilder::new(options);
+    let result = async {
+        let mut logical_bytes = 0_u64;
+        loop {
+            accounting.check()?;
+            let detection_bytes = options.maximum_blob_bytes
+                .saturating_sub(logical_bytes).saturating_add(1);
+            let maximum = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
+            let owned = read_owned_blob_source(source, maximum, accounting, cancellation).await?;
+            let (chunk, filled) = if let Some(chunk) = owned {
+                let filled = chunk.bytes.len();
+                (chunk, filled)
+            } else {
+                read_blob_chunk(source, maximum, accounting, cancellation).await?
+            };
+            if filled == 0 {
+                drop_source_chunk(chunk, accounting)?;
+                break;
+            }
+            logical_bytes = accept_owned_blob_chunk(
+                &mut batching, &mut index, chunk, maximum, logical_bytes,
+                options.maximum_blob_bytes, accounting, cancellation,
+            ).await?;
+            if filled < maximum { break; }
+        }
+        let root = index.finish(&mut batching, accounting, cancellation).await?;
+        batching.flush(accounting, cancellation).await?;
+        Ok(BlobBuild { root, logical_bytes, work: accounting.spent() })
+    }.await;
+    let index_cleanup = index.release(accounting);
+    let batch_cleanup = batching.release(accounting);
+    match result {
+        Err(error) => Err(error),
+        Ok(value) => { index_cleanup?; batch_cleanup?; Ok(value) }
+    }
+}
+
+fn blob_build_error(error: FsError) -> BlobBuildError {
+    match error {
+        FsError::BlobBuild(error) => error,
+        FsError::Work(error) => BlobBuildError::Work(error),
+        FsError::Cancelled(_) => BlobBuildError::Cancelled,
+        FsError::Object(error) => BlobBuildError::Storage(error),
+        FsError::Decode(error) => BlobBuildError::Encode(error),
+        error => BlobBuildError::Context(Box::new(error)),
+    }
+}
+
+fn build_allocation_error(error: AllocationError) -> FsError {
+    error.into_work_or(FsError::BlobBuild(BlobBuildError::AllocationFailed))
+}
+
+fn vector_bytes<T>(capacity: usize) -> Result<u64, FsError> {
+    capacity.checked_mul(size_of::<T>()).map(usize_to_u64)
+        .ok_or_else(|| WorkError::Overflow.into())
+}
+
+fn empty_blob_vec<T>() -> ReadOwned<Vec<T>> {
+    ReadOwned { value: Vec::new(), custody: KernelOwnedAllocation::Standalone }
+}
+
+/// Admission and reconciliation loans contain no allocator or copy operation.
+fn reserve_blob_vec<T>(
+    owner: &mut ReadOwned<Vec<T>>, capacity: usize, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    if owner.value.capacity() >= capacity { return Ok(()); }
+    let before = vector_bytes::<T>(owner.value.capacity())?;
+    let requested = vector_bytes::<T>(capacity)?;
+    let delta = requested.checked_sub(before).ok_or(WorkError::Overflow)?;
+    let mut admitted = accounting.claim_owned(delta, 1)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(owner.custody, KernelOwnedAllocation::Standalone)
+        && matches!(admitted, KernelOwnedAllocation::NativeOriginal(_))
+    {
+        owner.custody = admitted;
+    } else {
+        owner.custody.absorb(&mut admitted)?;
+    }
+    #[cfg(target_arch = "wasm32")]
+    owner.custody.absorb(&mut admitted)?;
+    if let Err(error) = owner.value.try_reserve_exact(capacity - owner.value.len()) {
+        let _ = accounting.reconcile_owned(&mut owner.custody, requested, before);
+        return Err(BlobBuildError::ReserveFailed(error).into());
+    }
+    let actual = vector_bytes::<T>(owner.value.capacity())?;
+    accounting.reconcile_owned(&mut owner.custody, requested, actual)
+}
+
+fn release_blob_vec<T>(
+    owner: ReadOwned<Vec<T>>, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let bytes = vector_bytes::<T>(owner.value.capacity())?;
+    drop(owner.value);
+    match owner.custody {
+        KernelOwnedAllocation::Standalone => release_blob_bytes(bytes, accounting),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(guard) => { drop(guard); Ok(()) }
+    }
+}
+
+fn completed_blob_backend(
+    measured: WorkCounters, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    match accounting {
+        KernelAccounting::Standalone { allocations, work, budget, .. } => {
+            *work = work.with_backend(measured, allocations.live_bytes())?;
+            work.verify(*budget)?;
+        }
+        KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } => {
+            **work = work.with_backend(measured, allocations.live_bytes())?;
+            work.verify(*budget)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => return Err(BlobBuildError::NativeSourceUnavailable.into()),
+    }
+    Ok(())
+}
+
+async fn read_owned_blob_source<R: AsyncBlobSource>(
+    source: &mut R, maximum: usize, accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Option<OwnedSourceChunk>, FsError> {
+    accounting.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return source.read_owned_with_native_work(maximum, original, cancellation).await;
+    }
+    let result = source.read_owned(maximum, accounting.remaining()?, cancellation).await;
+    let measured = source.take_work();
+    if let Some(measured) = measured { completed_blob_backend(measured, accounting)?; }
+    let chunk = result.map_err(BlobBuildError::Source)?;
+    if let Some(chunk) = chunk {
+        // This is an explicit by-value transfer from the actual source producer.
+        let retained = chunk.logical_owned_bytes;
+        let (custody, capacity_result) = accounting.record_actual_owned(retained)?;
+        let completed = if measured.is_none() {
+            WorkCounters { source_bytes_read: usize_to_u64(chunk.bytes.len()), ..WorkCounters::UNCHARGED }
+        } else { WorkCounters::UNCHARGED };
+        let completed_result = accounting.record_completed(completed);
+        if let Err(error) = capacity_result.and(completed_result) {
+            drop(chunk);
+            drop(custody);
+            let _ = release_blob_bytes(retained, accounting);
+            return Err(error);
+        }
+        return Ok(Some(chunk));
+    }
+    Ok(None)
 }
 
 async fn read_blob_chunk<R: AsyncBlobSource>(
-    source: &mut R,
-    allocation: usize,
-    index_bytes: u64,
-    retained: u64,
-    mut work: WorkCounters,
-    budget: WorkBudget,
+    source: &mut R, maximum: usize, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(Vec<u8>, usize, u64, u64, WorkCounters), BlobBuildFailure> {
-    let (mut bytes, prospective, simultaneous, retained_capacity) =
-        allocate_chunk_buffer(allocation, index_bytes, retained, work, budget)?;
-    work = prospective;
-    let mut filled = 0_usize;
-    while filled < bytes.len() {
-        if cancellation.is_cancelled() {
-            return Err(build_failed(BlobBuildError::Cancelled, work));
+) -> Result<(OwnedSourceChunk, usize), FsError> {
+    let mut buffer = empty_blob_vec();
+    let result = async {
+        reserve_blob_vec(&mut buffer, maximum, accounting)?;
+        let zeroed = WorkCounters { bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
+        accounting.admit(zeroed)?;
+        buffer.value.resize(maximum, 0);
+        completed_read_work(accounting, zeroed)?;
+        let mut filled = 0_usize;
+        while filled < maximum {
+            accounting.check()?;
+            let destination = buffer.value.get_mut(filled..).ok_or(BlobBuildError::TooLarge)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = accounting.native_work();
+            #[cfg(not(target_arch = "wasm32"))]
+            let read = if let Some(original) = native {
+                source.read_with_native_work(destination, original, cancellation).await
+            } else {
+                read_standalone_blob_source(source, destination, accounting, cancellation).await
+            };
+            #[cfg(target_arch = "wasm32")]
+            let read = read_standalone_blob_source(source, destination, accounting, cancellation).await;
+            let read = read?;
+            if read > maximum - filled { return Err(BlobBuildError::TooLarge.into()); }
+            if read == 0 { break; }
+            filled += read;
         }
-        #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
-        let read = AsyncBlobSource::read(
-            source, &mut bytes[filled..], source_read_budget(work, budget, simultaneous)?,
-            cancellation,
-        ).await;
-        let measured = source.take_work();
-        if let Some(measured) = measured {
-            work = charge_source_work(work, measured, simultaneous, budget)?;
-        }
-        match read {
-            Ok(0) => break,
-            Ok(count) => {
-                if count > bytes.len() - filled {
-                    return Err(build_failed(BlobBuildError::TooLarge, work));
-                }
-                filled = filled.saturating_add(count);
-                if measured.is_none() {
-                    work = build_add(
-                        work,
-                        WorkCounters {
-                            source_bytes_read: usize_to_u64(count),
-                            ..WorkCounters::default()
-                        },
-                    )?;
-                }
-                build_verify(work, budget)?;
-            }
-            Err(error) => return Err(build_failed(BlobBuildError::Source(error), work)),
+        buffer.value.truncate(filled);
+        Ok(filled)
+    }.await;
+    match result {
+        Err(error) => { let _ = release_blob_vec(buffer, accounting); Err(error) }
+        Ok(filled) => {
+            let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
+            // Native Bytes aliases inherit the original producer guard.
+            let bytes = owned_read_bytes(buffer)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let chunk = if accounting.native_work().is_some() {
+                OwnedSourceChunk::intrinsic(bytes, logical_owned_bytes, None)
+            } else {
+                OwnedSourceChunk::claimed(bytes, logical_owned_bytes)
+            };
+            #[cfg(target_arch = "wasm32")]
+            let chunk = OwnedSourceChunk::claimed(bytes, logical_owned_bytes);
+            Ok((chunk, filled))
         }
     }
-    Ok((bytes, filled, retained_capacity, simultaneous, work))
 }
 
-fn charge_source_work(
-    work: WorkCounters,
-    mut measured: WorkCounters,
-    live_bytes: u64,
-    budget: WorkBudget,
-) -> Result<WorkCounters, BlobBuildFailure> {
-    let simultaneous = live_bytes
-        .checked_add(measured.peak_allocation_bytes)
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
-    measured.peak_allocation_bytes = 0;
-    let mut combined = build_add(work, measured)?;
-    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
-    build_verify(combined, budget)?;
-    Ok(combined)
+async fn read_standalone_blob_source<R: AsyncBlobSource>(
+    source: &mut R, destination: &mut [u8], accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<usize, FsError> {
+    let result = source.read(destination, accounting.remaining()?, cancellation).await;
+    let measured = source.take_work();
+    if let Some(measured) = measured { completed_blob_backend(measured, accounting)?; }
+    let read = result.map_err(BlobBuildError::Source)?;
+    if measured.is_none() {
+        completed_read_work(accounting, WorkCounters {
+            source_bytes_read: usize_to_u64(read), ..WorkCounters::UNCHARGED
+        })?;
+    }
+    Ok(read)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the batch store, index, chunk, and every byte bound are updated by one accepted chunk"
-)]
+fn release_blob_bytes(bytes: u64, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    // Cleanup is unconditional, including after cancellation or a late denial.
+    match accounting {
+        KernelAccounting::Standalone { allocations, .. } => {
+            allocations.release(bytes).map_err(build_allocation_error)
+        }
+        KernelAccounting::BorrowedStandalone { allocations, .. } => {
+            allocations.release(bytes).map_err(build_allocation_error)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => Ok(()),
+    }
+}
+
+fn drop_source_chunk(chunk: OwnedSourceChunk, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    let bytes = chunk.logical_owned_bytes;
+    drop(chunk);
+    release_blob_bytes(bytes, accounting)
+}
+
+fn hashed_blob_object(
+    kind: ObjectKind, bytes: Bytes, accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<HashedObject, FsError> {
+    accounting.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return HashedObject::new_with_native_work(kind, bytes, original, cancellation).map_err(Into::into);
+    }
+    let hash = WorkCounters {
+        bytes_hashed: usize_to_u64(bytes.len()).checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)
+            .ok_or(WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(hash)?;
+    let object = HashedObject::new(kind, bytes);
+    completed_read_work(accounting, hash)?;
+    Ok(object)
+}
+
 async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
-    batching: &mut BlobBatchStore<'_, S>,
-    index: &mut BlobIndexBuilder,
-    chunk: OwnedSourceChunk,
-    allocation: usize,
-    retained: u64,
-    owned_source: bool,
-    logical_bytes: u64,
-    maximum_blob_bytes: u64,
-    budget: WorkBudget,
-    work: WorkCounters,
-    cancellation: &CancellationToken,
-) -> Result<(u64, WorkCounters), BlobBuildFailure> {
-    in_heap(move || async move {
-        let OwnedSourceChunk { bytes: chunk, logical_owned_bytes: retained_capacity } = chunk;
-        if chunk.len() > allocation {
-            return Err(build_failed(BlobBuildError::TooLarge, work));
-        }
-        let chunk_bytes = usize_to_u64(chunk.len());
-        let prospective = build_add(
-            work,
-            WorkCounters {
-                source_bytes_read: if owned_source { chunk_bytes } else { 0 },
-                peak_allocation_bytes: index
-                    .live_allocation_bytes
-                    .saturating_add(retained)
-                    .saturating_add(retained_capacity),
-                ..WorkCounters::default()
-            },
-        )?;
-        build_verify(prospective, budget)?;
-        let logical_bytes = logical_bytes
-            .checked_add(chunk_bytes)
-            .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
-        if logical_bytes > maximum_blob_bytes {
-            return Err(build_failed(BlobBuildError::TooLarge, prospective));
-        }
-        let first_offset = logical_bytes - chunk_bytes;
-        let chunk = HashedObject::new(ObjectKind::BlobChunk, chunk);
-        let chunk_id = chunk.object_id();
-        let mut work = build_put(
-            batching,
-            chunk,
-            PutAllocation {
-                retained: retained_capacity,
-                live: index
-                    .live_allocation_bytes
-                    .saturating_add(retained_capacity),
-            },
-            budget,
-            prospective,
-            cancellation,
-        )
-        .await?;
-        index
-            .push_chunk(
-                batching,
-                BlobChunkRef {
-                    first_offset,
-                    end_offset: logical_bytes,
-                    chunk: chunk_id,
-                },
-                budget,
-                &mut work,
-                cancellation,
-            )
-            .await?;
-        Ok((logical_bytes, work))
-    })
-    .await
-}
-
-fn validate_blob_build(
-    options: BlobBuildOptions,
-    cancellation: &CancellationToken,
-) -> Result<usize, BlobBuildFailure> {
-    if cancellation.is_cancelled() {
-        return Err(OperationFailure::before_work(BlobBuildError::Cancelled));
-    }
-    if options.chunk_bytes == 0
-        || effective_page_width(options).is_none()
-        || options.maximum_blob_bytes == 0
-    {
-        return Err(build_failed(
-            BlobBuildError::InvalidOptions,
-            WorkCounters::default(),
-        ));
-    }
-    usize::try_from(options.chunk_bytes)
-        .map_err(|_| build_failed(BlobBuildError::InvalidOptions, WorkCounters::default()))
-}
-
-async fn finish_blob_batch<S: AsyncObjectStore>(
-    batching: &mut BlobBatchStore<'_, S>,
-    work: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<WorkCounters, BlobBuildFailure> {
-    in_heap(move || async move {
-        let retained = batching.retained_bytes();
-        let mut remaining = work
-            .remaining(budget)
-            .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-        remaining.peak_allocation_bytes = remaining
-            .peak_allocation_bytes
-            .checked_sub(retained)
-            .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-        let receipt = batching
-            .finish(remaining, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, BlobBuildError::Storage))?;
-        let combined = work
-            .with_backend(receipt.work, retained)
-            .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-        build_verify(combined, budget)?;
-        Ok(combined)
-    })
-    .await
+    batching: &mut BlobBatchStore<'_, S>, index: &mut BlobIndexBuilder,
+    chunk: OwnedSourceChunk, maximum: usize, logical_bytes: u64, maximum_blob_bytes: u64,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<u64, FsError> {
+    let chunk_bytes = usize_to_u64(chunk.bytes.len());
+    let end = logical_bytes.checked_add(chunk_bytes).ok_or(BlobBuildError::TooLarge);
+    let end = match end {
+        Ok(end) if chunk.bytes.len() <= maximum && end <= maximum_blob_bytes => end,
+        _ => { drop_source_chunk(chunk, accounting)?; return Err(BlobBuildError::TooLarge.into()); }
+    };
+    let retained = chunk.logical_owned_bytes;
+    let object = match hashed_blob_object(ObjectKind::BlobChunk, chunk.bytes, accounting, cancellation) {
+        Ok(object) => object,
+        Err(error) => { let _ = release_blob_bytes(retained, accounting); return Err(error); }
+    };
+    let chunk_id = object.object_id();
+    batching.put(object, retained, accounting, cancellation).await?;
+    index.push_chunk(batching, BlobChunkRef {
+        first_offset: logical_bytes, end_offset: end, chunk: chunk_id,
+    }, accounting, cancellation).await?;
+    Ok(end)
 }
 
 const BLOB_BATCH_OBJECTS: usize = 4;
 const BLOB_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
-struct BlobBatchState {
-    writes: Vec<HashedObject>,
+struct BlobBatchStore<'a, S> {
+    inner: &'a S,
+    writes: ReadOwned<Vec<HashedObject>>,
     bytes: u64,
 }
 
-struct BlobBatchStore<'a, S> {
-    inner: &'a S,
-    state: BlobBatchState,
-    vector_bytes: u64,
-}
-
 impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
-    fn new(inner: &'a S, budget: WorkBudget) -> Result<(Self, WorkCounters), BlobBuildFailure> {
-        let minimum = WorkCounters {
-            allocation_operations: 1,
-            peak_allocation_bytes: usize_to_u64(BLOB_BATCH_OBJECTS)
-                .saturating_mul(usize_to_u64(size_of::<HashedObject>())),
-            ..WorkCounters::default()
-        };
-        minimum
-            .verify(budget)
-            .map_err(|error| build_failed(BlobBuildError::Work(error), WorkCounters::default()))?;
-        let mut writes = Vec::new();
-        writes
-            .try_reserve_exact(BLOB_BATCH_OBJECTS)
-            .map_err(|_| build_failed(BlobBuildError::AllocationFailed, WorkCounters::default()))?;
-        let vector_bytes =
-            usize_to_u64(writes.capacity()).saturating_mul(usize_to_u64(size_of::<HashedObject>()));
-        let admitted = WorkCounters {
-            allocation_operations: 1,
-            peak_allocation_bytes: vector_bytes,
-            ..WorkCounters::default()
-        };
-        admitted
-            .verify(budget)
-            .map_err(|error| build_failed(BlobBuildError::Work(error), admitted))?;
-        Ok((
-            Self {
-                inner,
-                state: BlobBatchState { writes, bytes: 0 },
-                vector_bytes,
-            },
-            admitted,
-        ))
-    }
-
-    fn retained_bytes(&self) -> u64 {
-        self.vector_bytes.saturating_add(self.state.bytes)
-    }
-
-    async fn flush_locked(
-        &mut self,
-        // The caller has already removed every buffer retained by the blob builder and this
-        // batch. Passing the original budget here would admit hidden simultaneous allocation.
-        backend_budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        if self.state.writes.is_empty() {
-            return Ok(crate::storage::ObjectReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
+    fn new(inner: &'a S, accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        let mut writes = empty_blob_vec();
+        if let Err(error) = reserve_blob_vec(&mut writes, BLOB_BATCH_OBJECTS, accounting) {
+            let _ = release_blob_vec(writes, accounting);
+            return Err(error);
         }
-        let receipt = self
-            .inner
-            .put_many_hashed(&self.state.writes, backend_budget, cancellation)
-            .await?;
-        self.state.writes.clear();
-        self.state.bytes = 0;
-        Ok(crate::storage::ObjectReceipt {
-            value: (),
-            work: receipt.work,
-        })
+        Ok(Self { inner, writes, bytes: 0 })
     }
 
-    async fn finish(
-        &mut self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        in_heap(|| self.flush_locked(budget, cancellation)).await
-    }
-
-    async fn put_with_retained(
-        &mut self,
-        object: HashedObject,
-        retained_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        cancellation.check().map_err(|_| {
-            crate::storage::ObjectFailure::before_work(crate::storage::ObjectStoreError::Cancelled)
-        })?;
-        self.state.bytes = self
-            .state
-            .bytes
-            .checked_add(retained_bytes)
-            .ok_or_else(|| {
-                crate::storage::ObjectFailure::before_work(
-                    crate::storage::ObjectStoreError::Rejected(
-                        "object write batch length overflowed".to_owned(),
-                    ),
-                )
-            })?;
-        self.state.writes.push(object);
-        if self.state.writes.len() >= BLOB_BATCH_OBJECTS || self.state.bytes >= BLOB_BATCH_BYTES {
-            return self.flush_locked(budget, cancellation).await;
+    async fn flush(&mut self, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken)
+        -> Result<(), FsError>
+    {
+        if self.writes.value.is_empty() { return Ok(()); }
+        accounting.check()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let mut writes = empty_blob_vec();
+            let result = async {
+                reserve_blob_vec(&mut writes, self.writes.value.len(), accounting)?;
+                // Only scalar identities and zero-copy byte aliases are transferred.
+                for object in &self.writes.value {
+                    writes.value.push(crate::storage::ObjectWrite {
+                        object_id: object.object_id(), bytes: object.bytes().clone(),
+                    });
+                }
+                self.inner.put_many_with_native_work(&writes.value, original, cancellation).await
+                    .map_err(FsError::from)
+            }.await;
+            let cleanup = release_blob_vec(writes, accounting);
+            result?;
+            cleanup?;
+            self.writes.value.clear();
+            self.bytes = 0;
+            return Ok(());
         }
-        Ok(crate::storage::ObjectReceipt {
-            value: (),
-            work: WorkCounters::default(),
-        })
+        let result = self.inner.put_many_hashed(
+            &self.writes.value, accounting.remaining()?, cancellation,
+        ).await;
+        let measured = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+        completed_blob_backend(measured, accounting)?;
+        result.map_err(|failure| FsError::from(failure.error))?;
+        self.writes.value.clear();
+        let bytes = std::mem::take(&mut self.bytes);
+        release_blob_bytes(bytes, accounting)
     }
-}
 
-fn allocate_chunk_buffer(
-    allocation: usize,
-    index_live_bytes: u64,
-    retained_batch_bytes: u64,
-    work: WorkCounters,
-    budget: WorkBudget,
-) -> Result<(Vec<u8>, WorkCounters, u64, u64), BlobBuildFailure> {
-    let allocation_bytes = usize_to_u64(allocation);
-    let simultaneous = index_live_bytes
-        .checked_add(allocation_bytes)
-        .and_then(|bytes| bytes.checked_add(retained_batch_bytes))
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
-    let mut prospective = build_add(
-        work,
-        WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        },
-    )?;
-    prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(simultaneous);
-    build_verify(prospective, budget)?;
-    let mut bytes = Vec::new();
-    if bytes.try_reserve_exact(allocation).is_err() {
-        return Err(build_failed(BlobBuildError::AllocationFailed, work));
+    async fn put(
+        &mut self, object: HashedObject, retained: u64, accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        self.bytes = self.bytes.checked_add(retained).ok_or(WorkError::Overflow)?;
+        self.writes.value.push(object);
+        if self.writes.value.len() >= BLOB_BATCH_OBJECTS || self.bytes >= BLOB_BATCH_BYTES {
+            self.flush(accounting, cancellation).await?;
+        }
+        Ok(())
     }
-    bytes.resize(allocation, 0);
-    let retained_capacity = usize_to_u64(bytes.capacity());
-    let actual_simultaneous = index_live_bytes
-        .checked_add(retained_capacity)
-        .and_then(|value| value.checked_add(retained_batch_bytes))
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
-    prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(actual_simultaneous);
-    build_verify(prospective, budget)?;
-    Ok((bytes, prospective, actual_simultaneous, retained_capacity))
+
+    fn release(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let bytes = self.bytes;
+        release_blob_vec(self.writes, accounting)?;
+        release_blob_bytes(bytes, accounting)
+    }
 }
 
 struct BlobIndexBuilder {
     options: BlobBuildOptions,
     width: usize,
-    leaf: Vec<BlobChunkRef>,
-    levels: Vec<Vec<BlobChild>>,
-    live_allocation_bytes: u64,
+    leaf: ReadOwned<Vec<BlobChunkRef>>,
+    levels: ReadOwned<Vec<ReadOwned<Vec<BlobChild>>>>,
 }
 
 impl BlobIndexBuilder {
     fn new(options: BlobBuildOptions) -> Self {
-        Self {
-            options,
-            width: effective_page_width(options).unwrap_or(0),
-            leaf: Vec::new(),
-            levels: Vec::new(),
-            live_allocation_bytes: 0,
-        }
+        Self { options, width: effective_page_width(options).unwrap_or(0),
+            leaf: empty_blob_vec(), levels: empty_blob_vec() }
     }
 
     async fn push_chunk<S: AsyncObjectStore>(
-        &mut self,
-        store: &mut BlobBatchStore<'_, S>,
-        chunk: BlobChunkRef,
-        budget: WorkBudget,
-        work: &mut WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<(), BlobBuildFailure> {
-        reserve_page_items(
-            &mut self.leaf,
-            self.width,
-            &mut self.live_allocation_bytes,
-            work,
-            budget,
-        )?;
-        self.leaf.push(chunk);
-        if self.leaf.len() == self.width {
-            self.flush_leaf(store, budget, work, cancellation).await?;
-        }
+        &mut self, store: &mut BlobBatchStore<'_, S>, chunk: BlobChunkRef,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        reserve_blob_vec(&mut self.leaf, self.width, accounting)?;
+        self.leaf.value.push(chunk);
+        if self.leaf.value.len() == self.width { self.flush_leaf(store, accounting, cancellation).await?; }
         Ok(())
     }
 
     async fn flush_leaf<S: AsyncObjectStore>(
-        &mut self,
-        store: &mut BlobBatchStore<'_, S>,
-        budget: WorkBudget,
-        work: &mut WorkCounters,
+        &mut self, store: &mut BlobBatchStore<'_, S>, accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(), BlobBuildFailure> {
-        let mut items = std::mem::take(&mut self.leaf);
-        if items.is_empty() {
-            return Ok(());
-        }
-        let (first_offset, end_offset) = match items.as_slice() {
-            [only] => (only.first_offset, only.end_offset),
-            [first, .., last] => (first.first_offset, last.end_offset),
-            [] => unreachable!("checked items.is_empty() above"),
-        };
-        let page = BlobPage {
-            first_offset,
-            end_offset,
-            node: BlobNode::Leaf(items),
-        };
-        let page_id = put_blob_page(
-            store,
-            &page,
-            self.options,
-            self.live_allocation_bytes,
-            budget,
-            work,
-            cancellation,
-        )
-        .await?;
-        let child = BlobChild {
-            first_offset: page.first_offset,
-            end_offset: page.end_offset,
-            page: page_id,
-        };
-        let BlobNode::Leaf(reusable) = page.node else {
-            unreachable!();
-        };
-        items = reusable;
+    ) -> Result<(), FsError> {
+        if self.leaf.value.is_empty() { return Ok(()); }
+        let items = std::mem::take(&mut self.leaf.value);
+        let first_offset = items.first().ok_or(BlobBuildError::InvalidIndexState)?.first_offset;
+        let end_offset = items.last().ok_or(BlobBuildError::InvalidIndexState)?.end_offset;
+        let page = BlobPage { first_offset, end_offset, node: BlobNode::Leaf(items) };
+        let result = put_blob_page(store, &page, self.options, accounting, cancellation).await;
+        let BlobNode::Leaf(mut items) = page.node else { unreachable!() };
         items.clear();
-        self.leaf = items;
-        self.push_child(store, 0, child, budget, work, cancellation)
-            .await
+        self.leaf.value = items;
+        let page = result?;
+        self.push_child(store, 0, BlobChild { first_offset, end_offset, page }, accounting, cancellation).await
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`self.ensure_level(level, ...)` runs immediately above every use of \
-                  `self.levels[level]` in this loop iteration; it loops `while self.levels.len() \
-                  <= level` pushing new levels, so afterwards `level < self.levels.len()` and \
-                  `self.levels` is not resized again before this iteration's accesses"
-    )]
     async fn push_child<S: AsyncObjectStore>(
-        &mut self,
-        store: &mut BlobBatchStore<'_, S>,
-        mut level: usize,
-        mut child: BlobChild,
-        budget: WorkBudget,
-        work: &mut WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<(), BlobBuildFailure> {
+        &mut self, store: &mut BlobBatchStore<'_, S>, mut level: usize, mut child: BlobChild,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
         loop {
-            self.ensure_level(level, work, budget)?;
-            reserve_page_items(
-                &mut self.levels[level],
-                self.width,
-                &mut self.live_allocation_bytes,
-                work,
-                budget,
-            )?;
-            self.levels[level].push(child);
-            if self.levels[level].len() < self.width {
-                return Ok(());
+            while self.levels.value.len() <= level {
+                let capacity = self.levels.value.len().checked_add(1).ok_or(WorkError::Overflow)?;
+                reserve_blob_vec(&mut self.levels, capacity, accounting)?;
+                self.levels.value.push(empty_blob_vec());
             }
-            child = self
-                .flush_internal(store, level, budget, work, cancellation)
-                .await?;
-            level = level
-                .checked_add(1)
-                .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
+            let items = self.levels.value.get_mut(level).ok_or(BlobBuildError::InvalidIndexState)?;
+            reserve_blob_vec(items, self.width, accounting)?;
+            items.value.push(child);
+            if items.value.len() < self.width { return Ok(()); }
+            child = self.flush_internal(store, level, accounting, cancellation).await?;
+            level = level.checked_add(1).ok_or(WorkError::Overflow)?;
         }
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`flush_internal` is only called from `push_child` (right after \
-                  `self.ensure_level(level, ...)` established `level < self.levels.len()`, with \
-                  no intervening resize) and from `finish` (with `level` taken from \
-                  `self.levels.iter().position(...)`, which is inherently `< self.levels.len()`)"
-    )]
     async fn flush_internal<S: AsyncObjectStore>(
-        &mut self,
-        store: &mut BlobBatchStore<'_, S>,
-        level: usize,
-        budget: WorkBudget,
-        work: &mut WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<BlobChild, BlobBuildFailure> {
-        let items = std::mem::take(&mut self.levels[level]);
-        let (first_offset, end_offset) = match items.as_slice() {
-            [only] => (only.first_offset, only.end_offset),
-            [first, .., last] => (first.first_offset, last.end_offset),
-            [] => unreachable!(
-                "flush_internal is only called once self.levels[level] is non-empty: from \
-                 push_child at self.width (>= 2) items, or from finish() for a level chosen via \
-                 self.levels.iter().position(|items| !items.is_empty())"
-            ),
-        };
-        let page = BlobPage {
-            first_offset,
-            end_offset,
-            node: BlobNode::Internal(items),
-        };
-        let page_id = put_blob_page(
-            store,
-            &page,
-            self.options,
-            self.live_allocation_bytes,
-            budget,
-            work,
-            cancellation,
-        )
-        .await?;
-        let child = BlobChild {
-            first_offset: page.first_offset,
-            end_offset: page.end_offset,
-            page: page_id,
-        };
-        let BlobNode::Internal(mut reusable) = page.node else {
-            unreachable!();
-        };
-        reusable.clear();
-        self.levels[level] = reusable;
-        Ok(child)
-    }
-
-    fn ensure_level(
-        &mut self,
-        level: usize,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-    ) -> Result<(), BlobBuildFailure> {
-        while self.levels.len() <= level {
-            let bytes = usize_to_u64(size_of::<Vec<BlobChild>>());
-            let next_live = self
-                .live_allocation_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
-            let mut prospective = work
-                .checked_add(WorkCounters {
-                    allocation_operations: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| build_failed(error.into(), *work))?;
-            prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(next_live);
-            build_verify(prospective, budget)?;
-            if self.levels.try_reserve_exact(1).is_err() {
-                return Err(build_failed(BlobBuildError::AllocationFailed, *work));
-            }
-            self.levels.push(Vec::new());
-            self.live_allocation_bytes = next_live;
-            *work = prospective;
-        }
-        Ok(())
+        &mut self, store: &mut BlobBatchStore<'_, S>, level: usize,
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<BlobChild, FsError> {
+        let owner = self.levels.value.get_mut(level).ok_or(BlobBuildError::InvalidIndexState)?;
+        let items = std::mem::take(&mut owner.value);
+        let first_offset = items.first().ok_or(BlobBuildError::InvalidIndexState)?.first_offset;
+        let end_offset = items.last().ok_or(BlobBuildError::InvalidIndexState)?.end_offset;
+        let page = BlobPage { first_offset, end_offset, node: BlobNode::Internal(items) };
+        let result = put_blob_page(store, &page, self.options, accounting, cancellation).await;
+        let BlobNode::Internal(mut items) = page.node else { unreachable!() };
+        items.clear();
+        owner.value = items;
+        Ok(BlobChild { first_offset, end_offset, page: result? })
     }
 
     async fn finish<S: AsyncObjectStore>(
-        mut self,
-        store: &mut BlobBatchStore<'_, S>,
-        budget: WorkBudget,
-        work: &mut WorkCounters,
+        &mut self, store: &mut BlobBatchStore<'_, S>, accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<ObjectId, BlobBuildFailure> {
-        in_heap(move || async move {
-        if self.leaf.is_empty() && self.levels.is_empty() {
-            return put_blob_page(
-                store,
-                &BlobPage {
-                    first_offset: 0,
-                    end_offset: 0,
-                    node: BlobNode::Leaf(Vec::new()),
-                },
-                self.options,
-                self.live_allocation_bytes,
-                budget,
-                work,
-                cancellation,
-            )
-            .await;
+    ) -> Result<ObjectId, FsError> {
+        if self.leaf.value.is_empty() && self.levels.value.is_empty() {
+            return put_blob_page(store, &BlobPage {
+                first_offset: 0, end_offset: 0, node: BlobNode::Leaf(Vec::new()),
+            }, self.options, accounting, cancellation).await;
         }
-        self.flush_leaf(store, budget, work, cancellation).await?;
+        self.flush_leaf(store, accounting, cancellation).await?;
         loop {
-            let Some(level) = self.levels.iter().position(|items| !items.is_empty()) else {
-                return Err(build_failed(BlobBuildError::InvalidIndexState, *work));
-            };
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "`level` comes from `self.levels.iter().position(...)` above, so `level \
-                          < self.levels.len()` and `level + 1 <= self.levels.len()`, which is \
-                          in-bounds for a `RangeFrom` slice"
-            )]
-            let higher_is_empty = self.levels[level + 1..].iter().all(Vec::is_empty);
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "`level < self.levels.len()` from `position(...)` above; the \
-                          `levels[level][0]` access is additionally guarded by the \
-                          `levels[level].len() == 1` check in this same condition"
-            )]
-            if higher_is_empty && self.levels[level].len() == 1 {
-                return Ok(self.levels[level][0].page);
+            let level = self.levels.value.iter().position(|items| !items.value.is_empty())
+                .ok_or(BlobBuildError::InvalidIndexState)?;
+            let higher_empty = self.levels.value.iter().skip(level + 1).all(|items| items.value.is_empty());
+            let items = self.levels.value.get(level).ok_or(BlobBuildError::InvalidIndexState)?;
+            if higher_empty && items.value.len() == 1 {
+                return Ok(items.value.first().ok_or(BlobBuildError::InvalidIndexState)?.page);
             }
-            let child = self
-                .flush_internal(store, level, budget, work, cancellation)
-                .await?;
-            self.push_child(store, level + 1, child, budget, work, cancellation)
-                .await?;
+            let child = self.flush_internal(store, level, accounting, cancellation).await?;
+            self.push_child(store, level + 1, child, accounting, cancellation).await?;
         }
-    })
-        .await
+    }
+
+    fn release(mut self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        for level in self.levels.value.drain(..) { release_blob_vec(level, accounting)?; }
+        release_blob_vec(self.leaf, accounting)?;
+        release_blob_vec(self.levels, accounting)
     }
 }
 
 fn effective_page_width(options: BlobBuildOptions) -> Option<usize> {
     let item_bound = usize::try_from(options.page_items).ok()?;
-    let byte_bound = usize::try_from(options.page_bytes)
-        .ok()?
-        .checked_sub(BLOB_PAGE_HEADER_BYTES)?
-        / BLOB_PAGE_ITEM_BYTES;
+    let byte_bound = usize::try_from(options.page_bytes).ok()?
+        .checked_sub(BLOB_PAGE_HEADER_BYTES)? / BLOB_PAGE_ITEM_BYTES;
     let width = item_bound.min(byte_bound);
     (width >= 2).then_some(width)
 }
 
-fn reserve_page_items<T>(
-    items: &mut Vec<T>,
-    width: usize,
-    live_allocation_bytes: &mut u64,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), BlobBuildFailure> {
-    if items.capacity() >= width {
-        return Ok(());
+pub(crate) fn encode_blob_page_with_accounting(
+    page: &BlobPage, maximum_items: u32, accounting: &mut KernelAccounting<'_>,
+) -> Result<ReadOwned<Vec<u8>>, FsError> {
+    let length = blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
+    let encoded = WorkCounters {
+        bytes_encoded: usize_to_u64(length), page_writes: 1, ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(encoded)?;
+    let mut owner = empty_blob_vec();
+    let mut claimed = 0_u64;
+    // The ordinary encoder and original observer share every canonical field write.
+    let result = (|| {
+        let encoder = Encoder::with_exact_capacity_with_steps(
+            DOMAIN, VERSION, length,
+            |step| -> Result<(), FsError> {
+                match step {
+                    super::codec::EncodeAllocationStep::Reserve { capacity } => {
+                        let requested = usize_to_u64(capacity);
+                        owner.custody = accounting.claim_owned(requested, 1)?;
+                        claimed = requested;
+                    }
+                    super::codec::EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
+                        claimed = actual_bytes;
+                        accounting.reconcile_owned(&mut owner.custody, admitted_bytes, actual_bytes)?;
+                    }
+                    super::codec::EncodeAllocationStep::BeforeHeader { .. }
+                        => accounting.check()?,
+                    super::codec::EncodeAllocationStep::HeaderWritten { bytes } => {
+                        completed_read_work(accounting, WorkCounters {
+                            bytes_encoded: bytes, ..WorkCounters::UNCHARGED
+                        })?;
+                    }
+                }
+                Ok(())
+            },
+            |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)),
+        )?;
+        let body = WorkCounters {
+            bytes_encoded: usize_to_u64(length).checked_sub(usize_to_u64(DOMAIN.len() + 2))
+                .ok_or(WorkError::Overflow)?,
+            page_writes: 1, ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(body)?;
+        owner.value = encode_blob_page_body(page, encoder).map_err(BlobBuildError::Encode)?;
+        completed_read_work(accounting, body)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(owner),
+        Err(error) => {
+            drop(owner.value);
+            match owner.custody {
+                KernelOwnedAllocation::Standalone => {
+                    let _ = release_blob_bytes(claimed, accounting);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(guard) => drop(guard),
+            }
+            Err(error)
+        }
     }
-    let bytes = width
-        .checked_mul(size_of::<T>())
-        .map(usize_to_u64)
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
-    let next_live = live_allocation_bytes
-        .checked_add(bytes)
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
-    let mut prospective = work
-        .checked_add(WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| build_failed(error.into(), *work))?;
-    prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(next_live);
-    build_verify(prospective, budget)?;
-    if items.try_reserve_exact(width - items.capacity()).is_err() {
-        return Err(build_failed(BlobBuildError::AllocationFailed, *work));
-    }
-    *live_allocation_bytes = next_live;
-    *work = prospective;
-    Ok(())
 }
 
 async fn put_blob_page<S: AsyncObjectStore>(
-    store: &mut BlobBatchStore<'_, S>,
-    page: &BlobPage,
-    options: BlobBuildOptions,
-    live_allocation_bytes: u64,
-    budget: WorkBudget,
-    work: &mut WorkCounters,
-    cancellation: &CancellationToken,
-) -> Result<ObjectId, BlobBuildFailure> {
-    let retained = store.retained_bytes();
-    let encoded = encode_blob_page(page, options.page_items)
-        .map_err(|error| build_failed(BlobBuildError::Encode(error), *work))?;
-    if encoded.len() > usize::try_from(options.page_bytes).unwrap_or(usize::MAX) {
-        return Err(build_failed(
-            BlobBuildError::PageTooLarge {
-                observed: usize_to_u64(encoded.len()),
-                maximum: u64::from(options.page_bytes),
-            },
-            *work,
-        ));
+    store: &mut BlobBatchStore<'_, S>, page: &BlobPage, options: BlobBuildOptions,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<ObjectId, FsError> {
+    let length = blob_page_encoded_length(page, options.page_items).map_err(BlobBuildError::Encode)?;
+    if usize_to_u64(length) > u64::from(options.page_bytes) {
+        return Err(BlobBuildError::PageTooLarge {
+            observed: usize_to_u64(length), maximum: u64::from(options.page_bytes),
+        }.into());
     }
-    let encoded_bytes = usize_to_u64(encoded.capacity());
-    let simultaneous = live_allocation_bytes
-        .checked_add(encoded_bytes)
-        .and_then(|bytes| bytes.checked_add(retained))
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
-    let mut encoded_work = build_add(
-        *work,
-        WorkCounters {
-            page_writes: 1,
-            bytes_encoded: usize_to_u64(encoded.len()),
-            allocation_operations: 1,
-            ..WorkCounters::default()
-        },
-    )?;
-    encoded_work.peak_allocation_bytes = encoded_work.peak_allocation_bytes.max(simultaneous);
-    build_verify(encoded_work, budget)?;
-    let page = HashedObject::new(ObjectKind::Blob, Bytes::from(encoded));
-    let page_id = page.object_id();
-    *work = build_put(
-        store,
-        page,
-        PutAllocation {
-            retained: encoded_bytes,
-            live: simultaneous,
-        },
-        budget,
-        encoded_work,
-        cancellation,
-    )
-    .await?;
-    Ok(page_id)
-}
-
-#[derive(Clone, Copy)]
-struct PutAllocation {
-    retained: u64,
-    live: u64,
-}
-
-async fn build_put<S: AsyncObjectStore>(
-    store: &mut BlobBatchStore<'_, S>,
-    object: HashedObject,
-    allocation: PutAllocation,
-    budget: WorkBudget,
-    work: WorkCounters,
-    cancellation: &CancellationToken,
-) -> Result<WorkCounters, BlobBuildFailure> {
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-    remaining.peak_allocation_bytes = budget
-        .peak_allocation_bytes
-        .checked_sub(allocation.live)
-        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-    match store
-        .put_with_retained(object, allocation.retained, remaining, cancellation)
-        .await
-    {
-        Ok(receipt) => {
-            let combined = work
-                .with_backend(receipt.work, allocation.live)
-                .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-            build_verify(combined, budget)?;
-            Ok(combined)
-        }
-        Err(failure) => Err(failure.map_with_prior_work(work, BlobBuildError::Storage)),
-    }
-}
-
-fn build_add(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, BlobBuildFailure> {
-    left.checked_add(right)
-        .map_err(|error| build_failed(BlobBuildError::Work(error), left))
-}
-
-fn build_verify(work: WorkCounters, budget: WorkBudget) -> Result<(), BlobBuildFailure> {
-    work.verify(budget)
-        .map_err(|error| build_failed(BlobBuildError::Work(error), work))
+    let owner = encode_blob_page_with_accounting(page, options.page_items, accounting)?;
+    let retained = usize_to_u64(owner.value.capacity());
+    let bytes = owned_read_bytes(owner)?;
+    let object = match hashed_blob_object(ObjectKind::Blob, bytes, accounting, cancellation) {
+        Ok(object) => object,
+        Err(error) => { let _ = release_blob_bytes(retained, accounting); return Err(error); }
+    };
+    let page = object.object_id();
+    store.put(object, retained, accounting, cancellation).await?;
+    Ok(page)
 }
 
 /// Streaming blob-build failure retaining exact completed work.
 pub type BlobBuildFailure = OperationFailure<BlobBuildError>;
+
+/// An actual source failure in storage funded before the source operation.
+pub struct BlobDemandFailure {
+    error: Box<Option<crate::DemandError>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: crate::NativeAllocation,
+}
+
+impl BlobDemandFailure {
+    /// Borrows the actual initialized provider cause.
+    pub fn error(&self) -> &crate::DemandError {
+        self.error.as_ref().as_ref().expect("published source failure is initialized")
+    }
+
+    /// Visits owned cause fields without cloning or replacing the prepaid holder.
+    pub fn error_mut(&mut self) -> &mut crate::DemandError {
+        self.error.as_mut().as_mut().expect("published source failure is initialized")
+    }
+}
+
+impl std::fmt::Debug for BlobDemandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("BlobDemandFailure").field("error", self.error()).finish()
+    }
+}
+
+impl std::fmt::Display for BlobDemandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.error(), formatter)
+    }
+}
+
+impl std::error::Error for BlobDemandFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(self.error()) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PreparedBlobDemandFailure {
+    storage: BlobDemandFailure,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PreparedBlobDemandFailure {
+    pub(crate) fn new(original: &crate::NativeMaterializationWork) -> Result<Self, FsError> {
+        let allocation = original.claim(usize_to_u64(size_of::<Option<crate::DemandError>>()))?;
+        let prepared = Self { storage: BlobDemandFailure {
+            error: Box::new(None), _allocation: allocation,
+        } };
+        original.admit(WorkCounters::UNCHARGED)?;
+        Ok(prepared)
+    }
+
+    pub(crate) fn shares_ledger(&self, original: &crate::NativeMaterializationWork) -> bool {
+        self.storage._allocation.work().shares_ledger(original)
+    }
+
+    pub(crate) fn failed(mut self, error: crate::DemandError) -> BlobDemandFailure {
+        *self.storage.error = Some(error);
+        self.storage
+    }
+}
 
 /// Stable streaming blob-build errors.
 #[derive(Debug, Error)]
@@ -1328,6 +1324,15 @@ pub enum BlobBuildError {
     /// Fallible bounded index scratch allocation was unavailable.
     #[error("blob build scratch allocation failed")]
     AllocationFailed,
+    /// The allocator's actual refusal, without replacing its cause.
+    #[error(transparent)]
+    ReserveFailed(std::collections::TryReserveError),
+    /// A custom source has not supplied an original-accounted producer.
+    #[error("blob source has no original native read primitive")]
+    NativeSourceUnavailable,
+    /// Exact accounting or provider cause outside the standalone error vocabulary.
+    #[error(transparent)]
+    Context(Box<FsError>),
     /// Incremental index finalization reached an impossible state.
     #[error("blob build index state is invalid")]
     InvalidIndexState,
@@ -1337,6 +1342,9 @@ pub enum BlobBuildError {
     /// Source stream failed.
     #[error("blob source failed: {0}")]
     Source(#[source] std::io::Error),
+    /// The original provider's typed cause in its actual preadmitted holder.
+    #[error(transparent)]
+    Demand(#[from] BlobDemandFailure),
     /// Canonical blob-index encoding failed.
     #[error(transparent)]
     Encode(#[from] CanonicalDecodeError),
@@ -1355,11 +1363,11 @@ fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBuildFailure {
 /// Successful authenticated logical blob range and exact work evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlobRead {
-    /// Requested bytes.
+    /// Requested bytes. Native aliases retain the original physical allocation guard.
     pub bytes: Bytes,
     /// Actual controlled output-vector capacity retained by `bytes`.
     pub logical_owned_bytes: u64,
-    /// Exact kernel and backend work.
+    /// Exact completed kernel and backend work in the supplied accounting context.
     pub work: WorkCounters,
     /// Exact authenticated forward page or chunk exposed by this traversal.
     pub next_residency: Option<ResidencyHint>,
@@ -1377,804 +1385,344 @@ impl BlobRead {
 /// Rejects invalid bounds, missing/corrupt objects, graph cycles, child-bound
 /// forgery, incomplete coverage, or any work outside the admitted budget.
 pub fn read_blob_range<S: ObjectStore>(
-    store: &S,
-    root: ObjectId,
-    range: ByteRange,
-    limits: DecodeLimits,
-    budget: WorkBudget,
+    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
 ) -> Result<BlobRead, BlobReadFailure> {
-    let mut machine = BlobRangeMachine::new(root, range, limits, budget)?;
-    frontier::drive_sync(store, &mut machine)
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+    let result = (|| {
+        let mut machine = BlobRangeMachine::new(root, range, limits, &mut accounting)?;
+        while !machine.pending.is_empty() {
+            let pending = machine.prepare(&mut accounting)?;
+            let (object, maximum) = pending.request(limits);
+            let result = ObjectStore::read(store, object, maximum, accounting.remaining()?);
+            let (read, retained) = super::file_read::accept_standalone_object_read(result, &mut accounting)?;
+            match pending {
+                PendingBlobRead::Page { expected_first, expected_end, height, .. } => {
+                    let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, &mut accounting)?);
+                    machine.accept_decoded_page(&decoded.value.0, expected_first, expected_end, height, &mut accounting)?;
+                    drop(decoded.value.0);
+                    release_read_allocation(decoded.value.1, decoded.custody, &mut accounting)?;
+                }
+                PendingBlobRead::Chunk(chunk) => machine.accept_chunk(&read, chunk, &mut accounting)?,
+            }
+            drop(read);
+            super::file_read::release_standalone_read_bytes(retained, &mut accounting)?;
+        }
+        machine.finish(&mut accounting)
+    })();
+    result.map_err(|error| failed(blob_error(error), accounting.spent()))
 }
 
-/// Asynchronously reads one authenticated logical blob range through the same
-/// transition machine as [`read_blob_range`].
+/// Asynchronously reads an authenticated range through the same transition
+/// machine as the synchronous and original-ledger readers.
 ///
 /// # Errors
 ///
-/// Returns the same typed authentication and work failures, plus cooperative
-/// cancellation before the next immutable-object read.
+/// Rejects malformed objects, cancellation, and work beyond the admitted budget.
 pub async fn read_blob_range_async<S: AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    range: ByteRange,
-    limits: DecodeLimits,
-    budget: WorkBudget,
+    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobRead, BlobReadFailure> {
-    if cancellation.is_cancelled() {
-        return Err(failed(BlobReadError::Cancelled, WorkCounters::default()));
-    }
-    let mut machine = BlobRangeMachine::new(root, range, limits, budget)?;
-    drive_blob_async(store, &mut machine, cancellation).await
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    read_blob_range_with_accounting(store, root, range, limits, &mut accounting, cancellation).await
+        .map_err(|error| failed(blob_error(error), accounting.spent()))
 }
 
-async fn drive_blob_async<S: AsyncObjectStore>(
-    store: &S,
-    machine: &mut BlobRangeMachine,
-    cancellation: &CancellationToken,
-) -> Result<BlobRead, BlobReadFailure> {
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(machine.cancelled());
-        }
-        if let Some(output) = machine.complete()? {
-            return Ok(output);
-        }
-        if let Some(batch) = machine.prepare_chunk_batch()? {
-            let receipt =
-                AsyncObjectStore::read_many(store, &batch.requests, batch.remaining, cancellation)
-                    .await
-                    .map_err(|failure| machine.batch_storage_failure(batch.prospective, failure))?;
-            machine.accept_chunk_batch(batch, receipt)?;
-            continue;
-        }
-        let request = machine.prepare_read()?;
-        let key = (request.page.kind == ObjectKind::Blob)
-            .then(|| DecodedCacheKey::new::<BlobPage>(request.page, machine.limits));
-        if let Some(key) = key {
-            let cached = store
-                .decoded_cache_get(key)
-                .map_err(|error| failed(error.into(), machine.work))?;
-            if let Some(cached) = cached {
-                machine.accept_cached_page(cached)?;
+pub(crate) async fn read_blob_range_with_accounting<S: AsyncObjectStore>(
+    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<BlobRead, FsError> {
+    read_blob_range_mode(store, root, range, limits, accounting, cancellation, true).await
+}
+
+pub(crate) async fn read_blob_range_for_copy_with_accounting<S: AsyncObjectStore>(
+    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<BlobRead, FsError> {
+    read_blob_range_mode(store, root, range, limits, accounting, cancellation, false).await
+}
+
+async fn read_blob_range_mode<S: AsyncObjectStore>(
+    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, publish_output: bool,
+) -> Result<BlobRead, FsError> {
+    let mut machine = BlobRangeMachine::new(root, range, limits, accounting)?;
+    machine.publish_output = publish_output;
+    while !machine.pending.is_empty() {
+        if machine.read_chunk_batch(store, accounting, cancellation).await? { continue; }
+        let pending = machine.prepare(accounting)?;
+        let (object, maximum) = pending.request(limits);
+        if let PendingBlobRead::Page { expected_first, expected_end, height, .. } = pending {
+            let key = DecodedCacheKey::new::<BlobPage>(object, limits);
+            #[cfg(not(target_arch = "wasm32"))]
+            let cached = if let Some(original) = accounting.native_work() {
+                store.decoded_cache_get_with_native_work(key, original)
+            } else { store.decoded_cache_get(key) };
+            #[cfg(target_arch = "wasm32")]
+            let cached = store.decoded_cache_get(key);
+            if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
+                let page = cached.value.downcast_ref::<BlobPage>().ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
+                machine.accept_decoded_page(page, expected_first, expected_end, height, accounting)?;
+                
+                drop(cached);
                 continue;
             }
+            let (read, retained) = read_object_with_accounting(store, object, maximum, accounting, cancellation).await?;
+            let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, accounting)?);
+            let (cached, allocated) = super::file_read::cache_decoded_read(store, key, decoded, accounting)?;
+            let page = cached.value.downcast_ref::<BlobPage>().ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
+            machine.accept_decoded_page(page, expected_first, expected_end, height, accounting)?;
+            
+            drop(cached);
+            super::file_read::release_standalone_read_bytes(allocated, accounting)?;
+            drop(read);
+            super::file_read::release_standalone_read_bytes(retained, accounting)?;
+        } else if let PendingBlobRead::Chunk(chunk) = pending {
+            let (read, retained) = read_object_with_accounting(store, object, maximum, accounting, cancellation).await?;
+            machine.accept_chunk(&read, chunk, accounting)?;
+            drop(read);
+            super::file_read::release_standalone_read_bytes(retained, accounting)?;
         }
-        let receipt = AsyncObjectStore::read(
-            store,
-            request.page,
-            request.maximum_bytes,
-            request.remaining,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| machine.storage_failure(request.prospective, failure))?;
-        machine.accept_read_with_cache(store, key, request.prospective, &receipt)?;
     }
-}
-
-struct PendingChunkBatch {
-    chunks: Vec<BlobChunkRef>,
-    requests: Vec<ObjectReadRequest>,
-    scratch_bytes: u64,
-    remaining: WorkBudget,
-    prospective: WorkCounters,
+    machine.finish(accounting)
 }
 
 #[derive(Clone, Copy)]
 enum PendingBlobRead {
-    Page {
-        page: ObjectId,
-        expected_first: u64,
-        expected_end: Option<u64>,
-        height: u16,
-    },
+    Page { page: ObjectId, expected_first: u64, expected_end: Option<u64>, height: u16 },
     Chunk(BlobChunkRef),
+}
+
+impl PendingBlobRead {
+    fn request(self, limits: DecodeLimits) -> (ObjectId, u64) {
+        match self {
+            Self::Page { page, .. } => (page, limits.maximum_page_object_bytes()),
+            Self::Chunk(chunk) => (chunk.chunk, chunk.end_offset - chunk.first_offset),
+        }
+    }
 }
 
 struct BlobRangeMachine {
     range: ByteRange,
     range_end: u64,
     limits: DecodeLimits,
-    budget: WorkBudget,
     allocation: usize,
     maximum_pending: usize,
     pending: Vec<PendingBlobRead>,
     pending_capacity: LogicalVecCapacity,
-    awaiting: Option<PendingBlobRead>,
-    visited: VisitedObjectSet,
+    visited: Option<super::persistent_point::Owned<VisitedObjectSet>>,
     output: Vec<u8>,
-    work: WorkCounters,
-    allocations: AllocationLedger,
     successor: Option<(u64, ResidencyHint)>,
+    publish_output: bool,
+    // Every physical payload is dropped before the corresponding native guard.
+    pending_custody: KernelOwnedAllocation,
+    output_custody: KernelOwnedAllocation,
 }
 
 impl BlobRangeMachine {
-    fn new(
-        root: ObjectId,
-        range: ByteRange,
-        limits: DecodeLimits,
-        budget: WorkBudget,
-    ) -> Result<Self, BlobReadFailure> {
-        if root.kind != ObjectKind::Blob {
-            return Err(failed(
-                BlobReadError::WrongRootKind,
-                WorkCounters::default(),
-            ));
-        }
-        let range_end = range
-            .offset
-            .checked_add(range.length)
-            .ok_or_else(|| failed(BlobReadError::InvalidRange, WorkCounters::default()))?;
-        let allocation = usize::try_from(range.length)
-            .map_err(|_| failed(BlobReadError::InvalidRange, WorkCounters::default()))?;
-        if !limits.page_limits_valid(1) {
-            return Err(failed(
-                BlobReadError::InvalidLimits,
-                WorkCounters::default(),
-            ));
-        }
-        let maximum_visited = usize::try_from(limits.maximum_visited_pages)
-            .map_err(|_| failed(BlobReadError::InvalidLimits, WorkCounters::default()))?;
-        let maximum_page_items = usize::try_from(limits.maximum_page_items)
-            .map_err(|_| failed(BlobReadError::InvalidLimits, WorkCounters::default()))?;
-        let maximum_pending = maximum_visited
-            .checked_add(maximum_page_items)
-            .ok_or_else(|| failed(BlobReadError::InvalidLimits, WorkCounters::default()))?;
-        let mut allocations = AllocationLedger::default();
-        let mut work = WorkCounters::default();
-        allocations
-            .claim_bytes(range.length, u64::from(allocation != 0), &mut work, budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let mut pending = Vec::new();
-        let mut pending_capacity = LogicalVecCapacity::default();
-        pending_capacity
-            .ensure_for_push(
-                &mut pending,
-                maximum_pending,
-                &mut allocations,
-                &mut work,
-                budget,
-            )
-            .map_err(|error| failed(error.into(), work))?;
-        pending.push(PendingBlobRead::Page {
-            page: root,
-            expected_first: 0,
-            expected_end: None,
-            height: 1,
-        });
-        let mut output = Vec::new();
-        if output.try_reserve_exact(allocation).is_err() {
-            return Err(failed(BlobReadError::AllocationFailed, work));
-        }
-        let excess = usize_to_u64(output.capacity()).checked_sub(range.length)
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), work))?;
-        allocations.claim_bytes(excess, 0, &mut work, budget)
-            .map_err(|error| failed(error.into(), work))?;
-        Ok(Self {
-            range,
-            range_end,
-            limits,
-            budget,
-            allocation,
-            maximum_pending,
-            pending,
-            pending_capacity,
-            awaiting: None,
-            visited,
-            output,
-            work,
-            allocations,
-            successor: None,
-        })
-    }
-
-    fn finish(&mut self) -> Result<BlobRead, BlobReadFailure> {
-        if self.output.len() != self.allocation {
-            return Err(failed(BlobReadError::IncompleteCoverage, self.work));
-        }
-        Ok(BlobRead {
-            logical_owned_bytes: usize_to_u64(self.output.capacity()),
-            bytes: Bytes::from(std::mem::take(&mut self.output)),
-            work: self.work,
-            next_residency: self.successor.map(|(_, hint)| hint),
-        })
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, BlobReadFailure> {
-        let pending = self
-            .pending
-            .pop()
-            .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        let (object, maximum_bytes) = match pending {
-            PendingBlobRead::Page { page, height, .. } => {
-                if height > self.limits.maximum_page_height {
-                    return Err(failed(BlobReadError::CycleOrHeight, self.work));
-                }
-                let visited = self
-                    .visited
-                    .insert(page, &mut self.allocations, &mut self.work, &self.budget)
-                    .map_err(|error| failed(error.into(), self.work))?;
-                if !visited.inserted {
-                    return Err(failed(BlobReadError::CycleOrHeight, self.work));
-                }
-                (page, self.limits.maximum_page_object_bytes())
-            }
-            PendingBlobRead::Chunk(chunk) => (chunk.chunk, chunk.end_offset - chunk.first_offset),
+    fn new(root: ObjectId, range: ByteRange, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        accounting.check()?;
+        if root.kind != ObjectKind::Blob { return Err(BlobReadError::WrongRootKind.into()); }
+        let range_end = range.offset.checked_add(range.length).ok_or(BlobReadError::InvalidRange)?;
+        let allocation = usize::try_from(range.length).map_err(|_| BlobReadError::InvalidRange)?;
+        if !limits.page_limits_valid(1) { return Err(BlobReadError::InvalidLimits.into()); }
+        let maximum_visited = usize::try_from(limits.maximum_visited_pages).map_err(|_| BlobReadError::InvalidLimits)?;
+        let maximum_pending = maximum_visited.checked_add(
+            usize::try_from(limits.maximum_page_items).map_err(|_| BlobReadError::InvalidLimits)?
+        ).ok_or(BlobReadError::InvalidLimits)?;
+        let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+        let output = allocate_read_buffer(allocation, accounting)?;
+        let mut machine = Self {
+            range, range_end, limits, allocation, maximum_pending, pending: Vec::new(),
+            pending_capacity: LogicalVecCapacity::default(), visited: Some(visited), output: output.value, successor: None,
+            pending_custody: KernelOwnedAllocation::Standalone, output_custody: output.custody,
+            publish_output: true,
         };
-        let mut remaining = self
-            .work
-            .remaining(self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        remaining.peak_allocation_bytes = self
-            .budget
-            .peak_allocation_bytes
-            .checked_sub(self.allocations.live_bytes())
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        self.awaiting = Some(pending);
-        Ok(frontier::ReadRequest {
-            page: object,
-            maximum_bytes,
-            remaining,
-            prospective: self.work,
-        })
+        machine.push(PendingBlobRead::Page { page: root, expected_first: 0, expected_end: None, height: 1 }, accounting)?;
+        Ok(machine)
     }
 
-    fn prepare_chunk_batch(&mut self) -> Result<Option<PendingChunkBatch>, BlobReadFailure> {
-        let chunk_count = self
-            .pending
-            .iter()
-            .rev()
-            .take_while(|pending| matches!(pending, PendingBlobRead::Chunk(_)))
-            .count();
-        if chunk_count < 2 {
-            return Ok(None);
-        }
-        let scratch_bytes = usize_to_u64(chunk_count)
-            .checked_mul(usize_to_u64(
-                size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>(),
-            ))
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        let live_bytes = self
-            .allocations
-            .live_bytes()
-            .checked_add(scratch_bytes)
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        let mut prospective = self.work;
-        prospective.allocation_operations = prospective
-            .allocation_operations
-            .checked_add(2)
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(live_bytes);
-        verify_work(prospective, self.budget)?;
-        let mut chunks = Vec::new();
-        let mut requests = Vec::new();
-        chunks
-            .try_reserve_exact(chunk_count)
-            .map_err(|_| failed(BlobReadError::AllocationFailed, self.work))?;
-        requests
-            .try_reserve_exact(chunk_count)
-            .map_err(|_| failed(BlobReadError::AllocationFailed, self.work))?;
-        for pending in self.pending.iter().rev().take(chunk_count) {
-            let PendingBlobRead::Chunk(chunk) = pending else {
-                return Err(failed(BlobReadError::TraversalState, self.work));
-            };
-            requests.push(ObjectReadRequest {
-                object_id: chunk.chunk,
-                maximum_bytes: chunk.end_offset - chunk.first_offset,
-            });
-            chunks.push(*chunk);
-        }
-        let mut remaining = prospective
-            .remaining(self.budget)
-            .map_err(|error| failed(error.into(), prospective))?;
-        remaining.peak_allocation_bytes = self
-            .budget
-            .peak_allocation_bytes
-            .checked_sub(live_bytes)
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), prospective))?;
-        Ok(Some(PendingChunkBatch {
-            chunks,
-            requests,
-            scratch_bytes,
-            remaining,
-            prospective,
-        }))
-    }
-
-    fn accept_chunk_batch(
-        &mut self,
-        batch: PendingChunkBatch,
-        receipt: ObjectReceipt<Vec<ObjectRead>>,
-    ) -> Result<(), BlobReadFailure> {
-        if receipt.value.len() != batch.chunks.len() {
-            return Err(failed(BlobReadError::TraversalState, batch.prospective));
-        }
-        let retained = self
-            .pending
-            .len()
-            .checked_sub(batch.chunks.len())
-            .ok_or_else(|| failed(BlobReadError::TraversalState, batch.prospective))?;
-        if self.pending.get(retained..).is_none_or(|pending| {
-            !pending
-                .iter()
-                .rev()
-                .zip(&batch.chunks)
-                .all(|(pending, chunk)| matches!(pending, PendingBlobRead::Chunk(found) if found == chunk))
-        }) {
-            return Err(failed(BlobReadError::TraversalState, batch.prospective));
-        }
-        self.pending.truncate(retained);
-        self.work = batch
-            .prospective
-            .with_backend(receipt.work, self.allocations.live_bytes())
-            .map_err(|error| failed(error.into(), batch.prospective))?;
-        let retained_bytes = receipt.value.iter().try_fold(0_u64, |total, value| {
-            total.checked_add(match value.retention {
-                ObjectReadRetention::Shared => 0,
-                ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-            })
-        });
-        let retained_bytes = retained_bytes
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        let simultaneous = self
-            .allocations
-            .live_bytes()
-            .checked_add(batch.scratch_bytes)
-            .and_then(|bytes| bytes.checked_add(retained_bytes))
-            .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
-        self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(simultaneous);
-        verify_work(self.work, self.budget)?;
-        for (chunk, value) in batch.chunks.into_iter().zip(receipt.value) {
-            self.accept_chunk(
-                &ObjectReceipt {
-                    value,
-                    work: WorkCounters::default(),
-                },
-                chunk,
-            )?;
-        }
+    fn push(&mut self, pending: PendingBlobRead, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        self.pending_capacity.ensure_for_push_with_accounting(
+            &mut self.pending, self.maximum_pending, &mut self.pending_custody, accounting,
+        )?;
+        self.pending.push(pending);
         Ok(())
     }
 
-    fn batch_storage_failure(
-        &self,
-        prospective: WorkCounters,
-        failure: crate::storage::ObjectFailure,
-    ) -> BlobReadFailure {
-        match prospective.with_backend(*failure.work, self.allocations.live_bytes()) {
-            Ok(combined) => failed(failure.error.into(), combined),
-            Err(error) => failed(error.into(), prospective),
+    fn prepare(&mut self, accounting: &mut KernelAccounting<'_>) -> Result<PendingBlobRead, FsError> {
+        accounting.check()?;
+        let pending = self.pending.pop().ok_or(BlobReadError::TraversalState)?;
+        if let PendingBlobRead::Page { page, height, .. } = pending {
+            if height > self.limits.maximum_page_height { return Err(BlobReadError::CycleOrHeight.into()); }
+            let visited_owner = self.visited.as_mut().ok_or(BlobReadError::TraversalState)?;
+            let visited = VisitedObjectSet::insert_with_accounting(visited_owner, page, accounting)?;
+            if !visited.inserted { return Err(BlobReadError::CycleOrHeight.into()); }
+            accounting.charge(WorkCounters { page_reads: 1, ..WorkCounters::UNCHARGED })?;
         }
-    }
-
-    fn accept_read(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<BlobRead>, BlobReadFailure> {
-        let pending = self
-            .awaiting
-            .take()
-            .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        self.work = prospective
-            .with_backend(receipt.work, self.allocations.live_bytes())
-            .map_err(|error| failed(error.into(), prospective))?;
-        match pending {
-            PendingBlobRead::Page {
-                expected_first,
-                expected_end,
-                height,
-                ..
-            } => self.accept_page(receipt, expected_first, expected_end, height)?,
-            PendingBlobRead::Chunk(chunk) => self.accept_chunk(receipt, chunk)?,
-        }
-        Ok(None)
-    }
-
-    fn accept_read_with_cache<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        key: Option<DecodedCacheKey>,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<(), BlobReadFailure> {
-        let pending = self
-            .awaiting
-            .take()
-            .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        self.work = prospective
-            .with_backend(receipt.work, self.allocations.live_bytes())
-            .map_err(|error| failed(error.into(), prospective))?;
-        match pending {
-            PendingBlobRead::Page {
-                expected_first,
-                expected_end,
-                height,
-                ..
-            } => self.accept_page_with_cache(
-                store,
-                key.ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?,
-                receipt,
-                expected_first,
-                expected_end,
-                height,
-            ),
-            PendingBlobRead::Chunk(chunk) => self.accept_chunk(receipt, chunk),
-        }
-    }
-
-    fn add_items(&mut self, count: u64) -> Result<(), BlobReadFailure> {
-        self.work = add_work(
-            self.work,
-            WorkCounters {
-                items_examined: count,
-                ..WorkCounters::default()
-            },
-        )?;
-        verify_work(self.work, self.budget)
-    }
-
-    fn accept_page(
-        &mut self,
-        receipt: &ObjectReceipt<ObjectRead>,
-        expected_first: u64,
-        expected_end: Option<u64>,
-        height: u16,
-    ) -> Result<(), BlobReadFailure> {
-        let (page, decoded_bytes, retained_bytes) = self.decode_page(receipt)?;
-        let result = self.accept_decoded_page(&page, expected_first, expected_end, height);
-        self.allocations
-            .release(decoded_bytes)
-            .map_err(|error| failed(error.into(), self.work))?;
-        self.allocations
-            .release(retained_bytes)
-            .map_err(|error| failed(error.into(), self.work))?;
-        result
-    }
-
-    fn decode_page(
-        &mut self,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<(BlobPage, u64, u64), BlobReadFailure> {
-        self.work = add_work(
-            self.work,
-            WorkCounters {
-                page_reads: 1,
-                ..WorkCounters::default()
-            },
-        )?;
-        verify_work(self.work, self.budget)?;
-        let retained_bytes = match receipt.value.retention {
-            ObjectReadRetention::Shared => 0,
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
-        self.allocations
-            .claim_bytes(retained_bytes, 0, &mut self.work, self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        let shape = blob_page_decode_shape(&receipt.value, self.limits)
-            .map_err(|error| failed(error.into(), self.work))?;
-        self.add_items(usize_to_u64(shape.items))?;
-        let item_bytes = match shape.kind {
-            DecodedPageKind::Leaf => size_of::<BlobChunkRef>(),
-            DecodedPageKind::Internal => size_of::<BlobChild>(),
-        };
-        let decoded_bytes = shape
-            .items
-            .checked_mul(item_bytes)
-            .map(usize_to_u64)
-            .ok_or_else(|| failed(BlobReadError::AllocationFailed, self.work))?;
-        self.allocations
-            .claim_bytes(
-                decoded_bytes,
-                u64::from(decoded_bytes != 0),
-                &mut self.work,
-                self.budget,
-            )
-            .map_err(|error| failed(error.into(), self.work))?;
-        let page = decode_blob_page(&receipt.value, self.limits)
-            .map_err(|error| failed(BlobReadError::Decode(error), self.work))?;
-        Ok((page, decoded_bytes, retained_bytes))
-    }
-
-    fn accept_cached_page(&mut self, cached: DecodedCacheValue) -> Result<(), BlobReadFailure> {
-        let pending = self
-            .awaiting
-            .take()
-            .ok_or_else(|| failed(BlobReadError::TraversalState, self.work))?;
-        let PendingBlobRead::Page {
-            expected_first,
-            expected_end,
-            height,
-            ..
-        } = pending
-        else {
-            return Err(failed(BlobReadError::TraversalState, self.work));
-        };
-        self.work = add_work(
-            self.work,
-            WorkCounters {
-                page_reads: 1,
-                ..WorkCounters::default()
-            },
-        )?;
-        verify_work(self.work, self.budget)?;
-        let page = cached
-            .value
-            .downcast::<BlobPage>()
-            .map_err(|_| failed(ObjectStoreError::Corrupt.into(), self.work))?;
-        self.accept_decoded_page(&page, expected_first, expected_end, height)
-    }
-
-    fn accept_page_with_cache<S: AsyncObjectStore>(
-        &mut self,
-        store: &S,
-        key: DecodedCacheKey,
-        receipt: &ObjectReceipt<ObjectRead>,
-        expected_first: u64,
-        expected_end: Option<u64>,
-        height: u16,
-    ) -> Result<(), BlobReadFailure> {
-        let (page, decoded_bytes, retained_bytes) = self.decode_page(receipt)?;
-        let admitted = store.decoded_cache_admit(
-            key,
-            DecodedCacheValue {
-                value: Arc::new(page),
-                logical_bytes: decoded_bytes,
-            },
-        );
-        let result = match admitted {
-            Ok(DecodedCacheAdmission::Shared(value)) => {
-                self.allocations
-                    .release(decoded_bytes)
-                    .map_err(|error| failed(error.into(), self.work))?;
-                let page = value
-                    .value
-                    .downcast::<BlobPage>()
-                    .map_err(|_| failed(ObjectStoreError::Corrupt.into(), self.work))?;
-                self.accept_decoded_page(&page, expected_first, expected_end, height)
-            }
-            Ok(DecodedCacheAdmission::Uncached(value)) => {
-                let page = value
-                    .value
-                    .downcast::<BlobPage>()
-                    .map_err(|_| failed(ObjectStoreError::Corrupt.into(), self.work))?;
-                let result = self.accept_decoded_page(&page, expected_first, expected_end, height);
-                self.allocations
-                    .release(decoded_bytes)
-                    .map_err(|error| failed(error.into(), self.work))?;
-                result
-            }
-            Err(error) => {
-                self.allocations
-                    .release(decoded_bytes)
-                    .map_err(|release| failed(release.into(), self.work))?;
-                Err(failed(error.into(), self.work))
-            }
-        };
-        self.allocations
-            .release(retained_bytes)
-            .map_err(|error| failed(error.into(), self.work))?;
-        result
+        Ok(pending)
     }
 
     fn accept_decoded_page(
-        &mut self,
-        page: &BlobPage,
-        expected_first: u64,
-        expected_end: Option<u64>,
-        height: u16,
-    ) -> Result<(), BlobReadFailure> {
-        if page.first_offset != expected_first
-            || expected_end.is_some_and(|end| page.end_offset != end)
-        {
-            return Err(failed(BlobReadError::ChildBoundsMismatch, self.work));
+        &mut self, page: &BlobPage, expected_first: u64, expected_end: Option<u64>, height: u16,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        if page.first_offset != expected_first || expected_end.is_some_and(|end| page.end_offset != end) {
+            return Err(BlobReadError::ChildBoundsMismatch.into());
         }
-        if expected_end.is_none() && self.range_end > page.end_offset {
-            return Err(failed(BlobReadError::InvalidRange, self.work));
-        }
+        if expected_end.is_none() && self.range_end > page.end_offset { return Err(BlobReadError::InvalidRange.into()); }
         match &page.node {
-            BlobNode::Internal(children) => self.push_children(children, height)?,
-            BlobNode::Leaf(chunks) => self.push_chunks(chunks)?,
-        }
-        Ok(())
-    }
-
-    fn push_children(
-        &mut self,
-        children: &[BlobChild],
-        height: u16,
-    ) -> Result<(), BlobReadFailure> {
-        let child_height = height
-            .checked_add(1)
-            .ok_or_else(|| failed(BlobReadError::CycleOrHeight, self.work))?;
-        for child in children.iter().rev() {
-            self.examine_item()?;
-            if child.first_offset < self.range_end && child.end_offset > self.range.offset {
-                self.pending_capacity
-                    .ensure_for_push(
-                        &mut self.pending,
-                        self.maximum_pending,
-                        &mut self.allocations,
-                        &mut self.work,
-                        self.budget,
-                    )
-                    .map_err(|error| failed(error.into(), self.work))?;
-                self.pending.push(PendingBlobRead::Page {
-                    page: child.page,
-                    expected_first: child.first_offset,
-                    expected_end: Some(child.end_offset),
-                    height: child_height,
-                });
-            } else if self.range.length != 0 && child.first_offset >= self.range_end {
-                self.retain_successor(
-                    child.first_offset,
-                    ObjectReadRequest {
-                        object_id: child.page,
-                        maximum_bytes: self.limits.maximum_page_object_bytes(),
-                    },
-                );
+            BlobNode::Internal(children) => {
+                let height = height.checked_add(1).ok_or(BlobReadError::CycleOrHeight)?;
+                for child in children.iter().rev() {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if child.first_offset < self.range_end && child.end_offset > self.range.offset {
+                        self.push(PendingBlobRead::Page { page: child.page, expected_first: child.first_offset,
+                            expected_end: Some(child.end_offset), height }, accounting)?;
+                    } else if self.range.length != 0 && child.first_offset >= self.range_end {
+                        self.retain_successor(child.first_offset, ObjectReadRequest { object_id: child.page,
+                            maximum_bytes: self.limits.maximum_page_object_bytes() });
+                    }
+                }
             }
-        }
-        Ok(())
-    }
-
-    fn push_chunks(&mut self, chunks: &[BlobChunkRef]) -> Result<(), BlobReadFailure> {
-        for chunk in chunks.iter().rev() {
-            self.examine_item()?;
-            if chunk.first_offset < self.range_end && chunk.end_offset > self.range.offset {
-                self.pending_capacity
-                    .ensure_for_push(
-                        &mut self.pending,
-                        self.maximum_pending,
-                        &mut self.allocations,
-                        &mut self.work,
-                        self.budget,
-                    )
-                    .map_err(|error| failed(error.into(), self.work))?;
-                self.pending.push(PendingBlobRead::Chunk(*chunk));
-            } else if self.range.length != 0 && chunk.first_offset >= self.range_end {
-                self.retain_successor(
-                    chunk.first_offset,
-                    ObjectReadRequest {
-                        object_id: chunk.chunk,
-                        maximum_bytes: chunk.end_offset - chunk.first_offset,
-                    },
-                );
+            BlobNode::Leaf(chunks) => {
+                for chunk in chunks.iter().rev() {
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    if chunk.first_offset < self.range_end && chunk.end_offset > self.range.offset {
+                        self.push(PendingBlobRead::Chunk(*chunk), accounting)?;
+                    } else if self.range.length != 0 && chunk.first_offset >= self.range_end {
+                        self.retain_successor(chunk.first_offset, ObjectReadRequest { object_id: chunk.chunk,
+                            maximum_bytes: chunk.end_offset - chunk.first_offset });
+                    }
+                }
             }
         }
         Ok(())
     }
 
     fn retain_successor(&mut self, offset: u64, request: ObjectReadRequest) {
-        if self
-            .successor
-            .is_none_or(|(current_offset, _)| offset < current_offset)
-        {
-            self.successor = Some((
-                offset,
-                ResidencyHint {
-                    request,
-                    reason: ResidencyReason::SequentialRange,
-                },
-            ));
+        if self.successor.is_none_or(|(current, _)| offset < current) {
+            self.successor = Some((offset, ResidencyHint { request, reason: ResidencyReason::SequentialRange }));
         }
     }
 
-    fn examine_item(&mut self) -> Result<(), BlobReadFailure> {
-        self.work = add_work(
-            self.work,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::default()
-            },
-        )?;
-        verify_work(self.work, self.budget)
+    fn accept_chunk(&mut self, bytes: &[u8], chunk: BlobChunkRef, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        if usize_to_u64(bytes.len()) != chunk.end_offset - chunk.first_offset { return Err(BlobReadError::ChunkLengthMismatch.into()); }
+        let start = usize::try_from(self.range.offset.max(chunk.first_offset) - chunk.first_offset).map_err(|_| BlobReadError::InvalidRange)?;
+        let end = usize::try_from(self.range_end.min(chunk.end_offset) - chunk.first_offset).map_err(|_| BlobReadError::InvalidRange)?;
+        let region = bytes.get(start..end).ok_or(BlobReadError::InvalidRange)?;
+        if self.output.len().checked_add(region.len()).is_none_or(|length| length > self.allocation) {
+            return Err(BlobReadError::IncompleteCoverage.into());
+        }
+        let copied = WorkCounters { bytes_copied: usize_to_u64(region.len()),
+            output_bytes: if self.publish_output { usize_to_u64(region.len()) } else { 0 },
+            items_returned: 1, ..WorkCounters::UNCHARGED };
+        accounting.admit(copied)?;
+        self.output.extend_from_slice(region);
+        completed_read_work(accounting, copied)
     }
 
-    fn accept_chunk(
-        &mut self,
-        receipt: &ObjectReceipt<ObjectRead>,
-        chunk: BlobChunkRef,
-    ) -> Result<(), BlobReadFailure> {
-        let retained_bytes = match receipt.value.retention {
-            ObjectReadRetention::Shared => 0,
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+    async fn read_chunk_batch<S: AsyncObjectStore>(
+        &mut self, store: &S, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<bool, FsError> {
+        if !matches!(self.pending.last(), Some(PendingBlobRead::Chunk(_))) { return Ok(false); }
+        let count = self.pending.iter().rev().take_while(|pending| matches!(pending, PendingBlobRead::Chunk(_))).count();
+        if count < 2 { return Ok(false); }
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = accounting.native_work().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        let mut observed = super::file_read::OriginalReadAccounting::new(accounting)?;
+        let mut chunks = Vec::new();
+        let mut requests = Vec::new();
+        let prepared = (|| -> Result<(), ReadDecodeError> {
+            reserve_decoded_items_with_steps(&mut chunks, count, &mut |step| observed.observe(step))?;
+            reserve_decoded_items_with_steps(&mut requests, count, &mut |step| observed.observe(step))?;
+            let copied = usize_to_u64(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>());
+            for pending in self.pending.iter().rev().take(count) {
+                let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState).into()) };
+                let completed = WorkCounters { items_examined: 1, bytes_copied: copied, ..WorkCounters::UNCHARGED };
+                observed.admit(completed)?;
+                chunks.push(*chunk);
+                requests.push(ObjectReadRequest { object_id: chunk.chunk, maximum_bytes: chunk.end_offset - chunk.first_offset });
+                observed.record_completed(completed)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            drop(chunks);
+            drop(requests);
+            observed.release_failed()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native { return Err(error.into_original_fs_error()); }
+            return Err(read_decode_error(error));
+        }
+        let (custody, scratch_bytes) = observed.into_parts();
+        let batch = ReadOwned { value: (chunks, requests, scratch_bytes), custody };
+        let read_result = super::file_read::read_objects_with_accounting(
+            store, &batch.value.1, accounting, cancellation,
+        ).await;
+        let applied = match read_result {
+            Err(error) => Err(error),
+            Ok(reads) => {
+                let retained = if native { Ok(0) } else {
+                    super::file_read::retained_object_reads_bytes(&reads.value, reads.value.capacity())
+                };
+                let applied = (|| -> Result<bool, FsError> {
+                    if reads.value.len() != count { return Err(BlobReadError::TraversalState.into()); }
+                    self.pending.truncate(self.pending.len() - count);
+                    for (chunk, read) in batch.value.0.iter().zip(&reads.value) {
+                        self.accept_chunk(&read.bytes, *chunk, accounting)?;
+                    }
+                    Ok(true)
+                })();
+                drop(reads.value);
+                let retired = retained.and_then(|bytes| release_read_allocation(bytes, reads.custody, accounting));
+                retired.and(applied)
+            }
         };
-        self.allocations
-            .claim_bytes(retained_bytes, 0, &mut self.work, self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        let chunk_length = chunk.end_offset - chunk.first_offset;
-        if usize_to_u64(receipt.value.len()) != chunk_length {
-            return Err(failed(BlobReadError::ChunkLengthMismatch, self.work));
+        drop(batch.value);
+        release_read_allocation(scratch_bytes, batch.custody, accounting)?;
+        applied
+    }
+
+    fn finish(mut self, accounting: &mut KernelAccounting<'_>) -> Result<BlobRead, FsError> {
+        if self.output.len() != self.allocation { return Err(BlobReadError::IncompleteCoverage.into()); }
+        let logical_owned_bytes = usize_to_u64(self.output.capacity());
+        let output = ReadOwned {
+            value: std::mem::take(&mut self.output),
+            custody: std::mem::replace(&mut self.output_custody, KernelOwnedAllocation::Standalone),
+        };
+        let bytes = owned_read_bytes(output)?;
+        let pending_bytes = self.pending_capacity.logical_bytes();
+        drop(self.pending);
+        release_read_allocation(pending_bytes, self.pending_custody, accounting)?;
+        if let Some(visited) = self.visited {
+            visited.retire(accounting)?;
         }
-        let start = self.range.offset.max(chunk.first_offset) - chunk.first_offset;
-        let end = self.range_end.min(chunk.end_offset) - chunk.first_offset;
-        let start =
-            usize::try_from(start).map_err(|_| failed(BlobReadError::InvalidRange, self.work))?;
-        let end =
-            usize::try_from(end).map_err(|_| failed(BlobReadError::InvalidRange, self.work))?;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "start <= end <= receipt.value.len() by construction: `BlobPage::validate` \
-                      (run by `decode_blob_page` before any chunk reaches this machine) requires \
-                      `contiguous()` to hold, so `chunk.first_offset < chunk.end_offset`; only \
-                      chunks with `chunk.first_offset < self.range_end && chunk.end_offset > \
-                      self.range.offset` are ever queued (see the frontier filter above); \
-                      `self.range_end` is `range.offset + range.length` via `checked_add`, so \
-                      `range.offset <= self.range_end`; together these bound \
-                      `max(range.offset, chunk.first_offset) <= min(range_end, \
-                      chunk.end_offset)`, i.e. start <= end; and the length check just above \
-                      establishes `end <= chunk_length == receipt.value.len()`"
-        )]
-        self.output.extend_from_slice(&receipt.value[start..end]);
-        self.work = add_work(
-            self.work,
-            WorkCounters {
-                bytes_copied: usize_to_u64(end - start),
-                output_bytes: usize_to_u64(end - start),
-                items_returned: 1,
-                ..WorkCounters::default()
-            },
-        )?;
-        verify_work(self.work, self.budget)?;
-        self.allocations
-            .release(retained_bytes)
-            .map_err(|error| failed(error.into(), self.work))
+        Ok(BlobRead { bytes, logical_owned_bytes, work: accounting.spent(), next_residency: self.successor.map(|(_, hint)| hint) })
     }
 }
 
-impl frontier::Machine for BlobRangeMachine {
-    type Output = BlobRead;
-    type Failure = BlobReadFailure;
-
-    fn complete(&mut self) -> Result<Option<Self::Output>, Self::Failure> {
-        if self.pending.is_empty() && self.awaiting.is_none() {
-            return self.finish().map(Some);
-        }
-        Ok(None)
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, Self::Failure> {
-        BlobRangeMachine::prepare_read(self)
-    }
-
-    fn accept(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<Self::Output>, Self::Failure> {
-        self.accept_read(prospective, receipt)
-    }
-
-    fn storage_failure(
-        &self,
-        prospective: WorkCounters,
-        failure: crate::storage::ObjectFailure,
-    ) -> Self::Failure {
-        match prospective.with_backend(*failure.work, self.allocations.live_bytes()) {
-            Ok(combined) => failed(failure.error.into(), combined),
-            Err(error) => failed(error.into(), prospective),
-        }
-    }
-
-    fn cancelled(&self) -> Self::Failure {
-        failed(BlobReadError::Cancelled, self.work)
+fn blob_error(error: FsError) -> BlobReadError {
+    match error {
+        FsError::BlobRead(error) => error,
+        FsError::Work(error) => error.into(),
+        FsError::Cancelled(_) => BlobReadError::Cancelled,
+        FsError::FileRead(super::FileRangeReadError::AllocationFailed) => BlobReadError::AllocationFailed,
+        FsError::FileRead(super::FileRangeReadError::Work(error)) => error.into(),
+        error => BlobReadError::Context(Box::new(error)),
     }
 }
 
-fn add_work(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, BlobReadFailure> {
-    left.checked_add(right)
-        .map_err(|error| failed(BlobReadError::Work(error), left))
+fn read_decode_error(error: ReadDecodeError) -> FsError {
+    match error {
+        ReadDecodeError::Canonical(error) => BlobReadError::Decode(error).into(),
+        ReadDecodeError::AllocationFailed(_) => BlobReadError::Decode(CanonicalDecodeError::AllocationFailed).into(),
+        ReadDecodeError::Accounting(error) => error,
+    }
 }
 
-fn verify_work(work: WorkCounters, budget: WorkBudget) -> Result<(), BlobReadFailure> {
-    work.verify(budget)
-        .map_err(|error| failed(BlobReadError::Work(error), work))
-}
 
 /// Authenticated blob-read failure with exact work retained on every path.
 pub type BlobReadFailure = OperationFailure<BlobReadError>;
@@ -2225,6 +1773,9 @@ pub enum BlobReadError {
     /// Exact work exceeded or overflowed its budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// Shared original-ledger read boundary failed.
+    #[error(transparent)]
+    Context(Box<FsError>),
 }
 
 impl From<AllocationError> for BlobReadError {
@@ -2241,8 +1792,8 @@ fn capacity(value: u32) -> Result<usize, CanonicalDecodeError> {
     usize::try_from(value).map_err(|_| CanonicalDecodeError::LengthOverflow)
 }
 
-fn invariant(message: &str) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(message.to_owned())
+fn invariant(message: &'static str) -> CanonicalDecodeError {
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
 #[cfg(all(test, feature = "memory"))]

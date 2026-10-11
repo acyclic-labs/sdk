@@ -727,22 +727,22 @@ where
     meter.check().map_err(fork_fs_failure)
 }
 
-trait ForkPublicationGuard<'a>: Send {
-    fn seal(&mut self, meter: &mut ForkWork<'a>)
+trait ForkPublicationGuard: Send {
+    fn seal(&mut self, meter: &mut ForkWork<'_>)
         -> impl Future<Output = Result<(), ForkFsFailure>> + Send;
     fn steps<S: AsyncAuthorityStore + ?Sized>(
-        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'a>,
+        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'_>,
     ) -> impl Future<Output = Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFsFailure>> + crate::async_storage::StorageFuture;
 }
 
-impl<'a, F, Fut> ForkPublicationGuard<'a> for Option<&mut F>
+impl<F, Fut> ForkPublicationGuard for Option<&mut F>
 where F: FnMut(WorkBudget) -> Fut + Send, Fut: Future<Output = crate::FsResult<()>> + Send {
-    async fn seal(&mut self, meter: &mut ForkWork<'a>) -> Result<(), ForkFsFailure> {
+    async fn seal(&mut self, meter: &mut ForkWork<'_>) -> Result<(), ForkFsFailure> {
         seal_fork_guard(meter, self).await
     }
 
     async fn steps<S: AsyncAuthorityStore + ?Sized>(
-        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'a>,
+        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'_>,
     ) -> Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFsFailure> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = meter.native_work() {
@@ -758,7 +758,7 @@ where F: FnMut(WorkBudget) -> Fut + Send, Fut: Future<Output = crate::FsResult<(
             ).await.map_err(ForkFsFailure::from),
             None => crate::async_storage::commit_workspace_fork_in_steps(
                 store, fork, child_budget, meter.cancellation,
-            ).await.map_err(fork_fs_failure),
+            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(fork_fs_failure),
         };
         match result {
             Ok(receipt) => {
@@ -780,10 +780,10 @@ struct NativeForkGuard<'g, 'a, F> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<'m, 'a, F, Fut> ForkPublicationGuard<'m> for NativeForkGuard<'_, 'a, F>
+impl<'a, F, Fut> ForkPublicationGuard for NativeForkGuard<'_, 'a, F>
 where F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
     Fut: Future<Output = Result<(), crate::FsError>> + Send {
-    async fn seal(&mut self, meter: &mut ForkWork<'m>) -> Result<(), ForkFsFailure> {
+    async fn seal(&mut self, meter: &mut ForkWork<'_>) -> Result<(), ForkFsFailure> {
         meter.check().map_err(fork_fs_failure)?;
         (self.callback)(self.original).await
             .map_err(|error| ForkFsFailure::new(error, meter.spent()))?;
@@ -791,7 +791,7 @@ where F: FnMut(&'a crate::NativeMaterializationWork) -> Fut + Send,
     }
 
     async fn steps<S: AsyncAuthorityStore + ?Sized>(
-        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'m>,
+        &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'_>,
     ) -> Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFsFailure> {
         let value = crate::async_storage::commit_workspace_fork_in_steps_guarded_with_native_work(
             store, fork, PublicationPermit::Unrestricted, self.original, meter.cancellation, self.callback,
@@ -1928,7 +1928,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Ok((request, records + more_records, bytes + more_bytes))
         }
 
-    async fn first_record_engine<'a, G: ForkPublicationGuard<'a>>(
+    async fn first_record_engine<'a, G: ForkPublicationGuard>(
         &self, authority: AuthorityId, commit: ProposedCommit,
         mut meter: ForkWork<'a>, mut guard: G,
     ) -> Result<crate::FsReceipt<bool>, ForkFsFailure> {
@@ -1991,7 +1991,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         Ok(crate::FsReceipt { value, work: meter.spent() })
     }
 
-    async fn workspace_fork_engine<'a, G: ForkPublicationGuard<'a>>(
+    async fn workspace_fork_engine<'a, G: ForkPublicationGuard>(
             &self, fork: WorkspaceForkCommit, permit: PublicationPermit,
             mut meter: ForkWork<'a>, mut guard: G,
         ) -> Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFsFailure> {
@@ -2021,7 +2021,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             guard.steps(self, fork, &mut meter).await
         }
 
-    pub(crate) async fn create_authority_engine<'a, G: ForkPublicationGuard<'a>>(
+    pub(crate) async fn create_authority_engine<'a, G: ForkPublicationGuard>(
             &self, authority: AuthorityId, epoch: Epoch,
             mut meter: ForkWork<'a>, mut guard: G,
         ) -> Result<crate::FsReceipt<CreateAuthorityOutcome>, ForkFsFailure> {
@@ -3637,7 +3637,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    async fn fork_generation_with_owner_guard<'a, G: ForkPublicationGuard<'a>>(
+    async fn fork_generation_with_owner_guard<'a, G: ForkPublicationGuard>(
             &self,
             source: crate::GenerationForkSource,
             destination_authority: AuthorityId,

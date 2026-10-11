@@ -1,7 +1,7 @@
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::Digest;
-use crate::kernel::extent_page_id;
+use crate::kernel::{extent_page_id, decode_extent_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use crate::storage::object_digest;
@@ -557,92 +557,53 @@ fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
 #[test]
 fn page_encoding_and_hashing_are_separately_admitted_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
-    fn context<'a>(
-        store: &'a MemoryObjectStore,
-        budget: WorkBudget,
-        cancellation: &'a CancellationToken,
-    ) -> Result<Context<'a, MemoryObjectStore>, AllocationError> {
-        let mut allocations = AllocationLedger::default();
-        let mut work = WorkCounters::default();
-        let visited = VisitedObjectSet::new(1, &mut allocations, &mut work, budget)?;
-        Ok(Context {
-            store,
-            limits: DecodeLimits::default(),
-            budget,
-            work,
-            allocations,
-            visited,
-            patches: Vec::new(),
-            maximum_seen_height: 0,
-            cancellation,
-        })
-    }
-
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let page = ExtentPage::Leaf(Vec::new());
     let encoded_length = u64::try_from(extent_page_encoded_length(&page, 1)?)?;
-    let mut encode_limited = context(
-        &store,
-        WorkBudget {
-            bytes_encoded: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )?;
-    let encode_initial_work = encode_limited.work;
-    let encode_error = poll_ready(encode_limited.write_page(&page))
-        .ok_or("synchronous adapter unexpectedly blocked")?
-        .err()
+    let mut encode_limited = KernelAccounting::standalone(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    );
+    let encode_initial_work = encode_limited.spent();
+    let encode_error = poll_ready(put_extent_page_with_accounting(
+        &store, &page, DecodeLimits::default(), &mut encode_limited, &cancellation,
+    )).ok_or("synchronous adapter unexpectedly blocked")?.err()
         .ok_or("zero encoding budget unexpectedly succeeded")?;
-    assert!(matches!(
-        encode_error,
+    assert!(matches!(project_extent_error(encode_error),
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_encoded",
-            observed,
-            maximum: 0,
+            counter: "bytes_encoded", observed, maximum: 0,
         }) if observed == encoded_length
     ));
-    assert_eq!(encode_limited.work, encode_initial_work);
+    assert_eq!(encode_limited.spent(), encode_initial_work);
 
-    let mut hash_limited = context(
-        &store,
-        WorkBudget {
-            bytes_hashed: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )?;
-    let hash_error = poll_ready(hash_limited.write_page(&page))
-        .ok_or("synchronous adapter unexpectedly blocked")?
-        .err()
+    let mut hash_limited = KernelAccounting::standalone(
+        WorkBudget { bytes_hashed: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    );
+    let hash_error = poll_ready(put_extent_page_with_accounting(
+        &store, &page, DecodeLimits::default(), &mut hash_limited, &cancellation,
+    )).ok_or("synchronous adapter unexpectedly blocked")?.err()
         .ok_or("zero hash budget unexpectedly succeeded")?;
-    assert!(matches!(
-        hash_error,
+    assert!(matches!(project_extent_error(hash_error),
         ExtentMutationError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_hashed",
-            observed,
-            maximum: 0,
+            counter: "bytes_hashed", observed, maximum: 0,
         }) if observed == encoded_length + OBJECT_DIGEST_ENVELOPE_BYTES
     ));
-    assert_eq!(hash_limited.work.bytes_encoded, encoded_length);
-    assert_eq!(hash_limited.work.bytes_hashed, 0);
-    assert_eq!(hash_limited.work.backend_write_operations, 0);
+    assert_eq!(hash_limited.spent().bytes_encoded, encoded_length);
+    assert_eq!(hash_limited.spent().bytes_hashed, 0);
+    assert_eq!(hash_limited.spent().backend_write_operations, 0);
 
-    let mut byte_limited = context(&store, WorkBudget::UNBOUNDED, &cancellation)?;
-    byte_limited.limits.maximum_page_bytes = 1;
-    let byte_error = poll_ready(byte_limited.write_page(&page))
-        .ok_or("byte-limited page write blocked")?
-        .err()
+    let mut byte_limited = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let byte_error = poll_ready(put_extent_page_with_accounting(
+        &store, &page, DecodeLimits { maximum_page_bytes: 1, ..DecodeLimits::default() },
+        &mut byte_limited, &cancellation,
+    )).ok_or("byte-limited page write blocked")?.err()
         .ok_or("one-byte page ceiling unexpectedly admitted an extent page")?;
-    assert!(matches!(
-        byte_error,
+    assert!(matches!(project_extent_error(byte_error),
         ExtentMutationError::Decode(CanonicalDecodeError::ObjectTooLarge {
-            observed,
-            maximum: 1,
+            observed, maximum: 1,
         }) if observed == encoded_length
     ));
-    assert_eq!(byte_limited.work.backend_write_operations, 0);
+    assert_eq!(byte_limited.spent().backend_write_operations, 0);
 
     Ok(())
 }
@@ -664,30 +625,18 @@ fn shape_valid_malformed_page_releases_decoded_allocation() -> Result<(), Box<dy
         Bytes::from(malformed),
         WorkBudget::UNBOUNDED,
     )?;
-    let mut allocations = AllocationLedger::default();
-    let mut work = WorkCounters::default();
-    let visited = VisitedObjectSet::new(1, &mut allocations, &mut work, WorkBudget::UNBOUNDED)?;
-    let mut context = Context {
-        store: &store,
-        limits: DecodeLimits::default(),
-        budget: WorkBudget::UNBOUNDED,
-        work,
-        allocations,
-        visited,
-        patches: Vec::new(),
-        maximum_seen_height: 0,
-        cancellation: &cancellation,
-    };
-    let initial_live = context.allocations.live_bytes();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut context = defensive_context(&store, &mut accounting, &cancellation)?;
+    let initial_live = standalone_live(context.accounting);
     let error = poll_ready(context.read_page(malformed_id))
         .ok_or("malformed page read blocked")?
         .err()
         .ok_or("shape-valid malformed extent page unexpectedly decoded")?;
     assert!(matches!(
-        error,
+        project_extent_error(error),
         ExtentMutationError::Decode(CanonicalDecodeError::Invariant(_))
     ));
-    assert_eq!(context.allocations.live_bytes(), initial_live);
+    assert_eq!(standalone_live(context.accounting), initial_live);
     Ok(())
 }
 
@@ -773,7 +722,8 @@ fn same_leaf_patch_replay_examines_linear_items() -> Result<(), Box<dyn std::err
         })
         .collect();
     let patch_count = u64::try_from(patches.len())?;
-    let (mut result, examined) = apply_patches_linear(extents, &patches)?;
+    let mut result = Vec::with_capacity(extents.len() + patches.len() * 2);
+    let examined = apply_patches_linear(&extents, &patches, &mut result)?;
     assert!(examined <= EXTENTS + patch_count.saturating_mul(3));
     coalesce(&mut result)?;
     assert_eq!(result.len(), 1);
@@ -788,6 +738,8 @@ fn overlapping_ordered_edits_normalize_content_offsets_exactly()
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([8; 32]),
     };
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let plan = compile_patch_plan(
         100,
         &[
@@ -807,9 +759,9 @@ fn overlapping_ordered_edits_normalize_content_offsets_exactly()
                 extend: false,
             },
         ],
-        WorkBudget::UNBOUNDED,
+        &mut accounting,
     )?;
-    let patches = plan.patches;
+    let patches = &plan.patches.value;
     assert_eq!(plan.final_size, 100);
     assert_eq!(patches.len(), 3);
     assert_eq!((patches[0].offset, patches[0].end), (10, 20));
@@ -1137,24 +1089,23 @@ fn generated_sparse_histories_match_independent_byte_model()
     Ok(())
 }
 
-fn defensive_context<'a>(
-    store: &'a MemoryObjectStore,
+fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
+    match accounting {
+        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+        _ => unreachable!("standalone fixture"),
+    }
+}
+
+fn defensive_context<'a, 'b>(
+    store: &'a MemoryObjectStore, accounting: &'a mut KernelAccounting<'b>,
     cancellation: &'a CancellationToken,
-) -> Result<Context<'a, MemoryObjectStore>, AllocationError> {
-    let budget = WorkBudget::UNBOUNDED;
-    let mut allocations = AllocationLedger::default();
-    let mut work = WorkCounters::default();
-    let visited = VisitedObjectSet::new(8, &mut allocations, &mut work, budget)?;
+) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
+    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
+    let patches = Owned::allocate(0, accounting)?;
     Ok(Context {
-        store,
-        limits: DecodeLimits::default(),
-        budget,
-        work,
-        allocations,
-        visited,
-        patches: Vec::new(),
-        maximum_seen_height: 0,
-        cancellation,
+        store, limits: DecodeLimits::default(), accounting,
+        visited, patches,
+        maximum_seen_height: 0, cancellation,
     })
 }
 
@@ -1206,10 +1157,9 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
             .err()
             .ok_or("invalid extent request unexpectedly succeeded")?;
         assert_eq!(
-            std::mem::discriminant(&failure.error),
+            std::mem::discriminant(&failure),
             std::mem::discriminant(&expected)
         );
-        assert_eq!(*failure.work, WorkCounters::default());
     }
     validate_request(
         root,
@@ -1218,17 +1168,18 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
         DecodeLimits::default(),
     )?;
 
-    let no_op = compile_patch_plan(0, std::slice::from_ref(&mutation), WorkBudget::UNBOUNDED)?;
-    assert!(no_op.patches.is_empty());
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let no_op = compile_patch_plan(0, std::slice::from_ref(&mutation), &mut accounting)?;
+    assert!(no_op.patches.value.is_empty());
     assert_eq!(no_op.final_size, 0);
-    assert_eq!(no_op.live_allocation_bytes, 0);
+    assert_eq!(no_op.patches.bytes, 0);
 
-    let mut work = WorkCounters::default();
-    let missing_coordinate = coordinate_index(&[1, 3], 2, &mut work, WorkBudget::UNBOUNDED)
+    let missing_coordinate = coordinate_index(&[1, 3], 2, &mut accounting)
         .err()
         .ok_or("missing patch coordinate unexpectedly resolved")?;
     assert!(matches!(
-        missing_coordinate.error,
+        project_extent_error(missing_coordinate),
         ExtentMutationError::PatchInvariant
     ));
     assert!(!patch_continues(
@@ -1302,7 +1253,8 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
 
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
-    let mut context = defensive_context(&store, &cancellation)?;
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut context = defensive_context(&store, &mut accounting, &cancellation)?;
     let complete = poll_ready(context.enter_node(NodeRequest {
         page: root,
         original_first: 4,
@@ -1311,7 +1263,7 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
         height: 1,
     }))
     .ok_or("empty extent request unexpectedly suspended")??;
-    assert!(matches!(complete, EnteredNode::Complete(values) if values.is_empty()));
+    assert!(matches!(complete, EnteredNode::Complete(values) if values.value.is_empty()));
     let height = poll_ready(context.enter_node(NodeRequest {
         page: root,
         original_first: 0,
@@ -1322,48 +1274,43 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
     .ok_or("height guard unexpectedly suspended")?
     .err()
     .ok_or("excessive height unexpectedly succeeded")?;
-    assert!(matches!(height, ExtentMutationError::HeightExceeded));
+    assert!(matches!(project_extent_error(height), ExtentMutationError::HeightExceeded));
 
     let original = ObjectId {
         kind: ObjectKind::ExtentPage,
         digest: Digest::from_bytes([1; 32]),
     };
+    let children = Owned::allocate(0, context.accounting)?;
+    let rewritten = Owned::allocate(0, context.accounting)?;
     let empty = poll_ready(context.finish_frame(InternalFrame {
         original,
-        children: Vec::new(),
+        children,
         original_first: 0,
         original_end: 0,
         output_end: 0,
         height: 1,
         next_child: 0,
-        rewritten: Vec::new(),
-        logical_bytes: 0,
+        rewritten,
     }))
     .ok_or("empty frame unexpectedly suspended")??;
-    assert!(empty.is_empty());
-    let rewritten = vec![Summary {
-        first: 0,
-        end: 1,
-        page: original,
-    }];
+    assert!(empty.value.is_empty());
+    let mut rewritten = Owned::<Vec<Summary>>::allocate(1, context.accounting)?;
+    rewritten.value.push(Summary { first: 0, end: 1, page: original });
+    let mut children = Owned::<Vec<ExtentChild>>::allocate(1, context.accounting)?;
+    children.value.push(ExtentChild { first_offset: 0, end_offset: 2, page: original });
     let single = poll_ready(context.finish_frame(InternalFrame {
         original,
-        children: vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 2,
-            page: original,
-        }],
+        children,
         original_first: 0,
         original_end: 2,
         output_end: 1,
         height: 1,
         next_child: 1,
-        rewritten: rewritten.clone(),
-        logical_bytes: 0,
+        rewritten,
     }))
     .ok_or("single frame unexpectedly suspended")??;
-    assert_eq!(single.len(), 1);
-    assert_eq!(single[0].end, 1);
+    assert_eq!(single.value.len(), 1);
+    assert_eq!(single.value[0].end, 1);
 
     for allocation in [
         AllocationError::Work(WorkError::Overflow),
@@ -1385,6 +1332,8 @@ fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::er
 #[test]
 fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let empty = admit_patch_plan(
         8,
         &[ExtentMutation::Replace {
@@ -1393,11 +1342,11 @@ fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
             kind: ExtentKind::Hole,
             extend: false,
         }],
-        WorkBudget::UNBOUNDED,
+        &mut accounting,
     )
     .err()
     .ok_or("empty replacement unexpectedly admitted")?;
-    assert!(matches!(empty.error, ExtentMutationError::EmptyRange));
+    assert!(matches!(project_extent_error(empty), ExtentMutationError::EmptyRange));
 
     let overflow = admit_patch_plan(
         u64::MAX,
@@ -1407,15 +1356,120 @@ fn patch_admission_and_coalescing_reject_every_boundary_before_storage()
             kind: ExtentKind::AllocatedZero,
             extend: true,
         }],
-        WorkBudget::UNBOUNDED,
+        &mut accounting,
     )
     .err()
     .ok_or("overflowing replacement unexpectedly admitted")?;
-    assert!(matches!(overflow.error, ExtentMutationError::RangeOverflow));
+    assert!(matches!(project_extent_error(overflow), ExtentMutationError::RangeOverflow));
 
     assert!(!equivalent_continuation(&hole(0, 1), &hole(2, 1))?);
     assert!(equivalent_continuation(&hole(0, 1), &hole(1, 1))?);
     assert!(equivalent_continuation(&allocated(0, 1), &allocated(1, 1))?);
     assert!(!equivalent_continuation(&hole(0, 1), &allocated(1, 1))?);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_extent_compilation_denial_restores_original_scratch_before_backend()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = put(&store, &ExtentPage::Leaf(vec![hole(0, 16)]), 8)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mutation = ExtentMutation::Replace {
+        offset: 4, length: 4, kind: ExtentKind::AllocatedZero, extend: false,
+    };
+    let denied = poll_ready(apply_extent_mutations_with_accounting(
+        &store, root, 16, std::slice::from_ref(&mutation), 1, DecodeLimits::default(),
+        &mut accounting, &cancellation,
+    )).ok_or("native extent compilation blocked")?.err().ok_or("unadmitted radix copy succeeded")?;
+    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)));
+    assert_eq!(original.receipt().bytes_copied, 0);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let receipt = poll_ready(apply_extent_mutations_with_accounting(
+        &store, root, 16, &[mutation], 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    )).ok_or("admitted native extent mutation blocked")??;
+    let read = store.read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?;
+    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default())?,
+        ExtentPage::Leaf(vec![hole(0, 4), allocated(4, 4), hole(8, 8)]));
+    assert!(original.receipt().backend_read_operations > 0);
+    assert_eq!(original.receipt().page_writes, 1);
+    assert_eq!(original.receipt().backend_write_operations, 1);
+    drop(read);
+    let cloned = poll_ready(super::super::regular_mutation::clone_extent_range_with_accounting(
+        &store, super::super::ExtentCloneRequest {
+            source_root: receipt.root, source_logical_bytes: 16,
+            source_range: crate::ByteRange { offset: 2, length: 8 },
+            destination_root: receipt.root, destination_logical_bytes: 16, destination_offset: 4,
+            maximum_spans: 8, maximum_mutations: 8,
+        }, DecodeLimits::default(), &mut accounting, &cancellation,
+    )).ok_or("overlapping native range clone blocked")??;
+    let read = store.read(cloned.root, u64::MAX, WorkBudget::UNBOUNDED)?;
+    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default())?,
+        ExtentPage::Leaf(vec![hole(0, 6), allocated(6, 4), hole(10, 6)]));
+    assert_eq!(original.receipt().page_writes, 2);
+    assert_eq!(original.receipt().backend_write_operations, 2);
+    drop(read);
+    drop(store);
+    assert_eq!(original.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_visited_growth_denial_preserves_old_slots_and_exact_original_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let object = |value| ObjectId {
+        kind: ObjectKind::ExtentPage, digest: Digest::from_bytes([value; 32]),
+    };
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut visited = VisitedObjectSet::new_with_accounting(32, &mut accounting)?;
+    for value in 0..8 {
+        assert!(VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
+    }
+    let retained = original.live_allocation_bytes();
+    let allocations_before = original.receipt().allocation_operations;
+    let denied = VisitedObjectSet::insert_with_accounting(&mut visited, object(8), &mut accounting)
+        .err().ok_or("unadmitted visited rehash copy succeeded")?;
+    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
+    assert_eq!(original.receipt().bytes_copied, 0);
+    assert!(original.receipt().allocation_operations > allocations_before);
+    assert_eq!(original.live_allocation_bytes(), retained);
+    for value in 0..8 {
+        assert!(!VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
+    }
+    visited.retire(&mut accounting)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let mut visited = VisitedObjectSet::new_with_accounting(32, &mut accounting)?;
+    for value in 0..18 {
+        assert!(VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
+    }
+    assert_eq!(original.receipt().bytes_copied, 24 * usize_to_u64(std::mem::size_of::<ObjectId>()));
+    for value in 0..18 {
+        assert!(!VisitedObjectSet::insert_with_accounting(&mut visited, object(value), &mut accounting)?.inserted);
+    }
+    visited.retire(&mut accounting)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }

@@ -1,10 +1,65 @@
 use super::*;
-use crate::kernel::{FileKind, NameEncoding, TreeChild, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_mutation_refuses_index_copy_before_allocating_or_reading()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let original = entry("a", 1, FileKind::Regular)?;
+    let root = put(&store, &TreePage::Leaf(vec![original.clone()]), 8)?;
+    let mutations = [TreeMutation::Replace { expected_file_id: original.file_id, entry: original }];
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let before = work.receipt();
+    let live = work.live_allocation_bytes();
+    let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
+    let error = crate::async_storage::poll_immediate(apply_tree_mutations_with_accounting(
+        &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    )).expect_err("index copy must be admitted before allocating");
+    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+    assert_eq!(work.receipt(), before);
+    assert_eq!(work.live_allocation_bytes(), live);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_mutation_write_denial_preserves_paid_orphan_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (root, _) = three_leaf_tree(&store)?;
+    let first = entry("a", 1, FileKind::Fifo)?;
+    let first_page = tree_page_id(&TreePage::Leaf(vec![first.clone()]), 8)?;
+    let mutations = [
+        TreeMutation::Replace { entry: first, expected_file_id: FileId::from_bytes([1; 16]) },
+        TreeMutation::Replace { entry: entry("x", 4, FileKind::Fifo)?, expected_file_id: FileId::from_bytes([4; 16]) },
+    ];
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget { page_writes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
+    let error = crate::async_storage::poll_immediate(apply_tree_mutations_with_accounting(
+        &store, root, &mutations, 2, DecodeLimits::default(), &mut accounting, &cancellation,
+    )).expect_err("second changed leaf must refuse on original page-write limit");
+    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+    assert_eq!(work.receipt().page_writes, 1);
+    assert_eq!(work.receipt().backend_write_operations, 1);
+    assert!(store.read(first_page, u64::MAX, WorkBudget::UNBOUNDED).is_ok());
+    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8)?;
+    assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
+    drop(accounting);
+    drop(store);
+    assert_eq!(work.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+    Ok(())
+}
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,

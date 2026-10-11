@@ -480,7 +480,7 @@ impl<'a> ForkStepsWork<'a> {
             ).await,
             None => append_first_record(
                 store, authority, commit, WorkCounters::UNCHARGED, self.remaining()?, self.cancellation,
-            ).await.map_err(authority_to_fs),
+            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
         };
         self.accept(result)
     }
@@ -507,10 +507,10 @@ impl<'a> ForkStepsWork<'a> {
             ).await,
             (Some(source), None) => store.fork_generation_authority(
                 source, destination, operation, remaining, self.cancellation,
-            ).await.map_err(authority_to_fs),
+            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
             (None, None) => store.create_authority(
                 destination, Epoch::GENESIS, remaining, self.cancellation,
-            ).await.map_err(authority_to_fs),
+            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
         };
         self.accept(result)
     }
@@ -721,7 +721,7 @@ where
         ).await,
         None => store.create_authority(
             authority, Epoch::GENESIS, remaining, cancellation,
-        ).await.map_err(authority_to_fs),
+        ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
     }.map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
     let mut work = add_authority(prior, created.work, budget).map_err(authority_to_fs)?;
     let head = match created.value {
@@ -776,7 +776,7 @@ where
             run_authority_guard(guard, &mut work, budget).await?;
         }
     }
-    Ok(crate::storage::AuthorityReceipt {
+    Ok(crate::FsReceipt {
         value: matches,
         work,
     })
@@ -799,7 +799,7 @@ fn add_authority(
         .checked_add(more)
         .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))?;
     combined
-        .verify_within(&budget)
+        .verify(budget)
         .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), combined))?;
     Ok(combined)
 }
@@ -811,7 +811,7 @@ fn authority_to_fs(
 }
 
 fn authority_projection<T>(result: crate::facade::FsResult<T>) -> AuthorityResult<T> {
-    result.map_err(|failure| {
+    result.map(|receipt| crate::storage::AuthorityReceipt { value: receipt.value, work: receipt.work }).map_err(|failure| {
         let error = match failure.error {
             crate::facade::FsError::Authority(error) => error,
             crate::facade::FsError::Work(error) => error.into(),

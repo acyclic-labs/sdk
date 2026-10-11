@@ -174,6 +174,147 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
     Ok(())
 }
 
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn original_native_root_constructor_retains_actual_read_prefixes() -> TestResult {
+    use acyclic_fs::NativeMaterializationWork;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    std::fs::create_dir(directory.path().join("unvisited"))?;
+    std::fs::write(directory.path().join("unvisited/body"), b"never enumerated")?;
+    let reference = SourceReference { identity: [91; 16], epoch: 17 };
+    let budget = finite_budget()?;
+    for reads in [0, 1, 2, 3] {
+        let mut limited = budget;
+        limited.backend_read_operations = reads;
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(limited, &cancellation).map_err(|(error, _)| error)?;
+        let before = work.receipt();
+        let opened = NativeDemandSource::open_with_reference_and_native_work(
+            directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
+        ).await;
+        if reads == 3 {
+            let source = opened?;
+            assert_eq!(source.reference(), reference);
+            assert_eq!(Arc::strong_count(&work.runtime_meter_owner()), 3, "provider intrinsically keeps its one original ledger alive");
+        } else {
+            let error = opened.err().ok_or("original root exceeded its read allowance")?;
+            assert!(matches!(error, DemandError::Work(_)));
+            if reads == 0 { assert_eq!(work.receipt(), before); }
+        }
+        let actual = work.receipt();
+        assert_eq!(actual.backend_read_operations, reads);
+        assert_eq!(actual.source_entries_visited, 0);
+        assert_eq!(actual.source_bytes_read, 0);
+        actual.verify(limited)?;
+    }
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let error = NativeDemandSource::open_with_reference_and_native_work(
+        &directory.path().join("absent"), FilesystemProfile::Portable, VolumeLimits::default(),
+        reference, None, &work,
+    ).await.err().ok_or("missing original root opened")?;
+    assert!(matches!(error, DemandError::Io(_)));
+    assert_eq!(work.receipt().backend_read_operations, 1);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let before = work.receipt();
+    cancellation.cancel();
+    let error = NativeDemandSource::open_with_reference_and_native_work(
+        directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
+    ).await.err().ok_or("pre-cancelled original root opened")?;
+    assert!(matches!(error, DemandError::Cancelled));
+    assert_eq!(work.receipt(), before);
+    for metadata_denial in [false, true] {
+        let mut limited = budget;
+        if metadata_denial { limited.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes(); }
+        else { limited.allocation_operations = 1; }
+        let work = NativeMaterializationWork::new(limited, &CancellationToken::new()).map_err(|(error, _)| error)?;
+        let before = work.receipt();
+        let error = NativeDemandSource::open_with_reference_and_native_work(
+            directory.path(), FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
+        ).await.err().ok_or("original root ignored its constructor metadata bound")?;
+        assert!(matches!(error, DemandError::Mount(_) | DemandError::Work(_)));
+        assert_eq!(work.receipt(), before);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn original_native_root_custody_and_current_reference_are_provider_owned() -> TestResult {
+    use acyclic_fs::NativeMaterializationWork;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().join("root");
+    std::fs::create_dir(&root)?;
+    let budget = finite_budget()?;
+    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(|(error, _)| error)?;
+    let before = work.live_allocation_bytes();
+    let (caller_path, caller_guard) = work.copy_path(&root)?;
+    let reference = SourceReference { identity: [92; 16], epoch: 18 };
+    let source = NativeDemandSource::open_with_reference_and_native_work(
+        &caller_path, FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
+    ).await?;
+    drop(caller_path);
+    drop(caller_guard);
+    assert!(work.live_allocation_bytes() > before, "provider retains its own root/control custody");
+    let identity = source.root_identity();
+    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, reference);
+    source.validate_current_with_native_work(reference, &work)?;
+    let advanced = source.invalidate_with_native_work(&work)?;
+    assert_eq!(advanced.identity, reference.identity);
+    assert_eq!(advanced.epoch, reference.epoch + 1);
+    assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
+    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
+    let ordinary = NativeDemandSource::open_with_reference(
+        &root, FilesystemProfile::Portable, VolumeLimits::default(), reference,
+    ).await?;
+    let prefix = work.receipt();
+    assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.invalidate_with_native_work(&work), Err(DemandError::NativeWorkUnavailable)));
+    assert_eq!(work.receipt(), prefix);
+    std::fs::rename(&root, temporary.path().join("held-original"))?;
+    std::fs::create_dir(&root)?;
+    assert!(matches!(source.validate_root_with_native_work(&root, identity, &work), Err(DemandError::SourceUnavailable)));
+    let retained = work.live_allocation_bytes();
+    drop(source);
+    assert!(work.live_allocation_bytes() < retained, "the physical root spelling retires only with its provider");
+    let detached_source = NativeDemandSource::open_with_reference_and_native_work(
+        &root, FilesystemProfile::Portable, VolumeLimits::default(), advanced, None, &work,
+    ).await?;
+    let original = work.runtime_meter_owner();
+    let original_weak = Arc::downgrade(&original);
+    drop(original);
+    work.receipt().verify(budget)?;
+    drop(work);
+    assert!(original_weak.upgrade().is_some(), "public provider outlives every caller accounting guard");
+    drop(detached_source);
+    assert!(original_weak.upgrade().is_none(), "provider Drop retires its intrinsic original keeper");
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", windows))]
+#[tokio::test]
+async fn original_native_root_preserves_unpaired_utf16_spelling() -> TestResult {
+    use acyclic_fs::NativeMaterializationWork;
+    use std::os::windows::ffi::OsStringExt as _;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join(std::ffi::OsString::from_wide(&[0x72, 0xd800, 0x74]));
+    std::fs::create_dir(&root)?;
+    let budget = finite_budget()?;
+    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(|(error, _)| error)?;
+    let reference = SourceReference { identity: [93; 16], epoch: 19 };
+    let source = NativeDemandSource::open_with_reference_and_native_work(
+        &root, FilesystemProfile::Windows, VolumeLimits::default(), reference, None, &work,
+    ).await?;
+    assert_eq!(work.receipt().backend_read_operations, 3);
+    assert_eq!(source.validate_root_with_native_work(&root, source.root_identity(), &work)?, reference);
+    work.receipt().verify(budget)?;
+    Ok(())
+}
+
 // Faults occur only after the real companion operation ran. In particular,
 // Binding is a lost acknowledgement of the real durable-in-memory CAS.
 #[derive(Clone)]
@@ -594,7 +735,7 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     let budget = finite_budget()?;
     let node = source.lookup(source.reference(), &path, budget, &token).await?.value.ok_or("file absent")?;
     let baseline = source.read_range(source.reference(), &path, node.version, 0, 6, budget, &token).await?;
-    assert_eq!(baseline.value.as_ref(), b"native");
+    assert_eq!(baseline.value.bytes.as_ref(), b"native");
     baseline.work.verify(budget)?;
     let mut limited = budget;
     limited.backend_read_operations = baseline.work.backend_read_operations.checked_sub(1).ok_or("no native IO")?;
@@ -700,7 +841,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     assert_eq!(page.value.entries[0].name, name);
     page.work.verify(budget)?;
     let read = source.read_range(source.reference(), &path, node.version, 0, 6, budget, &token).await?;
-    assert_eq!(read.value.as_ref(), b"opaque");
+    assert_eq!(read.value.bytes.as_ref(), b"opaque");
     read.work.verify(budget)?;
     let mut limited = budget;
     limited.peak_allocation_bytes = read.work.peak_allocation_bytes.checked_sub(1).ok_or("no native live buffer")?;
@@ -712,7 +853,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         directory.path(), FilesystemProfile::Windows, limits, source.reference(),
     ).await?;
     let read = reopened.read_range(reopened.reference(), &path, node.version, 0, 6, budget, &token).await?;
-    assert_eq!(read.value.as_ref(), b"opaque");
+    assert_eq!(read.value.bytes.as_ref(), b"opaque");
     read.work.verify(budget)?;
     Ok(())
 }

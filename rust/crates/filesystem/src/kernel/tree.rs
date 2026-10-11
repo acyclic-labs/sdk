@@ -41,7 +41,8 @@ pub fn encode_tree_page(
 /// The ordinary encoder projects this same engine with an unbounded permit.
 ///
 /// # Errors
-/// Returns validation, cancellation, allocation, or budget failures with their prefix.
+/// Returns validation, cancellation, allocation, or budget failures with their prefix;
+/// output-reservation failures retain the allocator's original error as their source.
 pub fn encode_tree_page_measured(
     page: &TreePage,
     maximum_items: u32,
@@ -61,9 +62,12 @@ pub fn encode_tree_page_measured(
 /// Failure from finite canonical tree encoding.
 #[derive(Debug, Error)]
 pub enum TreePageEncodeError {
-    /// Invalid canonical page or failed owned-buffer allocation.
+    /// Invalid canonical page.
     #[error(transparent)]
     Canonical(#[from] CanonicalDecodeError),
+    /// The canonical output reservation failed with its actual allocator cause.
+    #[error("canonical tree-page output allocation failed")]
+    AllocationFailed(#[source] std::collections::TryReserveError),
     /// The actual operation exceeded its permit.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
@@ -75,6 +79,7 @@ pub enum TreePageEncodeError {
 fn project_encoding(result: MeasuredResult<OperationReceipt<Vec<u8>>, TreePageEncodeError>) -> Result<Vec<u8>, CanonicalDecodeError> {
     result.map(|receipt| receipt.value).map_err(|failure| match failure.error {
         TreePageEncodeError::Canonical(error) => error,
+        TreePageEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
         TreePageEncodeError::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
         TreePageEncodeError::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
     })
@@ -111,20 +116,11 @@ pub(super) fn encode_tree_leaf_entries_with_accounting(
     semantic_tail: Option<u8>,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let native_original = accounting.native_work().is_some();
     let mut encoding = EncodeAccounting::new(accounting);
     let result = encode_tree_leaf_entries_with_steps(
         entries, maximum_items, semantic_tail, data_custody,
         |step| encoding.observe(step),
-        |error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native_original {
-                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
-            }
-            let _ = error;
-            CanonicalDecodeError::AllocationFailed.into()
-        },
+        crate::FsError::EncodedAllocationFailed,
     );
     encoding.finish(result)
 }
@@ -136,19 +132,10 @@ pub(super) fn encode_tree_internal_children_with_accounting<'a, I>(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError>
 where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let native_original = accounting.native_work().is_some();
     let mut encoding = EncodeAccounting::new(accounting);
     let result = encode_tree_internal_children_with_steps(
         children, maximum_items, |step| encoding.observe(step),
-        |error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native_original {
-                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
-            }
-            let _ = error;
-            CanonicalDecodeError::AllocationFailed.into()
-        },
+        crate::FsError::EncodedAllocationFailed,
     );
     encoding.finish(result)
 }
@@ -170,7 +157,7 @@ pub(super) fn encode_tree_leaf_entries_measured(
         encode_tree_leaf_entries_with_allocations(
             entries, maximum_items, &mut allocations, &mut work, budget,
             cancellation, semantic_tail, None,
-            |_| TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed),
+            TreePageEncodeError::AllocationFailed,
         )
     })();
     result.map(|value| OperationReceipt { value, work })
@@ -222,7 +209,7 @@ where I: Clone + ExactSizeIterator<Item = (&'a LogicalName, ObjectId)> {
             .map_err(|error| error.into_work_or(TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
         encode_tree_internal_children_with_allocations(
             children, maximum_items, &mut allocations, &mut work, budget, cancellation,
-            |_| TreePageEncodeError::Canonical(CanonicalDecodeError::AllocationFailed),
+            TreePageEncodeError::AllocationFailed,
         )
     })();
     result.map(|value| OperationReceipt { value, work })

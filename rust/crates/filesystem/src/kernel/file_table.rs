@@ -1305,7 +1305,7 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
         })
         .map_err(map_batch_failure)
     }, budget, cancellation, FileRecordReadError::Cancelled,
-        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<(), WorkError> + Sync)))
+        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)))
     .await
     .map(|receipt| FileRecordBatchLookup { work: receipt.work, ..receipt.value })
 }
@@ -1458,7 +1458,7 @@ pub(crate) async fn lookup_file_record_async_with_custody<S: AsyncObjectStore>(
         })
         .map_err(map_batch_failure)
     }, budget, cancellation, FileRecordReadError::Cancelled,
-        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<(), WorkError> + Sync)))
+        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)))
     .await
     .map(|receipt| FileRecordLookup { work: receipt.work, ..receipt.value })
 }

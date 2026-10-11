@@ -126,6 +126,31 @@ impl<A, O, S> DistributedFs<A, O, S> {
         ).await
     }
 
+    /// Attaches the original creation operation using its unchanged native root.
+    ///
+    /// # Errors
+    ///
+    /// Preserves typed paid creation and companion failures.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn attach_lazy_with_operation_with_native_work<D: DemandSource + 'static>(
+        &self, name: &str, source: Arc<D>, config: VolumeConfig,
+        operation_id: crate::OperationId,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<(LazyWorkspace<A, O, D, S>, crate::Generation<A, O>),
+        (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        S: LazyWorkspaceStore + Clone,
+    {
+        original.admit(crate::WorkCounters::UNCHARGED)
+            .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
+        LazyWorkspace::attach_with_operation_with_native_work(
+            &self.fs, name, source, self.store.clone(), config, operation_id, original, cancellation,
+        ).await
+    }
+
     /// Reopens an existing workspace against its unresolved source.
     pub async fn open_lazy<D: DemandSource + 'static>(
         &self,

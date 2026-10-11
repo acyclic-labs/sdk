@@ -138,6 +138,8 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
     let first_value = DecodedCacheValue {
         value: Arc::new(41_u64),
         logical_bytes: 8,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody: None,
     };
     assert!(matches!(
         cached.decoded_cache_admit(first_key, first_value)?,
@@ -155,6 +157,8 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
             DecodedCacheValue {
                 value: Arc::new(7_u32),
                 logical_bytes: 4,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             },
         )?,
         DecodedCacheAdmission::Shared(_)
@@ -167,6 +171,8 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
     let replacement = DecodedCacheValue {
         value: Arc::new(99_u64),
         logical_bytes: 8,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody: None,
     };
     let DecodedCacheAdmission::Shared(existing) =
         cached.decoded_cache_admit(first_key, replacement)?
@@ -182,6 +188,8 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
             DecodedCacheValue {
                 value: Arc::new(5_u16),
                 logical_bytes: 65,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             },
         )?,
         DecodedCacheAdmission::Uncached(_)
@@ -218,6 +226,10 @@ fn flight_waiter_bound_and_completion_are_deterministic() {
         Poll::Ready(Ok(Some(bytes))) if bytes.as_ref() == b"ready"
     ));
     flight.finish(None);
+    assert!(matches!(
+        flight.poll(first_context),
+        Poll::Ready(Ok(Some(bytes))) if bytes.as_ref() == b"ready"
+    ));
 }
 
 #[test]
@@ -360,6 +372,15 @@ impl AsyncObjectStore for CountingStore {
             .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work(
+        &self, object_id: ObjectId, maximum_bytes: u64,
+        work: &NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<NativeObjectRead, ObjectStoreError> {
+        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.read_with_native_work(object_id, maximum_bytes, work, cancellation).await
+    }
+
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
@@ -368,6 +389,15 @@ impl AsyncObjectStore for CountingStore {
     ) -> ObjectResult<Vec<ObjectRead>> {
         self.batch_reads.fetch_add(1, Ordering::AcqRel);
         self.inner.read_many(requests, budget, cancellation).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_many_with_native_work(
+        &self, requests: &[ObjectReadRequest],
+        work: &NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+        self.batch_reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.read_many_with_native_work(requests, work, cancellation).await
     }
 
     async fn contains(
@@ -883,6 +913,8 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
             DecodedCacheValue {
                 value: Arc::new(1_u64),
                 logical_bytes: 8,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             },
         )?,
         DecodedCacheAdmission::Shared(_)
@@ -893,6 +925,8 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
             DecodedCacheValue {
                 value: Arc::new(2_u32),
                 logical_bytes: 4,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             },
         )?,
         DecodedCacheAdmission::Shared(_)
@@ -1026,4 +1060,420 @@ fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         assert_eq!(cached.stats()?.in_flight, 0);
     }
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native_cache {
+    use super::*;
+    use crate::materializer::NativeTreeMaterializationError;
+    use futures::FutureExt as _;
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            backend_read_operations: 8,
+            object_probes: 32,
+            object_bytes_read: 65_536,
+            bytes_hashed: 65_536,
+            bytes_copied: 65_536,
+            source_bytes_read: 65_536,
+            items_examined: 256,
+            items_returned: 256,
+            allocation_operations: 128,
+            peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn native_shared_hit_borrows_one_backend_read_without_body_claim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let inner = Arc::new(MemoryObjectStore::default());
+        let (id, bytes) = object(b"shared native body");
+        inner.put(id, bytes.clone(), WorkBudget::UNBOUNDED, &token).await?;
+        let reads = Arc::new(AtomicUsize::new(0));
+        let cached = CachedObjectStore::new(CountingStore {
+            inner, scalar_reads: Arc::clone(&reads), batch_reads: Arc::default(),
+        }, options(2, 64))?;
+        let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let before = work.receipt().allocation_operations;
+        let first = cached.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
+        assert_eq!(first.read().bytes.as_ptr(), bytes.as_ptr());
+        // Only the actual new Flight Arc control was allocated by the cache.
+        assert_eq!(work.receipt().allocation_operations, before + 1);
+        let prefix = work.receipt();
+        let hit = cached.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
+        assert_eq!(hit.read().bytes.as_ptr(), bytes.as_ptr());
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    enum Finish { Return, Error, Panic, Pending }
+
+    struct OwnedNativeStore {
+        inner: MemoryObjectStore,
+        finish: Finish,
+    }
+
+    impl AsyncObjectStore for OwnedNativeStore {
+        async fn put(
+            &self, id: ObjectId, bytes: Bytes, budget: WorkBudget, token: &CancellationToken,
+        ) -> ObjectResult<()> {
+            self.inner.put(id, bytes, budget, token).await
+        }
+
+        async fn read(
+            &self, id: ObjectId, maximum: u64, budget: WorkBudget, token: &CancellationToken,
+        ) -> ObjectResult<ObjectRead> {
+            self.inner.read(id, maximum, budget, token).await
+        }
+
+        async fn contains(
+            &self, id: ObjectId, budget: WorkBudget, token: &CancellationToken,
+        ) -> ObjectResult<bool> {
+            self.inner.contains(id, budget, token).await
+        }
+
+        async fn read_with_native_work(
+            &self, id: ObjectId, maximum: u64, work: &NativeMaterializationWork, token: &CancellationToken,
+        ) -> Result<NativeObjectRead, ObjectStoreError> {
+            let source = self.inner.read_with_native_work(id, maximum, work, token).await?;
+            let length = source.read().bytes.len();
+            let allocation = work.claim(length as u64)?;
+            let copy = work.reserve_copy(length as u64)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(length)
+                .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
+            bytes.extend_from_slice(&source.read().bytes);
+            copy.record(length as u64)?;
+            let read = NativeObjectRead::owned(ObjectRead {
+                bytes: Bytes::from(bytes),
+                retention: ObjectReadRetention::Owned { logical_bytes: length as u64 },
+            }, allocation)?;
+            match self.finish {
+                Finish::Return => {}
+                Finish::Error => return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)),
+                Finish::Panic => panic!("native producer unwinds after its actual copy"),
+                Finish::Pending => std::future::pending::<()>().await,
+            }
+            Ok(read)
+        }
+
+        async fn read_many_with_native_work(
+            &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, token: &CancellationToken,
+        ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+            let source = self.inner.read_many_with_native_work(requests, work, token).await?;
+            let (values, allocation) = source.into_parts();
+            let mut buffer = BatchBuffer {
+                values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
+            };
+            for value in &mut buffer.values {
+                let length = value.bytes.len();
+                let allocation = work.claim(length as u64)?;
+                let copy = work.reserve_copy(length as u64)?;
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(length).map_err(|error| ObjectStoreError::Native(
+                    NativeTreeMaterializationError::AllocationFailed(error)))?;
+                bytes.extend_from_slice(&value.bytes);
+                copy.record(length as u64)?;
+                *value = NativeObjectRead::owned(ObjectRead {
+                    bytes: Bytes::from(bytes),
+                    retention: ObjectReadRetention::Owned { logical_bytes: length as u64 },
+                }, allocation)?.into_read();
+            }
+            match self.finish {
+                Finish::Return => {}
+                Finish::Error => return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)),
+                Finish::Panic => panic!("native batch producer unwinds after its actual copy"),
+                Finish::Pending => std::future::pending::<()>().await,
+            }
+            let BatchBuffer { values, allocation } = buffer;
+            match allocation {
+                Some(KernelOwnedAllocation::NativeOriginal(allocation)) => NativeObjectReadBatch::new(values, allocation),
+                _ => {
+                    drop(values);
+                    Err(ObjectStoreError::Corrupt)
+                }
+            }
+        }
+    }
+
+    async fn owned_cache(finish: Finish, token: &CancellationToken)
+    -> Result<(CachedObjectStore<OwnedNativeStore>, ObjectId), Box<dyn std::error::Error>> {
+        let inner = MemoryObjectStore::default();
+        let (id, bytes) = object(b"owned");
+        inner.put(id, bytes, WorkBudget::UNBOUNDED, token).await?;
+        Ok((CachedObjectStore::new(OwnedNativeStore { inner, finish }, options(2, 64))?, id))
+    }
+
+    #[tokio::test]
+    async fn native_owned_cache_holds_original_buffer_until_final_byte_alias_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let (cached, id) = owned_cache(Finish::Return, &token).await?;
+        let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let read = cached.read_with_native_work(id, 5, &work, &token).await?;
+        let alias = read.read().bytes.clone();
+        let held = work.live_allocation_bytes();
+        assert!(held > NativeMaterializationWork::accounting_state_bytes() + 5);
+        drop(read);
+        assert_eq!(work.live_allocation_bytes(), held);
+        let prefix = work.receipt();
+        drop(cached.read_with_native_work(id, 5, &work, &token).await?);
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        cached.clear()?;
+        assert_eq!(work.live_allocation_bytes(), held);
+        assert_eq!(alias.as_ref(), b"owned");
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(work.receipt().bytes_copied, 5);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_backend_denial_error_panic_and_future_drop_keep_actual_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let (cached, id) = owned_cache(Finish::Return, &token).await?;
+        let mut denied_budget = budget();
+        denied_budget.backend_read_operations = 0;
+        let denied = NativeMaterializationWork::new(denied_budget, &token).map_err(|(error, _)| error)?;
+        assert!(matches!(cached.read_with_native_work(id, 5, &denied, &token).await,
+            Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+                crate::WorkError::BudgetExceeded { counter: "backend_read_operations", .. })))));
+        assert_eq!(denied.receipt().backend_read_operations, 0);
+        assert_eq!(denied.receipt().bytes_copied, 0);
+        assert_eq!(denied.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(cached.stats()?.in_flight, 0);
+        for finish in [Finish::Error, Finish::Panic, Finish::Pending] {
+            let (cached, id) = owned_cache(finish, &token).await?;
+            let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+            match finish {
+                Finish::Error => assert!(matches!(cached.read_with_native_work(id, 5, &work, &token).await,
+                    Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)))),
+                Finish::Panic => assert!(std::panic::AssertUnwindSafe(
+                    cached.read_with_native_work(id, 5, &work, &token)).catch_unwind().await.is_err()),
+                Finish::Pending => {
+                    let mut future = Box::pin(cached.read_with_native_work(id, 5, &work, &token));
+                    assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+                    assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+                    drop(future);
+                }
+                Finish::Return => unreachable!(),
+            }
+            assert_eq!(work.receipt().backend_read_operations, 1);
+            assert_eq!(work.receipt().bytes_copied, 5);
+            assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+            assert_eq!(cached.stats()?.in_flight, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_follower_waiter_buffer_retires_after_abandoned_original_leader()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let (cached, id) = owned_cache(Finish::Pending, &token).await?;
+        let leader_work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let follower_work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let mut leader = Box::pin(cached.read_with_native_work(id, 5, &leader_work, &token));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(leader.as_mut().poll(&mut context).is_pending());
+        let mut follower = Box::pin(cached.read_with_native_work(id, 5, &follower_work, &token));
+        assert!(follower.as_mut().poll(&mut context).is_pending());
+        assert_eq!(follower_work.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes() + size_of::<Waker>() as u64);
+        assert_eq!(follower_work.receipt().backend_read_operations, 0);
+        assert_eq!(follower_work.receipt().allocation_operations, 2);
+        drop(follower);
+        // The actual registered waker remains in the running original flight.
+        assert!(follower_work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        drop(leader);
+        assert_eq!(leader_work.receipt().backend_read_operations, 1);
+        assert_eq!(leader_work.receipt().bytes_copied, 5);
+        assert_eq!(leader_work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(follower_work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(cached.stats()?.in_flight, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_decoded_cache_clones_existing_guard_and_ejected_alias_keeps_payload_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Page { value: u64, _custody: Arc<NativeAllocation> }
+        let token = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let mut allocation = work.claim(size_of::<Page>() as u64)?;
+        let mut control = work.claim(size_of::<NativeAllocation>() as u64)?;
+        allocation.absorb(&mut control)?;
+        let custody = Arc::new(allocation);
+        let page = Arc::new(Page { value: 41, _custody: Arc::clone(&custody) });
+        let cached = CachedObjectStore::new(MemoryObjectStore::default(), options(1, 128))?;
+        let (id, _) = object(b"decoded");
+        let key = DecodedCacheKey::new::<Page>(id, DecodeLimits::default());
+        let prefix = work.receipt();
+        let admission = cached.decoded_cache_admit_with_native_work(key, DecodedCacheValue {
+            value: page, logical_bytes: size_of::<Page>() as u64, native_custody: Some(custody),
+        }, &work)?;
+        let value = cached.decoded_cache_get_with_native_work(key, &work)?.ok_or("native decoded miss")?;
+        assert_eq!(value.value.downcast_ref::<Page>().map(|page| page.value), Some(41));
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        let alias = Arc::clone(&value.value);
+        let held = work.live_allocation_bytes();
+        drop(value);
+        drop(admission);
+        cached.clear()?;
+        assert_eq!(work.live_allocation_bytes(), held);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_batch_preserves_genuine_unique_frontier_and_shared_header_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let inner = Arc::new(MemoryObjectStore::default());
+        let (first, first_bytes) = object(b"first");
+        let (second, second_bytes) = object(b"second");
+        for (id, bytes) in [(first, first_bytes.clone()), (second, second_bytes.clone())] {
+            inner.put(id, bytes, WorkBudget::UNBOUNDED, &token).await?;
+        }
+        let scalar = Arc::new(AtomicUsize::new(0));
+        let batches = Arc::new(AtomicUsize::new(0));
+        let cached = CachedObjectStore::new(CountingStore {
+            inner, scalar_reads: Arc::clone(&scalar), batch_reads: Arc::clone(&batches),
+        }, options(2, 64))?;
+        let requests = [
+            ObjectReadRequest { object_id: first, maximum_bytes: 5 },
+            ObjectReadRequest { object_id: second, maximum_bytes: 6 },
+            ObjectReadRequest { object_id: first, maximum_bytes: 5 },
+        ];
+        let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let batch = cached.read_many_with_native_work(&requests, &work, &token).await?;
+        assert_eq!(batch.reads().len(), 3);
+        assert_eq!(batch.reads()[0].bytes.as_ptr(), first_bytes.as_ptr());
+        assert_eq!(batch.reads()[1].bytes.as_ptr(), second_bytes.as_ptr());
+        assert_eq!(batch.reads()[2].bytes.as_ptr(), first_bytes.as_ptr());
+        assert_eq!(batches.load(Ordering::Acquire), 1);
+        assert_eq!(scalar.load(Ordering::Acquire), 0);
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        let (reads, allocation) = batch.into_parts();
+        assert_eq!(allocation.bytes(), (reads.capacity() * size_of::<ObjectRead>()) as u64);
+        assert_eq!(work.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes() + allocation.bytes());
+        drop(reads);
+        drop(allocation);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        let prefix = work.receipt();
+        drop(cached.read_many_with_native_work(&requests, &work, &token).await?);
+        assert_eq!(batches.load(Ordering::Acquire), 1);
+        assert_eq!(scalar.load(Ordering::Acquire), 0);
+        assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
+        assert_eq!(work.receipt().bytes_copied, prefix.bytes_copied);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_batch_owned_alias_and_failed_prefix_keep_real_buffer_guards()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let (cached, id) = owned_cache(Finish::Return, &token).await?;
+        let requests = [ObjectReadRequest { object_id: id, maximum_bytes: 5 }; 2];
+        let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+        let batch = cached.read_many_with_native_work(&requests, &work, &token).await?;
+        assert_eq!(batch.reads()[0].bytes.as_ptr(), batch.reads()[1].bytes.as_ptr());
+        let alias = batch.reads()[0].bytes.clone();
+        drop(batch);
+        let held = work.live_allocation_bytes();
+        assert!(held > NativeMaterializationWork::accounting_state_bytes() + 5);
+        cached.clear()?;
+        assert_eq!(work.live_allocation_bytes(), held);
+        drop(alias);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        for finish in [Finish::Error, Finish::Panic, Finish::Pending] {
+            let (cached, id) = owned_cache(finish, &token).await?;
+            let requests = [ObjectReadRequest { object_id: id, maximum_bytes: 5 }; 2];
+            let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
+            match finish {
+                Finish::Error => assert!(matches!(cached.read_many_with_native_work(&requests, &work, &token).await,
+                    Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)))),
+                Finish::Panic => assert!(std::panic::AssertUnwindSafe(
+                    cached.read_many_with_native_work(&requests, &work, &token)).catch_unwind().await.is_err()),
+                Finish::Pending => {
+                    let mut future = Box::pin(cached.read_many_with_native_work(&requests, &work, &token));
+                    assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+                    drop(future);
+                }
+                Finish::Return => unreachable!(),
+            }
+            assert_eq!(work.receipt().backend_read_operations, 1);
+            assert_eq!(work.receipt().bytes_copied, size_of::<ObjectReadRequest>() as u64 + 5);
+            assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+            assert_eq!(cached.stats()?.in_flight, 0);
+        }
+        let (cached, id) = owned_cache(Finish::Return, &token).await?;
+        let mut limit = budget();
+        limit.allocation_operations = 1;
+        let work = NativeMaterializationWork::new(limit, &token).map_err(|(error, _)| error)?;
+        assert!(matches!(cached.read_many_with_native_work(
+            &[ObjectReadRequest { object_id: id, maximum_bytes: 5 }], &work, &token,
+        ).await, Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded { counter: "allocation_operations", .. })))));
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(cached.stats()?.in_flight, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_batch_partial_frontier_and_backend_denial_release_every_real_control()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let token = CancellationToken::new();
+        let inner = Arc::new(MemoryObjectStore::default());
+        let (first, first_bytes) = object(b"first");
+        let (second, second_bytes) = object(b"second");
+        inner.put(first, first_bytes, WorkBudget::UNBOUNDED, &token).await?;
+        inner.put(second, second_bytes, WorkBudget::UNBOUNDED, &token).await?;
+        let batches = Arc::new(AtomicUsize::new(0));
+        let cached = CachedObjectStore::new(CountingStore {
+            inner, scalar_reads: Arc::default(), batch_reads: Arc::clone(&batches),
+        }, options(2, 64))?;
+        let requests = [
+            ObjectReadRequest { object_id: first, maximum_bytes: 5 },
+            ObjectReadRequest { object_id: second, maximum_bytes: 6 },
+        ];
+        let mut limit = budget();
+        // Accounting owner + slots + leaders + first actual Flight Arc fit;
+        // the second Flight is denied before its allocator is called.
+        limit.allocation_operations = 4;
+        let work = NativeMaterializationWork::new(limit, &token).map_err(|(error, _)| error)?;
+        assert!(matches!(cached.read_many_with_native_work(&requests, &work, &token).await,
+            Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+                crate::WorkError::BudgetExceeded { counter: "allocation_operations", .. })))));
+        assert_eq!(batches.load(Ordering::Acquire), 0);
+        assert_eq!(work.receipt().allocation_operations, 4);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(cached.stats()?.in_flight, 0);
+        let mut limit = budget();
+        limit.backend_read_operations = 0;
+        let work = NativeMaterializationWork::new(limit, &token).map_err(|(error, _)| error)?;
+        assert!(matches!(cached.read_many_with_native_work(&requests, &work, &token).await,
+            Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+                crate::WorkError::BudgetExceeded { counter: "backend_read_operations", .. })))));
+        assert_eq!(batches.load(Ordering::Acquire), 1);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().object_bytes_read, 0);
+        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(cached.stats()?.in_flight, 0);
+        Ok(())
+    }
 }

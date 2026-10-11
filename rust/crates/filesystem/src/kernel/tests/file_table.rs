@@ -621,6 +621,104 @@ fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error:
 
 #[cfg(feature = "memory")]
 #[test]
+fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::ZERO };
+    let file_ids = [FileId::from_bytes([1; 16])];
+    let cancellation = CancellationToken::new();
+    for budget in [
+        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED },
+    ] {
+        let owner = ProofDataCustody::default();
+        let point = crate::async_storage::poll_immediate(lookup_file_record_async_with_custody(
+            &store, root, file_ids[0], DecodeLimits::default(), budget, &cancellation, Some(&owner),
+        )).expect_err("cold point frame must be denied");
+        let batch = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+            &store, root, &file_ids, 1, DecodeLimits::default(), budget, &cancellation, Some(&owner),
+        )).expect_err("cold batch frame must be denied");
+        for failure in [point, batch] {
+            assert!(matches!(failure.error, FileRecordReadError::Work(WorkError::BudgetExceeded { .. })));
+            assert_eq!(*failure.work, WorkCounters::default());
+        }
+        assert_eq!(owner.pending_data_work(), WorkCounters::default());
+        assert_eq!(owner.live_data_counts(), (0, 0));
+    }
+    cancellation.cancel();
+    let owner = ProofDataCustody::default();
+    let point = crate::async_storage::poll_immediate(lookup_file_record_async_with_custody(
+        &store, root, file_ids[0], DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation, Some(&owner),
+    )).expect_err("cold point cancellation");
+    let batch = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+        &store, root, &file_ids, 1, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation, Some(&owner),
+    )).expect_err("cold batch cancellation");
+    for failure in [point, batch] {
+        assert!(matches!(failure.error, FileRecordReadError::Cancelled));
+        assert_eq!(*failure.work, WorkCounters::default());
+    }
+    assert_eq!(owner.pending_data_work(), WorkCounters::default());
+    assert_eq!(owner.live_data_counts(), (0, 0));
+    Ok(())
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn file_table_batch_frame_retains_typed_error_and_exact_observer_prefix() {
+    let store = MemoryObjectStore::default();
+    let owner = ProofDataCustody::default();
+    let cancellation = CancellationToken::new();
+    let root = ObjectId { kind: ObjectKind::Blob, digest: Digest::ZERO };
+    let file_ids = [FileId::from_bytes([1; 16])];
+    let failure = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+        &store, root, &file_ids, 1, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation, Some(&owner),
+    )).expect_err("wrong root remains a typed error after frame admission");
+    assert!(matches!(failure.error, FileRecordReadError::WrongRootKind));
+    assert_eq!(failure.work.allocation_operations, 1);
+    assert!(failure.work.peak_allocation_bytes > 0);
+    assert_eq!(failure.work.page_reads, 0);
+    assert_eq!(owner.pending_data_work(), *failure.work);
+    assert_eq!(owner.live_data_counts(), (0, 0));
+    owner.take_completed_data_work();
+    owner.record_data_work(WorkCounters::default()).expect("released frame");
+    assert_eq!(owner.pending_data_work(), WorkCounters::default());
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn file_table_batch_receipt_includes_exact_frame_and_projects_same_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = two_level_file_table(&store)?;
+    let file_ids = [FileId::from_bytes([2; 16]), FileId::from_bytes([1; 16])];
+    let cancellation = CancellationToken::new();
+    let owner = ProofDataCustody::default();
+    let observed = crate::async_storage::poll_immediate(lookup_file_records_async_with_custody(
+        &store, root, &file_ids, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation, Some(&owner),
+    ))?;
+    let ordinary = crate::async_storage::poll_immediate(lookup_file_records_async(
+        &store, root, &file_ids, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))?;
+    assert_eq!(observed, ordinary);
+    let unboxed = lookup_file_records(
+        &store, root, &file_ids, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
+    )?;
+    let frame = owner.pending_data_work();
+    assert_eq!(frame.allocation_operations, 1);
+    assert!(frame.peak_allocation_bytes > 0);
+    assert_eq!(observed.records, unboxed.records);
+    assert_eq!(observed.work, frame.with_backend(unboxed.work, frame.peak_allocation_bytes)?);
+    assert_eq!(owner.live_data_counts(), (0, 0));
+    Ok(())
+}
+
+#[cfg(feature = "memory")]
+#[test]
 fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
@@ -829,4 +927,35 @@ fn assert_file_table_encoder_limits(page: &FileTablePage) -> Result<(), Box<dyn 
 #[test]
 fn measured_empty_file_table_uses_the_canonical_encoder() -> Result<(), Box<dyn std::error::Error>> {
     assert_file_table_encoder_limits(&FileTablePage::Leaf(Vec::new()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn canonical_buffer_reserve_failure_keeps_its_native_primary_source() {
+    let mut observed_reserve = false;
+    let error = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, usize::MAX,
+        |step| {
+            match step {
+                super::super::codec::EncodeAllocationStep::Reserve { capacity } => {
+                    assert_eq!(capacity, usize::MAX);
+                    observed_reserve = true;
+                }
+                _ => panic!("failed reservation must not report capacity or header writes"),
+            }
+            Ok(())
+        },
+        FileTableEncodeError::AllocationFailed,
+    ).err().expect("impossible capacity must fail at the actual reservation");
+    assert!(observed_reserve);
+    let error = file_table_encode_error(error, true);
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_)),
+    ));
+
+    let source = Vec::<u8>::new().try_reserve_exact(usize::MAX)
+        .expect_err("impossible capacity must produce an actual reserve source");
+    let error = file_table_encode_error(FileTableEncodeError::AllocationFailed(source), false);
+    assert!(matches!(error, crate::FsError::Decode(CanonicalDecodeError::AllocationFailed)));
 }

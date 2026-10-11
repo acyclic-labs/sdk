@@ -2,12 +2,35 @@ use super::*;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{
-    FileKind, FilePayload, FileTableChild, encode_file_table_page, file_table_page_id,
+    FileKind, FilePayload, FileTableChild, FileTablePage, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use bytes::Bytes;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?;
+    let mutations = [FileTableMutation::Replace { expected: record(1, 1), replacement: record(1, 2) }];
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let live = work.live_allocation_bytes();
+    let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
+    let error = crate::async_storage::poll_immediate(apply_file_table_mutations_with_accounting(
+        &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
+    )).expect_err("original canonical encoder must refuse before producing payload bytes");
+    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+    assert_eq!(work.receipt().bytes_encoded, 0);
+    assert_eq!(work.receipt().page_writes, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    assert_eq!(work.live_allocation_bytes(), live);
+    Ok(())
+}
 fn record(byte: u8, metadata_byte: u8) -> FileRecord {
     FileRecord {
         file_id: FileId::from_bytes([byte; 16]),

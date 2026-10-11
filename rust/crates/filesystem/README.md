@@ -94,6 +94,11 @@ until physical retirement. Observer and candidate-diff factories use the same
 canonical engines on the original carrier; guarded diff output includes both
 vector capacities and every owned key/before/after name buffer. Cached proof
 snapshots inventory DATA without adopting it again.
+Namespace paths cache actual component-vector and name-buffer capacities, while
+equality and ordering remain content-only. Owned source-chunk getters expose the
+producer's existing DATA inventory, not a second allocation claim. The operation
+read cache forwards publication holds, preparation and collection custody to
+its underlying store using the same accounting boundary as its other callbacks.
 
 Native stock reads use the original allocation/work carrier through Memory,
 Logical Objects, cache, staged storage and simulation. Logical Objects reserves

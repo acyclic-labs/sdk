@@ -9545,7 +9545,7 @@ mod tests {
             .expect("admitted actual vector allocation");
         let mut payload = Vec::<u8>::new();
         payload.try_reserve_exact(4).expect("actual vector backing");
-        incoming.reconcile_capacity(payload.capacity() as u64).expect("actual capacity");
+        incoming.reconcile_capacity(payload.capacity()).expect("actual capacity");
         meter.admit_examination(0, 4).expect("admitted actual payload copy");
         payload.extend_from_slice(b"data");
         meter.record_examination(0, 4).expect("completed actual payload copy");
@@ -9577,7 +9577,7 @@ mod tests {
             .expect("admitted actual vector allocation");
         let mut payload = Vec::<u8>::new();
         payload.try_reserve_exact(4).expect("actual vector backing");
-        incoming.reconcile_capacity(payload.capacity() as u64).expect("actual capacity");
+        incoming.reconcile_capacity(payload.capacity()).expect("actual capacity");
         let before = (original.receipt(), original.live_allocation_bytes(), other.receipt(), other.live_allocation_bytes());
         let (error, incoming) = match NativeAllocation::from_runtime_allocation(&other, incoming) {
             Err(failure) => failure,

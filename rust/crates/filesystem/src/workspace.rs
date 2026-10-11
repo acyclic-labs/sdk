@@ -5,6 +5,7 @@
 //! remain implementation details.
 
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
+use crate::CancellationToken;
 use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
@@ -91,6 +92,7 @@ enum WorkspaceNameAccounting<'a> {
         allocations: &'a mut crate::kernel::allocation::AllocationLedger,
         work: &'a mut crate::WorkCounters,
         budget: crate::WorkBudget,
+        cancellation: &'a crate::CancellationToken,
     },
     #[cfg(not(target_arch = "wasm32"))]
     Native(&'a crate::NativeMaterializationWork),
@@ -128,9 +130,9 @@ impl WorkspaceNameAccounting<'_> {
         ) -> Result<T, WorkspaceError>,
     ) -> Result<T, WorkspaceError> {
         let mut accounting = match self {
-            Self::Standalone { allocations, work, budget } =>
+            Self::Standalone { allocations, work, budget, cancellation } =>
                 crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-                    allocations, work, *budget, &crate::CancellationToken::UNBOUNDED,
+                    allocations, work, *budget, cancellation,
                 ),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(original) =>
@@ -174,7 +176,7 @@ impl WorkspaceNameAccounting<'_> {
 
     fn claim(&mut self, bytes: u64, operations: u64) -> Result<WorkspaceNameAllocation, WorkspaceError> {
         match self {
-            Self::Standalone { allocations, work, budget } => {
+            Self::Standalone { allocations, work, budget, .. } => {
                 allocations.claim_bytes(bytes, operations, work, *budget).map_err(workspace_allocation_error)?;
                 Ok(WorkspaceNameAllocation::Standalone(bytes))
             }
@@ -468,7 +470,7 @@ impl WorkspaceName {
         let mut allocations = crate::kernel::allocation::AllocationLedger::default();
         normalize_workspace_name(
             name.as_ref(), &mut WorkspaceNameAccounting::Standalone {
-                allocations: &mut allocations, work: &mut work, budget,
+                allocations: &mut allocations, work: &mut work, budget, cancellation,
             }, cancellation, None, 0,
         )
             .map(|(name, _allocation)| crate::OperationReceipt {
@@ -577,7 +579,7 @@ impl WorkspaceId {
         let mut allocations = crate::kernel::allocation::AllocationLedger::default();
         let result = Self::derive_with_accounting(
             namespace, name, &mut WorkspaceNameAccounting::Standalone {
-                allocations: &mut allocations, work: &mut work, budget,
+                allocations: &mut allocations, work: &mut work, budget, cancellation,
             }, cancellation,
         );
         result
@@ -732,6 +734,12 @@ impl<A, O> Workspace<A, O> {
     pub const fn limits(&self) -> crate::model::VolumeLimits {
         self.volume.config.limits
     }
+
+    /// Authenticated immutable configuration of this workspace's actual volume.
+    #[must_use]
+    pub const fn volume_config(&self) -> crate::model::VolumeConfig {
+        self.volume.config
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
@@ -814,6 +822,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         cancellation.check()
             .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
         self.authority().release_publication(reservation, budget, cancellation).await
+            .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| failure.map_with_prior_work(
                 crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
             ))
@@ -840,7 +849,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         {
             return Err(crate::OperationFailure::new(WorkspaceError::IncompatibleWorkspace, receipt.work));
         }
-        Ok(receipt)
+        Ok(crate::OperationReceipt { value: receipt.value, work: receipt.work })
     }
 
     /// Acquires the original proof; recovery owns every check after acquisition.
@@ -1389,7 +1398,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut,
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::FsResult<()>> + Send,
     {
         self.restore_path_records_measured_guarded(
@@ -1414,7 +1423,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut,
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::FsResult<()>> + Send,
     {
         self.restore_path_records_measured_guarded(
@@ -1467,7 +1476,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         mut before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut,
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::FsResult<()>> + Send,
     {
         crate::heap_future::in_heap_measured(move |budget| async move {
@@ -2905,14 +2914,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn engine_checkout_with_native_work(
         &self, selector: GenerationSelector, mode: CheckoutMode,
-        work: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
-        let original = work.native_materialization_work();
-        self.volume.checkout_with_native_work(selector, mode, &original, cancellation)
+        self.volume.checkout_with_native_work(selector, mode, original, cancellation)
             .await.map_err(WorkspaceError::from)
     }
 
@@ -3367,7 +3375,7 @@ pub struct Transaction<A, O> {
 
 // Records die before the source's intrinsic collection root and its backing.
 struct RestoreSourceRecords<A, O> {
-    records: crate::kernel::Owned<crate::PathBatchLookup>,
+    records: crate::kernel::Owned<crate::kernel::PathBatchLookup>,
     root: RestoreSourceRoot<A, O>,
 }
 
@@ -3595,19 +3603,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
                     )?;
                     self.checkout.validate_native_work(original)?;
-                    reader.validate_native_work(original)?;
-                    let records = if selected_subtrees {
-                        crate::kernel::lookup_paths_selected_async_with_accounting(
-                            &self.workspace.volume.fs.inner.objects, reader.borrowed_root(),
-                            paths, reader.volume_config(), accounting, cancellation, None,
-                        ).await?
-                    } else {
-                        crate::kernel::lookup_paths_async_with_accounting(
-                            &self.workspace.volume.fs.inner.objects, reader.borrowed_root(),
-                            paths, reader.volume_config(), accounting, cancellation, None,
-                        ).await?
-                    };
-                    Ok(records.into_parts())
+                    reader.lookup_restore_batch_with_accounting(
+                        paths, selected_subtrees, accounting, cancellation,
+                    ).await
                 }
             }
         }.await;
@@ -4808,7 +4806,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         mut before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut,
+        F: FnMut(crate::WorkBudget) -> Fut + Send,
         Fut: Future<Output = crate::FsResult<()>> + Send,
     {
         let span = crate::obs::span!(
@@ -5508,7 +5506,7 @@ fn sorted_changed_file_ids(
     file_ids: impl IntoIterator<Item = FileId>,
     accounting: &mut ReverseAccounting<'_>,
 ) -> Result<ReverseOwned<Vec<FileId>>, WorkspaceError> {
-    let mut ids = ReverseOwned { value: Vec::new(), allocation: accounting.claim_owned(0, 0)? };
+    let mut ids = ReverseOwned { value: Vec::<FileId>::new(), allocation: accounting.claim_owned(0, 0)? };
     for file_id in file_ids {
         accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
         let mut low = 0;
@@ -6870,10 +6868,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         else {
             return Ok(initial);
         };
+        let cancellation = crate::CancellationToken::new();
         validate_join_side_selections(
             &conflicts, truncated, &selections,
             &mut crate::kernel::allocation::KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED, &crate::CancellationToken::UNBOUNDED,
+                WorkBudget::UNBOUNDED, &cancellation,
             ),
         )?;
         let resolutions = selections

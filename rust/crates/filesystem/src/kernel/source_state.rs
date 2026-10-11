@@ -176,8 +176,8 @@ fn reason_from_tag(tag: u8) -> Result<SourceInvalidation, CanonicalDecodeError> 
     }
 }
 
-fn invariant(message: &str) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(message.to_owned())
+fn invariant(message: &'static str) -> CanonicalDecodeError {
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
 #[cfg(test)]

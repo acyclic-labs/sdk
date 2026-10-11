@@ -5,7 +5,7 @@
 //! namespace traversal; complete results can then be reused by every context
 //! sharing the same filesystem deployment.
 
-use crate::kernel::allocation::{AllocationError, AllocationLedger};
+use crate::kernel::allocation::{AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use crate::kernel::{FileRecord, LogicalName, NameEncoding, NamespacePath};
 use crate::model::VolumeLimits;
 use crate::{CancellationToken, FileId, GenerationId, WorkBudget, WorkCounters, WorkError};
@@ -27,6 +27,9 @@ pub(crate) enum PathIndexError {
     AllocationFailed,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    Native(#[from] crate::NativeTreeMaterializationError),
 }
 
 impl From<AllocationError> for PathIndexError {
@@ -35,27 +38,99 @@ impl From<AllocationError> for PathIndexError {
     }
 }
 
+fn accounting_error(error: PathIndexError) -> crate::FsError {
+    match error {
+        PathIndexError::Work(error) => error.into(),
+        PathIndexError::Cancelled => crate::CancellationError.into(),
+        PathIndexError::AllocationFailed => crate::FsError::HandleAllocationFailed,
+        PathIndexError::Io(_) => crate::FsError::HandleAllocationFailed,
+        #[cfg(not(target_arch = "wasm32"))]
+        PathIndexError::Native(error) => error.into(),
+    }
+}
+
 fn check(token: &CancellationToken) -> Result<(), PathIndexError> {
     token.check().map_err(|_| PathIndexError::Cancelled)
 }
 
-fn copied(bytes: usize, work: &mut WorkCounters, budget: WorkBudget) -> Result<(), PathIndexError> {
-    work.charge(&WorkCounters { bytes_copied: bytes as u64, ..WorkCounters::default() }, &budget)?;
-    Ok(())
+/// All producer work runs outside the original ledger mutex. This owns only
+/// capacities allocated by its body; success transfers the real guard.
+struct PathIndexWork<'a, 'ctx> {
+    accounting: &'a mut KernelAccounting<'ctx>,
+    token: &'a CancellationToken,
+    retained: u64,
+    allocation: KernelOwnedAllocation,
 }
 
-fn exact_vec<T>(
-    count: usize, ledger: &mut AllocationLedger, work: &mut WorkCounters,
-    budget: WorkBudget, token: &CancellationToken,
-) -> Result<Vec<T>, PathIndexError> {
-    check(token)?;
-    let bytes = ledger.claim_elements::<T>(count, work, budget)?;
-    let mut value = Vec::new();
-    if value.try_reserve_exact(count).is_err() {
-        ledger.release(bytes)?;
-        return Err(PathIndexError::AllocationFailed);
+impl<'a, 'ctx> PathIndexWork<'a, 'ctx> {
+    fn new(accounting: &'a mut KernelAccounting<'ctx>, token: &'a CancellationToken)
+        -> Result<Self, PathIndexError>
+    {
+        check(token)?;
+        let allocation = accounting.claim_owned(0, 0).map_err(projected_error)?;
+        Ok(Self { accounting, token, retained: 0, allocation })
     }
-    Ok(value)
+
+    fn check(&self) -> Result<(), PathIndexError> {
+        check(self.token)?;
+        self.accounting.check().map_err(projected_error)
+    }
+
+    fn admit(&self, delta: WorkCounters) -> Result<(), PathIndexError> {
+        self.check()?;
+        self.accounting.admit(delta).map_err(projected_error)
+    }
+
+    fn record(&mut self, delta: WorkCounters) -> Result<(), PathIndexError> {
+        self.accounting.record_completed(delta).map_err(projected_error)?;
+        check(self.token)
+    }
+
+    fn exact_vec<T>(&mut self, count: usize) -> Result<Vec<T>, PathIndexError> {
+        self.check()?;
+        let requested = count.checked_mul(std::mem::size_of::<T>())
+            .ok_or(WorkError::Overflow)? as u64;
+        let mut allocation = self.accounting.claim_owned(requested, u64::from(count != 0))
+            .map_err(projected_error)?;
+        let mut value = Vec::<T>::new();
+        if let Err(error) = value.try_reserve_exact(count) {
+            drop(value);
+            self.accounting.release_owned(&mut allocation, requested).map_err(projected_error)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if original_accounting(self.accounting) {
+                return Err(PathIndexError::Native(crate::NativeTreeMaterializationError::AllocationFailed(error)));
+            }
+            let _ = error;
+            return Err(PathIndexError::AllocationFailed);
+        }
+        let actual = value.capacity().checked_mul(std::mem::size_of::<T>())
+            .ok_or(WorkError::Overflow)? as u64;
+        if let Err(error) = self.accounting.reconcile_owned(&mut allocation, requested, actual) {
+            drop(value);
+            self.accounting.release_owned(&mut allocation, actual).map_err(projected_error)?;
+            return Err(projected_error(error));
+        }
+        if let Err(error) = self.allocation.absorb(&mut allocation) {
+            drop(value);
+            self.accounting.release_owned(&mut allocation, actual).map_err(projected_error)?;
+            return Err(projected_error(error));
+        }
+        self.retained = self.retained.checked_add(actual).ok_or(WorkError::Overflow)?;
+        Ok(value)
+    }
+
+    fn take_allocation(&mut self) -> KernelOwnedAllocation {
+        self.retained = 0;
+        std::mem::replace(&mut self.allocation, KernelOwnedAllocation::Standalone)
+    }
+}
+
+impl Drop for PathIndexWork<'_, '_> {
+    fn drop(&mut self) {
+        // The body's vectors have already dropped; native custody itself
+        // releases on drop, while standalone callers use their existing ledger.
+        let _ = release_borrowed(self.accounting, self.retained);
+    }
 }
 
 /// The canonical cache wire format is scanned without a JSON DOM or string
@@ -63,33 +138,44 @@ fn exact_vec<T>(
 pub(crate) struct GenerationPathQuery;
 
 impl GenerationPathQuery {
+    pub(crate) fn decode_with_accounting(
+        bytes: &[u8], generation: GenerationId, file_ids: &[FileId], limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>, token: &CancellationToken,
+    ) -> Result<(Option<Vec<(FileId, NamespacePath)>>, KernelOwnedAllocation), crate::FsError> {
+        check(token).map_err(accounting_error)?;
+        if bytes.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES {
+            return Ok((None, accounting.claim_owned(0, 0)?));
+        }
+        let query = query_id_with_accounting(file_ids, accounting, token).map_err(accounting_error)?;
+        let mut work = PathIndexWork::new(accounting, token).map_err(accounting_error)?;
+        let result = (|| {
+            let mut parser = QueryParser { bytes, position: 0, work: &mut work };
+            let count = parser.document(generation, file_ids, query, limits, None)?;
+            let mut output = parser.work.exact_vec(count)?;
+            parser.position = 0;
+            parser.document(generation, file_ids, query, limits, Some(&mut output))?;
+            Ok(output)
+        })();
+        match result {
+            Ok(output) => Ok((Some(output), work.take_allocation())),
+            Err(DecodeError::Invalid) => {
+                drop(work);
+                Ok((None, accounting.claim_owned(0, 0)?))
+            }
+            Err(DecodeError::Boundary(error)) => Err(accounting_error(error)),
+        }
+    }
+
     pub(crate) fn decode_measured(
         bytes: &[u8], generation: GenerationId, file_ids: &[FileId], limits: VolumeLimits,
         ledger: &mut AllocationLedger, work: &mut WorkCounters, budget: WorkBudget,
         token: &CancellationToken,
     ) -> Result<Option<Vec<(FileId, NamespacePath)>>, PathIndexError> {
-        check(token)?;
-        if bytes.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(None); }
-        let query = query_id_measured(file_ids, work, budget, token)?;
-        let initial_live = ledger.live_bytes();
-        let result = (|| {
-            let mut parser = QueryParser { bytes, position: 0, work, budget, token };
-            let count = parser.document(generation, file_ids, query, limits, ledger, None)?;
-            let mut output = exact_vec(count, ledger, parser.work, budget, token)?;
-            parser.position = 0;
-            parser.document(generation, file_ids, query, limits, ledger, Some(&mut output))?;
-            Ok(output)
-        })();
-        match result {
-            Ok(output) => Ok(Some(output)),
-            Err(error) => {
-                ledger.release(ledger.live_bytes() - initial_live)?;
-                match error {
-                    DecodeError::Invalid => Ok(None),
-                    DecodeError::Boundary(error) => Err(error),
-                }
-            }
-        }
+        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, budget, token);
+        let (output, allocation) = Self::decode_with_accounting(
+            bytes, generation, file_ids, limits, &mut accounting, token).map_err(projected_error)?;
+        drop(allocation);
+        Ok(output)
     }
 }
 
@@ -102,20 +188,21 @@ impl From<PathIndexError> for DecodeError {
     fn from(error: PathIndexError) -> Self { Self::Boundary(error) }
 }
 
-struct QueryParser<'a> {
+struct QueryParser<'a, 'work, 'ctx> {
     bytes: &'a [u8],
     position: usize,
-    work: &'a mut WorkCounters,
-    budget: WorkBudget,
-    token: &'a CancellationToken,
+    work: &'a mut PathIndexWork<'work, 'ctx>,
 }
 
-impl QueryParser<'_> {
+impl QueryParser<'_, '_, '_> {
     fn take(&mut self) -> Result<u8, DecodeError> {
-        check(self.token)?;
-        let value = *self.bytes.get(self.position).ok_or(DecodeError::Invalid)?;
-        self.work.charge_items(1, &self.budget).map_err(PathIndexError::from)?;
+        self.work.check()?;
+        if self.position >= self.bytes.len() { return Err(DecodeError::Invalid); }
+        let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+        self.work.admit(delta)?;
+        let value = self.bytes[self.position];
         self.position += 1;
+        self.work.record(delta)?;
         Ok(value)
     }
 
@@ -172,8 +259,10 @@ impl QueryParser<'_> {
             count = count.checked_add(1).ok_or(DecodeError::Invalid)?;
             if let Some(output) = output.as_deref_mut() {
                 if output.len() == output.capacity() { return Err(DecodeError::Invalid); }
-                copied(1, self.work, self.budget)?;
+                let delta = WorkCounters { bytes_copied: 1, ..WorkCounters::UNCHARGED };
+                self.work.admit(delta)?;
                 output.push(byte);
+                self.work.record(delta)?;
             }
         }
         Ok(count)
@@ -235,32 +324,39 @@ impl QueryParser<'_> {
         Ok(count)
     }
 
-    fn path(&mut self, limits: VolumeLimits, ledger: &mut AllocationLedger) -> Result<NamespacePath, DecodeError> {
+    fn path(&mut self, limits: VolumeLimits) -> Result<NamespacePath, DecodeError> {
         let start = self.position;
         let count = self.path_shape(limits)?;
         self.position = start;
-        let mut names = exact_vec::<LogicalName>(count, ledger, self.work, self.budget, self.token)?;
+        let mut names = self.work.exact_vec::<LogicalName>(count)?;
         self.literal(b"[")?;
         let mut first = true;
         while self.next(&mut first)? {
             let (encoding, length, bytes_start) = self.name(limits)?;
             let end = self.position;
-            let mut bytes = exact_vec::<u8>(length, ledger, self.work, self.budget, self.token)?;
+            let mut bytes = self.work.exact_vec::<u8>(length)?;
             self.position = bytes_start;
             self.byte_array(Some(&mut bytes))?;
             self.position = end;
-            check(self.token)?;
-            self.work.charge_items(length as u64, &self.budget).map_err(PathIndexError::from)?;
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes).map_err(|_| DecodeError::Invalid)?;
-            copied(std::mem::size_of::<LogicalName>(), self.work, self.budget)?;
+            let delta = WorkCounters { items_examined: length as u64, ..WorkCounters::UNCHARGED };
+            self.work.admit(delta)?;
+            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes);
+            self.work.record(delta)?;
+            let name = name.map_err(|_| DecodeError::Invalid)?;
+            let delta = WorkCounters {
+                bytes_copied: std::mem::size_of::<LogicalName>() as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            self.work.admit(delta)?;
             names.push(name);
+            self.work.record(delta)?;
         }
         NamespacePath::new(names, limits).map_err(|_| DecodeError::Invalid)
     }
 
     fn document(
         &mut self, generation: GenerationId, file_ids: &[FileId], query: [u8; 32],
-        limits: VolumeLimits, ledger: &mut AllocationLedger,
+        limits: VolumeLimits,
         mut output: Option<&mut Vec<(FileId, NamespacePath)>>,
     ) -> Result<usize, DecodeError> {
         self.literal(b"{\"version\":")?;
@@ -283,9 +379,14 @@ impl QueryParser<'_> {
             while self.next(&mut path_first)? {
                 paths = paths.checked_add(1).ok_or(DecodeError::Invalid)?;
                 if let Some(output) = output.as_deref_mut() {
-                    let path = self.path(limits, ledger)?;
-                    copied(std::mem::size_of::<(FileId, NamespacePath)>(), self.work, self.budget)?;
+                    let path = self.path(limits)?;
+                    let delta = WorkCounters {
+                        bytes_copied: std::mem::size_of::<(FileId, NamespacePath)>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    self.work.admit(delta)?;
                     output.push((file_id, path));
+                    self.work.record(delta)?;
                 } else {
                     self.path_shape(limits)?;
                 }
@@ -310,31 +411,33 @@ impl From<PathIndexError> for EncodeError {
 
 /// Counting and producing use the same canonical encoder. Neither pass owns
 /// intermediate paths, strings, JSON values, or serializer error buffers.
-struct QueryWriter<'a> {
+struct QueryWriter<'a, 'work, 'ctx> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
-    work: &'a mut WorkCounters,
-    budget: WorkBudget,
-    token: &'a CancellationToken,
+    work: &'a mut PathIndexWork<'work, 'ctx>,
 }
 
-impl QueryWriter<'_> {
+impl QueryWriter<'_, '_, '_> {
     fn append(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
-        check(self.token)?;
+        self.work.check()?;
         let length = self.length.checked_add(bytes.len())
             .ok_or(PathIndexError::Work(WorkError::Overflow))?;
         if length > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Err(EncodeError::TooLarge); }
-        self.work.charge(&WorkCounters {
+        let delta = WorkCounters {
             bytes_encoded: bytes.len() as u64,
             bytes_copied: if self.output.is_some() { bytes.len() as u64 } else { 0 },
             items_examined: 1,
-            ..WorkCounters::default()
-        }, &self.budget).map_err(PathIndexError::from)?;
+            ..WorkCounters::UNCHARGED
+        };
+        if self.output.as_ref().is_some_and(|output| length > output.capacity()) {
+            return Err(PathIndexError::AllocationFailed.into());
+        }
+        self.work.admit(delta)?;
         if let Some(output) = self.output.as_deref_mut() {
-            if length > output.capacity() { return Err(PathIndexError::AllocationFailed.into()); }
             output.extend_from_slice(bytes);
         }
         self.length = length;
+        self.work.record(delta)?;
         Ok(())
     }
 
@@ -379,9 +482,10 @@ impl QueryWriter<'_> {
             self.append(uuid.hyphenated().encode_lower(&mut buffer).as_bytes())?;
             self.append(b"\",\"paths\":[")?;
             while records.get(record_index).is_some_and(|entry| entry.0 < file_id) {
-                check(self.token)?;
-                self.work.charge_items(1, &self.budget).map_err(PathIndexError::from)?;
+                let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+                self.work.admit(delta)?;
                 record_index += 1;
+                self.work.record(delta)?;
             }
             let paths = records.get(record_index).filter(|entry| entry.0 == file_id)
                 .map_or(&[][..], |entry| entry.1.as_slice());
@@ -410,48 +514,99 @@ pub(crate) fn encode_records_measured(
     ledger: &mut AllocationLedger, work: &mut WorkCounters, budget: WorkBudget,
     token: &CancellationToken,
 ) -> Result<Option<Vec<u8>>, PathIndexError> {
-    let query = query_id_measured(file_ids, work, budget, token)?;
-    let mut counter = QueryWriter { output: None, length: 0, work, budget, token };
-    match counter.document(generation, query, file_ids, records) {
-        Ok(()) => {}
-        Err(EncodeError::TooLarge) => return Ok(None),
-        Err(EncodeError::Boundary(error)) => return Err(error),
-    }
-    let length = counter.length;
-    let initial_live = ledger.live_bytes();
-    let mut output = exact_vec::<u8>(length, ledger, counter.work, budget, token)?;
-    let mut writer = QueryWriter { output: Some(&mut output), length: 0, work: counter.work, budget, token };
-    let result = writer.document(generation, query, file_ids, records);
+    let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, budget, token);
+    let (output, allocation) = encode_records_with_accounting(
+        generation, file_ids, records, &mut accounting, token).map_err(projected_error)?;
+    drop(allocation);
+    Ok(output)
+}
+
+pub(crate) fn encode_records_with_accounting(
+    generation: GenerationId, file_ids: &[FileId],
+    records: &[(FileId, Vec<(NamespacePath, FileRecord)>)],
+    accounting: &mut KernelAccounting<'_>, token: &CancellationToken,
+) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), crate::FsError> {
+    let query = query_id_with_accounting(file_ids, accounting, token).map_err(accounting_error)?;
+    let mut work = PathIndexWork::new(accounting, token).map_err(accounting_error)?;
+    let length = {
+        let mut counter = QueryWriter { output: None, length: 0, work: &mut work };
+        match counter.document(generation, query, file_ids, records) {
+            Ok(()) => counter.length,
+            Err(EncodeError::TooLarge) => {
+                drop(counter);
+                return Ok((None, work.take_allocation()));
+            }
+            Err(EncodeError::Boundary(error)) => return Err(accounting_error(error)),
+        }
+    };
+    let mut output = work.exact_vec::<u8>(length).map_err(accounting_error)?;
+    let result = {
+        let mut writer = QueryWriter { output: Some(&mut output), length: 0, work: &mut work };
+        writer.document(generation, query, file_ids, records)
+    };
     match result {
-        Ok(()) => Ok(Some(output)),
+        Ok(()) => Ok((Some(output), work.take_allocation())),
         Err(error) => {
-            ledger.release(ledger.live_bytes() - initial_live)?;
+            drop(output);
+            drop(work);
             match error {
-                EncodeError::TooLarge => Ok(None),
-                EncodeError::Boundary(error) => Err(error),
+                EncodeError::TooLarge => Ok((None, accounting.claim_owned(0, 0)?)),
+                EncodeError::Boundary(error) => Err(accounting_error(error)),
             }
         }
     }
 }
 
-fn hash_bytes(
-    hasher: &mut blake3::Hasher, bytes: &[u8], work: &mut WorkCounters,
-    budget: WorkBudget, token: &CancellationToken,
-) -> Result<(), PathIndexError> {
-    check(token)?;
-    work.charge(&WorkCounters { bytes_hashed: bytes.len() as u64, items_examined: 1, ..WorkCounters::default() }, &budget)?;
-    hasher.update(bytes);
-    Ok(())
+/// Candidate roots never reuse a complete alias set from another namespace.
+pub(crate) fn cache_key_for_root_with_accounting(
+    generation: GenerationId, root_file_id: FileId, file_table: crate::ObjectId,
+    file_ids: &[FileId], accounting: &mut KernelAccounting<'_>, token: &CancellationToken,
+) -> Result<[u8; 32], crate::FsError> {
+    token.check()?;
+    let key = cache_key_with_accounting(generation, file_ids, accounting, token).map_err(accounting_error)?;
+    let mut hasher = blake3::Hasher::new();
+    hash_bytes(&mut hasher, b"acyclic-generation-path-root-v1\0", accounting, token).map_err(accounting_error)?;
+    hash_bytes(&mut hasher, &key, accounting, token).map_err(accounting_error)?;
+    hash_bytes(&mut hasher, &root_file_id.into_bytes(), accounting, token).map_err(accounting_error)?;
+    hash_bytes(&mut hasher, &[file_table.kind.canonical_tag()], accounting, token).map_err(accounting_error)?;
+    hash_bytes(&mut hasher, file_table.digest.as_bytes(), accounting, token).map_err(accounting_error)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
-fn query_id_measured(
-    file_ids: &[FileId], work: &mut WorkCounters, budget: WorkBudget, token: &CancellationToken,
+fn hash_bytes(
+    hasher: &mut blake3::Hasher, bytes: &[u8], accounting: &mut KernelAccounting<'_>,
+    token: &CancellationToken,
+) -> Result<(), PathIndexError> {
+    check(token)?;
+    let delta = WorkCounters {
+        bytes_hashed: bytes.len() as u64, items_examined: 1, ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(delta).map_err(projected_error)?;
+    hasher.update(bytes);
+    accounting.record_completed(delta).map_err(projected_error)?;
+    check(token)
+}
+
+fn query_id_with_accounting(
+    file_ids: &[FileId], accounting: &mut KernelAccounting<'_>, token: &CancellationToken,
 ) -> Result<[u8; 32], PathIndexError> {
     let mut hasher = blake3::Hasher::new();
-    hash_bytes(&mut hasher, b"acyclic-generation-path-file-ids-v1\0", work, budget, token)?;
+    hash_bytes(&mut hasher, b"acyclic-generation-path-file-ids-v1\0", accounting, token)?;
     for file_id in file_ids {
-        hash_bytes(&mut hasher, &file_id.into_bytes(), work, budget, token)?;
+        hash_bytes(&mut hasher, &file_id.into_bytes(), accounting, token)?;
     }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn cache_key_with_accounting(
+    generation: GenerationId, file_ids: &[FileId], accounting: &mut KernelAccounting<'_>,
+    token: &CancellationToken,
+) -> Result<[u8; 32], PathIndexError> {
+    let query = query_id_with_accounting(file_ids, accounting, token)?;
+    let mut hasher = blake3::Hasher::new();
+    hash_bytes(&mut hasher, b"acyclic-generation-path-query-v1\0", accounting, token)?;
+    hash_bytes(&mut hasher, generation.digest().as_bytes(), accounting, token)?;
+    hash_bytes(&mut hasher, &query, accounting, token)?;
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -459,17 +614,50 @@ pub(crate) fn cache_key_measured(
     generation: GenerationId, file_ids: &[FileId], work: &mut WorkCounters,
     budget: WorkBudget, token: &CancellationToken,
 ) -> Result<[u8; 32], PathIndexError> {
-    let query = query_id_measured(file_ids, work, budget, token)?;
-    let mut hasher = blake3::Hasher::new();
-    hash_bytes(&mut hasher, b"acyclic-generation-path-query-v1\0", work, budget, token)?;
-    hash_bytes(&mut hasher, generation.digest().as_bytes(), work, budget, token)?;
-    hash_bytes(&mut hasher, &query, work, budget, token)?;
-    Ok(*hasher.finalize().as_bytes())
+    cache_key_with_accounting(generation, file_ids,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut AllocationLedger::default(), work, budget, token), token)
 }
 
 /// Best-effort derived cache. I/O errors are misses; exhausted work and
 /// cancellation remain visible to the containing operation.
 pub(crate) trait GenerationPathIndex: Send + Sync {
+    /// External implementations must explicitly provide original-ledger custody.
+    fn load_with_accounting(
+        &self, key: [u8; 32], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let bytes = match accounting {
+            KernelAccounting::Standalone { allocations, work, budget, .. } =>
+                self.load_measured(key, allocations, work, *budget, cancellation).map_err(accounting_error)?,
+            KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } =>
+                self.load_measured(key, allocations, work, *budget, cancellation).map_err(accounting_error)?,
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } =>
+                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+        };
+        Ok((bytes, KernelOwnedAllocation::Standalone))
+    }
+
+    fn store_with_accounting(
+        &self, key: [u8; 32], value: &[u8], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        match accounting {
+            KernelAccounting::Standalone { allocations, work, budget, .. } =>
+                self.store_measured(key, value, allocations, work, *budget, cancellation).map_err(accounting_error),
+            KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } =>
+                self.store_measured(key, value, allocations, work, *budget, cancellation).map_err(accounting_error),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } =>
+                Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+        }
+    }
+
     fn load_measured(
         &self, key: [u8; 32], ledger: &mut AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
@@ -497,17 +685,20 @@ fn cache_check(cancellation: &CancellationToken) -> Result<(), PathIndexError> {
 }
 
 fn cache_find<T>(
-    entries: &[([u8; 32], T)], key: [u8; 32], work: &mut WorkCounters,
-    budget: WorkBudget, cancellation: &CancellationToken,
+    entries: &[([u8; 32], T)], key: [u8; 32], accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
 ) -> Result<Result<usize, usize>, PathIndexError> {
     let mut left = 0;
     let mut right = entries.len();
     while left < right {
         cache_check(cancellation)?;
-        work.charge_items(1, &budget)?;
+        let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+        accounting.admit(delta).map_err(projected_error)?;
         let index = left + (right - left) / 2;
         let (existing, _) = entries.get(index).ok_or(PathIndexError::AllocationFailed)?;
-        match existing.cmp(&key) {
+        let ordering = existing.cmp(&key);
+        accounting.record_completed(delta).map_err(projected_error)?;
+        match ordering {
             std::cmp::Ordering::Equal => return Ok(Ok(index)),
             std::cmp::Ordering::Greater => right = index,
             std::cmp::Ordering::Less => left = index + 1,
@@ -516,59 +707,90 @@ fn cache_find<T>(
     Ok(Err(left))
 }
 
-fn cache_move<T>(
-    count: usize, work: &mut WorkCounters, budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), PathIndexError> {
-    cache_check(cancellation)?;
+fn cache_move<T>(count: usize) -> Result<WorkCounters, PathIndexError> {
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)?;
-    work.charge(&WorkCounters { bytes_copied: bytes as u64,
-        ..WorkCounters::UNCHARGED }, &budget)?;
-    Ok(())
-}
-
-fn cache_reserve<T>(
-    entries: &mut Vec<T>, capacity: usize, ledger: &mut AllocationLedger,
-    work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<(), PathIndexError> {
-    if entries.capacity() >= capacity { return Ok(()); }
-    cache_check(cancellation)?;
-    let old_bytes = entries.capacity().checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let new_bytes = ledger.claim_elements::<T>(capacity, work, budget)?;
-    let result = (|| {
-        let mut replacement = Vec::new();
-        replacement.try_reserve_exact(capacity).map_err(|_| PathIndexError::AllocationFailed)?;
-        cache_move::<T>(entries.len(), work, budget, cancellation)?;
-        replacement.append(entries);
-        *entries = replacement;
-        Ok(())
-    })();
-    if result.is_err() { ledger.release(new_bytes)?; }
-    else { ledger.release(old_bytes)?; }
-    result
+    Ok(WorkCounters { bytes_copied: bytes as u64, ..WorkCounters::UNCHARGED })
 }
 
 fn cache_copy(
-    value: &[u8], ledger: &mut AllocationLedger, work: &mut WorkCounters,
-    budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Vec<u8>, PathIndexError> {
-    cache_check(cancellation)?;
-    work.admit(&WorkCounters { bytes_copied: value.len() as u64,
-        ..WorkCounters::UNCHARGED }, &budget)?;
-    let bytes = ledger.claim_elements::<u8>(value.len(), work, budget)?;
-    let mut copied = Vec::new();
-    if copied.try_reserve_exact(value.len()).is_err() {
-        ledger.release(bytes)?;
-        return Err(PathIndexError::AllocationFailed);
-    }
-    if let Err(error) = cache_move::<u8>(value.len(), work, budget, cancellation) {
-        ledger.release(bytes)?;
-        return Err(error);
-    }
+    value: &[u8], accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<(Vec<u8>, KernelOwnedAllocation), PathIndexError> {
+    let mut meter = PathIndexWork::new(accounting, cancellation)?;
+    let delta = cache_move::<u8>(value.len())?;
+    meter.admit(delta)?;
+    let mut copied = meter.exact_vec::<u8>(value.len())?;
     copied.extend_from_slice(value);
-    Ok(copied)
+    meter.record(delta)?;
+    Ok((copied, meter.take_allocation()))
+}
+
+struct CachePayload {
+    bytes: Vec<u8>,
+    allocation: KernelOwnedAllocation,
+}
+
+fn projected_error(error: crate::FsError) -> PathIndexError {
+    match error {
+        crate::FsError::Work(error) => PathIndexError::Work(error),
+        crate::FsError::Cancelled(_) => PathIndexError::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::FsError::NativeKernel(error) => PathIndexError::Native(error),
+        _ => PathIndexError::AllocationFailed,
+    }
+}
+
+fn original_accounting(accounting: &KernelAccounting<'_>) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    { accounting.native_work().is_some() }
+    #[cfg(target_arch = "wasm32")]
+    { let _ = accounting; false }
+}
+
+// Cleanup cannot be vetoed by cancellation after the physical payload drop.
+fn release_borrowed(
+    accounting: &mut KernelAccounting<'_>, bytes: u64,
+) -> Result<(), crate::FsError> {
+    match accounting {
+        KernelAccounting::Standalone { allocations, .. } =>
+            allocations.release(bytes).map_err(|error| accounting_error(error.into())),
+        KernelAccounting::BorrowedStandalone { allocations, .. } =>
+            allocations.release(bytes).map_err(|error| accounting_error(error.into())),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => Ok(()),
+    }
+}
+
+fn retire_cache_payload(
+    payload: CachePayload, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    let bytes = payload.bytes.capacity() as u64;
+    drop(payload);
+    release_borrowed(accounting, bytes)?;
+    Ok(())
+}
+
+fn cache_reserve_with_accounting<T>(
+    entries: &mut Vec<T>, allocation: &mut Option<KernelOwnedAllocation>, capacity: usize,
+    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<(), crate::FsError> {
+    if entries.capacity() >= capacity { return Ok(()); }
+    let old_bytes = entries.capacity().checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)? as u64;
+    let mut meter = PathIndexWork::new(accounting, cancellation).map_err(accounting_error)?;
+    let delta = cache_move::<T>(entries.len()).map_err(accounting_error)?;
+    meter.admit(delta).map_err(accounting_error)?;
+    let mut replacement = meter.exact_vec::<T>(capacity).map_err(accounting_error)?;
+    replacement.append(entries);
+    let guard = meter.take_allocation();
+    drop(meter);
+    let previous_guard = allocation.replace(guard);
+    let previous = std::mem::replace(entries, replacement);
+    let completed = accounting.record_completed(delta);
+    drop(previous);
+    drop(previous_guard);
+    release_borrowed(accounting, old_bytes)?;
+    completed
 }
 
 pub(crate) struct MemoryGenerationPathIndex {
@@ -579,17 +801,19 @@ pub(crate) struct MemoryGenerationPathIndex {
 struct MemoryPathIndexState {
     // Sorted keys preserve the cache's lexicographic eviction policy, while
     // making the actual retained container capacity measurable.
-    entries: Vec<([u8; 32], Vec<u8>)>,
+    entries: Vec<([u8; 32], CachePayload)>,
     retained_bytes: usize,
+    // Physical container capacity is destroyed before original custody.
+    allocation: Option<KernelOwnedAllocation>,
 }
 
 impl MemoryPathIndexState {
     fn owned_bytes(&self) -> Result<u64, PathIndexError> {
         let container = self.entries.capacity().checked_mul(
-            std::mem::size_of::<([u8; 32], Vec<u8>)>())
+            std::mem::size_of::<([u8; 32], CachePayload)>())
             .ok_or(crate::WorkError::Overflow)? as u64;
         self.entries.iter().try_fold(container, |total, (_, value)| {
-            total.checked_add(value.capacity() as u64)
+            total.checked_add(value.bytes.capacity() as u64)
                 .ok_or_else(|| crate::WorkError::Overflow.into())
         })
     }
@@ -602,71 +826,118 @@ impl Default for MemoryGenerationPathIndex {
 }
 
 impl GenerationPathIndex for MemoryGenerationPathIndex {
-    fn load_measured(
-        &self, key: [u8; 32], ledger: &mut AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<Option<Vec<u8>>, PathIndexError> {
-        cache_check(cancellation)?;
-        let Ok(state) = self.state.lock() else { return Ok(None); };
-        let retained = state.owned_bytes()?;
-        ledger.claim_bytes(retained, 0, work, budget)?;
+    fn load_with_accounting(
+        &self, key: [u8; 32], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), crate::FsError> {
+        cancellation.check()?;
+        let Ok(state) = self.state.lock() else {
+            let mut meter = PathIndexWork::new(accounting, cancellation).map_err(accounting_error)?;
+            return Ok((None, meter.take_allocation()));
+        };
+        let retained = state.owned_bytes().map_err(accounting_error)?;
+        let borrowed = !original_accounting(accounting);
+        if borrowed { let _ = accounting.claim_owned(retained, 0)?; }
         let result = (|| {
-            match cache_find(&state.entries, key, work, budget, cancellation)? {
+            match cache_find(&state.entries, key, accounting, cancellation).map_err(accounting_error)? {
                 Ok(index) => cache_copy(&state.entries.get(index)
-                    .ok_or(PathIndexError::AllocationFailed)?.1,
-                    ledger, work, budget, cancellation).map(Some),
-                Err(_) => Ok(None),
+                    .ok_or(crate::FsError::HandleAllocationFailed)?.1.bytes,
+                    accounting, cancellation).map(|(bytes, allocation)| (Some(bytes), allocation))
+                    .map_err(accounting_error),
+                Err(_) => {
+                    let mut meter = PathIndexWork::new(accounting, cancellation).map_err(accounting_error)?;
+                    Ok((None, meter.take_allocation()))
+                }
             }
         })();
-        ledger.release(retained)?;
+        release_borrowed(accounting, if borrowed { retained } else { 0 })?;
         result
+    }
+
+    fn store_with_accounting(
+        &self, key: [u8; 32], value: &[u8], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        cancellation.check()?;
+        if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
+        let Ok(mut state) = self.state.lock() else { return Ok(()); };
+        let borrowed = !original_accounting(accounting);
+        if borrowed {
+            let retained = state.owned_bytes().map_err(accounting_error)?;
+            let _ = accounting.claim_owned(retained, 0)?;
+        }
+        let result = (|| {
+            let found = cache_find(&state.entries, key, accounting, cancellation).map_err(accounting_error)?;
+            let MemoryPathIndexState { entries, allocation, .. } = &mut *state;
+            cache_reserve_with_accounting(entries, allocation, MAXIMUM_PATH_INDEX_ENTRIES,
+                accounting, cancellation)?;
+            let (bytes, allocation) = cache_copy(value, accounting, cancellation).map_err(accounting_error)?;
+            let copied = CachePayload { bytes, allocation };
+            let mutation = (|| {
+                if let Ok(index) = found {
+                    let delta = cache_move::<([u8; 32], CachePayload)>(
+                        state.entries.len() - index - 1).map_err(accounting_error)?;
+                    accounting.admit(delta)?;
+                    let (_, previous) = state.entries.remove(index);
+                    state.retained_bytes -= previous.bytes.len();
+                    let completed = accounting.record_completed(delta);
+                    retire_cache_payload(previous, accounting)?;
+                    completed?;
+                }
+                while state.entries.len() >= MAXIMUM_PATH_INDEX_ENTRIES
+                    || state.retained_bytes.saturating_add(value.len()) > MAXIMUM_PATH_INDEX_RETAINED_BYTES
+                {
+                    let delta = cache_move::<([u8; 32], CachePayload)>(
+                        state.entries.len() - 1).map_err(accounting_error)?;
+                    accounting.admit(delta)?;
+                    let (_, evicted) = state.entries.remove(0);
+                    state.retained_bytes -= evicted.bytes.len();
+                    let completed = accounting.record_completed(delta);
+                    retire_cache_payload(evicted, accounting)?;
+                    completed?;
+                }
+                let index = cache_find(&state.entries, key, accounting, cancellation)
+                    .map_err(accounting_error)?.unwrap_or_else(|index| index);
+                let delta = cache_move::<([u8; 32], CachePayload)>(
+                    state.entries.len() - index).map_err(accounting_error)?;
+                accounting.admit(delta)?;
+                Ok((index, delta))
+            })();
+            match mutation {
+                Ok((index, delta)) => {
+                    state.entries.insert(index, (key, copied));
+                    state.retained_bytes += value.len();
+                    accounting.record_completed(delta)
+                }
+                Err(error) => {
+                    retire_cache_payload(copied, accounting)?;
+                    Err(error)
+                }
+            }
+        })();
+        if borrowed {
+            let retained = state.owned_bytes().map_err(accounting_error)?;
+            release_borrowed(accounting, retained)?;
+        }
+        result
+    }
+
+    fn load_measured(
+        &self, key: [u8; 32], ledger: &mut AllocationLedger, work: &mut WorkCounters,
+        budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<u8>>, PathIndexError> {
+        self.load_with_accounting(key,
+            &mut KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation), cancellation)
+            .map(|(bytes, _)| bytes).map_err(projected_error)
     }
 
     fn store_measured(
         &self, key: [u8; 32], value: &[u8], ledger: &mut AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> Result<(), PathIndexError> {
-        cache_check(cancellation)?;
-        if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
-        let Ok(mut state) = self.state.lock() else { return Ok(()); };
-        ledger.claim_bytes(state.owned_bytes()?, 0, work, budget)?;
-        let result = (|| {
-            let found = cache_find(&state.entries, key, work, budget, cancellation)?;
-            cache_reserve(&mut state.entries, MAXIMUM_PATH_INDEX_ENTRIES,
-                ledger, work, budget, cancellation)?;
-            let copied = cache_copy(value, ledger, work, budget, cancellation)?;
-            let copied_bytes = copied.capacity() as u64;
-            let mutation = (|| {
-                if let Ok(index) = found {
-                    cache_move::<([u8; 32], Vec<u8>)>(
-                        state.entries.len() - index - 1, work, budget, cancellation)?;
-                    let (_, previous) = state.entries.remove(index);
-                    state.retained_bytes -= previous.len();
-                    ledger.release(previous.capacity() as u64)?;
-                }
-                while state.entries.len() >= MAXIMUM_PATH_INDEX_ENTRIES
-                    || state.retained_bytes.saturating_add(value.len())
-                        > MAXIMUM_PATH_INDEX_RETAINED_BYTES
-                {
-                    cache_move::<([u8; 32], Vec<u8>)>(
-                        state.entries.len() - 1, work, budget, cancellation)?;
-                    let (_, evicted) = state.entries.remove(0);
-                    state.retained_bytes -= evicted.len();
-                    ledger.release(evicted.capacity() as u64)?;
-                }
-                let index = cache_find(&state.entries, key, work, budget, cancellation)?
-                    .unwrap_or_else(|index| index);
-                cache_move::<([u8; 32], Vec<u8>)>(
-                    state.entries.len() - index, work, budget, cancellation)?;
-                state.entries.insert(index, (key, copied));
-                state.retained_bytes += value.len();
-                Ok(())
-            })();
-            if mutation.is_err() { ledger.release(copied_bytes)?; }
-            mutation
-        })();
-        ledger.release(state.owned_bytes()?)?;
-        result
+        self.store_with_accounting(key, value,
+            &mut KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation), cancellation)
+            .map_err(projected_error)
     }
 }
 
@@ -681,6 +952,8 @@ pub(crate) struct NativeGenerationPathIndex {
 struct NativePathIndexState {
     entries: Vec<([u8; 32], usize)>,
     retained_bytes: usize,
+    // The resident vector is physically owned, never post-hoc adopted.
+    allocation: Option<KernelOwnedAllocation>,
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -691,82 +964,127 @@ impl NativePathIndexState {
     }
 
     fn find_measured(
-        &self, key: [u8; 32], meter: &mut CacheHostWork<'_>,
+        &self, key: [u8; 32], meter: &mut CacheHostWork<'_, '_>,
     ) -> Result<Option<usize>, PathIndexError> {
         for (index, (candidate, _)) in self.entries.iter().enumerate() {
-            cache_check(meter.cancellation)?;
-            meter.work.charge_items(1, &meter.budget)?;
-            if *candidate == key { return Ok(Some(index)); }
+            let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+            meter.meter.admit(delta)?;
+            let found = *candidate == key;
+            meter.meter.record(delta)?;
+            if found { return Ok(Some(index)); }
         }
         Ok(None)
     }
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-struct CacheHostWork<'a> {
-    ledger: &'a mut AllocationLedger,
-    work: &'a mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: &'a CancellationToken,
+struct CacheHostWork<'a, 'ctx> {
+    meter: PathIndexWork<'a, 'ctx>,
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-impl crate::native_host::NativeHostWork for CacheHostWork<'_> {
+struct CacheHostAllocation {
+    allocation: KernelOwnedAllocation,
+    bytes: u64,
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+enum CacheCleanupWrite {
+    Standalone(u64),
+    Native(crate::materializer::NativeCleanupWrite),
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+impl crate::native_host::NativeHostWork for CacheHostWork<'_, '_> {
     type Error = PathIndexError;
-    type Allocation = u64;
-    type CleanupWrite = u64;
+    type Allocation = CacheHostAllocation;
+    type CleanupWrite = CacheCleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<std::io::ErrorKind> {
         match error { PathIndexError::Io(error) => Some(error.kind()), _ => None }
     }
-    fn check(&self) -> Result<(), Self::Error> { cache_check(self.cancellation) }
-    fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        cache_check(self.cancellation)?;
-        self.work.admit(&delta, &self.budget)?;
-        Ok(())
+    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
+        PathIndexError::Native(crate::NativeTreeMaterializationError::AllocationFailed(error))
     }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.work.charge(&delta, &self.budget)?;
-        Ok(())
+    fn check(&self) -> Result<(), Self::Error> { self.meter.check() }
+    fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.meter.admit(delta) }
+    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.meter.record(delta) }
+    fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
+        let allocation = self.meter.accounting.claim_owned(bytes, u64::from(bytes != 0))
+            .map_err(projected_error)?;
+        Ok(CacheHostAllocation { allocation, bytes })
     }
-    fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        cache_check(self.cancellation)?;
-        self.ledger.claim_bytes(bytes, u64::from(bytes != 0), self.work, self.budget)?;
-        Ok(bytes)
+    fn reserve_opaque_decode(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
+        let allocation = self.meter.accounting.claim_owned(bytes, 0).map_err(projected_error)?;
+        Ok(CacheHostAllocation { allocation, bytes })
     }
-    fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
-        self.ledger.release(bytes)?;
-        Ok(())
+    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64)
+        -> Result<(), Self::Error> {
+        let result = self.meter.accounting.reconcile_owned(
+            &mut allocation.allocation, allocation.bytes, actual).map_err(projected_error);
+        allocation.bytes = actual;
+        result
+    }
+    fn release(&mut self, mut allocation: Self::Allocation) -> Result<(), Self::Error> {
+        self.meter.accounting.release_owned(&mut allocation.allocation, allocation.bytes)
+            .map_err(projected_error)
+    }
+    fn attempt_io<T>(&mut self, delta: WorkCounters, operation: impl FnOnce() -> std::io::Result<T>)
+        -> Result<T, Self::Error> {
+        self.admit(delta)?;
+        let result = operation();
+        let recorded = self.record(delta);
+        recorded?;
+        result.map_err(Into::into)
     }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
-        cache_check(self.cancellation)?;
-        self.work.admit(&WorkCounters {
-            backend_write_operations: 1, ..WorkCounters::UNCHARGED
-        }, &self.budget)?;
-        let original = self.budget.backend_write_operations;
-        self.budget.backend_write_operations = original.checked_sub(1)
-            .ok_or(crate::WorkError::Overflow)?;
-        Ok(original)
+        self.check()?;
+        if let Some(work) = self.meter.accounting.native_work() {
+            return work.reserve_cleanup_write().map(CacheCleanupWrite::Native).map_err(Into::into);
+        }
+        let (_, work, budget, _) = self.meter.accounting.standalone_parts()
+            .ok_or(PathIndexError::AllocationFailed)?;
+        work.admit(&WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, &budget)?;
+        let original = budget.backend_write_operations;
+        match self.meter.accounting {
+            KernelAccounting::Standalone { budget, .. }
+            | KernelAccounting::BorrowedStandalone { budget, .. } => {
+                budget.backend_write_operations = original.checked_sub(1).ok_or(WorkError::Overflow)?;
+            }
+            KernelAccounting::NativeOriginal { .. } => unreachable!(),
+        }
+        Ok(CacheCleanupWrite::Standalone(original))
     }
-    fn cancel_cleanup_write(&mut self, original: Self::CleanupWrite) {
-        self.budget.backend_write_operations = original;
+    fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
+        if let CacheCleanupWrite::Standalone(original) = reservation {
+            match self.meter.accounting {
+                KernelAccounting::Standalone { budget, .. }
+                | KernelAccounting::BorrowedStandalone { budget, .. } => {
+                    budget.backend_write_operations = original;
+                }
+                KernelAccounting::NativeOriginal { .. } => unreachable!(),
+            }
+        }
     }
-    fn attempt_cleanup_write<T>(
-        &mut self, original: Self::CleanupWrite, operation: impl FnOnce() -> T,
-    ) -> (T, Result<(), Self::Error>) {
-        self.budget.backend_write_operations = original;
-        let delta = WorkCounters {
-            backend_write_operations: 1, ..WorkCounters::UNCHARGED
-        };
-        // The admitted restoration remains mandatory even if cancellation
-        // arrived after the original mutation.
-        let recorded = match self.work.charge(&delta, &self.budget) {
-            Ok(()) => Ok(()),
-            Err(error) => match self.work.try_add_assign(&delta) {
-                Ok(()) => Err(error.into()),
-                Err(error) => Err(error.into()),
-            },
-        };
-        (operation(), recorded)
+    fn attempt_cleanup_write<T>(&mut self, reservation: Self::CleanupWrite, operation: impl FnOnce() -> T)
+        -> (T, Result<(), Self::Error>) {
+        match reservation {
+            CacheCleanupWrite::Native(reservation) => {
+                let result = operation();
+                let recorded = reservation.attempt_recorded(|| ()).1.map_err(Into::into);
+                (result, recorded)
+            }
+            reservation @ CacheCleanupWrite::Standalone(_) => {
+                self.cancel_cleanup_write(reservation);
+                let result = operation();
+                let recorded = match self.meter.accounting.standalone_parts() {
+                    Some((_, work, budget, _)) => work.try_add_assign(&WorkCounters {
+                        backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+                        .and_then(|()| work.verify(budget)).map_err(Into::into),
+                    None => Err(PathIndexError::AllocationFailed),
+                };
+                (result, recorded)
+            }
+        }
     }
 }
 
@@ -777,50 +1095,52 @@ fn cache_io_miss(result: Result<(), PathIndexError>) -> Result<(), PathIndexErro
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 fn cache_host_attempt<T>(
-    meter: &mut CacheHostWork<'_>, delta: WorkCounters,
+    meter: &mut CacheHostWork<'_, '_>, delta: WorkCounters,
     callback: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, PathIndexError> {
     use crate::native_host::NativeHostWork as _;
     meter.admit(delta)?;
+    let result = callback();
     meter.record(delta)?;
-    callback().map_err(Into::into)
+    result.map_err(Into::into)
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 fn cache_name(
     key: [u8; 32], temporary: bool, buffer: &mut [u8; 85],
-    meter: &mut CacheHostWork<'_>,
+    meter: &mut CacheHostWork<'_, '_>,
 ) -> Result<usize, PathIndexError> {
     use crate::native_host::NativeHostWork as _;
-    let pid = std::process::id();
-    let mut digits = [0_u8; 10];
-    let mut number = pid;
-    let mut start = digits.len();
-    loop {
-        start -= 1;
-        *digits.get_mut(start).ok_or(PathIndexError::AllocationFailed)? =
-            b'0' + (number % 10) as u8;
-        number /= 10;
-        if number == 0 { break; }
-    }
+    let pid = if temporary { std::process::id() } else { 0 };
+    let decimal_length = pid.checked_ilog10().unwrap_or(0) as usize + 1;
     let suffix = if temporary { b".next".as_slice() } else { b".json".as_slice() };
-    let length = 64 + suffix.len() + if temporary { 1 + digits.len() - start } else { 0 };
+    let length = 64 + suffix.len() + if temporary { 1 + decimal_length } else { 0 };
     let delta = WorkCounters { bytes_encoded: length as u64, ..WorkCounters::UNCHARGED };
     meter.admit(delta)?;
-    hex::encode_to_slice(key, buffer.get_mut(..64).ok_or(PathIndexError::AllocationFailed)?)
-        .map_err(|_| PathIndexError::AllocationFailed)?;
-    let mut cursor = 64;
-    if temporary {
-        *buffer.get_mut(cursor).ok_or(PathIndexError::AllocationFailed)? = b'.';
-        cursor += 1;
-        let decimal = digits.get(start..).ok_or(PathIndexError::AllocationFailed)?;
-        buffer.get_mut(cursor..cursor + decimal.len()).ok_or(PathIndexError::AllocationFailed)?
-            .copy_from_slice(decimal);
-        cursor += decimal.len();
-    }
-    buffer.get_mut(cursor..length).ok_or(PathIndexError::AllocationFailed)?.copy_from_slice(suffix);
+    let encoded = (|| {
+        hex::encode_to_slice(key, buffer.get_mut(..64).ok_or(PathIndexError::AllocationFailed)?)
+            .map_err(|_| PathIndexError::AllocationFailed)?;
+        let mut cursor = 64;
+        if temporary {
+            *buffer.get_mut(cursor).ok_or(PathIndexError::AllocationFailed)? = b'.';
+            cursor += 1;
+            let mut digits = [0_u8; 10];
+            let start = digits.len() - decimal_length;
+            let mut number = pid;
+            for digit in digits.get_mut(start..).ok_or(PathIndexError::AllocationFailed)?.iter_mut().rev() {
+                *digit = b'0' + (number % 10) as u8;
+                number /= 10;
+            }
+            let decimal = digits.get(start..).ok_or(PathIndexError::AllocationFailed)?;
+            buffer.get_mut(cursor..cursor + decimal.len()).ok_or(PathIndexError::AllocationFailed)?
+                .copy_from_slice(decimal);
+            cursor += decimal.len();
+        }
+        buffer.get_mut(cursor..length).ok_or(PathIndexError::AllocationFailed)?.copy_from_slice(suffix);
+        Ok(length)
+    })();
     meter.record(delta)?;
-    Ok(length)
+    encoded
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -832,18 +1152,19 @@ fn cache_leaf(buffer: &[u8]) -> Result<&std::path::Path, PathIndexError> {
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 fn evict_native_entries(
     state: &mut NativePathIndexState, directory: &cap_std::fs::Dir,
-    meter: &mut CacheHostWork<'_>,
+    meter: &mut CacheHostWork<'_, '_>,
 ) -> Result<(), PathIndexError> {
     while state.entries.len() > MAXIMUM_PATH_INDEX_ENTRIES
         || state.retained_bytes > MAXIMUM_PATH_INDEX_RETAINED_BYTES
     {
         let mut oldest = None;
         for (index, &(key, _)) in state.entries.iter().enumerate() {
-            cache_check(meter.cancellation)?;
-            meter.work.charge_items(1, &meter.budget)?;
+            let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+            meter.meter.admit(delta)?;
             if oldest.is_none_or(|(_, candidate)| key < candidate) {
                 oldest = Some((index, key));
             }
+            meter.meter.record(delta)?;
         }
         let Some((index, oldest)) = oldest else { break; };
         let mut buffer = [0_u8; 85];
@@ -851,11 +1172,12 @@ fn evict_native_entries(
         let leaf = cache_leaf(buffer.get(..length).ok_or(PathIndexError::AllocationFailed)?)?;
         // A failed eviction remains a disposable disk entry, as before.
         cache_io_miss(crate::native_host::remove_leaf_with_work(directory, leaf, meter))?;
-        cache_move::<([u8; 32], usize)>(
-            usize::from(index + 1 != state.entries.len()),
-            meter.work, meter.budget, meter.cancellation)?;
+        let delta = cache_move::<([u8; 32], usize)>(
+            usize::from(index + 1 != state.entries.len()))?;
+        meter.meter.admit(delta)?;
         let (_, bytes) = state.entries.swap_remove(index);
         state.retained_bytes -= bytes;
+        meter.meter.record(delta)?;
     }
     Ok(())
 }
@@ -925,31 +1247,32 @@ impl NativeGenerationPathIndex {
         let Ok(mut state) = self.state.lock() else { return Ok(()); };
         let retained = state.owned_bytes()?.checked_add(self.root.capacity() as u64)
             .ok_or(crate::WorkError::Overflow)?;
-        ledger.claim_bytes(retained, 0, work, budget)?;
+        let mut accounting = KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation);
+        let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
         let result = (|| {
-            let mut meter = CacheHostWork { ledger, work, budget, cancellation };
+            let mut meter = CacheHostWork { meter: PathIndexWork::new(&mut accounting, cancellation)? };
             let directory = crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?;
             evict_native_entries(&mut state, &directory, &mut meter)
         })();
-        ledger.release(state.owned_bytes()?.checked_add(self.root.capacity() as u64)
-            .ok_or(crate::WorkError::Overflow)?)?;
+        release_borrowed(&mut accounting, retained).map_err(projected_error)?;
         cache_io_miss(result)
     }
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-impl GenerationPathIndex for NativeGenerationPathIndex {
-    fn load_measured(
-        &self, key: [u8; 32], ledger: &mut AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<Option<Vec<u8>>, PathIndexError> {
+impl NativeGenerationPathIndex {
+    fn load_engine(
+        &self, key: [u8; 32], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), PathIndexError> {
         use crate::native_host::NativeHostWork as _;
         use std::io::Read as _;
         cache_check(cancellation)?;
-        let root_bytes = self.root.capacity() as u64;
-        ledger.claim_bytes(root_bytes, 0, work, budget)?;
+        let borrowed = !original_accounting(accounting);
+        let root_bytes = if borrowed { self.root.capacity() as u64 } else { 0 };
+        if borrowed { let _ = accounting.claim_owned(root_bytes, 0).map_err(projected_error)?; }
         let result = (|| {
-            let mut meter = CacheHostWork { ledger, work, budget, cancellation };
+            let mut meter = CacheHostWork { meter: PathIndexWork::new(accounting, cancellation)? };
             let directory = crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?;
             let mut name = [0_u8; 85];
             let length = cache_name(key, false, &mut name, &mut meter)?;
@@ -958,56 +1281,58 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 &crate::native_host::NativeOpenOptions::Read, &mut meter)?;
             let metadata = cache_host_attempt(&mut meter, WorkCounters {
                 backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || file.metadata())?;
-            let Ok(length) = usize::try_from(metadata.len()) else { return Ok(None); };
-            if length > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(None); }
-            meter.check()?;
-            let owned = meter.ledger.claim_elements::<u8>(length, meter.work, meter.budget)?;
-            let read = (|| {
-                let mut bytes = Vec::new();
-                bytes.try_reserve_exact(length).map_err(|_| PathIndexError::AllocationFailed)?;
-                bytes.resize(length, 0);
-                let mut consumed = 0;
-                while consumed < length {
-                    let remaining = bytes.get_mut(consumed..).ok_or(PathIndexError::AllocationFailed)?;
-                    meter.admit(WorkCounters { backend_read_operations: 1,
-                        source_bytes_read: remaining.len() as u64, ..WorkCounters::UNCHARGED })?;
-                    meter.record(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
-                    match file.read(remaining) {
-                        Ok(0) => { bytes.truncate(consumed); break; }
-                        Ok(count) => {
-                            meter.record(WorkCounters { source_bytes_read: count as u64,
-                                ..WorkCounters::UNCHARGED })?;
-                            consumed += count;
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(error) => return Err(error.into()),
-                    }
+            let length = match usize::try_from(metadata.len()) {
+                Ok(length) if length <= MAXIMUM_PATH_INDEX_VALUE_BYTES => length,
+                _ => return Ok((None, meter.meter.take_allocation())),
+            };
+            let mut bytes = meter.meter.exact_vec::<u8>(length)?;
+            bytes.resize(length, 0);
+            let mut consumed = 0;
+            while consumed < length {
+                let remaining = bytes.get_mut(consumed..).ok_or(PathIndexError::AllocationFailed)?;
+                meter.admit(WorkCounters { backend_read_operations: 1,
+                    source_bytes_read: remaining.len() as u64, ..WorkCounters::UNCHARGED })?;
+                let read = file.read(remaining);
+                let count = read.as_ref().map_or(0, |count| *count);
+                meter.record(WorkCounters { backend_read_operations: 1,
+                    source_bytes_read: count as u64, ..WorkCounters::UNCHARGED })?;
+                match read {
+                    Ok(0) => { bytes.truncate(consumed); break; }
+                    Ok(count) => consumed += count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error.into()),
                 }
-                Ok(Some(bytes))
-            })();
-            if read.is_err() { meter.ledger.release(owned)?; }
-            read
+            }
+            Ok((Some(bytes), meter.meter.take_allocation()))
         })();
-        ledger.release(root_bytes)?;
-        match result { Err(PathIndexError::Io(_)) => Ok(None), result => result }
+        release_borrowed(accounting, root_bytes).map_err(projected_error)?;
+        match result {
+            Err(PathIndexError::Io(_)) => {
+                let mut meter = PathIndexWork::new(accounting, cancellation)?;
+                Ok((None, meter.take_allocation()))
+            }
+            result => result,
+        }
     }
 
-    fn store_measured(
-        &self, key: [u8; 32], value: &[u8], ledger: &mut AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
+    fn store_locked_engine(
+        &self, state: &mut NativePathIndexState, key: [u8; 32], value: &[u8],
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<(), PathIndexError> {
         use crate::native_host::NativeHostWork as _;
         use std::io::Write as _;
         cache_check(cancellation)?;
         if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
-        let Ok(mut state) = self.state.lock() else { return Ok(()); };
+        let borrowed = !original_accounting(accounting);
         let root_bytes = self.root.capacity() as u64;
-        ledger.claim_bytes(state.owned_bytes()?.checked_add(root_bytes)
-            .ok_or(crate::WorkError::Overflow)?, 0, work, budget)?;
+        if borrowed {
+            let retained = state.owned_bytes()?.checked_add(root_bytes).ok_or(WorkError::Overflow)?;
+            let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
+        }
         let result = (|| {
-            cache_reserve(&mut state.entries, MAXIMUM_PATH_INDEX_ENTRIES + 1,
-                ledger, work, budget, cancellation)?;
-            let mut meter = CacheHostWork { ledger, work, budget, cancellation };
+            cache_reserve_with_accounting(&mut state.entries, &mut state.allocation,
+                MAXIMUM_PATH_INDEX_ENTRIES + 1, accounting, cancellation).map_err(projected_error)?;
+            let mut meter = CacheHostWork { meter: PathIndexWork::new(accounting, cancellation)? };
             let directory = match crate::native_host::open_root_directory_with_work(&self.root, &mut meter) {
                 Ok(directory) => directory,
                 Err(PathIndexError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1036,12 +1361,13 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 while !remaining.is_empty() {
                     meter.admit(WorkCounters { backend_write_operations: 1,
                         output_bytes: remaining.len() as u64, ..WorkCounters::UNCHARGED })?;
-                    meter.record(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
-                    match file.write(remaining) {
+                    let written = file.write(remaining);
+                    let count = written.as_ref().map_or(0, |count| *count);
+                    meter.record(WorkCounters { backend_write_operations: 1,
+                        output_bytes: count as u64, ..WorkCounters::UNCHARGED })?;
+                    match written {
                         Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into()),
                         Ok(count) => {
-                            meter.record(WorkCounters { output_bytes: count as u64,
-                                ..WorkCounters::UNCHARGED })?;
                             remaining = remaining.get(count..).ok_or(PathIndexError::AllocationFailed)?;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1055,7 +1381,7 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
             })();
             match stored {
                 Err(error @ (PathIndexError::Work(_) | PathIndexError::Cancelled
-                    | PathIndexError::AllocationFailed)) => return Err(error),
+                    | PathIndexError::AllocationFailed | PathIndexError::Native(_))) => return Err(error),
                 Err(PathIndexError::Io(_)) => {
                     cache_io_miss(crate::native_host::remove_leaf_with_work(
                         &directory, temporary_leaf, &mut meter))?;
@@ -1075,9 +1401,50 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
             state.retained_bytes += value.len();
             evict_native_entries(&mut state, &directory, &mut meter)
         })();
-        ledger.release(state.owned_bytes()?.checked_add(root_bytes)
-            .ok_or(crate::WorkError::Overflow)?)?;
+        if borrowed {
+            let retained = state.owned_bytes()?.checked_add(root_bytes).ok_or(WorkError::Overflow)?;
+            release_borrowed(accounting, retained).map_err(projected_error)?;
+        }
         cache_io_miss(result)
+    }
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+impl GenerationPathIndex for NativeGenerationPathIndex {
+    fn load_with_accounting(
+        &self, key: [u8; 32], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), crate::FsError> {
+        cancellation.check()?;
+        self.load_engine(key, accounting, cancellation).map_err(accounting_error)
+    }
+
+    fn store_with_accounting(
+        &self, key: [u8; 32], value: &[u8], accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        cancellation.check()?;
+        if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
+        let Ok(mut state) = self.state.lock() else { return Ok(()); };
+        self.store_locked_engine(&mut state, key, value, accounting, cancellation).map_err(accounting_error)
+    }
+
+    fn load_measured(
+        &self, key: [u8; 32], ledger: &mut AllocationLedger,
+        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<u8>>, PathIndexError> {
+        self.load_with_accounting(key,
+            &mut KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation), cancellation)
+            .map(|(bytes, _)| bytes).map_err(projected_error)
+    }
+
+    fn store_measured(
+        &self, key: [u8; 32], value: &[u8], ledger: &mut AllocationLedger,
+        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> Result<(), PathIndexError> {
+        self.store_with_accounting(key, value,
+            &mut KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation), cancellation)
+            .map_err(projected_error)
     }
 }
 
@@ -1110,6 +1477,159 @@ mod tests {
             &mut AllocationLedger::default(), &mut WorkCounters::default(),
             WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("encode").expect("cacheable");
         (generation, file_ids, bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn external_cache_defaults_do_not_claim_original_support() -> Result<(), crate::FsError> {
+        struct External;
+        impl GenerationPathIndex for External {
+            fn load_measured(
+                &self, _: [u8; 32], _: &mut AllocationLedger, _: &mut WorkCounters,
+                _: WorkBudget, _: &CancellationToken,
+            ) -> Result<Option<Vec<u8>>, PathIndexError> {
+                panic!("an opaque measured allocation must not run on an original ledger")
+            }
+            fn store_measured(
+                &self, _: [u8; 32], _: &[u8], _: &mut AllocationLedger,
+                _: &mut WorkCounters, _: WorkBudget, _: &CancellationToken,
+            ) -> Result<(), PathIndexError> {
+                panic!("an opaque measured allocation must not run on an original ledger")
+            }
+        }
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+            .map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &token);
+        assert!(External.load_with_accounting([0; 32], &mut accounting, &token).is_err());
+        assert!(External.store_with_accounting([0; 32], b"bytes", &mut accounting, &token).is_err());
+        assert_eq!(original.receipt(), before);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[test]
+    fn original_disk_cache_guards_resident_container_and_loaded_bytes() -> Result<(), crate::FsError> {
+        let directory = tempfile::tempdir().expect("cache directory");
+        let index = NativeGenerationPathIndex::new(directory.path().join("cache"));
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &token);
+        index.store_with_accounting([9; 32], b"disk bytes", &mut accounting, &token)?;
+        let resident = original.live_allocation_bytes();
+        assert!(resident > baseline);
+        let (bytes, guard) = index.load_with_accounting([9; 32], &mut accounting, &token)?;
+        assert_eq!(bytes.as_deref(), Some(b"disk bytes".as_slice()));
+        assert_eq!(original.live_allocation_bytes(), resident + 10);
+        drop(bytes);
+        drop(guard);
+        assert_eq!(original.live_allocation_bytes(), resident);
+        drop(index);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn original_decode_late_capacity_denial_retires_dropped_payload() -> Result<(), crate::FsError> {
+        let (generation, ids, bytes) = fixture_bytes();
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &token,
+        ).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &token);
+        let result = GenerationPathQuery::decode_with_accounting(
+            &bytes, generation, &ids, VolumeLimits::default(), &mut accounting, &token);
+        assert!(result.is_err());
+        drop(result);
+        assert_eq!(original.receipt().allocation_operations, 1);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn root_qualified_keys_separate_candidate_namespaces() -> Result<(), crate::FsError> {
+        let token = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+        let (generation, ids, _) = codec_fixture();
+        let table = crate::ObjectId {
+            kind: crate::storage::ObjectKind::FileTablePage,
+            digest: crate::Digest::from_bytes([1; 32]),
+        };
+        let root = FileId::from_bytes([2; 16]);
+        let first = cache_key_for_root_with_accounting(generation, root, table, &ids, &mut accounting, &token)?;
+        let different_root = cache_key_for_root_with_accounting(
+            generation, FileId::from_bytes([3; 16]), table, &ids, &mut accounting, &token)?;
+        let different_table = cache_key_for_root_with_accounting(
+            generation, root, crate::ObjectId { digest: crate::Digest::from_bytes([2; 32]), ..table },
+            &ids, &mut accounting, &token)?;
+        assert_ne!(first, different_root);
+        assert_ne!(first, different_table);
+        assert_eq!(first, cache_key_for_root_with_accounting(
+            generation, root, table, &ids, &mut accounting, &token)?);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn original_memory_cache_retains_only_physically_owned_capacity() -> Result<(), crate::FsError> {
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &token);
+        let index = MemoryGenerationPathIndex::default();
+        index.store_with_accounting([1; 32], b"original", &mut accounting, &token)?;
+        let resident = original.live_allocation_bytes();
+        assert!(resident >= baseline + 8);
+        let (bytes, guard) = index.load_with_accounting([1; 32], &mut accounting, &token)?;
+        assert_eq!(bytes.as_deref(), Some(b"original".as_slice()));
+        assert_eq!(original.live_allocation_bytes(), resident + 8);
+        drop(bytes);
+        drop(guard);
+        assert_eq!(original.live_allocation_bytes(), resident);
+        index.store_with_accounting([1; 32], b"x", &mut accounting, &token)?;
+        assert_eq!(original.live_allocation_bytes(), resident - 7);
+        drop(index);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn original_codec_returns_actual_wire_and_path_custody() -> Result<(), crate::FsError> {
+        let token = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &token);
+        let (generation, ids, records) = codec_fixture();
+        let (wire, wire_guard) = encode_records_with_accounting(
+            generation, &ids, &records, &mut accounting, &token)?;
+        let wire = wire.expect("cacheable");
+        let wire_live = original.live_allocation_bytes();
+        assert_eq!(wire_live, baseline + wire.capacity() as u64);
+        let (paths, paths_guard) = GenerationPathQuery::decode_with_accounting(
+            &wire, generation, &ids, VolumeLimits::default(), &mut accounting, &token)?;
+        assert_eq!(paths.as_ref().expect("valid").len(), 1);
+        assert!(original.live_allocation_bytes() > wire_live);
+        drop(paths);
+        drop(paths_guard);
+        assert_eq!(original.live_allocation_bytes(), wire_live);
+        let (miss, miss_guard) = GenerationPathQuery::decode_with_accounting(
+            b"corrupt", generation, &ids, VolumeLimits::default(), &mut accounting, &token)?;
+        assert!(miss.is_none());
+        drop(miss);
+        drop(miss_guard);
+        assert_eq!(original.live_allocation_bytes(), wire_live);
+        drop(wire);
+        drop(wire_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
     }
 
     #[test]
@@ -1463,11 +1983,11 @@ mod tests {
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
         let budget = WorkBudget { backend_write_operations: 2, ..WorkBudget::default() };
-        let mut meter = CacheHostWork { ledger: &mut ledger, work: &mut work,
-            budget, cancellation: &token };
+        let mut accounting = KernelAccounting::borrowed_standalone(&mut ledger, &mut work, budget, &token);
+        let mut meter = CacheHostWork { meter: PathIndexWork::new(&mut accounting, &token).expect("meter") };
         let cleanup = meter.reserve_cleanup_write().expect("reserve restoration");
-        assert_eq!(meter.work.backend_write_operations, 0);
-        assert_eq!(meter.budget.backend_write_operations, 1);
+        assert_eq!(meter.meter.accounting.spent().backend_write_operations, 0);
+        assert_eq!(meter.meter.accounting.standalone_parts().expect("standalone").2.backend_write_operations, 1);
         cache_host_attempt(&mut meter, WorkCounters { backend_write_operations: 1,
             ..WorkCounters::UNCHARGED }, || file.set_len(8)).expect("actual mutation");
         assert!(matches!(meter.admit(WorkCounters { backend_write_operations: 1,
@@ -1476,10 +1996,10 @@ mod tests {
         let (restored, recorded) = meter.attempt_cleanup_write(cleanup, || file.set_len(0));
         restored.expect("mandatory physical restoration");
         recorded.expect("admitted restoration receipt");
-        assert_eq!(meter.work.backend_write_operations, 2);
-        assert_eq!(meter.budget.backend_write_operations, 2);
+        assert_eq!(meter.meter.accounting.spent().backend_write_operations, 2);
+        assert_eq!(meter.meter.accounting.standalone_parts().expect("standalone").2.backend_write_operations, 2);
         assert_eq!(file.metadata().expect("restored file").len(), 0);
-        meter.work.verify(budget).expect("exact cleanup receipt");
+        meter.meter.accounting.spent().verify(budget).expect("exact cleanup receipt");
     }
 
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -1491,15 +2011,15 @@ mod tests {
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
         let budget = WorkBudget { backend_write_operations: 1, ..WorkBudget::default() };
-        let mut meter = CacheHostWork { ledger: &mut ledger, work: &mut work,
-            budget, cancellation: &token };
+        let mut accounting = KernelAccounting::borrowed_standalone(&mut ledger, &mut work, budget, &token);
+        let mut meter = CacheHostWork { meter: PathIndexWork::new(&mut accounting, &token).expect("meter") };
         let cleanup = meter.reserve_cleanup_write().expect("reserve write");
-        assert_eq!(meter.budget.backend_write_operations, 0);
+        assert_eq!(meter.meter.accounting.standalone_parts().expect("standalone").2.backend_write_operations, 0);
         meter.cancel_cleanup_write(cleanup);
-        assert_eq!(meter.work.backend_write_operations, 0);
+        assert_eq!(meter.meter.accounting.spent().backend_write_operations, 0);
         cache_host_attempt(&mut meter, WorkCounters { backend_write_operations: 1,
             ..WorkCounters::UNCHARGED }, || file.set_len(3)).expect("released write allowance");
-        assert_eq!(meter.work.backend_write_operations, 1);
+        assert_eq!(meter.meter.accounting.spent().backend_write_operations, 1);
         assert_eq!(file.metadata().expect("actual write").len(), 3);
     }
 }

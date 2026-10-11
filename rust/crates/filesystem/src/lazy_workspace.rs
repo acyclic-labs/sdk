@@ -5,10 +5,10 @@
 //! paths are observed individually through [`DemandSource`].
 
 use crate::demand::{
-    DemandError, DemandSource, SourceCursor, SourceDirectoryEntry, SourceNode, SourceNodeKind,
+    DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind,
     SourceReference, SourceVersion,
 };
-use crate::heap_future::{in_heap, in_heap_admitted, in_heap_measured};
+use crate::heap_future::{in_heap_admitted, in_heap_measured};
 use crate::kernel::{
     FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NamespacePath,
 };
@@ -17,12 +17,13 @@ use crate::path::PortablePath;
 use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
-    ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
+    ForkOptions, Fs, FsError, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
     Workspace, WorkspaceDirectoryEntry, WorkspaceError, WorkspaceExtentKind, WorkspaceId,
     WorkspaceStat,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -94,7 +95,7 @@ impl SelectedImportPlan {
 
     fn input_digest(
         &self, destination: LazySnapshotRef, work: &LazyTreapWork<'_>,
-    ) -> Result<crate::kernel::Digest, LazyWorkspaceError> {
+    ) -> Result<crate::Digest, LazyWorkspaceError> {
         let mut hasher = blake3::Hasher::new();
         let domain = b"acyclic-fs-selected-import-v1\0";
         work.charge(WorkCounters {
@@ -113,7 +114,7 @@ impl SelectedImportPlan {
             hasher.update(&(root.len() as u64).to_le_bytes());
             hasher.update(root.as_bytes());
         }
-        Ok(crate::kernel::Digest::from_bytes(*hasher.finalize().as_bytes()))
+        Ok(crate::Digest::from_bytes(*hasher.finalize().as_bytes()))
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -121,8 +122,8 @@ impl SelectedImportPlan {
         &self, destination: LazySnapshotRef,
         original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::Digest, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+    ) -> Result<crate::Digest, LazyWorkspaceError> {
+        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.input_digest(destination, &work)
     }
 }
@@ -232,7 +233,7 @@ pub struct CompletedSelectedImport {
     /// Authenticated original source freeze.
     pub source: LazySnapshotRef,
     /// Selected input fingerprint, not an object-store root.
-    pub input: crate::kernel::Digest,
+    pub input: crate::Digest,
     /// Actual destination volume configuration.
     pub config: VolumeConfig,
     /// Actual source freeze volume configuration.
@@ -1692,7 +1693,7 @@ enum LazyTreapMeter {
         allocations: Mutex<crate::kernel::allocation::AllocationLedger>,
         budget: WorkBudget,
     },
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     NativeOriginal {
         original: crate::materializer::NativeMaterializationWork,
         scratch: Mutex<crate::materializer::NativeAllocation>,
@@ -1746,12 +1747,12 @@ impl<'a> LazyTreapWork<'a> {
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn native_with_work(
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::materializer::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
     ) -> Result<Self, LazyWorkspaceError> {
-        let original = original.native_materialization_work();
+        let original = original.clone();
         original.admit(WorkCounters::UNCHARGED)?;
         let scratch = original.claim_allocation(0, 0)?;
         Ok(Self {
@@ -1776,7 +1777,7 @@ impl<'a> LazyTreapWork<'a> {
                 let mut work = work.lock().expect("lazy treap work lock poisoned");
                 operation(&mut allocations, &mut work, *budget, self.cancellation)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, scratch } => {
                 let (value, mut allocation) = original.with_owned_allocations(operation)?;
                 let absorbed = scratch.lock().expect("lazy treap scratch lock poisoned")
@@ -1805,7 +1806,7 @@ impl<'a> LazyTreapWork<'a> {
                     operation(&mut accounting, cancellation).map(|(value, _)| value)
                 },
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, scratch } => {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, self.cancellation);
                 let (value, allocation) = operation(&mut accounting, self.cancellation)?;
@@ -1829,7 +1830,7 @@ impl<'a> LazyTreapWork<'a> {
         match &self.meter {
             LazyTreapMeter::Standalone { work, .. } =>
                 *work.lock().expect("lazy treap work lock poisoned"),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 original.native_read_meter().with_original_leaf(|work| work.work),
         }
@@ -1839,7 +1840,7 @@ impl<'a> LazyTreapWork<'a> {
         match &self.meter {
             LazyTreapMeter::Standalone { allocations, .. } =>
                 allocations.lock().expect("lazy treap allocation lock poisoned").live_bytes(),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { scratch, .. } =>
                 scratch.lock().expect("lazy treap scratch lock poisoned").bytes(),
         }
@@ -1855,7 +1856,7 @@ impl<'a> LazyTreapWork<'a> {
                     .checked_sub(self.live_bytes()).ok_or_else(counter_overflow)?;
                 Ok(remaining)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 original.remaining().map_err(Into::into),
         }
@@ -1876,7 +1877,7 @@ impl<'a> LazyTreapWork<'a> {
                 *work = work.with_backend(additional, live)?;
                 work.verify(*budget).map_err(Into::into)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 original.native_read_meter().with_original_leaf(|work| work.merge(additional)).map_err(Into::into),
         };
@@ -1896,7 +1897,7 @@ impl<'a> LazyTreapWork<'a> {
                 *work = next;
                 Ok(())
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 original.admit(additional).map_err(Into::into),
         }
@@ -1905,21 +1906,21 @@ impl<'a> LazyTreapWork<'a> {
     fn retain_fresh_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &self, checkout: &crate::Checkout<A, O>,
     ) -> Result<u64, LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, .. } = &self.meter {
             original.admit(WorkCounters::UNCHARGED)?;
             return Ok(0);
         }
         let token = checkout.private_control_custody();
         let bytes = token.logical_owned_bytes()
-            .checked_add(token.retained_payload_bytes().ok_or_else(counter_overflow)?)
+            .checked_add(token.retained_payload_bytes())
             .ok_or_else(counter_overflow)?;
         self.adopt(bytes)?;
         Ok(bytes)
     }
 
     fn adopt(&self, bytes: u64) -> Result<(), LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, scratch } = &self.meter {
             let mut allocation = original.retain_owned(bytes)?;
             scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation)?;
@@ -1930,7 +1931,7 @@ impl<'a> LazyTreapWork<'a> {
     }
 
     fn adopt_input(&self, bytes: u64) -> Result<(), LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { .. } = &self.meter {
             return self.adopt(bytes);
         }
@@ -1945,14 +1946,14 @@ impl<'a> LazyTreapWork<'a> {
 
     fn allocate(&self, bytes: u64) -> Result<(), LazyWorkspaceError> {
         self.cancellation.check().map_err(|_| {
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let LazyTreapMeter::NativeOriginal { .. } = &self.meter {
                 return LazyWorkspaceError::NativeWork(
                     crate::NativeTreeMaterializationError::Cancelled);
             }
             LazyWorkspaceError::Cancelled
         })?;
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, scratch } = &self.meter {
             let mut allocation = original.claim(bytes)?;
             scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation)?;
@@ -1993,7 +1994,6 @@ impl<'a> LazyTreapWork<'a> {
     ) -> Result<Option<crate::materializer::NativeAllocation>, LazyWorkspaceError> {
         match &self.meter {
             LazyTreapMeter::Standalone { .. } => Ok(None),
-            #[cfg(feature = "native-mount")]
             LazyTreapMeter::NativeOriginal { scratch, .. } => Ok(Some(
                 scratch.lock().expect("lazy treap scratch lock poisoned").split_off(bytes)?,
             )),
@@ -2001,7 +2001,7 @@ impl<'a> LazyTreapWork<'a> {
     }
 
     fn transfer_to_treap(&self, bytes: u64) -> Result<(), LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if matches!(self.meter, LazyTreapMeter::NativeOriginal { .. }) {
             return Ok(());
         }
@@ -2013,7 +2013,7 @@ impl<'a> LazyTreapWork<'a> {
             LazyTreapMeter::Standalone { allocations, .. } =>
                 allocations.lock().expect("lazy treap allocation lock poisoned")
                     .release(bytes).map_err(lazy_allocation_error),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { scratch, .. } => {
                 scratch.lock().expect("lazy treap scratch lock poisoned").release(bytes)?;
                 Ok(())
@@ -2026,7 +2026,7 @@ impl<'a> LazyTreapWork<'a> {
             return Ok(());
         }
         self.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, scratch } = &self.meter {
             let old_bytes = crate::foundation::usize_to_u64(values.capacity())
                 .checked_mul(std::mem::size_of::<T>() as u64).ok_or(crate::WorkError::Overflow)?;
@@ -2222,7 +2222,7 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
         id: Self::Id,
     ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
     {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.1
             && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
         {
@@ -2287,7 +2287,7 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for OverlayTreap<'_, S> {
             right: node.right,
         };
         let owned_bytes = overlay.logical_owned_bytes();
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.1
             && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
         {
@@ -2350,7 +2350,7 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
         id: Self::Id,
     ) -> Result<Option<ImmutableTreapNode<Self::Key, Self::Value, Self::Id>>, LazyWorkspaceError>
     {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.1
             && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
         {
@@ -2422,7 +2422,7 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
             right: node.right,
         };
         let owned_bytes = shadow.logical_owned_bytes();
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.1
             && let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter
         {
@@ -2498,7 +2498,7 @@ pub(crate) struct SelectedImportEffects {
     pub(crate) paths: Vec<String>,
     pub(crate) records: Vec<(FileRecord, FileMetadata)>,
     pub(crate) changes: Vec<NamespacePath>,
-    pub(crate) input: crate::kernel::Digest,
+    pub(crate) input: crate::Digest,
     pub(crate) logical_owned_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
     allocation: Option<crate::materializer::NativeAllocation>,
@@ -2709,7 +2709,7 @@ struct ResolvedLazyLookup {
     source: Option<SourceReference>,
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn authored_record_stat(record: FileRecord, metadata: FileMetadata) -> WorkspaceStat {
     let logical_bytes = match record.payload {
         FilePayload::InlineRegular(bytes) => Some(crate::foundation::usize_to_u64(bytes.as_bytes().len())),
@@ -2757,7 +2757,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SelectedLookupPhase<A, O> {
     }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 struct NativeInspectState<A: AsyncAuthorityStore, O: AsyncObjectStore> {
     reader: crate::PinnedReader<A, O>,
     record: Option<FileRecord>,
@@ -2767,7 +2767,7 @@ struct NativeInspectState<A: AsyncAuthorityStore, O: AsyncObjectStore> {
 
 enum LazyInspectBackend<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> {
     Measured(std::marker::PhantomData<(&'a (), A, O)>),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native(&'a mut NativeInspectState<A, O>),
 }
 
@@ -2834,7 +2834,7 @@ impl LazyReadonlyAccounting<'_> {
         -> Result<(), LazyWorkspaceError>
     {
         self.check()?;
-        PortablePath::validate(path, limits).map_err(|error| match self {
+        PortablePath::validate(path, limits).map(|_| ()).map_err(|error| match self {
             Self::Portable { .. } => LazyWorkspaceError::Workspace(error.to_string()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => LazyWorkspaceError::NamespacePath(
@@ -2890,8 +2890,16 @@ struct DemandBlobSource<'a, D> {
     failure: Option<DemandError>,
     source_used: Option<&'a std::sync::atomic::AtomicBool>,
     expected_source: Option<SourceReference>,
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     failure_storage: Option<crate::kernel::PreparedBlobDemandFailure>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<D> DemandBlobSource<'_, D> {
+    fn original_source_error(&mut self, error: DemandError) -> crate::FsError {
+        let storage = self.failure_storage.take().expect("native source failure storage is prepared");
+        crate::kernel::BlobBuildError::Demand(storage.failed(error)).into()
+    }
 }
 
 impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D> {
@@ -2941,7 +2949,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Err(std::io::Error::other("frozen demand source epoch changed"));
         }
         let chunk = receipt.value;
-        if chunk.is_empty() || u64::try_from(chunk.len()).unwrap_or(u64::MAX) > requested {
+        if chunk.bytes.is_empty() || u64::try_from(chunk.bytes.len()).unwrap_or(u64::MAX) > requested {
             self.failure = Some(DemandError::StaleVersion);
             return Err(std::io::Error::other(
                 "version-pinned demand read was incomplete",
@@ -2949,22 +2957,17 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         }
         self.offset = self
             .offset
-            .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
+            .checked_add(u64::try_from(chunk.bytes.len()).unwrap_or(u64::MAX))
             .ok_or_else(|| std::io::Error::other("demand source offset overflow"))?;
         destination
-            .get_mut(..chunk.len())
+            .get_mut(..chunk.bytes.len())
             .ok_or_else(|| std::io::Error::other("demand source exceeded read bound"))?
-            .copy_from_slice(&chunk);
-        Ok(chunk.len())
+            .copy_from_slice(&chunk.bytes);
+        Ok(chunk.bytes.len())
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    fn original_source_error(&mut self, error: DemandError) -> crate::FsError {
-        let storage = self.failure_storage.take().expect("native source failure storage is prepared");
-        crate::kernel::BlobBuildError::Demand(storage.failed(error)).into()
-    }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn read_with_native_work<'a>(
         &'a mut self, destination: &'a mut [u8],
         original: &'a crate::NativeMaterializationWork, cancellation: &'a CancellationToken,
@@ -3070,14 +3073,14 @@ impl Iterator for ExactifyEntries {
     }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct DirectoryNativeOwnership {
     input_borrowed: bool,
     allocation: Option<crate::materializer::NativeAllocation>,
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl DirectoryNativeOwnership {
     fn mark_input_borrowed(&mut self) { self.input_borrowed = true; }
 
@@ -3102,7 +3105,7 @@ pub struct LazyDirectoryCursor {
     directory: NamespacePath,
     phase: LazyDirectoryPhase,
     snapshot: Option<LazySnapshotId>,
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     native_directory_ownership: DirectoryNativeOwnership,
 }
 
@@ -3111,7 +3114,7 @@ impl Clone for LazyDirectoryCursor {
         Self {
             source: self.source, overlay: self.overlay, directory: self.directory.clone(),
             phase: self.phase.clone(), snapshot: self.snapshot,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             native_directory_ownership: DirectoryNativeOwnership::default(),
         }
     }
@@ -3163,9 +3166,9 @@ fn lazy_cursor_reservation_filesystem_error(error: std::collections::TryReserveE
 
 fn lazy_cursor_fixed_read_step(
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    step: crate::kernel::codec::ReadAllocationStep,
+    step: crate::kernel::ReadAllocationStep,
 ) -> Result<(), crate::FsError> {
-    use crate::kernel::codec::ReadAllocationStep;
+    use crate::kernel::ReadAllocationStep;
     match step {
         ReadAllocationStep::BeforeCopy(bytes) => accounting.admit(WorkCounters {
             bytes_copied: bytes, ..WorkCounters::UNCHARGED
@@ -3186,7 +3189,7 @@ fn lazy_cursor_fixed_read_step(
 }
 
 impl LazyDirectoryCursor {
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn mark_input_borrowed(&mut self) {
         self.native_directory_ownership.mark_input_borrowed();
         match &mut self.phase {
@@ -3196,7 +3199,7 @@ impl LazyDirectoryCursor {
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn unclaimed_retained_bytes(&self) -> Result<u64, LazyWorkspaceError> {
         let directory = self.native_directory_ownership.unclaimed_retained_bytes(self.directory.retained_bytes());
         let continuation = match &self.phase {
@@ -3208,7 +3211,7 @@ impl LazyDirectoryCursor {
         directory.checked_add(continuation).ok_or_else(counter_overflow)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn attach_native_custody(
         &mut self,
         allocation: &mut crate::materializer::NativeAllocation,
@@ -3253,7 +3256,7 @@ impl LazyDirectoryCursor {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Vec<u8>, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError> {
-        use crate::kernel::codec::EncodeAllocationStep;
+        use crate::kernel::EncodeAllocationStep;
         const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
         let mut allocation = accounting.claim_owned(0, 0).map_err(lazy_cursor_filesystem_error)?;
         let mut owned_bytes = 0;
@@ -3486,7 +3489,7 @@ impl LazyDirectoryCursor {
             decoder.finish().map_err(|_| LazyWorkspaceError::StaleCursor)?;
             accounting.check().map_err(lazy_cursor_filesystem_error)?;
             Ok(Self { source, overlay, directory, phase, snapshot,
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 native_directory_ownership: DirectoryNativeOwnership::default(),
             })
         })();
@@ -3501,7 +3504,7 @@ impl LazyDirectoryCursor {
 
     /// Encodes with the caller's original ledger; physical allocation and writes
     /// occur outside the original-root accounting leaves.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn encode_with_native_work(
         &self,
         original: &crate::NativeMaterializationWork,
@@ -3525,7 +3528,7 @@ impl LazyDirectoryCursor {
 
     /// Decodes on the original ledger using the workspace's actual profile and
     /// limits. Continuation fields adopt their producer guards without new work.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn decode_with_native_work(
         bytes: &[u8],
         profile: crate::model::FilesystemProfile,
@@ -3563,16 +3566,16 @@ impl LazyDirectoryCursor {
 
     fn claimable_directory_bytes(&self) -> u64 {
         let bytes = self.directory.retained_bytes();
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         { self.native_directory_ownership.unclaimed_retained_bytes(bytes) }
-        #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         { bytes }
     }
 
     fn claimable_source_cursor_bytes(cursor: &SourceCursor) -> u64 {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         { cursor.unclaimed_retained_bytes() }
-        #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         { cursor.retained_bytes() }
     }
 
@@ -3594,14 +3597,14 @@ enum LazyDirectoryPhase {
 
 struct LazyDirectoryAfter {
     name: LogicalName,
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     native_ownership: DirectoryNativeOwnership,
 }
 
 impl LazyDirectoryAfter {
     fn new(name: LogicalName) -> Self {
         Self { name,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             native_ownership: DirectoryNativeOwnership::default(),
         }
     }
@@ -3972,11 +3975,11 @@ impl LazyWorkspaceError {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn demand_native_failure_allocation_mut(
-        error: &mut crate::DemandError,
+        error: &mut DemandError,
     ) -> Option<&mut Option<crate::materializer::NativeAllocation>> {
         match error {
             #[cfg(feature = "native-mount")]
-            crate::DemandError::Mount(error) => match error {
+            DemandError::Mount(error) => match error {
                 crate::native_mount::MountSourceError::Filesystem(error)
                 | crate::native_mount::MountSourceError::WorkspaceCause(
                     WorkspaceError::Filesystem(error),
@@ -4153,7 +4156,7 @@ where
     /// # Errors
     ///
     /// Preserves the creator's paid failure and actual companion-store cause.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "explicit original creation identity and accounting root")]
     pub async fn attach_with_operation_with_native_work(
         fs: &Fs<A, O>, name: &str, source: Arc<D>, store: S,
@@ -4168,7 +4171,7 @@ where
         let generation = fs.create_workspace_with_operation_with_native_work(
             name, config, operation_id, original, cancellation,
         ).await.map_err(|(error, allocation)| (LazyWorkspaceError::WorkspaceCause(error), allocation))?;
-        let meter = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)
+        let meter = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         Self::attach_created_with_accounting(
             generation, source, store, reference, &meter, cancellation,
@@ -4190,7 +4193,7 @@ where
             LazyTreapMeter::Standalone { .. } => meter.accept(store.load_lazy_workspace_measured(
                 workspace.id(), meter.remaining()?, cancellation,
             ).await)?.map(LazyStatePhase::Standalone),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 store.load_lazy_workspace_with_native_work(
                     workspace.id(), original,
@@ -4218,7 +4221,7 @@ where
                 LazyTreapMeter::Standalone { .. } => meter.accept(store.compare_and_swap_lazy_workspace_measured(
                     workspace.id(), 0, state, meter.remaining()?, cancellation,
                 ).await)?,
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     store.compare_and_swap_lazy_workspace_with_native_work(
                         workspace.id(), 0, state, original,
@@ -4258,7 +4261,7 @@ where
                     shadow_id, shadows, meter.remaining()?, cancellation,
                 ).await)?;
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let (overlay, allocation) = original.with_owned_allocations(
                     |_, _, _, _| Ok::<_, LazyWorkspaceError>(overlay),
@@ -4450,13 +4453,13 @@ where
     /// # Errors
     ///
     /// Preserves actual native provider failures and rejects a stale source.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn resume_with_native_work(
         workspace: Workspace<A, O>, source: Arc<D>, store: S,
         original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<Self>, (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         let cancellation = original.cancellation();
-        let meter = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)
+        let meter = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         Self::resume_with_accounting(workspace, source, store, &meter, cancellation)
             .await.map_err(LazyWorkspaceError::into_native_failure)
@@ -4475,7 +4478,7 @@ where
             LazyTreapMeter::Standalone { .. } => meter.accept(store.load_lazy_workspace_measured(
                 workspace.id(), meter.remaining()?, cancellation,
             ).await)?.map(LazyStatePhase::Standalone),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 store.load_lazy_workspace_with_native_work(
                     workspace.id(), original,
@@ -4532,14 +4535,14 @@ where
     /// # Errors
     ///
     /// Returns actual typed provider failures; missing roots fail closed.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn resume_root_observation_with_native_work(
         workspace: Workspace<A, O>, source: Arc<D>, store: S,
         expected_source: SourceReference,
         original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Self, (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         let cancellation = original.cancellation();
-        let meter = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)
+        let meter = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         Self::resume_root_with_accounting(
             workspace, source, store, expected_source, &meter, cancellation,
@@ -4559,7 +4562,7 @@ where
             LazyTreapMeter::Standalone { .. } => meter.accept(store.load_lazy_workspace_measured(
                 workspace.id(), meter.remaining()?, cancellation,
             ).await)?.map(LazyStatePhase::Standalone),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 store.load_lazy_workspace_with_native_work(
                     workspace.id(), original,
@@ -4567,7 +4570,7 @@ where
             }
         }.ok_or_else(|| match &meter.meter {
             LazyTreapMeter::Standalone { .. } => LazyWorkspaceError::Store("lazy binding is absent".to_owned()),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { .. } => LazyWorkspaceError::OriginalSnapshotUnavailable,
         })?;
         let state = state.as_state();
@@ -4591,7 +4594,7 @@ where
                 drop(shadow);
                 if !present { return Err(LazyWorkspaceError::Store("lazy identity shadow is absent".to_owned())); }
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let overlay = store.load_lazy_overlay_with_native_work(state.overlay, original).await?;
                 let present = overlay.is_some();
@@ -4615,7 +4618,7 @@ where
                     meter.remaining()?, cancellation,
                 ).await.map_err(|failure| lazy_operation_failure(failure, |error| error)))?;
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let (state, allocation) = lazy.rebind_source_with_native_work(
                     original,
@@ -4694,7 +4697,7 @@ where
     /// Captures the actual logical identity on the caller's original native scope.
     ///
     /// The returned guard is transferred from the actual decoded state phase.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn snapshot_with_native_work(
         &self, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, crate::materializer::NativeAllocation), LazyWorkspaceError> {
@@ -4803,17 +4806,48 @@ where
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<LazySnapshotRef>, LazyWorkspaceError> {
         let meter = LazyTreapWork::new(budget, cancellation);
-        let result = async {
-            cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let (name, id) = meter.accept(self.workspace.volume.fs.workspace_name_identity_measured(
-                destination, meter.remaining()?, cancellation,
-            ).map_err(measured_workspace_error))?;
-            meter.adopt(name.retained_bytes())?;
-            let origin = self.prepare_fork_origin_at(id, original_operation_id, Some(frozen), &meter).await?;
-            Ok(origin.snapshot)
-        }.await;
+        let result = self.prepare_fork_snapshot_with_accounting(
+            destination, frozen, original_operation_id, &meter,
+        ).await;
         result.map(|value| OperationReceipt { value, work: meter.spent() })
             .map_err(|error| crate::OperationFailure::new(error, meter.spent()))
+    }
+
+    /// Retains the same qualified freeze on the caller's original native scope.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn prepare_fork_snapshot_with_native_work(
+        &self, destination: impl AsRef<str>, frozen: LazySnapshotRef,
+        original_operation_id: crate::OperationId,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
+        let meter = LazyTreapWork::native_with_work(original, cancellation)?;
+        self.prepare_fork_snapshot_with_accounting(
+            destination, frozen, original_operation_id, &meter,
+        ).await
+    }
+
+    async fn prepare_fork_snapshot_with_accounting(
+        &self, destination: impl AsRef<str>, frozen: LazySnapshotRef,
+        original_operation_id: crate::OperationId, meter: &LazyTreapWork<'_>,
+    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
+        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        let (name, id) = match &meter.meter {
+            LazyTreapMeter::Standalone { .. } => {
+                let named = meter.accept(self.workspace.volume.fs.workspace_name_identity_measured(
+                    destination, meter.remaining()?, meter.cancellation,
+                ).map_err(measured_workspace_error))?;
+                meter.adopt(named.0.retained_bytes())?;
+                named
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                self.workspace.volume.fs.workspace_name_identity_with_native_work(
+                    destination, original, meter.cancellation,
+                ).map_err(native_workspace_error_pair)?,
+        };
+        let origin = self.prepare_fork_origin_at(id, original_operation_id, Some(frozen), meter).await?;
+        drop(name);
+        Ok(origin.snapshot)
     }
 
     /// Binds the same already-created project after authenticating its immutable creation.
@@ -4824,38 +4858,113 @@ where
         budget: WorkBudget, cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<(Self, LazySnapshotRef)>, LazyWorkspaceError> {
         let meter = LazyTreapWork::new(budget, cancellation);
-        let result = async {
-            meter.adopt_input(created_child.name.retained_bytes())?;
-            cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            if !self.workspace.volume.fs.same_deployment(&created_child.volume.fs) {
-                return Err(workspace_error(WorkspaceError::ForeignGeneration));
-            }
-            let state = meter.accept(self.store.load_lazy_workspace_measured(
-                created_child.id(), meter.remaining()?, cancellation,
-            ).await)?.ok_or(LazyWorkspaceError::Concurrent)?;
-            let origin = self.validate_fork_origin(&state, created_child.id(), original_operation_id, Some(frozen), &meter)?;
-            let observed = meter.accept(self.workspace.volume.fs.workspace_for_creation_operation_measured(
-                created_child.name.as_str(), created_child.volume.config, original_operation_id,
-                meter.remaining()?, cancellation,
-            ).await.map_err(measured_workspace_error))?.ok_or(LazyWorkspaceError::Concurrent)?;
-            let observed_bytes = observed.publication_retained_bytes();
-            meter.adopt_input(observed_bytes)?;
-            if observed.id() != original_child_generation || observed.workspace_id() != created_child.id() {
-                return Err(LazyWorkspaceError::Concurrent);
-            }
-            drop(observed);
-            meter.release(observed_bytes)?;
-            let child_snapshot = self.commit_prepared_fork_at(
-                &created_child, original_child_generation, origin, &meter,
-            ).await?;
-            let selected_publication = new_selected_import_control(&meter)?;
-            Ok((Self { workspace: created_child, source: Arc::clone(&self.source), store: self.store.clone(), selected_publication,
-                #[cfg(not(target_arch = "wasm32"))]
-                allocation: None,
-            }, child_snapshot))
-        }.await;
+        let result = self.bind_prepared_fork_with_accounting(
+            frozen, created_child, original_child_generation, original_operation_id, &meter,
+        ).await;
         result.map(|value| OperationReceipt { value, work: meter.spent() })
             .map_err(|error| crate::OperationFailure::new(error, meter.spent()))
+    }
+
+    /// Binds the authentic original filesystem creation on its original native scope.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn bind_prepared_fork_with_native_work(
+        &self, frozen: LazySnapshotRef, created_child: Workspace<A, O>,
+        original_child_generation: crate::GenerationId, original_operation_id: crate::OperationId,
+        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+    ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
+        let meter = LazyTreapWork::native_with_work(original, cancellation)?;
+        self.bind_prepared_fork_with_accounting(
+            frozen, created_child, original_child_generation, original_operation_id, &meter,
+        ).await
+    }
+
+    async fn bind_prepared_fork_with_accounting(
+        &self, frozen: LazySnapshotRef, created_child: Workspace<A, O>,
+        original_child_generation: crate::GenerationId, original_operation_id: crate::OperationId,
+        meter: &LazyTreapWork<'_>,
+    ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
+        if matches!(meter.meter, LazyTreapMeter::Standalone { .. }) {
+            meter.adopt_input(created_child.name.retained_bytes())?;
+        }
+        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        if !self.workspace.volume.fs.same_deployment(&created_child.volume.fs) {
+            return Err(match &meter.meter {
+                LazyTreapMeter::Standalone { .. } => workspace_error(WorkspaceError::ForeignGeneration),
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyTreapMeter::NativeOriginal { .. } => native_workspace_error(WorkspaceError::ForeignGeneration),
+            });
+        }
+        let state = self.load_fork_state_at(created_child.id(), meter).await?
+            .ok_or(LazyWorkspaceError::Concurrent)?;
+        let origin = self.validate_fork_origin(
+            state.as_state(), created_child.id(), original_operation_id, Some(frozen), meter,
+        )?;
+        let observed = match &meter.meter {
+            LazyTreapMeter::Standalone { .. } =>
+                meter.accept(self.workspace.volume.fs.workspace_for_creation_operation_measured(
+                    created_child.name.as_str(), created_child.volume.config, original_operation_id,
+                    meter.remaining()?, meter.cancellation,
+                ).await.map_err(measured_workspace_error))?,
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                self.workspace.volume.fs.workspace_for_creation_operation_with_native_work(
+                    created_child.name.as_str(), created_child.volume.config, original_operation_id,
+                    original, meter.cancellation,
+                ).await.map_err(native_workspace_error_pair)?,
+        }.ok_or(LazyWorkspaceError::Concurrent)?;
+        let observed_bytes = observed.publication_retained_bytes();
+        if matches!(meter.meter, LazyTreapMeter::Standalone { .. }) {
+            meter.adopt_input(observed_bytes)?;
+        }
+        if observed.id() != original_child_generation || observed.workspace_id() != created_child.id() {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        drop(observed);
+        if matches!(meter.meter, LazyTreapMeter::Standalone { .. }) {
+            meter.release(observed_bytes)?;
+        }
+        let child_snapshot = self.commit_prepared_fork_at(
+            &created_child, original_child_generation, origin, meter,
+        ).await?;
+        let selected_publication = new_selected_import_control(meter)?;
+        Ok((Self { workspace: created_child, source: Arc::clone(&self.source), store: self.store.clone(), selected_publication,
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: None,
+        }, child_snapshot))
+    }
+
+    async fn load_fork_state_at(
+        &self, destination: WorkspaceId, meter: &LazyTreapWork<'_>,
+    ) -> Result<Option<LazyStatePhase>, LazyWorkspaceError> {
+        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        match &meter.meter {
+            LazyTreapMeter::Standalone { .. } =>
+                meter.accept(self.store.load_lazy_workspace_measured(
+                    destination, meter.remaining()?, meter.cancellation,
+                ).await).map(|state| state.map(LazyStatePhase::Standalone)),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                self.store.load_lazy_workspace_with_native_work(destination, original).await
+                    .map(|state| state.map(LazyStatePhase::Native)),
+        }
+    }
+
+    async fn swap_fork_state_at(
+        &self, destination: WorkspaceId, revision: u64, state: LazyWorkspaceState,
+        meter: &LazyTreapWork<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        match &meter.meter {
+            LazyTreapMeter::Standalone { .. } =>
+                meter.accept(self.store.compare_and_swap_lazy_workspace_measured(
+                    destination, revision, state, meter.remaining()?, meter.cancellation,
+                ).await),
+            #[cfg(not(target_arch = "wasm32"))]
+            LazyTreapMeter::NativeOriginal { original, .. } =>
+                self.store.compare_and_swap_lazy_workspace_with_native_work(
+                    destination, revision, state, original,
+                ).await,
+        }
     }
 
     fn validate_fork_origin(
@@ -4899,18 +5008,29 @@ where
         if destination == self.workspace.id() { return Err(LazyWorkspaceError::Concurrent); }
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let loaded = meter.accept(self.store.load_lazy_workspace_measured(
-                destination, meter.remaining()?, meter.cancellation,
-            ).await)?;
+            let loaded = self.load_fork_state_at(destination, meter).await?;
             if let Some(state) = loaded {
-                return self.validate_fork_origin(&state, destination, operation_id, qualified, meter);
+                return self.validate_fork_origin(state.as_state(), destination, operation_id, qualified, meter);
             }
             let snapshot = if let Some(snapshot) = qualified { snapshot } else {
-                meter.accept(self.snapshot_measured(meter.remaining()?, meter.cancellation).await
-                    .map_err(|failure| lazy_operation_failure(failure, |error| error)))?
+                match &meter.meter {
+                    LazyTreapMeter::Standalone { .. } =>
+                        meter.accept(self.snapshot_measured(meter.remaining()?, meter.cancellation).await
+                            .map_err(|failure| lazy_operation_failure(failure, |error| error)))?,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    LazyTreapMeter::NativeOriginal { original, .. } =>
+                        self.snapshot_with_native_work(original).await?.0,
+                }
             };
-            meter.accept(self.validate_snapshot_measured(snapshot, meter.remaining()?, meter.cancellation).await
-                .map_err(|failure| lazy_operation_failure(failure, |error| error)))?;
+            match &meter.meter {
+                LazyTreapMeter::Standalone { .. } => {
+                    meter.accept(self.validate_snapshot_measured(snapshot, meter.remaining()?, meter.cancellation).await
+                        .map_err(|failure| lazy_operation_failure(failure, |error| error)))?;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyTreapMeter::NativeOriginal { original, .. } =>
+                    self.validate_native_snapshot_with_accounting(snapshot, original, meter.cancellation).await?,
+            }
             let origin = LazyForkOrigin {
                 operation_id, snapshot, config: self.workspace.volume.config, phase: LazyForkPhase::Prepared,
             };
@@ -4922,21 +5042,26 @@ where
             };
             // Reuse SDK publication custody: the actual closure is protected from
             // concurrent sweeping until the FIRST companion freeze becomes durable.
-            let hold = meter.accept(self.workspace.volume.fs.make_generation_durable_measured(
-                &self.workspace.volume, snapshot.authored_generation, meter.remaining()?, meter.cancellation,
-            ).await.map_err(measured_workspace_error))?;
-            let swapped = meter.accept(self.store.compare_and_swap_lazy_workspace_measured(
-                destination, 0, state, meter.remaining()?, meter.cancellation,
-            ).await)?;
+            let hold = match &meter.meter {
+                LazyTreapMeter::Standalone { .. } =>
+                    meter.accept(self.workspace.volume.fs.make_generation_durable_measured(
+                        &self.workspace.volume, snapshot.authored_generation, meter.remaining()?, meter.cancellation,
+                    ).await.map_err(measured_workspace_error))?,
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyTreapMeter::NativeOriginal { original, .. } =>
+                    self.workspace.volume.fs.make_generation_durable_with_native_work(
+                        &self.workspace.volume, snapshot.authored_generation, original, meter.cancellation,
+                    ).await.map_err(native_workspace_error_pair)?,
+            };
+            let swapped = self.swap_fork_state_at(destination, 0, state, meter).await?;
             drop(hold);
             if swapped { return Ok(origin); }
             // A qualified capture never substitutes a refreshed parent. A canonical
             // first attempt may recapture only while no durable freeze exists.
             if qualified.is_some() {
-                let state = meter.accept(self.store.load_lazy_workspace_measured(
-                    destination, meter.remaining()?, meter.cancellation,
-                ).await)?.ok_or(LazyWorkspaceError::Concurrent)?;
-                return self.validate_fork_origin(&state, destination, operation_id, qualified, meter);
+                let state = self.load_fork_state_at(destination, meter).await?
+                    .ok_or(LazyWorkspaceError::Concurrent)?;
+                return self.validate_fork_origin(state.as_state(), destination, operation_id, qualified, meter);
             }
         }
         Err(LazyWorkspaceError::Concurrent)
@@ -4948,9 +5073,19 @@ where
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let state = meter.accept(self.store.load_lazy_workspace_measured(
-                workspace.id(), meter.remaining()?, meter.cancellation,
-            ).await)?.ok_or(LazyWorkspaceError::Concurrent)?;
+            // Native decoded data must retire before its actual allocation guard.
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut state_allocation = None;
+            let state = match self.load_fork_state_at(workspace.id(), meter).await?
+                .ok_or(LazyWorkspaceError::Concurrent)? {
+                LazyStatePhase::Standalone(state) => state,
+                #[cfg(not(target_arch = "wasm32"))]
+                LazyStatePhase::Native(owned) => {
+                    let (state, allocation) = owned.into_parts();
+                    state_allocation = Some(allocation);
+                    state
+                }
+            };
             let existing = self.validate_fork_origin(
                 &state, workspace.id(), origin.operation_id, Some(origin.snapshot), meter,
             )?;
@@ -4966,9 +5101,10 @@ where
             let committed = LazyWorkspaceState {
                 revision, fork_origin: Some(LazyForkOrigin { phase: LazyForkPhase::Committed, ..origin }), ..state
             };
-            if meter.accept(self.store.compare_and_swap_lazy_workspace_measured(
-                workspace.id(), revision - 1, committed, meter.remaining()?, meter.cancellation,
-            ).await)? {
+            let swapped = self.swap_fork_state_at(workspace.id(), revision - 1, committed, meter).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(state_allocation);
+            if swapped {
                 meter.charge(WorkCounters {
                     bytes_hashed: crate::foundation::usize_to_u64(LAZY_SNAPSHOT_DOMAIN.len()) + 136,
                     ..WorkCounters::UNCHARGED
@@ -5075,14 +5211,26 @@ where
                 return Err(LazyWorkspaceError::Concurrent);
             }
         }
+        let control_meter = LazyTreapWork::new(remaining_work(work, budget)?, cancellation);
+        let selected_publication = new_selected_import_control(&control_meter)?;
+        work = account_work(work, control_meter.spent(), budget)?;
+        let control_bytes = control_meter.live_bytes();
+        let mut remaining = remaining_work(work, budget)?;
+        remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
+            .checked_sub(control_bytes).ok_or_else(counter_overflow)?;
         let exactified = Self {
             workspace,
             source: Arc::clone(&self.source),
             store: self.store.clone(),
+            selected_publication,
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: None,
         }
-        .exactify(remaining_work(work, budget)?, cancellation)
+        .exactify(remaining, cancellation)
         .await?;
-        work = account_work(work, exactified.work, budget)?;
+        control_meter.release(control_bytes)?;
+        work = work.with_backend(exactified.work, control_bytes)?;
+        work.verify(&budget)?;
         Ok(OperationReceipt {
             value: exactified.value,
             work,
@@ -5167,11 +5315,11 @@ where
                     .await.map_err(measured_workspace_error))?;
                 let mut removed = work.accept(self.collect_generation_selected_paths_measured(
                     &baseline, paths, work.remaining()?, cancellation,
-                ).await)?;
+                ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&removed)?)?;
                 let present = work.accept(self.collect_generation_selected_paths_measured(
                     imported, paths, work.remaining()?, cancellation,
-                ).await)?;
+                ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&present)?)?;
                 let mut write = 0_usize;
                 for read in 0..removed.len() {
@@ -5252,7 +5400,7 @@ where
 
     /// Projects selected regions of the original immutable cut on the caller's
     /// native ledger. The baseline is forked from `frozen`, never from head.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn exactify_snapshot_selected_at_generation_with_native_work_guarded<'original, F, Fut>(
         &self, frozen: LazySnapshotRef, imported: &crate::Generation<A, O>,
         paths: &[String], destination: &str, baseline_key: IdempotencyKey,
@@ -5264,7 +5412,7 @@ where
         F: FnMut(&'original crate::NativeMaterializationWork) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::FsError>> + Send,
     {
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&work, || async {
             self.validate_snapshot_with_accounting(frozen, &work, cancellation).await?;
             if !self.workspace.volume.fs.same_deployment(&imported.workspace.volume.fs) {
@@ -5314,8 +5462,8 @@ where
             if current.id() != baseline.id() { return Err(LazyWorkspaceError::Concurrent); }
             drop(current);
             for (index, path) in paths.iter().enumerate() {
-                if accounting.leaf(|_, counters, budget|
-                    exactify_root_is_covered(paths, index, counters, budget, cancellation))? {
+                if accounting.with_kernel(cancellation, |accounting|
+                    exactify_root_is_covered_with_accounting(paths, index, accounting, cancellation))? {
                     continue;
                 }
                 let mut guard = |_: WorkBudget| seal_guard(original);
@@ -5332,8 +5480,8 @@ where
             ).await?;
             let mut write = 0;
             for read in 0..removed.len() {
-                let exists = accounting.leaf(|_, counters, budget|
-                    exactify_contains_path(&present, &removed[read], counters, budget, cancellation))?;
+                let exists = accounting.with_kernel(cancellation, |accounting|
+                    exactify_contains_path_with_accounting(&present, &removed[read], accounting, cancellation))?;
                 if exists {
                     let path = std::mem::take(&mut removed[read]);
                     let bytes = path.capacity() as u64;
@@ -5427,12 +5575,12 @@ where
     /// # Errors
     ///
     /// Retains source, companion, cancellation and admission failures.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn rebind_source_with_native_work(
         &self, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(LazyWorkspaceState, crate::materializer::NativeAllocation), LazyWorkspaceError> {
         let cancellation = original.cancellation();
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         match self.rebind_source_with_accounting(&work, cancellation).await? {
             LazyStatePhase::Native(owned) => Ok(owned.into_parts()),
             LazyStatePhase::Standalone(_) => Err(LazyWorkspaceError::NativeLedgerMismatch),
@@ -5540,7 +5688,7 @@ where
     /// Resolves and publishes observations on the caller's original native ledger.
     ///
     /// Drop the lookup before dropping its returned ownership guard.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_with_native_work(
         &self, path: &str, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -5549,7 +5697,7 @@ where
             .map(|(resolved, allocation)| (resolved.lookup, allocation))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn lookup_resolved_with_native_work(
         &self, path: &str, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -5560,15 +5708,13 @@ where
         Ok((resolved, allocation))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn lookup_owned_with_native_work(
         &self, path: &str, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<NativeFrozenLookup<A, O>, LazyWorkspaceError> {
-        let projection = original.native_mount_work();
-        let frame = LazyTreapWork::native_with_work(&projection, cancellation)?;
+        let frame = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&frame, move || async move {
-                let original = projection.native_materialization_work();
                 let head = self.workspace.head_with_native_work(
                     &original, cancellation,
                 ).await.map_err(native_workspace_error_pair)?;
@@ -5646,14 +5792,8 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyReadonlyAccounting::Native { original, cancellation } => {
-                #[cfg(feature = "native-mount")]
-                {
-                    let projection = original.native_mount_work();
-                    let observations = LazyTreapWork::native_with_work(&projection, cancellation)?;
+                    let observations = LazyTreapWork::native_with_work(original, cancellation)?;
                     self.observe_with_accounting(path, state, &observations, cancellation).await?
-                }
-                #[cfg(not(feature = "native-mount"))]
-                return Err(LazyWorkspaceError::Demand(DemandError::NativeWorkUnavailable));
             }
         };
         let authored = match accounting {
@@ -5666,8 +5806,6 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyReadonlyAccounting::Native { original, cancellation } => {
-                #[cfg(feature = "native-mount")]
-                {
                     if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
                         None
                     } else if let LazyInspectBackend::Native(context) = backend {
@@ -5687,9 +5825,6 @@ where
                     } else {
                         return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
                     }
-                }
-                #[cfg(not(feature = "native-mount"))]
-                return Err(LazyWorkspaceError::Demand(DemandError::NativeWorkUnavailable));
             }
         };
         let aliased = authored.is_some();
@@ -5781,7 +5916,7 @@ where
         }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn inspect_unauthored_with_native_work(
         &self, path: &str, state: Option<&LazyWorkspaceState>,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -5791,7 +5926,7 @@ where
         }, original, cancellation).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "retains the genuine listed node in the unchanged native inspection basis")]
     pub(crate) async fn inspect_listed_with_native_work(
         &self, state: &LazyWorkspaceState, path: &str, node: SourceNode, unobserved: bool,
@@ -5803,13 +5938,12 @@ where
         }, original, cancellation).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn inspect_basis_with_native_work(
         &self, path: &str, basis: InspectBasis<'_>,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<((LazyLookup, Option<SourceReference>), crate::NativeAllocation), LazyWorkspaceError> {
-        let projection = original.native_mount_work();
-        let frame = LazyTreapWork::native_with_work(&projection, cancellation)?;
+        let frame = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&frame, move || async move {
             original.admit(WorkCounters::UNCHARGED)?;
             cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
@@ -5964,8 +6098,6 @@ where
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 LazyReadonlyAccounting::Native { original, cancellation } => {
-                    #[cfg(feature = "native-mount")]
-                    {
                         let original = *original;
                         let result = self.source_request_with_work(
                             path, state.source, original, cancellation, |path| async move {
@@ -5992,12 +6124,6 @@ where
                                 return Err(error);
                             }
                         }
-                    }
-                    #[cfg(not(feature = "native-mount"))]
-                    {
-                        let _ = (original, cancellation, backend);
-                        return Err(LazyWorkspaceError::Demand(DemandError::NativeWorkUnavailable));
-                    }
                 }
             };
             if basis.authored_generation.is_some() && self.source.reference() != state.source {
@@ -6090,7 +6216,6 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyReadonlyAccounting::Native { original, cancellation } => {
-                #[cfg(feature = "native-mount")]
                 if let LazyInspectBackend::Native(context) = backend {
                     return self.authored_lookup_with_work(path, context, original, cancellation).await;
                 }
@@ -6116,7 +6241,6 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyReadonlyAccounting::Native { original, cancellation } => {
-                #[cfg(feature = "native-mount")]
                 if let LazyInspectBackend::Native(context) = backend {
                     return self.authored_alias_with_work(node, state, context, original, cancellation).await;
                 }
@@ -6126,7 +6250,7 @@ where
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn authored_lookup_with_work(
         &self, path: &str, context: &mut NativeInspectState<A, O>,
         original: &crate::materializer::NativeMaterializationWork,
@@ -6160,7 +6284,7 @@ where
         }))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn authored_path_with_work(
         &self, path: &str, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -6168,8 +6292,7 @@ where
         original.admit(WorkCounters::UNCHARGED)?;
         cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
             crate::NativeTreeMaterializationError::Cancelled))?;
-        let meter = original.native_mount_work();
-        let paths = LazyTreapWork::native_with_work(&meter, cancellation)?;
+        let paths = LazyTreapWork::native_with_work(original, cancellation)?;
         let path = paths.canonical_path_owned(path, self.workspace.limits())?;
         let allocation = paths.take_native_owned(
             crate::foundation::usize_to_u64(path.capacity()))?
@@ -6177,7 +6300,7 @@ where
         Ok((path, allocation))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn source_file_id_with_work(
         &self, node: &SourceNode, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -6185,7 +6308,7 @@ where
         self.source_file_id_of_with_native_work(&node.file_identity, original, cancellation)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn source_file_id_of_with_native_work(
         &self, file_identity: &[u8; 32], original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -6214,7 +6337,7 @@ where
         Ok(file_id)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn authored_shadow_with_work(
         &self, file_id: FileId, node: &SourceNode, state: &LazyWorkspaceState,
         context: &mut NativeInspectState<A, O>,
@@ -6235,7 +6358,7 @@ where
         }))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn authored_alias_with_work(
         &self, node: &SourceNode, state: &LazyWorkspaceState,
         context: &mut NativeInspectState<A, O>,
@@ -6417,7 +6540,7 @@ where
         accounting.finish_measured(result).map_err(LazyWorkspaceError::into_measured_failure)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn stable_file_id_for_lookup_with_native_work(
         &self, path: &str, lookup: &LazyLookup,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -6426,7 +6549,7 @@ where
             &mut LazyReadonlyAccounting::Native { original, cancellation }).await
     }
 
-    #[cfg(any(feature = "native-mount", all(test, feature = "native-watch", not(target_arch = "wasm32"))))]
+    #[cfg(any(feature = "native-mount", not(target_arch = "wasm32")))]
     fn source_file_id_with_readonly_accounting(
         &self, node: &SourceNode, accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
@@ -6435,16 +6558,12 @@ where
             LazyReadonlyAccounting::Portable { work, budget, cancellation } =>
                 self.source_file_id_measured(node, work, *budget, cancellation),
             #[cfg(not(target_arch = "wasm32"))]
-            LazyReadonlyAccounting::Native { original, cancellation } => {
-                #[cfg(feature = "native-mount")]
-                { self.source_file_id_with_work(node, original, cancellation) }
-                #[cfg(not(feature = "native-mount"))]
-                { Err(LazyWorkspaceError::OriginalSnapshotUnavailable) }
-            }
+            LazyReadonlyAccounting::Native { original, cancellation } =>
+                self.source_file_id_with_work(node, original, cancellation),
         }
     }
 
-    #[cfg(any(feature = "native-mount", all(test, feature = "native-watch", not(target_arch = "wasm32"))))]
+    #[cfg(any(feature = "native-mount", not(target_arch = "wasm32")))]
     async fn stable_file_id_with_accounting(
         &self, path: &str, lookup: &LazyLookup,
         accounting: &mut LazyReadonlyAccounting<'_>,
@@ -6688,7 +6807,7 @@ where
         Ok(state)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn inspect_at_snapshot_with_work(
         &self,
         snapshot: LazySnapshotRef,
@@ -6699,6 +6818,10 @@ where
     ) -> Result<NativeFrozenLookup<A, O>,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)>
     {
+        let frame = LazyTreapWork::native_with_work(original, cancellation)
+            .map_err(|error| (error, None))?;
+        in_heap_lazy_with_work(&frame, || async {
+            Ok(async {
         let state = self.readonly_snapshot_state_with_work(snapshot, false, original, cancellation)
             .map_err(|error| (error, None))?;
         let reader = self.workspace.readonly_pinned_reader_with_native_work(
@@ -6746,6 +6869,8 @@ where
                 Err((error, Some(allocation)))
             }
         }
+            }.await)
+        }).await.map_err(|error| (error, None))?
     }
 
     /// Authenticates retained immutable snapshot metadata without refreshing its parent.
@@ -6787,6 +6912,8 @@ where
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
+        let frame = LazyTreapWork::native_with_work(original, cancellation)?;
+        in_heap_lazy_with_work(&frame, || async {
         self.readonly_snapshot_state_with_work(frozen, false, original, cancellation)?;
         let reader = self.workspace.readonly_pinned_reader_with_native_work(
             frozen.authored_generation, original, cancellation,
@@ -6805,6 +6932,7 @@ where
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(())
+        }).await
     }
 
     async fn validate_snapshot_with_accounting(
@@ -6812,7 +6940,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         match &work.meter {
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 self.validate_native_snapshot_with_accounting(frozen, original, cancellation).await,
             LazyTreapMeter::Standalone { .. } => {
@@ -6945,6 +7073,10 @@ where
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<(Bytes, crate::NativeAllocation),
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
+        let frame = LazyTreapWork::native_with_work(original, cancellation)
+            .map_err(|error| (error, None))?;
+        in_heap_lazy_with_work(&frame, || async {
+            Ok(async {
         let source_used = std::sync::atomic::AtomicBool::new(false);
         let frozen = self.inspect_at_snapshot_with_work(
             snapshot, path, original, cancellation, &source_used,
@@ -6997,6 +7129,8 @@ where
             }
         }
         Ok((bytes, allocation))
+            }.await)
+        }).await.map_err(|error| (error, None))?
     }
 
     /// Reads a complete regular file from exactly this frozen authored/source view.
@@ -7203,7 +7337,7 @@ where
         }).await.map_err(LazyWorkspaceError::into_measured_failure)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn open_source_file_with_native_work(
         &self, path: &str, source: SourceReference, node: SourceNode,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
@@ -7270,17 +7404,9 @@ where
                     return Err((LazyWorkspaceError::NotRegularFile, None));
                 }
                 let source = source.ok_or((LazyWorkspaceError::Concurrent, None))?;
-                #[cfg(feature = "native-mount")]
-                {
                     return self.read_source_range_with_work(
                         path, source, node.version, offset, length, original, cancellation,
                     ).await.map(|(bytes, custody)| (bytes, Some(custody)));
-                }
-                #[cfg(not(feature = "native-mount"))]
-                {
-                    let _ = (path, source, node, offset, length);
-                    return Err((LazyWorkspaceError::Demand(DemandError::NativeWorkUnavailable), None));
-                }
             }
         };
         if record.kind != FileKind::Regular {
@@ -7294,21 +7420,19 @@ where
         ), None)).map_err(|error| (native_filesystem_error(error), None))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn unauthored_content_reader_with_native_work(
         &self, lookup: &LazyLookup, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<Option<crate::PinnedReader<A, O>>, LazyWorkspaceError> {
         if !matches!(lookup, LazyLookup::Shadow { .. }) { return Ok(None); }
-        let checkout = self.workspace.engine_checkout_with_native_work(
-            crate::GenerationSelector::Head, crate::CheckoutMode::read_only_pinned(),
-            &original.native_mount_work(), cancellation,
-        ).await.map_err(LazyWorkspaceError::WorkspaceCause)?;
-        checkout.into_pinned_reader_with_native_work(original, cancellation)
-            .map(Some).map_err(LazyWorkspaceError::Filesystem)
+        let head = self.workspace.head_with_native_work(original, cancellation)
+            .await.map_err(native_workspace_error_pair)?;
+        self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
+            .await.map(Some).map_err(native_workspace_error)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn read_unauthored_range_owned_with_native_work(
         &self, lookup: &LazyLookup, source: Option<SourceReference>, path: &str,
         offset: u64, length: u64, original: &crate::NativeMaterializationWork,
@@ -7325,7 +7449,7 @@ where
         ).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn read_unauthored_link_owned_with_native_work(
         &self, lookup: &LazyLookup, source: Option<SourceReference>, path: &str,
         maximum_bytes: u64, original: &crate::NativeMaterializationWork,
@@ -7495,17 +7619,9 @@ where
                     return Err((LazyWorkspaceError::TooLarge, None));
                 }
                 let source = source.ok_or((LazyWorkspaceError::Concurrent, None))?;
-                #[cfg(feature = "native-mount")]
-                {
                     return self.read_source_link_with_work(
                         path, source, node.version, maximum_bytes, original, cancellation,
                     ).await.map(|(bytes, custody)| (bytes, Some(custody)));
-                }
-                #[cfg(not(feature = "native-mount"))]
-                {
-                    let _ = (path, source, node);
-                    return Err((LazyWorkspaceError::Demand(DemandError::NativeWorkUnavailable), None));
-                }
             }
         };
         if record.kind != FileKind::SymbolicLink {
@@ -7787,7 +7903,7 @@ where
                     self.workspace.begin_transaction_measured(key, work.remaining()?, cancellation)
                         .await.map_err(measured_workspace_error),
                 ),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     self.workspace.begin_transaction_with_native_work(
                         key, original, cancellation,
@@ -7839,7 +7955,7 @@ where
                     }.map_err(measured_workspace_error);
                     work.accept(applied.map(|work| OperationReceipt { value: (), work }))
                 }
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     match operation {
                         LazyPromotionMutation::Directory =>
@@ -7888,7 +8004,7 @@ where
                     transaction.commit_with_permit_measured(permit, work.remaining()?, cancellation)
                         .await.map_err(measured_workspace_error),
                 ),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     transaction.commit_with_permit_with_native_work(
                         permit, original, cancellation,
@@ -7908,7 +8024,7 @@ where
                 work.accept(result.map(|value| OperationReceipt { value, work: counters })
                     .map_err(|error| error.with_prior_work(counters)))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 self.source_file_id_with_work(node, original, cancellation)
             }
@@ -7933,7 +8049,7 @@ where
                         }
                     },
                 ).await),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     let read = match offset {
                         Some(offset) => self.read_source_range_with_work(
@@ -7964,7 +8080,7 @@ where
             LazyTreapMeter::Standalone { .. } => work.accept(self.validate_staging_source_measured(
                 snapshot, source, work.remaining()?, cancellation,
             ).await),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 original.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
@@ -8010,7 +8126,7 @@ where
                 work.release(bytes)?;
                 record
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let reader = self.workspace.readonly_pinned_reader_with_native_work(
                     snapshot.authored_generation, original, cancellation,
@@ -8054,7 +8170,7 @@ where
                 failure: None,
                 source_used,
                 expected_source: snapshot.map(|snapshot| snapshot.source),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 failure_storage: None,
             };
             let mut remaining = remaining_work(work, budget)?;
@@ -8088,7 +8204,7 @@ where
             .map_err(|error: LazyWorkspaceError| error.with_prior_work(work))
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn stage_regular_source_content_with_native_work(
         &self,
         transaction: &crate::Transaction<A, O>,
@@ -8099,7 +8215,7 @@ where
         snapshot: Option<LazySnapshotRef>,
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<crate::StagedContent, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&work, || async {
             let length = pinned.node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)?;
             let scope = TreapAllocationScope::new(&work);
@@ -8132,7 +8248,7 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
         before_publication: &mut F,
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
@@ -8140,9 +8256,9 @@ where
         Fut: Future + Send,
         Fut::Output: Into<ExactifyPublicationResult>,
     {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = original {
-            let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+            let work = LazyTreapWork::native_with_work(original, cancellation)?;
             let value = in_heap_lazy_with_work(&work, || async {
                 // The shared controller hook only validates its pinned source;
                 // native publication work stays on the SDK's borrowed original.
@@ -8167,7 +8283,7 @@ where
             async move {
                 match outcome.await.into() {
                     ExactifyPublicationResult::Portable(result) => result,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     ExactifyPublicationResult::Native(_) =>
                         unreachable!("portable exactification requires a measured guard"),
                 }
@@ -8206,17 +8322,17 @@ where
         work: WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         original: Option<&crate::NativeMaterializationWork>,
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         pending_allocation: Option<&mut crate::NativeAllocation>,
     ) -> Result<WorkCounters, LazyWorkspaceError> {
         if pending.is_empty() {
             return Ok(work);
         }
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = original {
-            let frame = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+            let frame = LazyTreapWork::native_with_work(original, cancellation)?;
             in_heap_lazy_with_work(&frame, || async {
                 let allocation = pending_allocation.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
                 let paid = allocation.split_off(allocation.bytes())?;
@@ -8507,13 +8623,13 @@ where
             .map_err(|error: LazyWorkspaceError| error.with_prior_work(spent).into_measured_failure())
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn promote_exact_with_native_work(
         &self, path: &str, expected_source: FileId, maximum_bytes: u64,
         idempotency_key: IdempotencyKey, original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         self.promote_exact_with_accounting(
             path, expected_source, maximum_bytes, idempotency_key, &work, cancellation,
         ).await
@@ -8568,7 +8684,7 @@ where
                 work.adopt(bytes)?;
                 Ok(LazyReadonlyNode::Portable(lookup))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let (lookup, allocation) = self.lookup_resolved_with_native_work(path, original, cancellation).await?;
                 Ok(LazyReadonlyNode::Native(NativeOwnedCoreState::from_parts(lookup, allocation)))
@@ -8583,7 +8699,7 @@ where
             LazyTreapMeter::Standalone { .. } => work.accept(
                 self.workspace.head_measured(work.remaining()?, cancellation).await.map_err(measured_workspace_error),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 self.workspace.head_with_native_work(original, cancellation).await.map_err(native_workspace_error_pair)
             }
@@ -8623,14 +8739,13 @@ where
         ).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn stage_exact_into_checkout_with_native_work(
         &self, checkout: &mut crate::Checkout<A, O>,
         path: &str, expected_source: FileId, maximum_bytes: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let projection = original.native_mount_work();
-        let work = LazyTreapWork::native_with_work(&projection, cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         self.stage_into_checkout_with_accounting(
             checkout, None, path, expected_source, maximum_bytes, &work, cancellation,
         ).await
@@ -8651,14 +8766,13 @@ where
         ).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn stage_at_snapshot_into_checkout_with_native_work(
         &self, checkout: &mut crate::Checkout<A, O>, snapshot: LazySnapshotRef,
         path: &str, expected_source: FileId, maximum_bytes: u64,
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let projection = original.native_mount_work();
-        let work = LazyTreapWork::native_with_work(&projection, cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         self.stage_into_checkout_with_accounting(
             checkout, Some(snapshot), path, expected_source, maximum_bytes, &work, cancellation,
         ).await
@@ -8693,7 +8807,7 @@ where
         in_heap_lazy_with_work(work, move || async move {
             let source_used = std::sync::atomic::AtomicBool::new(false);
                 let requested = work.canonical_path_owned(path, self.workspace.limits())?;
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let frozen = match &work.meter {
                     LazyTreapMeter::NativeOriginal { original, .. } => {
                         Some(match snapshot {
@@ -8723,10 +8837,10 @@ where
                     })
                 } else { None };
                 let portable_accounting = portable_lookup.is_some();
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let lookup = portable_lookup.as_ref().or_else(|| frozen.as_ref().map(|value| &value.resolved))
                     .ok_or(LazyWorkspaceError::Concurrent)?;
-                #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let lookup = portable_lookup.as_ref().ok_or(LazyWorkspaceError::Concurrent)?;
                 let pinned_source = lookup.source;
                 let lookup_bytes = if portable_lookup.is_some() {
@@ -8786,7 +8900,7 @@ where
                                 Err(failure) => Err(lazy_operation_failure(failure, |error| workspace_error(error.into()))),
                             })?
                         }
-                        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                        #[cfg(not(target_arch = "wasm32"))]
                         LazyTreapMeter::NativeOriginal { original, .. } => {
                             match checkout.read_file_record_by_id_with_native_work(
                                 expected_source, original, cancellation,
@@ -8803,7 +8917,7 @@ where
                         checkout.private_candidate_measured(work.remaining()?, cancellation)
                             .map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into()))),
                     )?,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } => {
                         checkout.private_candidate_with_native_work(
                             original, cancellation,
@@ -8815,7 +8929,7 @@ where
                 let mut transaction = match &work.meter {
                     LazyTreapMeter::Standalone { .. } =>
                         crate::Transaction::for_checkout_candidate(&self.workspace, candidate),
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } =>
                         crate::Transaction::for_checkout_candidate_with_native_work(
                             &self.workspace, candidate, original, cancellation,
@@ -8852,7 +8966,7 @@ where
                             work.remaining()?, cancellation, Some(&source_used),
                         ).await)?
                     } else {
-                        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                        #[cfg(not(target_arch = "wasm32"))]
                         {
                             let lookup = &frozen.as_ref().ok_or(LazyWorkspaceError::Concurrent)?.resolved;
                             self.apply_resolved_promotion_with_accounting(
@@ -8860,7 +8974,7 @@ where
                                 Some(&source_used),
                             ).await?
                         }
-                        #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+                        #[cfg(target_arch = "wasm32")]
                         { return Err(LazyWorkspaceError::Concurrent); }
                     }
                 };
@@ -8961,7 +9075,7 @@ where
         &self, root: LazyOverlayId, path: &str,
         projection: &mut DirectoryProjectionWork<'_>, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
             return self.tombstoned_with_accounting(root, path,
                 &mut LazyReadonlyAccounting::Native { original, cancellation }).await;
@@ -8974,7 +9088,7 @@ where
         &self, root: LazyOverlayId, path: &str,
         projection: &mut DirectoryProjectionWork<'_>, cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
             return self.overlay_has_beneath_with_accounting(root, path,
                 &mut LazyReadonlyAccounting::Native { original, cancellation }).await;
@@ -8987,7 +9101,7 @@ where
         &self, root: LazyOverlayId, path: &str,
         projection: &mut DirectoryProjectionWork<'_>, cancellation: &CancellationToken,
     ) -> Result<Option<LazyOverlayChange>, LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
             let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
             accounting.validate_path(path, self.workspace.limits())?;
@@ -9003,7 +9117,7 @@ where
         &self, checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
         projection: &mut DirectoryProjectionWork<'_>, cancellation: &CancellationToken,
     ) -> Result<Option<FileRecord>, LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
             return checkout.lookup_no_follow_with_native_work(path, original, cancellation)
                 .await.map(|lookup| lookup.record).map_err(native_filesystem_error);
@@ -9019,11 +9133,11 @@ where
         &self, path: &str, directory: &NamespacePath, after: Option<&LogicalName>,
         maximum_entries: u32, mounted: Option<&mut crate::Checkout<A, O>>,
         generation: Option<&crate::Generation<A, O>>,
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         reader: Option<&crate::PinnedReader<A, O>>,
         projection: &mut DirectoryProjectionWork<'_>, cancellation: &CancellationToken,
     ) -> Result<(DirectoryAuthoredEntries, bool), LazyWorkspaceError> {
-        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
             let (entries, has_more, mut allocation) = if let Some(checkout) = mounted {
                 let (page, allocation) = checkout.list_directory_with_native_work(
@@ -9065,13 +9179,13 @@ where
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn directory_head_reader(
         &self, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::PinnedReader<A, O>, LazyWorkspaceError> {
         let checkout = self.workspace.engine_checkout_with_native_work(
             crate::GenerationSelector::Head, crate::CheckoutMode::read_only_pinned(),
-            &original.native_mount_work(), cancellation,
+            original, cancellation,
         ).await.map_err(native_workspace_error)?;
         checkout.into_pinned_reader_with_native_work(original, cancellation)
             .map_err(native_filesystem_error)
@@ -9104,9 +9218,15 @@ where
                     let source = projection.source_lookup(self.source.as_ref(), source, directory, cancellation).await?;
                     match source {
                         None => true,
-                        Some(node) if projection.leaf(|_, work, budget, cancellation| self.source_file_id_measured(&node, work, budget, cancellation))? == record.file_id => false,
+                        Some(node) if match projection {
+                            DirectoryProjectionWork::Portable { work, budget, cancellation, .. } =>
+                                self.source_file_id_measured(&node, work, *budget, cancellation)?,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            DirectoryProjectionWork::Native { original, cancellation, .. } =>
+                                self.source_file_id_with_work(&node, original, cancellation)?,
+                        } == record.file_id => false,
                         Some(_) => {
-                            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                            #[cfg(not(target_arch = "wasm32"))]
                             if let Some(original) = projection.native_original() {
                                 let reader = self.directory_head_reader(original, cancellation).await?;
                                 let committed = reader.lookup_record_with_native_work(directory, original, cancellation)
@@ -9168,7 +9288,7 @@ where
     }
 
     /// Lists the frozen readonly view against the caller's unchanged original work.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "the caller supplies the original frozen page and work context")]
     pub async fn list_directory_at_snapshot_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
@@ -9182,7 +9302,7 @@ where
         ).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "shares the frozen producer's actual native source-use marker")]
     pub(crate) async fn list_directory_at_snapshot_observed_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
@@ -9196,7 +9316,7 @@ where
         ).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "one canonical frozen list producer with optional source participation")]
     async fn list_directory_at_snapshot_with_source_use_with_work(
         &self, snapshot: LazySnapshotRef, path: &str, cursor: Option<LazyDirectoryCursor>,
@@ -9346,16 +9466,16 @@ where
         match self.list_directory_with_projection(
             state, projection, path, cursor, maximum_entries, cancellation,
             mounted, mounted_mask, authored_generation, snapshot_id, source_used,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             None,
         ).await? {
             DirectoryProjectionPage::Portable(receipt) => Ok(receipt),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             DirectoryProjectionPage::Native(_) => unreachable!("portable directory retains its original work mode"),
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "the original state owner supplies its unchanged native directory context")]
     pub(crate) async fn list_directory_in_state_with_native_work(
         &self, state: &LazyWorkspaceState, path: &str, cursor: Option<LazyDirectoryCursor>,
@@ -9386,7 +9506,7 @@ where
             authored_generation: Option<&crate::Generation<A, O>>,
             snapshot_id: Option<LazySnapshotId>,
             source_used: Option<&std::sync::atomic::AtomicBool>,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             authored_reader: Option<&crate::PinnedReader<A, O>>,
         ) -> Result<DirectoryProjectionPage, LazyWorkspaceError> {
             let (mut future, future_bytes) = in_heap_admitted(
@@ -9394,7 +9514,7 @@ where
                 |projection, bytes| projection.claim_frame(bytes),
                 move |mut projection| async move {
                 let result = async {
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let mut current_native_reader = None;
                     cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
                     if maximum_entries == 0 { return Err(LazyWorkspaceError::InvalidPageBound); }
@@ -9402,7 +9522,7 @@ where
                         projection.claim(cursor.claimable_directory_bytes(), 0)?;
                         if let LazyDirectoryPhase::Authored(Some(after)) = &cursor.phase {
                             let bytes = after.name.retained_bytes() as u64;
-                            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                            #[cfg(not(target_arch = "wasm32"))]
                             let bytes = after.native_ownership.unclaimed_retained_bytes(bytes);
                             projection.claim(bytes, 0)?;
                         }
@@ -9561,7 +9681,7 @@ where
                                         for chunk in source_paths.chunks(maximum) {
                                             let target = authored.get_mut(offset..offset + chunk.len())
                                                 .ok_or(LazyWorkspaceError::Concurrent)?;
-                                            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                            #[cfg(not(target_arch = "wasm32"))]
                                             if let Some(original) = projection.native_original() {
                                                 if mounted.is_none() && authored_reader.is_none() && current_native_reader.is_none() {
                                                     current_native_reader = Some(self.directory_head_reader(original, cancellation).await?);
@@ -9636,7 +9756,7 @@ where
                                         None => None,
                                     }.map(|phase| LazyDirectoryCursor {
                                         source: state.source, overlay: state.overlay, directory, phase, snapshot: snapshot_id,
-                                        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                        #[cfg(not(target_arch = "wasm32"))]
                                         native_directory_ownership: DirectoryNativeOwnership::default(),
                                     });
                                     projection.prepare_page(LazyDirectoryPage { entries, next })
@@ -9672,7 +9792,7 @@ where
                                 };
                             }
                             LazyDirectoryPhase::Authored(after) => {
-                                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                #[cfg(not(target_arch = "wasm32"))]
                                 if let Some(original) = projection.native_original()
                                     && mounted.is_none() && authored_reader.is_none() && current_native_reader.is_none()
                                 {
@@ -9681,7 +9801,7 @@ where
                                 let response = self.directory_authored_entries(
                                     path, &directory, after.as_deref(), maximum_entries,
                                     mounted.as_deref_mut(), authored_generation,
-                                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                    #[cfg(not(target_arch = "wasm32"))]
                                     authored_reader.or(current_native_reader.as_ref()),
                                     &mut projection, cancellation,
                                 ).await;
@@ -9708,7 +9828,7 @@ where
                                 projection.release(raw_slots)?;
                                 let after_bytes = after.as_ref().map_or(0, |after| {
                                     let bytes = after.name.retained_bytes() as u64;
-                                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                    #[cfg(not(target_arch = "wasm32"))]
                                     let bytes = after.native_ownership.unclaimed_retained_bytes(bytes);
                                     bytes
                                 });
@@ -9719,7 +9839,7 @@ where
                                     source: state.source, overlay: state.overlay, directory,
                                     phase: LazyDirectoryPhase::Authored(Some(LazyDirectoryAfter::new(name))),
                                     snapshot: snapshot_id,
-                                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                    #[cfg(not(target_arch = "wasm32"))]
                                     native_directory_ownership: DirectoryNativeOwnership::default(),
                                 });
                                 return projection.prepare_page(LazyDirectoryPage { entries, next });
@@ -9834,13 +9954,13 @@ where
     }
 
     /// Exactifies a live subtree on the supplied original native ledger and permit.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn exactify_subtree_with_native_work(
         &self, path: &str, permit: crate::PublicationPermit,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         let result = in_heap_lazy_with_work(&work, || async {
             original.admit(WorkCounters::UNCHARGED)?;
             cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
@@ -9902,7 +10022,7 @@ where
         self.collect_selected_paths_measured(roots, Some(snapshot), None, budget, cancellation).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn collect_snapshot_selected_paths_with_native_work(
         &self,
         snapshot: LazySnapshotRef,
@@ -9910,7 +10030,7 @@ where
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(Vec<String>, bool, crate::materializer::NativeAllocation), LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&work, || async {
             let mut accounting = ExactifyCollectorWork::Native { work: &work, original };
             let (paths, used) = self.collect_selected_paths_with_accounting(
@@ -9969,15 +10089,15 @@ where
         let state = match (snapshot, &mut *accounting) {
             (Some(snapshot), ExactifyCollectorWork::Portable { work, budget, .. }) =>
                 Some(self.readonly_snapshot_state(snapshot, false, work, *budget, cancellation)?),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             (Some(snapshot), ExactifyCollectorWork::Native { original, .. }) =>
                 Some(self.readonly_snapshot_state_with_work(snapshot, false, original, cancellation)?),
             (None, _) => None,
         };
         let mut paths = Vec::new();
         for (index, root) in roots.iter().enumerate() {
-            if accounting.leaf(|_, work, budget|
-                exactify_root_is_covered(roots, index, work, budget, cancellation))? {
+            if accounting.with_kernel(cancellation, |kernel|
+                exactify_root_is_covered_with_accounting(roots, index, kernel, cancellation))? {
                 continue;
             }
             let mut collected = self.collect_exactify_paths_with_accounting(
@@ -9992,8 +10112,8 @@ where
             drop(collected);
             accounting.release(slots)?;
         }
-        accounting.leaf(|_, work, budget|
-            sort_exactify_paths(&mut paths, work, budget, cancellation))?;
+        accounting.with_kernel(cancellation, |kernel|
+            sort_exactify_paths_with_accounting(&mut paths, kernel, cancellation))?;
         accounting.dedup(&mut paths, cancellation)?;
         let used = source_used.load(std::sync::atomic::Ordering::Acquire);
         if let Some(snapshot) = snapshot {
@@ -10026,9 +10146,9 @@ where
                 Err(failure) => return Err(accounting.nested_error(measured_workspace_error(failure))),
             }
         } else if let Some((origin, snapshot, state)) = read_view {
-            #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+            #[cfg(target_arch = "wasm32")]
             let lookup: Option<bool> = None;
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let lookup = match accounting.original() {
                 Some(original) => {
                     let used = source_used.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
@@ -10087,7 +10207,7 @@ where
                 accounting.check(cancellation)?;
                 // Declared before the iterator: all physical entries (including
                 // unvisited entries on failure) drop before page custody.
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let mut page_allocation = None;
                 let (entries, slot_bytes, next, authored_next) = if let Some(generation) = authored {
                     let response = generation.list_directory_measured(
@@ -10106,15 +10226,14 @@ where
                     accounting.retain_page(page_bytes)?;
                     let next = if page.has_more {
                         let name = page.entries.last().ok_or(LazyWorkspaceError::Concurrent)?;
-                        Some(accounting.leaf(|allocations, work, budget|
-                            directory_clone_name(&name.name, allocations, work, budget, cancellation))?)
+                        Some(accounting.clone_name(&name.name, cancellation)?)
                     } else { None };
                     let slots = crate::foundation::usize_to_u64(page.entries.capacity()
                         .checked_mul(std::mem::size_of::<WorkspaceDirectoryEntry>()).ok_or_else(counter_overflow)?);
                     (ExactifyEntries::Authored(page.entries.into_iter()), slots, None, next)
                 } else {
                     accounting.release_portable_cursor(cursor.as_ref())?;
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     let native_page = if let Some(original) = accounting.original() {
                         let used = source_used.ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
                         let (page, allocation) = if let Some((origin, snapshot, _)) = read_view {
@@ -10135,7 +10254,7 @@ where
                         page_allocation = Some(allocation);
                         Some(page)
                     } else { None };
-                    #[cfg(not(all(feature = "native-mount", not(target_arch = "wasm32"))))]
+                    #[cfg(target_arch = "wasm32")]
                     let native_page: Option<LazyDirectoryPage> = None;
                     let page = if let Some(page) = native_page { page } else {
                         let response = if let Some((origin, snapshot, _)) = read_view {
@@ -10170,8 +10289,7 @@ where
                 };
                 for (name, is_directory) in entries {
                     accounting.check(cancellation)?;
-                    accounting.leaf(|_, work, budget|
-                        work.charge_items(1, &budget).map_err(LazyWorkspaceError::from))?;
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, cancellation)?;
                     let name_bytes = name.retained_bytes() as u64;
                     let path = accounting.child_path(&directory, &name)?;
                     drop(name);
@@ -10184,7 +10302,7 @@ where
                     paths.push(path);
                 }
                 accounting.release_page_bytes(slot_bytes)?;
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 drop(page_allocation);
                 cursor = next;
                 authored_cursor = authored_next;
@@ -10255,7 +10373,7 @@ where
                     LazyStatePhase::Standalone(receipt.value)
                 }
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 if let Some((origin, snapshot)) = read_view {
                     LazyStatePhase::Standalone(origin.readonly_snapshot_state_with_work(
@@ -10275,9 +10393,10 @@ where
         let capture = if let Some((_, snapshot)) = read_view {
             snapshot.id
         } else {
-            accounting.leaf(|_, work, budget| charge_lazy_hash(
-                crate::foundation::usize_to_u64(LAZY_SNAPSHOT_DOMAIN.len()) + 136, work, budget,
-            ))?;
+            accounting.charge(WorkCounters {
+                bytes_hashed: crate::foundation::usize_to_u64(LAZY_SNAPSHOT_DOMAIN.len()) + 136,
+                ..WorkCounters::UNCHARGED
+            }, cancellation)?;
             LazySnapshotRef::new(self.workspace.id(), pinned_generation.id(),
                 state.source, state.overlay, state.shadows).id
         };
@@ -10287,7 +10406,8 @@ where
         ).await?;
         self.check_exactify_live_source(live_source, state.source)?;
         let path_vector_bytes = exactify_path_vector_bytes(&paths)?;
-        accounting.leaf(|_, work, budget| sort_exactify_paths(&mut paths, work, budget, cancellation))?;
+        accounting.with_kernel(cancellation, |kernel|
+            sort_exactify_paths_with_accounting(&mut paths, kernel, cancellation))?;
         let maximum_batch_paths = exactify_batch_paths(self.workspace.limits());
         let mut seen_sources: Vec<(FileId, String)> =
             accounting.vector(maximum_batch_paths.min(paths.len()), cancellation)?;
@@ -10348,16 +10468,14 @@ where
             self.check_exactify_live_source(live_source, state.source)?;
             self.check_exactify_live_source(live_source, resolved.source.unwrap_or(state.source))?;
             if matches!(resolved.lookup, LazyLookup::Source(_)) {
-                accounting.leaf(|_, work, budget| {
-                    work.materializations = work.materializations.checked_add(1).ok_or_else(counter_overflow)?;
-                    work.verify(budget).map_err(Into::into)
-                })?;
+                accounting.charge(WorkCounters { materializations: 1, ..WorkCounters::UNCHARGED }, cancellation)?;
             }
             if transaction.is_none() {
-                accounting.leaf(|_, work, budget| charge_lazy_hash(
-                    crate::foundation::usize_to_u64(b"acyclic-fs-lazy-exactify-batch-v1\0".len())
-                        + 32 + crate::foundation::usize_to_u64(root.len()) + 8, work, budget,
-                ))?;
+                accounting.charge(WorkCounters {
+                    bytes_hashed: crate::foundation::usize_to_u64(b"acyclic-fs-lazy-exactify-batch-v1\0".len())
+                        + 32 + crate::foundation::usize_to_u64(root.len()) + 8,
+                    ..WorkCounters::UNCHARGED
+                }, cancellation)?;
                 transaction = Some(self.exactify_begin_with_accounting(
                     workspace, &pinned_generation, exactify_batch_key(capture, root, batch_index),
                     parent_path(root), accounting, cancellation,
@@ -10373,7 +10491,7 @@ where
                 let mut found = None;
                 for (seen, alias) in &seen_sources {
                     accounting.check(cancellation)?;
-                    accounting.leaf(|_, work, budget| work.charge_items(1, &budget).map_err(Into::into))?;
+                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, cancellation)?;
                     if *seen == id { found = Some(alias); break; }
                 }
                 found
@@ -10391,7 +10509,7 @@ where
                             .map_err(|error| exactify_error("link", &path, accounting.nested_error(error)))?;
                         accounting.record(linked)?;
                     }
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     ExactifyCollectorWork::Native { original, .. } => {
                         current.hard_link_with_native_work(alias, &path, original, cancellation)
                             .await.map_err(native_workspace_error)?;
@@ -10416,7 +10534,7 @@ where
                             ))?;
                             accounting.accept(Ok(receipt))?
                         }
-                        #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                        #[cfg(not(target_arch = "wasm32"))]
                         ExactifyCollectorWork::Native { original, .. } =>
                             projection.stage_regular_source_content_with_native_work(
                                 current, &path, &pinned, original, cancellation,
@@ -10473,7 +10591,7 @@ where
                         accounting.record(spent)?;
                         value
                     }
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     ExactifyCollectorWork::Native { work, original } =>
                         projection.apply_resolved_promotion_with_accounting(
                             current, &path, resolved, original.native_read_meter()
@@ -10549,7 +10667,7 @@ where
                     .map_err(measured_workspace_error)?;
                 accounting.accept(Ok(receipt))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
                 workspace.head_with_native_work(original, cancellation)
                     .await.map_err(native_workspace_error_pair),
@@ -10582,7 +10700,7 @@ where
                 accounting.retain_page(bytes)?;
                 values
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 let original = *original;
                 let reader = self.workspace.readonly_pinned_reader_with_native_work(
@@ -10621,7 +10739,7 @@ where
                 }.map_err(|error| accounting.nested_error(error))?;
                 Ok(LazyReadonlyNode::Portable(accounting.accept(Ok(response))?))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { work, original } => {
                 let original = *original;
                 in_heap_lazy_with_work(work, || async {
@@ -10694,7 +10812,7 @@ where
                 }
                 Ok(transaction)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 let mut transaction = workspace.begin_pinned_transaction_with_native_work(
                     generation, key, original, cancellation,
@@ -10715,7 +10833,7 @@ where
         match accounting {
             ExactifyCollectorWork::Portable { work, budget, .. } =>
                 self.source_file_id_measured(node, work, *budget, cancellation),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
                 self.source_file_id_with_work(node, original, cancellation),
         }
@@ -10730,14 +10848,14 @@ where
             ExactifyCollectorWork::Portable { retained_bytes, work, budget } => {
                 **work = self.flush_exactify_source_batch_with_accounting(
                     transaction, pending, pending_bytes, retained_bytes, **work, *budget, cancellation,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     None,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     None,
                 ).await?;
                 Ok(())
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { work, original } => {
                 if pending.is_empty() { return Ok(()); }
                 let mut allocation = work.take_native_owned(*pending_bytes)?
@@ -10767,12 +10885,12 @@ where
             ExactifyCollectorWork::Portable { .. } => {
                 let receipt = self.commit_exactify_batch_guarded_with_accounting(
                     transaction, permit, accounting.remaining()?, cancellation, before_publication,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     None,
                 ).await.map_err(|error| accounting.nested_error(error))?;
                 accounting.accept(Ok(receipt))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 self.commit_exactify_batch_guarded_with_accounting(
                     transaction, permit, WorkBudget::UNBOUNDED, cancellation, before_publication, Some(original),
@@ -10885,7 +11003,7 @@ where
         original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.prepare_mount_removals_with_accounting(
             paths, selected_paths, identity_records, idempotency_key, &work, cancellation,
         ).await
@@ -10926,7 +11044,7 @@ where
                     LazyTreapMeter::Standalone { .. } => work.accept(self.overlay_fact_measured(
                         state.overlay, &path, work.remaining()?, cancellation,
                     ).await)?,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } => {
                         let mut readonly = LazyReadonlyAccounting::Native { original, cancellation };
                         self.overlay_fact_with_accounting(state.overlay, &path, &mut readonly).await?
@@ -10943,7 +11061,7 @@ where
                                     self.source.lookup(state.source, &namespace, remaining, cancellation).await
                                 },
                             ).await),
-                            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                            #[cfg(not(target_arch = "wasm32"))]
                             LazyTreapMeter::NativeOriginal { original, scratch } => {
                                 let native = original;
                                 let result = self.source_request_with_work(
@@ -10989,7 +11107,7 @@ where
                     LazyTreapMeter::Standalone { .. } => work.accept(self.workspace.make_records_durable_measured(
                         std::slice::from_ref(record), work.remaining()?, cancellation,
                     ).await.map_err(|failure| lazy_operation_failure(failure, workspace_error)))?,
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } => {
                         self.workspace.make_records_durable_with_native_work(
                             std::slice::from_ref(record), original, cancellation,
@@ -11006,7 +11124,7 @@ where
                         work.adopt(crate::foundation::usize_to_u64(encoded.capacity()))?;
                         encoded
                     }
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, scratch } => {
                         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
                         let (encoded, allocation) = crate::kernel::encode_file_record_with_accounting(
@@ -11091,7 +11209,7 @@ where
         &self, original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<Option<bool>, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.mount_removal_publication_with_accounting(&work, cancellation).await
     }
 
@@ -11133,7 +11251,7 @@ where
         &self, original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.finish_mount_removals_with_accounting(&work, cancellation).await
     }
 
@@ -11511,14 +11629,6 @@ where
         Err(LazyWorkspaceError::Concurrent)
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    pub(crate) async fn state_with_meter(
-        &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &CancellationToken,
-    ) -> Result<NativeOwnedCoreState<LazyWorkspaceState>, LazyWorkspaceError> {
-        let projection = crate::native_mount::NativeMountMeterWork::from_meter(Arc::clone(original));
-        self.state_with_native_work(&projection.native_materialization_work(), cancellation).await
-    }
 
     async fn recover_pending_remove(&self) -> Result<(), LazyWorkspaceError> {
         self.recover_pending_remove_measured(
@@ -11608,7 +11718,7 @@ where
             LazyTreapMeter::Standalone { .. } => work.accept(self.overlay_fact_measured(
                 state.overlay, &path, work.remaining()?, cancellation,
             ).await)?,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 if self.source.reference() != state.source {
                     return Err(LazyWorkspaceError::StaleSource);
@@ -11619,7 +11729,7 @@ where
         };
         match fact {
             Some(LazyOverlayChange::Observe { source, node }) if source == state.source => {
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if matches!(&work.meter, LazyTreapMeter::NativeOriginal { .. }) {
                     let bytes = crate::foundation::usize_to_u64(path.capacity());
                     drop(path);
@@ -11638,7 +11748,7 @@ where
                     path, state.clone(), work.remaining()?, cancellation,
                 ).await)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { .. } =>
                 self.observe_live_with_accounting(path, state, work, cancellation).await,
         }
@@ -11675,12 +11785,12 @@ where
                     .ok_or(crate::WorkError::Overflow)?;
                 let node = work.accept(self.source.lookup(
                     state.source, &namespace, work.remaining()?, cancellation,
-                ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
+                ).await.map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from)))?;
                 drop(namespace);
                 work.release(namespace_bytes)?;
                 node
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 match self.source_request_with_work(
                     &path, state.source, original, cancellation, |namespace| async move {
@@ -11710,7 +11820,7 @@ where
                     path, change, work.remaining()?, cancellation,
                 ).await)?;
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { .. } => {
                 let result = self.append_overlay_with_accounting(&path, change, work, cancellation).await;
                 let bytes = crate::foundation::usize_to_u64(path.capacity());
@@ -11746,13 +11856,13 @@ where
             let phase = match &work.meter {
                 LazyTreapMeter::Standalone { .. } => LazyStatePhase::Standalone(
                     work.accept(self.state_measured(work.remaining()?, cancellation).await)?),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     LazyStatePhase::Native(self.state_with_native_work(original, cancellation).await?)
                 }
             };
             let state = phase.as_state();
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let LazyTreapMeter::NativeOriginal { .. } = &work.meter
                 && let LazyOverlayChange::Observe { source, .. } = &change
             {
@@ -11773,7 +11883,7 @@ where
                 overlay: overlay_id,
                 ..state.clone()
             };
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let LazyTreapMeter::NativeOriginal { .. } = &work.meter
                 && let LazyOverlayChange::Observe { source, .. } = &change
             {
@@ -12075,7 +12185,7 @@ where
 
     /// The returned guard covers request metadata only. Native source Bytes
     /// retain their actual original-ledger payload custody through final drop.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn source_request_with_work<T, F, Fut>(
         &self, path: &str, source: SourceReference,
         original: &crate::materializer::NativeMaterializationWork,
@@ -12086,6 +12196,10 @@ where
         F: FnOnce(NamespacePath) -> Fut,
         Fut: Future<Output = Result<T, DemandError>>,
     {
+        let frame = LazyTreapWork::native_with_work(original, cancellation)
+            .map_err(|error| (error, None))?;
+        in_heap_lazy_with_work(&frame, || async {
+            Ok(async {
         original.admit(WorkCounters::UNCHARGED)
             .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
         cancellation.check().map_err(|_| (LazyWorkspaceError::NativeWork(
@@ -12103,8 +12217,10 @@ where
                 crate::materializer::NativeTreeMaterializationError::Work(error)),
             DemandError::Cancelled => LazyWorkspaceError::NativeWork(
                 crate::materializer::NativeTreeMaterializationError::Cancelled),
+            #[cfg(feature = "native-mount")]
             DemandError::Mount(crate::native_mount::MountSourceError::NativeWork(error)) =>
                 LazyWorkspaceError::NativeWork(error),
+            #[cfg(feature = "native-mount")]
             DemandError::Mount(error) => match error.semantic_error() {
                 crate::native_mount::MountSourceError::Work(error) => LazyWorkspaceError::NativeWork(
                     crate::materializer::NativeTreeMaterializationError::Work(*error)),
@@ -12136,9 +12252,11 @@ where
             Ok(value) => Ok((value, custody)),
             Err(error) => Err((error, Some(custody))),
         }
+            }.await)
+        }).await.map_err(|error| (error, None))?
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::too_many_arguments, reason = "one exact original source range request")]
     async fn read_source_range_with_work(
         &self, path: &str, source: SourceReference, expected: SourceVersion,
@@ -12152,7 +12270,7 @@ where
         }).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn read_source_link_with_work(
         &self, path: &str, source: SourceReference, expected: SourceVersion, maximum_bytes: u64,
         original: &crate::materializer::NativeMaterializationWork,
@@ -12195,7 +12313,7 @@ where
         original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         let scratch = TreapAllocationScope::new(&accounting);
         let mut value = self.prepare_selected_import_into_checkout_with_accounting(
             destination, plan, checkout, operation, &accounting, cancellation,
@@ -12216,7 +12334,7 @@ where
                 ).await)?;
                 Ok(state.map(LazyStatePhase::Standalone))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let state = self.store.load_lazy_workspace_with_native_work(
                     self.workspace.id(), original,
@@ -12237,7 +12355,7 @@ where
                 ).await.map_err(|failure| LazyWorkspaceError::SpentWork(Box::new(failure))))?;
                 Ok(SelectedLookupPhase::Portable(lookup, std::marker::PhantomData))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let source_used = std::sync::atomic::AtomicBool::new(false);
                 match self.inspect_at_snapshot_with_work(
@@ -12262,7 +12380,7 @@ where
                     accounting.remaining()?, cancellation,
                 ).await,
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 self.store.compare_and_swap_lazy_workspace_with_native_work(
                     self.workspace.id(), expected_revision, replacement,
@@ -12277,7 +12395,7 @@ where
         record: FileRecord, accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(crate::kernel::Mutation, FileId), LazyWorkspaceError> {
-        let bytes = path.logical_owned_bytes();
+        let bytes = path.retained_bytes();
         match &accounting.meter {
             LazyTreapMeter::Standalone { .. } => {
                 accounting.release(bytes)?;
@@ -12288,7 +12406,7 @@ where
                 accounting.adopt(bytes)?;
                 Ok(compiled)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, scratch } => {
                 let allocation = accounting.take_native_owned(bytes)?
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
@@ -12325,7 +12443,7 @@ where
                     lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
                 Ok(())
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let allocation = accounting.take_native_owned(bytes)?
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
@@ -12346,7 +12464,7 @@ where
                     key, accounting.remaining()?, cancellation,
                 ).await.map_err(measured_workspace_error),
             )?,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 self.workspace.operation_generation_with_native_work(
                     key.operation_id(), original, cancellation,
@@ -12363,9 +12481,10 @@ where
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         match &accounting.meter {
             LazyTreapMeter::Standalone { .. } => accounting.accept(
-                self.snapshot_measured(accounting.remaining()?, cancellation).await,
+                self.snapshot_measured(accounting.remaining()?, cancellation).await
+                    .map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let (snapshot, allocation) = self.snapshot_with_native_work(
                     original,
@@ -12386,10 +12505,10 @@ where
                     selector, mode, accounting.remaining()?, cancellation,
                 ).await.map_err(measured_workspace_error),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 self.workspace.engine_checkout_with_native_work(
-                    selector, mode, &original.native_mount_work(), cancellation,
+                    selector, mode, original, cancellation,
                 ).await.map_err(native_workspace_error)
             }
         }
@@ -12406,7 +12525,7 @@ where
                         failure, |error| workspace_error(error.into()),
                     )),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 checkout.lookup_no_follow_with_native_work(
                     path, original, cancellation,
@@ -12426,7 +12545,7 @@ where
                         failure, |error| workspace_error(error.into()),
                     )),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 checkout.lookup_no_follow_with_metadata_with_native_work(path, original, cancellation)
                     .await.map_err(native_filesystem_error),
@@ -12445,7 +12564,7 @@ where
                 accounting.adopt(exactify_paths_retained_bytes(&paths)?)?;
                 Ok((paths, used))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, scratch } => {
                 let (paths, used, mut allocation) = self.collect_snapshot_selected_paths_with_native_work(
                     snapshot, roots, original, cancellation,
@@ -12470,7 +12589,7 @@ where
                     checkout, snapshot, path, expected, maximum_bytes, accounting.remaining()?, cancellation,
                 ).await.map_err(|failure| LazyWorkspaceError::SpentWork(Box::new(failure))),
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
                 self.stage_at_snapshot_into_checkout_with_native_work(
                     checkout, snapshot, path, expected, maximum_bytes, original, cancellation,
@@ -12507,7 +12626,7 @@ where
                     }, accounting, cancellation,
                 ).await?;
                 let baseline_bytes = accounting.retain_fresh_checkout(&baseline)?;
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let LazyTreapMeter::NativeOriginal { .. } = &accounting.meter {
                     baseline.bind_authored_operation(operation);
                     checkout.bind_authored_operation(operation);
@@ -12527,7 +12646,7 @@ where
                     let namespace = accounting.namespace_owned(
                         path, self.workspace.profile(), self.workspace.limits(),
                     )?;
-                    let namespace_bytes = namespace.logical_owned_bytes();
+                    let namespace_bytes = namespace.retained_bytes();
                     let current = self.selected_checkout_lookup_with_accounting(
                         checkout, &namespace, accounting, cancellation,
                     ).await?;
@@ -12555,7 +12674,7 @@ where
                     let namespace = accounting.namespace_owned(
                         path, self.workspace.profile(), self.workspace.limits(),
                     )?;
-                    let namespace_bytes = namespace.logical_owned_bytes();
+                    let namespace_bytes = namespace.retained_bytes();
                     let before = self.selected_checkout_metadata_with_accounting(
                         &mut baseline, &namespace, accounting, cancellation,
                     ).await?
@@ -12601,7 +12720,7 @@ where
                         let namespace = accounting.namespace_owned(
                             &entry.path, self.workspace.profile(), self.workspace.limits(),
                         )?;
-                        let namespace_bytes = namespace.logical_owned_bytes();
+                        let namespace_bytes = namespace.retained_bytes();
                         let actual = self.selected_checkout_lookup_with_accounting(
                             checkout, &namespace, accounting, cancellation,
                         ).await?;
@@ -12634,7 +12753,7 @@ where
                         let namespace = accounting.namespace_owned(
                             parent, self.workspace.profile(), self.workspace.limits(),
                         )?;
-                        let namespace_bytes = namespace.logical_owned_bytes();
+                        let namespace_bytes = namespace.retained_bytes();
                         let existing = self.selected_checkout_lookup_with_accounting(
                             checkout, &namespace, accounting, cancellation,
                         ).await?;
@@ -12681,7 +12800,7 @@ where
                         path, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     operations.push(crate::kernel::Mutation::Remove {
-                        path: namespace, expected_file_id: None, recursive: false,
+                        path: namespace, expected_file_id: crate::kernel::MetadataField::Unavailable,
                     });
                     changes.push(changed);
                     accounting.charge(WorkCounters {
@@ -12709,7 +12828,7 @@ where
                         let source = accounting.namespace_owned(
                             existing, self.workspace.profile(), self.workspace.limits(),
                         )?;
-                        crate::kernel::Mutation::HardLink { source, destination: namespace }
+                        crate::kernel::Mutation::Link { source, destination: namespace }
                     } else {
                         let compiled = self.compile_selected_record_with_accounting(
                             checkout, namespace, record, accounting, cancellation,
@@ -12742,9 +12861,9 @@ where
                 for operation in &operations {
                     transferred_bytes = transferred_bytes.checked_add(match operation {
                         crate::kernel::Mutation::Remove { path, .. }
-                        | crate::kernel::Mutation::Create { path, .. } => path.logical_owned_bytes(),
-                        crate::kernel::Mutation::HardLink { source, destination } =>
-                            source.logical_owned_bytes().checked_add(destination.logical_owned_bytes())
+                        | crate::kernel::Mutation::Create { path, .. } => path.retained_bytes(),
+                        crate::kernel::Mutation::Link { source, destination } =>
+                            source.retained_bytes().checked_add(destination.retained_bytes())
                                 .ok_or_else(counter_overflow)?,
                         crate::kernel::Mutation::File { .. } => 0,
                         _ => unreachable!("selected compiler emits only canonical replacement mutations"),
@@ -12778,7 +12897,7 @@ where
                         .ok_or(crate::WorkError::Overflow)?;
                 }
                 for path in &changes {
-                    logical_owned_bytes = logical_owned_bytes.checked_add(path.logical_owned_bytes())
+                    logical_owned_bytes = logical_owned_bytes.checked_add(path.retained_bytes())
                         .ok_or(crate::WorkError::Overflow)?;
                 }
                 Ok(SelectedImportEffects {
@@ -12806,7 +12925,7 @@ where
                     |_, work, budget, cancellation|
                         self.source_file_id_measured(node, work, budget, cancellation),
                 ),
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } =>
                     self.source_file_id_with_work(node, original, accounting.cancellation),
             },
@@ -12849,7 +12968,7 @@ where
     /// Consumes a real frozen plan and its original root/resource payload guard.
     /// Denial retains the actual private checkout and companion candidate; retry
     /// must use the same original operation and native work, never a fresh head.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn import_selected_with_native_work_guarded<'a, F, Fut>(
         &self,
         destination: LazySnapshotRef,
@@ -12875,7 +12994,7 @@ where
         {
             return Err(LazyWorkspaceError::NativeLedgerMismatch);
         }
-        let accounting = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&accounting, || async {
             self.import_selected_with_accounting_guarded(
                 destination, incoming, operation, permit, &accounting, cancellation,
@@ -12924,7 +13043,7 @@ where
                 accounting.adopt(bytes)?;
                 bytes
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 if let Some(retained) = custody.retained.as_ref() {
                     let paid = retained.plan_allocation.as_ref()
@@ -12948,7 +13067,7 @@ where
                 accounting.adopt(bytes)?;
                 bytes
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { .. } => 0,
         };
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
@@ -13000,7 +13119,7 @@ where
                     accounting.adopt(effects.logical_owned_bytes)?;
                     effects
                 }
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { .. } => {
                     let scratch = TreapAllocationScope::new(accounting);
                     let mut effects = self.prepare_selected_import_into_checkout_with_accounting(
@@ -13024,7 +13143,7 @@ where
             match &accounting.meter {
                 LazyTreapMeter::Standalone { .. } => {
                     let rebase = accounting.accept(retained.checkout.rebase_head(
-                        self.workspace.config().limits.maximum_checkout_dependencies,
+                        self.workspace.limits().maximum_checkout_dependencies,
                         accounting.remaining()?, cancellation,
                     ).await.map_err(|failure|
                         lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
@@ -13034,10 +13153,10 @@ where
                         }));
                     }
                 }
-                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     let (rebase, allocation) = retained.checkout.rebase_head_with_native_work(
-                        self.workspace.config().limits.maximum_checkout_dependencies,
+                        self.workspace.limits().maximum_checkout_dependencies,
                         original, cancellation,
                     ).await.map_err(native_filesystem_error)?;
                     if let crate::kernel::RebaseDecision::Conflicted { conflicts, truncated } = rebase {
@@ -13064,7 +13183,7 @@ where
                 ).await.map_err(|failure|
                     lazy_operation_failure(failure, |error| workspace_error(error.into()))),
             )?,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 let mut guard = |_: &crate::materializer::NativeMaterializationWork|
                     native_before_publication();
@@ -13097,7 +13216,7 @@ where
         destination: LazySnapshotRef,
         source: LazySnapshotRef,
         source_config: VolumeConfig,
-        input: crate::kernel::Digest,
+        input: crate::Digest,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<OperationReceipt<LazySnapshotRef>, LazyWorkspaceError> {
@@ -13115,11 +13234,11 @@ where
     pub(crate) async fn selected_committed_snapshot_with_work(
         &self, operation: crate::OperationId, generation: crate::GenerationId,
         destination: LazySnapshotRef, source: LazySnapshotRef,
-        source_config: VolumeConfig, input: crate::kernel::Digest,
+        source_config: VolumeConfig, input: crate::Digest,
         original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.selected_committed_snapshot_with_accounting(
             operation, generation, destination, source, source_config, input,
             &accounting, cancellation,
@@ -13129,7 +13248,7 @@ where
     async fn selected_committed_snapshot_with_accounting(
         &self, operation: crate::OperationId, generation: crate::GenerationId,
         destination: LazySnapshotRef, source: LazySnapshotRef,
-        source_config: VolumeConfig, input: crate::kernel::Digest,
+        source_config: VolumeConfig, input: crate::Digest,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let result = async {
@@ -13146,7 +13265,7 @@ where
                     if completed.snapshot.authored_generation != generation
                         || completed.destination != destination || completed.source != source
                         || completed.source_config != source_config || completed.input != input
-                        || completed.config != self.workspace.config()
+                        || completed.config != self.workspace.volume_config()
                     {
                         return Err(LazyWorkspaceError::StaleIdentity);
                     }
@@ -13179,7 +13298,7 @@ where
                     revision: state.revision.saturating_add(1),
                     completed_selected_import: Some(CompletedSelectedImport {
                         operation, snapshot, destination, source, input,
-                        config: self.workspace.config(), source_config,
+                        config: self.workspace.volume_config(), source_config,
                     }),
                     ..state.clone()
                 };
@@ -13250,7 +13369,7 @@ where
         original: &crate::native_mount::NativeMountMeterWork,
         cancellation: &CancellationToken,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
         self.selected_import_snapshot_for_generation_with_accounting(
             operation, generation, &accounting, cancellation,
         ).await
@@ -13269,7 +13388,7 @@ where
             if saved.operation != operation || saved.snapshot.authored_generation != generation
                 || saved.snapshot.workspace_id != self.workspace.id()
                 || saved.destination.workspace_id != self.workspace.id()
-                || saved.config != self.workspace.config()
+                || saved.config != self.workspace.volume_config()
             {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
@@ -13298,14 +13417,14 @@ where
     /// Queries the original authority operation and durable logical companion.
     /// A lost acknowledgement may finish its actual retained companion, but
     /// missing original evidence never authorizes replay or adopting the head.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn selected_import_snapshot_with_native_work(
         &self,
         operation: crate::OperationId,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<Option<LazySnapshotRef>, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy_with_work(&accounting, || async {
             self.selected_import_snapshot_with_accounting(operation, &accounting, cancellation).await
         }).await.map_err(|error| match error {
@@ -13352,7 +13471,7 @@ where
             if saved.snapshot.authored_generation != generation
                 || saved.snapshot.workspace_id != self.workspace.id()
                 || saved.destination.workspace_id != self.workspace.id()
-                || saved.config != self.workspace.config()
+                || saved.config != self.workspace.volume_config()
             {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
@@ -13361,7 +13480,7 @@ where
             let retained = custody.retained.as_ref()
                 .filter(|retained| retained.operation == operation)
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let LazyTreapMeter::NativeOriginal { original, .. } = &accounting.meter {
                 let paid = retained.plan_allocation.as_ref()
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
@@ -13409,14 +13528,14 @@ where
         }, budget, cancellation, LazyWorkspaceError::Cancelled, None).await
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn prepare_selected_import_with_native_work(
         &self, snapshot: LazySnapshotRef, requested: &[NamespacePath],
         original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(SelectedImportPlan, crate::materializer::NativeAllocation),
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         let cancellation = original.cancellation();
-        let accounting = LazyTreapWork::native_with_work(&original.native_mount_work(), cancellation)
+        let accounting = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         let scratch = TreapAllocationScope::new(&accounting);
         let result = in_heap_lazy_with_work(&accounting, || async {
@@ -13443,7 +13562,7 @@ where
                             crate::workspace::namespace_path_text_with_accounting(
                                 path, kernel, cancellation,
                             ).map_err(|error| {
-                                #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                                #[cfg(not(target_arch = "wasm32"))]
                                 if let LazyTreapMeter::NativeOriginal { .. } = &accounting.meter {
                                     return native_workspace_error(error);
                                 }
@@ -13471,7 +13590,7 @@ where
                             mutations: crate::MutationMode::None,
                         }, accounting, cancellation,
                     ).await?),
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { .. } => None,
                 };
                 let checkout_bytes = checkout.as_ref().map(|checkout|
@@ -13577,7 +13696,7 @@ where
                     owned_bytes = owned_bytes.checked_add(entry.path.capacity() as u64).ok_or_else(counter_overflow)?;
                 }
                 Ok(SelectedImportPlan {
-                    source: snapshot, source_config: self.workspace.config(),
+                    source: snapshot, source_config: self.workspace.volume_config(),
                     source_used, roots, entries, logical_bytes,
                     maximum_regular_file_bytes,
                     logical_owned_bytes: owned_bytes,
@@ -13705,7 +13824,7 @@ fn native_workspace_error(error: WorkspaceError) -> LazyWorkspaceError {
         WorkspaceError::NotFound => LazyWorkspaceError::NotFound,
         WorkspaceError::NotRegularFile => LazyWorkspaceError::NotRegularFile,
         WorkspaceError::NotDirectory => LazyWorkspaceError::NotDirectory,
-        WorkspaceError::ReadLimitExceeded => LazyWorkspaceError::ReadLimitExceeded,
+        WorkspaceError::ReadLimitExceeded => LazyWorkspaceError::TooLarge,
         error => LazyWorkspaceError::WorkspaceCause(error),
     }
 }
@@ -13880,7 +13999,7 @@ pub(crate) fn logical_child_path(parent: &str, name: &LogicalName) -> Option<Str
 /// receipt-free while sharing the exact same selected traversal.
 enum ExactifyPublicationResult {
     Portable(crate::FsResult<()>),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native(Result<(), crate::FsError>),
 }
 
@@ -13888,7 +14007,7 @@ impl From<crate::FsResult<()>> for ExactifyPublicationResult {
     fn from(result: crate::FsResult<()>) -> Self { Self::Portable(result) }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<Result<(), crate::FsError>> for ExactifyPublicationResult {
     fn from(result: Result<(), crate::FsError>) -> Self { Self::Native(result) }
 }
@@ -13899,7 +14018,7 @@ enum ExactifyCollectorWork<'a> {
         work: &'a mut WorkCounters,
         budget: WorkBudget,
     },
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native {
         work: &'a LazyTreapWork<'a>,
         original: &'a crate::materializer::NativeMaterializationWork,
@@ -13907,13 +14026,65 @@ enum ExactifyCollectorWork<'a> {
 }
 
 impl ExactifyCollectorWork<'_> {
+    fn with_kernel<T>(
+        &mut self, cancellation: &CancellationToken,
+        operation: impl FnOnce(&mut crate::kernel::allocation::KernelAccounting<'_>)
+            -> Result<T, LazyWorkspaceError>,
+    ) -> Result<T, LazyWorkspaceError> {
+        match self {
+            Self::Portable { work, budget, .. } => {
+                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+                let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                    &mut allocations, work, *budget, cancellation,
+                );
+                operation(&mut accounting)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { original, .. } => {
+                let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+                operation(&mut accounting)
+            }
+        }
+    }
+
+    fn charge(
+        &mut self, delta: WorkCounters, cancellation: &CancellationToken,
+    ) -> Result<(), LazyWorkspaceError> {
+        self.with_kernel(cancellation, |accounting|
+            accounting.charge(delta).map_err(lazy_cursor_filesystem_error))
+    }
+
+    fn clone_name(
+        &mut self, name: &LogicalName, cancellation: &CancellationToken,
+    ) -> Result<LogicalName, LazyWorkspaceError> {
+        match self {
+            Self::Portable { retained_bytes, work, budget } => {
+                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+                allocations.claim_bytes(**retained_bytes, 0, work, *budget)
+                    .map_err(lazy_allocation_error)?;
+                let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+                    &mut allocations, work, *budget, cancellation,
+                );
+                let result = name.clone_with_accounting(&mut accounting, cancellation)
+                    .map_err(lazy_cursor_filesystem_error);
+                drop(accounting);
+                **retained_bytes = allocations.live_bytes();
+                result.map(|(name, allocation)| { drop(allocation); name })
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => work.produce(|accounting, cancellation|
+                name.clone_with_accounting(accounting, cancellation)
+                    .map_err(lazy_cursor_filesystem_error)),
+        }
+    }
+
     fn vector<T>(
         &mut self, count: usize, cancellation: &CancellationToken,
     ) -> Result<Vec<T>, LazyWorkspaceError> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 exactify_vec(count, retained_bytes, work, *budget, cancellation),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, original } => {
                 let LazyTreapMeter::NativeOriginal { scratch, .. } = &work.meter else {
                     return Err(LazyWorkspaceError::NativeLedgerMismatch);
@@ -13954,7 +14125,7 @@ impl ExactifyCollectorWork<'_> {
                 let bytes = namespace.retained_bytes();
                 Ok((namespace, bytes))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => {
                 let prior = work.live_bytes();
                 let namespace = work.namespace_owned(path, profile, limits)?;
@@ -13972,7 +14143,7 @@ impl ExactifyCollectorWork<'_> {
             Self::Portable { retained_bytes, work, budget } => queue_exactify_mutation(
                 pending, mutation, pending_bytes, retained_bytes, work, *budget,
             ),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => {
                 let prior = work.live_bytes();
                 self.reserve(pending)?;
@@ -13995,7 +14166,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 replace_exactify_generation(current, replacement, retained_bytes, work, *budget),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => { *current = replacement; Ok(()) }
         }
     }
@@ -14008,7 +14179,7 @@ impl ExactifyCollectorWork<'_> {
     fn context_error(&self, stage: &str, path: &str, error: LazyWorkspaceError) -> LazyWorkspaceError {
         match self {
             Self::Portable { .. } => exactify_error(stage, path, error),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => error,
         }
     }
@@ -14017,7 +14188,7 @@ impl ExactifyCollectorWork<'_> {
     fn check(&mut self, cancellation: &CancellationToken) -> Result<(), LazyWorkspaceError> {
         match self {
             Self::Portable { .. } => cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => {
                 original.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
@@ -14026,7 +14197,7 @@ impl ExactifyCollectorWork<'_> {
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn original(&self) -> Option<&crate::materializer::NativeMaterializationWork> {
         match self {
             Self::Native { original, .. } => Some(original),
@@ -14038,7 +14209,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 remaining_exactify_work(**work, *budget, **retained_bytes),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => Err(LazyWorkspaceError::NativeLedgerMismatch),
         }
     }
@@ -14049,7 +14220,7 @@ impl ExactifyCollectorWork<'_> {
                 **work = account_nested_with_live_memory(**work, additional, **retained_bytes, *budget)?;
                 Ok(())
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => Err(LazyWorkspaceError::NativeLedgerMismatch),
         }
     }
@@ -14057,7 +14228,7 @@ impl ExactifyCollectorWork<'_> {
     fn nested_error(&self, error: LazyWorkspaceError) -> LazyWorkspaceError {
         match self {
             Self::Portable { retained_bytes, .. } => nested_lazy_failure(error, **retained_bytes),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => error,
         }
     }
@@ -14074,7 +14245,7 @@ impl ExactifyCollectorWork<'_> {
                 **retained_bytes = retained_bytes.checked_sub(bytes).ok_or_else(counter_overflow)?;
                 Ok(())
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.release(bytes),
         }
     }
@@ -14086,7 +14257,7 @@ impl ExactifyCollectorWork<'_> {
                 work.peak_allocation_bytes = work.peak_allocation_bytes.max(**retained_bytes);
                 work.verify(*budget)?;
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => {}
         }
         Ok(())
@@ -14108,7 +14279,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 reserve_exactify_slot(values, retained_bytes, work, *budget),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.ensure_vec_push(values),
         }
     }
@@ -14117,7 +14288,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 clone_exactify_string(value, retained_bytes, work, *budget),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.produce(|accounting, cancellation|
                 clone_lazy_string_with_accounting(value, accounting, cancellation)),
         }
@@ -14127,7 +14298,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 exactify_child_path(directory, name, retained_bytes, work, *budget),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => {
                 if name.unicode_utf8_bytes().is_none() { return Err(LazyWorkspaceError::UnsupportedNode); }
                 work.produce(|accounting, cancellation| {
@@ -14144,7 +14315,7 @@ impl ExactifyCollectorWork<'_> {
         match self {
             Self::Portable { retained_bytes, work, budget } =>
                 dedup_exactify_paths(paths, retained_bytes, work, *budget, cancellation),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, original } => {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
                 dedup_exactify_paths_with_accounting(paths, &mut accounting, cancellation, |bytes|
@@ -14161,10 +14332,23 @@ fn exactify_root_is_covered(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<bool, LazyWorkspaceError> {
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+        &mut allocations, work, budget, cancellation,
+    );
+    exactify_root_is_covered_with_accounting(roots, index, &mut accounting, cancellation)
+}
+
+fn exactify_root_is_covered_with_accounting(
+    roots: &[String], index: usize,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, LazyWorkspaceError> {
     let root = roots.get(index).ok_or(LazyWorkspaceError::Concurrent)?;
     for (other_index, other) in roots.iter().enumerate() {
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        work.charge_items(1, &budget)?;
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(lazy_cursor_filesystem_error)?;
         if (root == other && other_index < index)
             || (root != other && (other == "/"
                 || root.strip_prefix(other.as_str()).is_some_and(|suffix| suffix.starts_with('/')))) {
@@ -14227,11 +14411,24 @@ fn exactify_contains_path(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<bool, LazyWorkspaceError> {
+    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+        &mut allocations, work, budget, cancellation,
+    );
+    exactify_contains_path_with_accounting(paths, path, &mut accounting, cancellation)
+}
+
+fn exactify_contains_path_with_accounting(
+    paths: &[String], path: &str,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, LazyWorkspaceError> {
     let mut start = 0_usize;
     let mut end = paths.len();
     while start < end {
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        work.charge_items(1, &budget)?;
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(lazy_cursor_filesystem_error)?;
         let middle = start + (end - start) / 2;
         match exactify_path_order(&paths[middle], path) {
             std::cmp::Ordering::Less => start = middle + 1,
@@ -14249,44 +14446,45 @@ fn exactify_path_order(left: &str, right: &str) -> std::cmp::Ordering {
         .then_with(|| left.cmp(right))
 }
 
-fn sort_exactify_paths(
-    values: &mut [String],
-    work: &mut WorkCounters,
-    budget: WorkBudget,
+fn sort_exactify_paths_with_accounting(
+    values: &mut [String], accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), LazyWorkspaceError> {
     fn compare(
-        left: &str, right: &str, work: &mut WorkCounters,
-        budget: WorkBudget, cancellation: &CancellationToken,
+        left: &str, right: &str, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<std::cmp::Ordering, LazyWorkspaceError> {
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        work.charge_items(1, &budget)?;
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(lazy_cursor_filesystem_error)?;
         Ok(exactify_path_order(left, right))
     }
     fn swap(
         values: &mut [String], left: usize, right: usize,
-        work: &mut WorkCounters, budget: WorkBudget,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        charge_lazy_copy(crate::foundation::usize_to_u64(
+        let delta = WorkCounters { bytes_copied: crate::foundation::usize_to_u64(
             2 * std::mem::size_of::<String>(),
-        ), work, budget)?;
+        ), ..WorkCounters::UNCHARGED };
+        accounting.admit(delta).map_err(lazy_cursor_filesystem_error)?;
         values.swap(left, right);
+        accounting.record_completed(delta).map_err(lazy_cursor_filesystem_error)?;
         Ok(())
     }
     fn sift(
         values: &mut [String], mut root: usize, end: usize,
-        work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         while root < end / 2 {
             let mut child = root * 2 + 1;
             if child + 1 < end
-                && compare(&values[child], &values[child + 1], work, budget, cancellation)?.is_lt() {
+                && compare(&values[child], &values[child + 1], accounting, cancellation)?.is_lt() {
                 child += 1;
             }
-            if !compare(&values[root], &values[child], work, budget, cancellation)?.is_lt() {
+            if !compare(&values[root], &values[child], accounting, cancellation)?.is_lt() {
                 break;
             }
-            swap(values, root, child, work, budget)?;
+            swap(values, root, child, accounting)?;
             root = child;
         }
         Ok(())
@@ -14294,12 +14492,12 @@ fn sort_exactify_paths(
     cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
     let length = values.len();
     for root in (0..length / 2).rev() {
-        sift(values, root, length, work, budget, cancellation)?;
+        sift(values, root, length, accounting, cancellation)?;
     }
     for end in (1..length).rev() {
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        swap(values, 0, end, work, budget)?;
-        sift(values, 0, end, work, budget, cancellation)?;
+        swap(values, 0, end, accounting)?;
+        sift(values, 0, end, accounting, cancellation)?;
     }
     Ok(())
 }
@@ -14422,7 +14620,7 @@ fn retained_directory_page_bytes<T>(
 enum DirectoryAuthoredEntries {
     Mounted(Vec<crate::kernel::TreeEntry>),
     Workspace(Vec<WorkspaceDirectoryEntry>),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Original(Vec<crate::DirectoryRecordEntry>),
 }
 
@@ -14431,7 +14629,7 @@ impl DirectoryAuthoredEntries {
         match self {
             Self::Mounted(entries) => entries.len(),
             Self::Workspace(entries) => entries.len(),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Original(entries) => entries.len(),
         }
     }
@@ -14446,7 +14644,7 @@ impl DirectoryAuthoredEntries {
         match self {
             Self::Mounted(entries) => bytes!(entries),
             Self::Workspace(entries) => bytes!(entries),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Original(entries) => bytes!(entries),
         }
     }
@@ -14455,7 +14653,7 @@ impl DirectoryAuthoredEntries {
         match self {
             Self::Mounted(entries) => entries.last().map(|entry| &entry.name),
             Self::Workspace(entries) => entries.last().map(|entry| &entry.name),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Original(entries) => entries.last().map(|entry| &entry.name),
         }
     }
@@ -14467,7 +14665,7 @@ impl DirectoryAuthoredEntries {
                 source: None, unobserved: false,
             })),
             Self::Workspace(entries) => output.extend(entries.into_iter().map(authored_entry)),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Original(entries) => output.extend(entries.into_iter().map(|entry| LazyDirectoryEntry {
                 name: entry.name, kind: source_kind(entry.record.kind), authored: true,
                 source: None, unobserved: false,
@@ -14483,7 +14681,7 @@ enum DirectoryProjectionWork<'a> {
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
     },
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native {
         original: &'a crate::materializer::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
@@ -14493,41 +14691,41 @@ enum DirectoryProjectionWork<'a> {
 
 enum DirectoryProjectionPage {
     Portable(OperationReceipt<LazyDirectoryPage>),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native(NativeLazyDirectoryPage),
 }
 
 enum PreparedDirectoryPage {
     Portable(LazyDirectoryPage),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native(NativeLazyDirectoryPage),
 }
 
 enum DirectoryPublicationReservation {
     Portable(WorkBudget),
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native,
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeLazyDirectoryPage {
     pub(crate) page: LazyDirectoryPage,
     allocation: crate::materializer::NativeAllocation,
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl std::ops::Deref for NativeLazyDirectoryPage {
     type Target = LazyDirectoryPage;
     fn deref(&self) -> &Self::Target { &self.page }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl std::ops::DerefMut for NativeLazyDirectoryPage {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.page }
 }
 
 impl<'a> DirectoryProjectionWork<'a> {
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn native(
         original: &'a crate::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
@@ -14539,7 +14737,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         Ok(Self::Native { original, cancellation, allocation })
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn native_original(&self) -> Option<&'a crate::NativeMaterializationWork> {
         match self {
             Self::Native { original, .. } => Some(*original),
@@ -14550,12 +14748,12 @@ impl<'a> DirectoryProjectionWork<'a> {
     fn is_native(&self) -> bool {
         match self {
             Self::Portable { .. } => false,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => true,
         }
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn absorb(&mut self, incoming: &mut crate::NativeAllocation) -> Result<(), LazyWorkspaceError> {
         match self {
             Self::Native { allocation, .. } => allocation.absorb(incoming).map_err(Into::into),
@@ -14574,7 +14772,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 );
                 run(&mut accounting, cancellation).map(|(value, _)| value)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation, allocation } => {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
                 let (value, custody) = run(&mut accounting, cancellation)?;
@@ -14600,7 +14798,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         match self {
             Self::Portable { work, allocations, budget, .. } =>
                 directory_remaining_work(*work, allocations, *budget),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => original.remaining().map_err(Into::into),
         }
     }
@@ -14609,7 +14807,7 @@ impl<'a> DirectoryProjectionWork<'a> {
     -> Result<T, LazyWorkspaceError> {
         match self {
             Self::Portable { work, allocations, .. } => accept_directory_work(result, work, allocations),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } =>
                 unreachable!("original directory dispatch never accepts a standalone receipt"),
         }
@@ -14624,7 +14822,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         let result = self.claim(bytes, u64::from(bytes != 0));
         match self {
             Self::Portable { work, .. } => result.map_err(|error| error.with_prior_work(*work)),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => result,
         }
     }
@@ -14632,7 +14830,7 @@ impl<'a> DirectoryProjectionWork<'a> {
     fn release(&mut self, bytes: u64) -> Result<(), LazyWorkspaceError> {
         match self {
             Self::Portable { allocations, .. } => allocations.release(bytes).map_err(lazy_allocation_error),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { allocation, .. } => allocation.release(bytes).map_err(Into::into),
         }
     }
@@ -14643,7 +14841,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
                 work.charge_items(count, budget).map_err(Into::into)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation, .. } => {
                 cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
                     crate::NativeTreeMaterializationError::Cancelled))?;
@@ -14683,7 +14881,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                     .await.map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from));
                 self.accept(response)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => source.lookup_with_native_work(
                 reference, path, crate::demand::NativeSourceWork::from_native_materialization_work(original),
             ).await.map_err(LazyWorkspaceError::from),
@@ -14701,7 +14899,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                     .await.map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from));
                 self.accept(response)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => source.list_page_with_native_work(
                 reference, directory, cursor, maximum_entries, crate::demand::NativeSourceWork::from_native_materialization_work(original),
             ).await.map_err(LazyWorkspaceError::from),
@@ -14717,7 +14915,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 *budget = remaining_work(cleanup, prior)?;
                 Ok(DirectoryPublicationReservation::Portable(prior))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => Ok(DirectoryPublicationReservation::Native),
         }
     }
@@ -14725,9 +14923,9 @@ impl<'a> DirectoryProjectionWork<'a> {
     fn restore_publication(&mut self, reservation: DirectoryPublicationReservation) {
         match (self, reservation) {
             (Self::Portable { budget, .. }, DirectoryPublicationReservation::Portable(prior)) => *budget = prior,
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             (Self::Native { .. }, DirectoryPublicationReservation::Native) => {}
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             _ => unreachable!("directory publication retains its original work mode"),
         }
     }
@@ -14742,7 +14940,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                     .map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from));
                 self.accept(response)
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => publication
                 .accept_with_native_work(crate::demand::NativeSourceWork::from_native_materialization_work(original))
                 .map_err(LazyWorkspaceError::from),
@@ -14761,7 +14959,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                     None,
                 ))
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation, .. } => {
                 original.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
@@ -14782,7 +14980,7 @@ impl<'a> DirectoryProjectionWork<'a> {
             Self::Portable { allocations, .. } => allocations.release(
                 LazyDirectoryCleanupCause::allocation_bytes(),
             ).map_err(lazy_allocation_error),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => Ok(()),
         }
     }
@@ -14803,7 +15001,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 *work = work.with_backend(spent, allocations.live_bytes())?;
                 answer
             }
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, .. } => publication.abort_with_native_work(
                 crate::demand::NativeSourceWork::from_native_materialization_work(original),
             ),
@@ -14814,7 +15012,7 @@ impl<'a> DirectoryProjectionWork<'a> {
     -> Result<PreparedDirectoryPage, LazyWorkspaceError> {
         match self {
             Self::Portable { .. } => Ok(PreparedDirectoryPage::Portable(page)),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { allocation, .. } => {
                 let entries_bytes = retained_directory_page_bytes(
                     page.entries.capacity(), &page.entries,
@@ -14838,11 +15036,11 @@ impl<'a> DirectoryProjectionWork<'a> {
                 .map(|page| match page {
                     PreparedDirectoryPage::Portable(value) =>
                         DirectoryProjectionPage::Portable(OperationReceipt { value, work: *work }),
-                    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     PreparedDirectoryPage::Native(_) => unreachable!("portable directory preserves its work mode"),
                 })
                 .map_err(|error| error.with_prior_work(*work)),
-            #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native { .. } => result.map(|page| match page {
                 PreparedDirectoryPage::Native(page) => DirectoryProjectionPage::Native(page),
                 PreparedDirectoryPage::Portable(_) => unreachable!("native directory preserves its original work mode"),
@@ -15002,16 +15200,6 @@ fn directory_child_path_with_accounting(
     }
 }
 
-fn directory_clone_name(
-    name: &LogicalName,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<LogicalName, LazyWorkspaceError> {
-    name.clone_with_ledger(allocations, work, budget, cancellation)
-        .map_err(directory_namespace_error)
-}
 
 
 fn exactify_path_vector_bytes(paths: &Vec<String>) -> Result<u64, LazyWorkspaceError> {
@@ -15243,7 +15431,7 @@ mod tests {
     use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn original_lazy_future_envelope_is_cold_exact_and_keeps_failed_prefix() {
         struct FrameControl<'a> {
@@ -15291,8 +15479,7 @@ mod tests {
             original.charge(WorkCounters {
                 items_examined: 3, ..WorkCounters::UNCHARGED
             }).expect("existing original prefix");
-            let projection = original.native_mount_work();
-            let work = LazyTreapWork::native_with_work(&projection, &cancellation)
+            let work = LazyTreapWork::native_with_work(&original, &cancellation)
                 .expect("same original carrier");
             let before = original.receipt();
             let created = AtomicBool::new(false);
@@ -16862,7 +17049,7 @@ mod tests {
         root.prepare_fork_snapshot_measured("bind-child", frozen, key.operation_id(), budget, &token)
             .await.expect("prepare before actual creation");
         assert!(fs.open_workspace("bind-child").await.is_err());
-        let config = root.workspace().config();
+        let config = root.workspace().volume.config();
         let created = fs.create_workspace_with_operation_measured(
             "bind-child", config, key.operation_id(), budget, &token,
         ).await.expect("actual project creation").value;
@@ -16896,6 +17083,67 @@ mod tests {
         assert_eq!(bound.value.0.workspace().head().await.expect("unchanged current head").id(), later);
         assert_eq!(bound.value.1.authored_generation, created.id());
         assert_eq!(bound.value.1.source, frozen.source);
+        assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
+        assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_fork_journal_keeps_original_ledger_and_rejects_current_child_seed() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"unhydrated")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = LazyWorkspace::attach(&fs, "native-bind-parent", Arc::clone(&source), store)
+            .await.expect("actual parent");
+        let token = CancellationToken::new();
+        let budget = finite_fixture_budget();
+        let key = IdempotencyKey::from_bytes([0xd4; 16]);
+        let frozen = root.snapshot_measured(budget, &token).await.expect("frozen parent").value;
+        let denied = crate::NativeMaterializationWork::new(
+            WorkBudget { bytes_hashed: 0, ..budget }, &token,
+        ).expect("original hash-denied scope");
+        denied.charge(WorkCounters { items_examined: 3, ..WorkCounters::UNCHARGED })
+            .expect("real caller prefix");
+        let failure = root.prepare_fork_snapshot_with_native_work(
+            "native-bind-child", frozen, key.operation_id(), &denied, &token,
+        ).await.err().expect("no fresh ledger may bypass hash denial");
+        assert!(matches!(failure.semantic_error(), LazyWorkspaceError::NativeWork(_)
+            | LazyWorkspaceError::NativeWorkspaceCause(_)));
+        assert_eq!(denied.receipt().bytes_hashed, 0);
+        assert!(denied.receipt().items_examined >= 3);
+        assert!(fs.open_workspace("native-bind-child").await.is_err());
+        let original = crate::NativeMaterializationWork::new(budget, &token)
+            .expect("original admitted invocation");
+        original.charge(WorkCounters { items_examined: 7, ..WorkCounters::UNCHARGED })
+            .expect("retained caller prefix");
+        let prepared = root.prepare_fork_snapshot_with_native_work(
+            "native-bind-child", frozen, key.operation_id(), &original, &token,
+        ).await.expect("same journal preparation");
+        assert_eq!(prepared, frozen);
+        let created = fs.create_workspace_with_operation_with_native_work(
+            "native-bind-child", root.workspace().volume.config(), key.operation_id(), &original, &token,
+        ).await.expect("authentic filesystem creation");
+        let child = fs.open_workspace_with_native_work("native-bind-child", &original, &token)
+            .await.expect("same original created project");
+        child.write_text("/advance", "later head").await.expect("advance before binding");
+        let later = child.head().await.expect("current child head").id();
+        assert_ne!(later, created.id());
+        let failure = root.bind_prepared_fork_with_native_work(
+            frozen, child.clone(), later, key.operation_id(), &original, &token,
+        ).await.err().expect("current head is not the original creation witness");
+        assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Concurrent));
+        let before = original.receipt();
+        let (bound, snapshot) = root.bind_prepared_fork_with_native_work(
+            frozen, child, created.id(), key.operation_id(), &original, &token,
+        ).await.expect("same original creation binds");
+        assert_eq!(snapshot.authored_generation, created.id());
+        assert_eq!(snapshot.source, frozen.source);
+        assert_eq!(snapshot.overlay, frozen.overlay);
+        assert_eq!(snapshot.shadows, frozen.shadows);
+        assert_eq!(bound.workspace().head().await.expect("unchanged head").id(), later);
+        assert!(original.receipt().items_examined >= before.items_examined);
+        assert!(original.receipt().items_examined >= 7);
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
@@ -18891,7 +19139,7 @@ mod tests {
         assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("readonly companion"), binding);
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn original_frozen_inspection_retains_exact_authored_record_and_metadata() {
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -18931,7 +19179,7 @@ mod tests {
         assert_eq!(allocation.bytes(), 0);
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn original_frozen_inspection_denial_and_cancellation_keep_actual_prefix() {
         let root = LazyWorkspace::attach(
@@ -18953,7 +19201,10 @@ mod tests {
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::NativeWork(
             crate::NativeTreeMaterializationError::Work(_))));
         assert!(allocation.is_none());
-        assert_eq!(original.receipt(), before);
+        assert_eq!(original.receipt().bytes_hashed, before.bytes_hashed);
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations + 1);
+        assert_eq!(original.native_read_meter().with_original_leaf(
+            |work| work.live_allocation_bytes()), crate::NativeMaterializationWork::accounting_state_bytes());
         assert!(!source_used.load(std::sync::atomic::Ordering::Acquire));
         let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
             .expect("original accounting before cancellation");
@@ -18969,7 +19220,7 @@ mod tests {
         assert!(!source_used.load(std::sync::atomic::Ordering::Acquire));
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn original_frozen_inspection_authenticates_both_actual_roots_before_lookup() {
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -19004,7 +19255,7 @@ mod tests {
         assert_eq!(root.snapshot().await.expect("unchanged live snapshot"), frozen);
     }
 
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn original_frozen_hardlink_alias_uses_retained_authored_then_shadow_records() {
         let mut source = CountingSource::new(Bytes::from_static(b"source"));

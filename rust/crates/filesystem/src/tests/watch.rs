@@ -222,7 +222,7 @@ fn measured_native_watch_open_admits_only_started_requests()
     )
     .err()
     .expect("the root does not exist");
-    assert!(matches!(failure.error, NativeWatchError::Io(_)));
+    assert!(matches!(failure.error, NativeWatchError::OriginalIo(_)));
     assert_eq!(
         *failure.work,
         WorkCounters {
@@ -736,6 +736,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         tracker: 8,
         from: directory.path().join("moved-out-again"),
         to: None,
+        allocation: None,
     });
     assert!(matches!(
         watch

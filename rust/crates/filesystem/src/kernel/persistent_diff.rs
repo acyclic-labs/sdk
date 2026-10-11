@@ -1,21 +1,18 @@
 //! Bounded Merkle-aware value diffs for persistent authenticated B+trees.
 
-use super::allocation::AllocationLedger;
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_btree::{Format, Page};
 use super::persistent_io::{self, OwnedPage, PageLease};
+use super::persistent_point::{Owned, absorb, retire_allocation, split_allocation};
 use super::tree_mutation::TreeFormat;
-use super::{CanonicalDecodeError, DecodeLimits};
-use super::{FileRecord, LogicalName, TreeEntry};
+use super::{CanonicalDecodeError, DecodeLimits, FileRecord, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
-use std::collections::BTreeMap;
+use crate::FsError;
 use thiserror::Error;
-
-type ChangeMap<F> =
-    BTreeMap<<F as Format>::Key, (Option<<F as Format>::Value>, Option<<F as Format>::Value>)>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ValueChange<K, V> {
@@ -25,10 +22,11 @@ pub(crate) struct ValueChange<K, V> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Diff<VK, V> {
-    pub(crate) changes: Vec<ValueChange<VK, V>>,
+pub(crate) struct Diff<K, V> {
+    pub(crate) changes: Vec<ValueChange<K, V>>,
     pub(crate) truncated: bool,
     pub(crate) work: WorkCounters,
+    pub(crate) retained_allocation_bytes: u64,
 }
 
 #[derive(Debug, Error)]
@@ -49,439 +47,302 @@ pub(crate) enum DiffError {
     Cancelled,
 }
 
+#[derive(Clone, Copy)]
 enum Task {
     Compare(ObjectId, ObjectId),
     Before(ObjectId),
     After(ObjectId),
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded traversal walks both persistent trees in key order"
-)]
-pub(crate) async fn diff_async<S, F>(
-    store: &S,
-    before: Option<ObjectId>,
-    after: Option<ObjectId>,
-    maximum_changes: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<Diff<F::Key, F::Value>, OperationFailure<DiffError>>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    if before.is_some_and(|value| value.kind != F::kind())
-        || after.is_some_and(|value| value.kind != F::kind())
-    {
+type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
+
+pub(crate) async fn diff_async<S: AsyncObjectStore, F: Format>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
+) -> Result<Diff<F::Key, F::Value>, OperationFailure<DiffError>> {
+    // Preserve the standalone error distinction used by facade/merge projections.
+    if before.is_some_and(|id| id.kind != F::kind()) || after.is_some_and(|id| id.kind != F::kind()) {
         return Err(OperationFailure::before_work(DiffError::WrongRootKind));
     }
     if maximum_changes == 0 {
         return Err(OperationFailure::before_work(DiffError::InvalidLimit));
     }
-    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
-    let mut work = WorkCounters::default();
-    let mut tasks = match (before, after) {
-        (Some(before), Some(after)) if before == after => {
-            return Ok(Diff {
-                changes: Vec::new(),
-                truncated: false,
-                work,
-            });
-        }
-        (Some(before), Some(after)) => vec![Task::Compare(before, after)],
-        (Some(before), None) => vec![Task::Before(before)],
-        (None, Some(after)) => vec![Task::After(after)],
-        (None, None) => {
-            return Ok(Diff {
-                changes: Vec::new(),
-                truncated: false,
-                work,
-            });
-        }
-    };
-    let mut values = ChangeMap::<F>::new();
-    let mut truncated = false;
-    let mut allocations = AllocationLedger::default();
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = diff_with_accounting::<S, F>(store, before, after, maximum_changes, limits, &mut accounting, cancellation).await;
+    let work = accounting.spent();
+    result.map(|(mut diff, _)| { diff.work = work; diff })
+        .map_err(|error| OperationFailure::new(project_failure(error), work))
+}
 
-    while let Some(task) = tasks.pop() {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::new(DiffError::Cancelled, work))?;
-        if values.len() > maximum {
-            truncated = true;
-            break;
-        }
-        match task {
-            Task::Compare(left, right) if left == right => {}
-            Task::Compare(left, right) => {
-                let left = read_diff_page::<S, F>(
-                    store,
-                    left,
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut allocations,
-                    &mut work,
-                )
-                .await?;
-                let right = read_diff_page::<S, F>(
-                    store,
-                    right,
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut allocations,
-                    &mut work,
-                )
-                .await?;
-                if let (Some(left_children), Some(right_children)) =
-                    (internal_children(&left), internal_children(&right))
-                {
-                    align_children::<F>(left_children, right_children, &mut tasks);
-                    release_owned_page(left, &mut allocations, work)?;
-                    release_owned_page(right, &mut allocations, work)?;
-                } else {
-                    push_owned_page(
-                        left,
-                        true,
-                        &mut tasks,
-                        &mut values,
-                        maximum,
-                        &mut truncated,
-                        budget,
-                        &mut allocations,
-                        &mut work,
-                    )?;
-                    push_owned_page(
-                        right,
-                        false,
-                        &mut tasks,
-                        &mut values,
-                        maximum,
-                        &mut truncated,
-                        budget,
-                        &mut allocations,
-                        &mut work,
-                    )?;
+async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<(Diff<F::Key, F::Value>, KernelOwnedAllocation), FsError> {
+    if before.is_some_and(|id| id.kind != F::kind()) || after.is_some_and(|id| id.kind != F::kind()) || maximum_changes == 0 {
+        return Err(FsError::InvalidDiff);
+    }
+    accounting.check()?;
+    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
+    let initial = match (before, after) {
+        (Some(left), Some(right)) if left != right => Some(Task::Compare(left, right)),
+        (Some(left), None) => Some(Task::Before(left)),
+        (None, Some(right)) => Some(Task::After(right)),
+        _ => None,
+    };
+    let Some(initial) = initial else {
+        let allocation = accounting.claim_owned(0, 0)?;
+        return Ok((Diff {
+            changes: Vec::new(), truncated: false, work: WorkCounters::UNCHARGED,
+            retained_allocation_bytes: 0,
+        }, allocation));
+    };
+    let mut tasks = Owned::<Vec<Task>>::allocate(0, accounting).map_err(allocation_error)?;
+    let mut values = match Changes::<F>::allocate(0, accounting) {
+        Ok(values) => values,
+        Err(error) => { tasks.retire(accounting)?; return Err(allocation_error(error)); }
+    };
+    let result = async {
+        push_task(&mut tasks, initial, accounting)?;
+        let mut truncated = false;
+        while let Some(task) = tasks.value.pop() {
+            cancellation.check()?;
+            accounting.check()?;
+            if values.value.len() > maximum { truncated = true; break; }
+            match task {
+                Task::Compare(left, right) if left == right => {}
+                Task::Compare(left, right) => {
+                    // Both cold pages enter the same read_many frontier, rather
+                    // than serially borrowing the native invocation across I/O.
+                    let mut batch = persistent_io::read_pages_with_accounting::<S, F, _>(
+                        store, [left, right].into_iter(), limits, accounting, cancellation, None,
+                    ).await?;
+                    let left = match batch.next_with_accounting(limits, accounting, cancellation) {
+                        Ok((page, guard)) => { let bytes = page.logical_bytes; Owned::new(page, guard, bytes) }
+                        Err(error) => { batch.discard_with_accounting(accounting, cancellation)?; return Err(error); }
+                    };
+                    let right = match batch.next_with_accounting(limits, accounting, cancellation) {
+                        Ok((page, guard)) => { let bytes = page.logical_bytes; Owned::new(page, guard, bytes) }
+                        Err(error) => { left.retire(accounting)?; batch.discard_with_accounting(accounting, cancellation)?; return Err(error); }
+                    };
+                    if let Err(error) = batch.finish_with_accounting(accounting, cancellation) {
+                        left.retire(accounting)?; right.retire(accounting)?; return Err(error);
+                    }
+                    if let (Some(left_children), Some(right_children)) = (internal_children(&left.value), internal_children(&right.value)) {
+                        let aligned = align_children::<F>(left_children, right_children, &mut tasks, accounting);
+                        left.retire(accounting)?;
+                        right.retire(accounting)?;
+                        aligned?;
+                    } else {
+                        let pushed = push_page::<F>(left, true, &mut tasks, &mut values, maximum, &mut truncated, limits, accounting);
+                        if let Err(error) = pushed { right.retire(accounting)?; return Err(error); }
+                        push_page::<F>(right, false, &mut tasks, &mut values, maximum, &mut truncated, limits, accounting)?;
+                    }
+                }
+                Task::Before(id) | Task::After(id) => {
+                    let before = matches!(task, Task::Before(_));
+                    let (page, guard) = persistent_io::read_page_with_accounting::<S, F>(store, id, limits, accounting, cancellation, None).await?;
+                    let bytes = page.logical_bytes;
+                    push_page::<F>(Owned::new(page, guard, bytes), before, &mut tasks, &mut values, maximum, &mut truncated, limits, accounting)?;
                 }
             }
-            Task::Before(page) => {
-                let page = read_diff_page::<S, F>(
-                    store,
-                    page,
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut allocations,
-                    &mut work,
-                )
-                .await?;
-                push_owned_page(
-                    page,
-                    true,
-                    &mut tasks,
-                    &mut values,
-                    maximum,
-                    &mut truncated,
-                    budget,
-                    &mut allocations,
-                    &mut work,
-                )?;
-            }
-            Task::After(page) => {
-                let page = read_diff_page::<S, F>(
-                    store,
-                    page,
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut allocations,
-                    &mut work,
-                )
-                .await?;
-                push_owned_page(
-                    page,
-                    false,
-                    &mut tasks,
-                    &mut values,
-                    maximum,
-                    &mut truncated,
-                    budget,
-                    &mut allocations,
-                    &mut work,
-                )?;
-            }
+            if truncated { break; }
         }
-        if truncated {
-            break;
+        let mut index = 0;
+        while index < values.value.len() {
+            let change = values.value.get(index).ok_or(FsError::DiffAllocationFailed)?;
+            if change.before == change.after {
+                remove_change::<F>(&mut values, index, accounting)?;
+            } else { index += 1; }
+        }
+        while values.value.len() > maximum {
+            truncated = true;
+            let index = values.value.len() - 1;
+            remove_change::<F>(&mut values, index, accounting)?;
+        }
+        Ok(truncated)
+    }.await;
+    tasks.retire(accounting)?;
+    match result {
+        Err(error) => { values.retire(accounting)?; Err(allocation_error(error)) }
+        Ok(truncated) => {
+            let Owned { value: changes, allocation, bytes } = values;
+            Ok((Diff { changes, truncated, work: accounting.spent(), retained_allocation_bytes: bytes }, allocation))
         }
     }
+}
 
-    let mut changes = Vec::new();
-    changes
-        .try_reserve(values.len().min(maximum))
-        .map_err(|_| OperationFailure::new(DiffError::AllocationFailed, work))?;
-    for (key, (before, after)) in values {
-        if before != after {
-            if changes.len() == maximum {
-                truncated = true;
-                break;
-            }
-            changes.push(ValueChange { key, before, after });
-        }
-    }
-    Ok(Diff {
-        changes,
-        truncated,
-        work,
-    })
+fn push_task(tasks: &mut Owned<Vec<Task>>, task: Task, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    tasks.ensure_for_push(usize::MAX, accounting).map_err(allocation_error)?;
+    tasks.value.push(task);
+    Ok(())
 }
 
 fn align_children<F: Format>(
-    left: &[super::persistent_btree::Child<F::Key>],
-    right: &[super::persistent_btree::Child<F::Key>],
-    tasks: &mut Vec<Task>,
-) {
-    let mut common = Vec::new();
-    let mut next_right = 0;
-    for (left_index, left_child) in left.iter().enumerate() {
-        // `next_right` starts at 0 and is only ever reassigned below to
-        // `right_index + 1`, where `right_index = next_right + relative` and
-        // `relative` is a valid position within `right[next_right..]` (so
-        // `relative < right.len() - next_right`). That makes `right_index <
-        // right.len()`, hence `next_right <= right.len()` on every iteration;
-        // slicing at exactly `right.len()` yields an empty (not
-        // out-of-bounds) slice.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "next_right <= right.len() is maintained by the right_index + 1 update below"
-        )]
-        if let Some(relative) = right[next_right..]
-            .iter()
-            .position(|right_child| right_child.page == left_child.page)
-        {
-            let right_index = next_right + relative;
-            common.push((left_index, right_index));
-            next_right = right_index + 1;
-        }
-    }
+    left: &[super::persistent_btree::Child<F::Key>], right: &[super::persistent_btree::Child<F::Key>],
+    tasks: &mut Owned<Vec<Task>>, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
     let mut left_start = 0;
     let mut right_start = 0;
-    common.push((left.len(), right.len()));
-    for (left_end, right_end) in common {
-        // `common` accumulates `(left_index, right_index)` pairs in strictly
-        // increasing order (both indices only grow across iterations of the
-        // loop above, and each is bounded above by the sentinel
-        // `(left.len(), right.len())` pushed after the loop). So
-        // `left_start <= left_end <= left.len()` and
-        // `right_start <= right_end <= right.len()` hold for every pair here.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "left_start..left_end and right_start..right_end are bounded by the strictly increasing (left_index, right_index) pairs built above, terminated by the (left.len(), right.len()) sentinel"
-        )]
-        push_unmatched::<F>(
-            &left[left_start..left_end],
-            &right[right_start..right_end],
-            tasks,
-        );
-        left_start = left_end.saturating_add(1);
-        right_start = right_end.saturating_add(1);
+    for (left_index, left_child) in left.iter().enumerate() {
+        if let Some(relative) = right.get(right_start..).and_then(|children| children.iter().position(|child| child.page == left_child.page)) {
+            let right_index = right_start + relative;
+            push_unmatched::<F>(left.get(left_start..left_index).ok_or(FsError::InvalidDiff)?, right.get(right_start..right_index).ok_or(FsError::InvalidDiff)?, tasks, accounting)?;
+            left_start = left_index + 1;
+            right_start = right_index + 1;
+        }
     }
+    push_unmatched::<F>(left.get(left_start..).ok_or(FsError::InvalidDiff)?, right.get(right_start..).ok_or(FsError::InvalidDiff)?, tasks, accounting)
 }
 
 fn push_unmatched<F: Format>(
-    left: &[super::persistent_btree::Child<F::Key>],
-    right: &[super::persistent_btree::Child<F::Key>],
-    tasks: &mut Vec<Task>,
-) {
-    if left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| left.first == right.first)
-    {
-        tasks.extend(
-            left.iter()
-                .zip(right)
-                .rev()
-                .map(|(left, right)| Task::Compare(left.page, right.page)),
-        );
+    left: &[super::persistent_btree::Child<F::Key>], right: &[super::persistent_btree::Child<F::Key>],
+    tasks: &mut Owned<Vec<Task>>, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    if left.len() == right.len() && left.iter().zip(right).all(|(left, right)| left.first == right.first) {
+        for (left, right) in left.iter().zip(right).rev() { push_task(tasks, Task::Compare(left.page, right.page), accounting)?; }
     } else {
-        tasks.extend(right.iter().rev().map(|child| Task::After(child.page)));
-        tasks.extend(left.iter().rev().map(|child| Task::Before(child.page)));
+        for child in right.iter().rev() { push_task(tasks, Task::After(child.page), accounting)?; }
+        for child in left.iter().rev() { push_task(tasks, Task::Before(child.page), accounting)?; }
     }
+    Ok(())
 }
 
-fn internal_children<F: Format>(
-    page: &OwnedPage<F>,
-) -> Option<&[super::persistent_btree::Child<F::Key>]> {
-    match &page.page {
-        PageLease::Owned(Page::Internal(children)) => Some(children),
-        PageLease::Owned(Page::Leaf(_)) => None,
-        PageLease::Shared { page, .. } => match page.as_ref() {
-            Page::Internal(children) => Some(children),
-            Page::Leaf(_) => None,
-        },
-    }
+fn page_view<F: Format>(page: &OwnedPage<F>) -> &Page<F> {
+    match &page.page { PageLease::Owned(page) => page, PageLease::Shared { page, .. } => page.as_ref() }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "pushes one page into the shared task stack, change map, truncation flag, allocations, and work counters"
-)]
-fn push_owned_page<F: Format>(
-    page: OwnedPage<F>,
-    before: bool,
-    tasks: &mut Vec<Task>,
-    values: &mut ChangeMap<F>,
-    maximum: usize,
-    truncated: &mut bool,
-    budget: WorkBudget,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<(), OperationFailure<DiffError>> {
-    if let Some(children) = internal_children(&page) {
-        tasks.extend(children.iter().rev().map(|child| {
-            if before {
-                Task::Before(child.page)
-            } else {
-                Task::After(child.page)
+fn internal_children<F: Format>(page: &OwnedPage<F>) -> Option<&[super::persistent_btree::Child<F::Key>]> {
+    match page_view(page) { Page::Internal(children) => Some(children), Page::Leaf(_) => None }
+}
+
+#[allow(clippy::too_many_arguments, reason = "one page updates the guarded frontier and bounded sorted changes")]
+fn push_page<F: Format>(
+    mut page: Owned<OwnedPage<F>>, before: bool, tasks: &mut Owned<Vec<Task>>, values: &mut Changes<F>,
+    maximum: usize, truncated: &mut bool, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let result = (|| {
+        if let Some(children) = internal_children(&page.value) {
+            for child in children.iter().rev() {
+                push_task(tasks, if before { Task::Before(child.page) } else { Task::After(child.page) }, accounting)?;
             }
-        }));
-        release_owned_page(page, allocations, *work)?;
-        return Ok(());
-    }
-    let (page, logical_bytes) = page
-        .into_owned(budget, allocations, work)
-        .map_err(|error| OperationFailure::new(map_page_error(error), *work))?;
-    match page {
-        Page::Leaf(page) => insert_leaf::<F>(values, page, before, maximum, truncated),
-        Page::Internal(children) => {
-            tasks.extend(children.into_iter().rev().map(|child| {
-                if before {
-                    Task::Before(child.page)
-                } else {
-                    Task::After(child.page)
+            return Ok(());
+        }
+        match &mut page.value.page {
+            PageLease::Owned(Page::Leaf(entries)) => {
+                // Move owned leaf payloads; split their original guard instead
+                // of copying names or adopting them after the allocation.
+                for value in std::mem::take(entries) {
+                    if values.value.len() > maximum { *truncated = true; break; }
+                    let bytes = F::value_owned_bytes(&value);
+                    let guard = split_allocation(&mut page.allocation, bytes)?;
+                    page.bytes = page.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+                    insert_value::<F>(values, Owned::new(value, guard, bytes), before, maximum, limits, accounting)?;
                 }
-            }));
+            }
+            PageLease::Shared { page, .. } => {
+                if let Page::Leaf(entries) = page.as_ref() {
+                    for value in entries {
+                        if values.value.len() > maximum { *truncated = true; break; }
+                        let (value, guard) = persistent_io::clone_value_with_accounting::<F>(value, limits.maximum_name_bytes, accounting)?;
+                        let bytes = F::value_owned_bytes(&value);
+                        insert_value::<F>(values, Owned::new(value, guard, bytes), before, maximum, limits, accounting)?;
+                    }
+                }
+            }
+            PageLease::Owned(Page::Internal(_)) => return Err(FsError::InvalidDiff),
         }
+        Ok(())
+    })();
+    page.retire(accounting)?;
+    result
+}
+
+fn insert_value<F: Format>(
+    values: &mut Changes<F>, value: Owned<F::Value>, before: bool, maximum: usize,
+    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let prepared = (|| {
+        let position = super::search::binary_search_with_accounting(&values.value, accounting, |entry| entry.key.cmp(F::key(&value.value)))?;
+        if let Err(index) = position {
+            values.ensure_for_push(maximum.saturating_add(1), accounting).map_err(allocation_error)?;
+            let (key, guard) = persistent_io::clone_key_with_accounting::<F>(F::key(&value.value), limits.maximum_name_bytes, accounting)?;
+            let bytes = F::key_owned_bytes(&key);
+            absorb(&mut values.allocation, guard)?;
+            values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+            values.value.insert(index, ValueChange { key, before: None, after: None });
+        }
+        Ok(match position { Ok(index) | Err(index) => index })
+    })();
+    let index = match prepared { Ok(index) => index, Err(error) => { value.retire(accounting)?; return Err(error); } };
+    let slot = values.value.get_mut(index).ok_or(FsError::DiffAllocationFailed)?;
+    let destination = if before { &mut slot.before } else { &mut slot.after };
+    if let Some(old) = destination.take() {
+        let bytes = F::value_owned_bytes(&old);
+        let guard = split_allocation(&mut values.allocation, bytes)?;
+        values.bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+        drop(old);
+        retire_allocation(guard, bytes, accounting)?;
     }
-    release_page_bytes(logical_bytes, allocations, *work)
+    let Owned { value, allocation, bytes } = value;
+    absorb(&mut values.allocation, allocation)?;
+    values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+    *destination = Some(value);
+    Ok(())
 }
 
-fn insert_leaf<F: Format>(
-    values: &mut ChangeMap<F>,
-    page: Vec<F::Value>,
-    before: bool,
-    maximum: usize,
-    truncated: &mut bool,
-) {
-    for value in page {
-        if values.len() > maximum {
-            *truncated = true;
-            break;
-        }
-        let key = F::key(&value).clone();
-        let entry = values.entry(key).or_insert((None, None));
-        if before {
-            entry.0 = Some(value);
-        } else {
-            entry.1 = Some(value);
-        }
-    }
+fn remove_change<F: Format>(values: &mut Changes<F>, index: usize, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    let change = values.value.remove(index);
+    let bytes = F::key_owned_bytes(&change.key)
+        .checked_add(change.before.as_ref().map_or(0, F::value_owned_bytes)).ok_or(WorkError::Overflow)?
+        .checked_add(change.after.as_ref().map_or(0, F::value_owned_bytes)).ok_or(WorkError::Overflow)?;
+    let allocation = split_allocation(&mut values.allocation, bytes)?;
+    values.bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+    drop(change);
+    retire_allocation(allocation, bytes, accounting)
 }
 
-async fn read_diff_page<S, F>(
-    store: &S,
-    page: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<OwnedPage<F>, OperationFailure<DiffError>>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    persistent_io::read_page::<S, F>(store, page, limits, budget, cancellation, allocations, work)
-        .await
-        .map_err(|error| OperationFailure::new(map_page_error(error), *work))
+fn allocation_error(error: FsError) -> FsError {
+    match error { FsError::Decode(CanonicalDecodeError::AllocationFailed) => FsError::DiffAllocationFailed, other => other }
 }
 
-fn map_page_error(error: persistent_io::Error) -> DiffError {
+fn project_failure(error: FsError) -> DiffError {
     match error {
-        persistent_io::Error::AllocationFailed | persistent_io::Error::Allocation(_) => {
-            DiffError::AllocationFailed
-        }
-        persistent_io::Error::Storage(error) => DiffError::Storage(error),
-        persistent_io::Error::Decode(error) => DiffError::Decode(error),
-        persistent_io::Error::Work(error) => DiffError::Work(error),
+        FsError::InvalidDiff => DiffError::InvalidLimit,
+        FsError::DiffAllocationFailed | FsError::Decode(CanonicalDecodeError::AllocationFailed) => DiffError::AllocationFailed,
+        FsError::Object(error) => DiffError::Storage(error),
+        FsError::Decode(error) => DiffError::Decode(error),
+        FsError::Work(error) => DiffError::Work(error),
+        FsError::Cancelled(_) => DiffError::Cancelled,
+        _ => unreachable!("canonical persistent diff only produces its typed failures"),
     }
 }
 
-fn release_page_bytes(
-    logical_bytes: u64,
-    allocations: &mut AllocationLedger,
-    work: WorkCounters,
-) -> Result<(), OperationFailure<DiffError>> {
-    allocations
-        .release(logical_bytes)
-        .map_err(|_| OperationFailure::new(DiffError::AllocationFailed, work))
+pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
+    diff_with_accounting::<S, FileTableFormat>(store, before, after, maximum_changes, limits, accounting, cancellation).await
 }
 
-fn release_owned_page<F: Format>(
-    page: OwnedPage<F>,
-    allocations: &mut AllocationLedger,
-    work: WorkCounters,
-) -> Result<(), OperationFailure<DiffError>> {
-    let logical_bytes = page.logical_bytes;
-    drop(page);
-    release_page_bytes(logical_bytes, allocations, work)
+pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
+    diff_with_accounting::<S, TreeFormat>(store, before, after, maximum_changes, limits, accounting, cancellation).await
 }
 
 pub(crate) async fn diff_file_records_async<S: AsyncObjectStore>(
-    store: &S,
-    before: Option<ObjectId>,
-    after: Option<ObjectId>,
-    maximum_changes: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
 ) -> Result<Diff<crate::FileId, FileRecord>, OperationFailure<DiffError>> {
-    diff_async::<S, FileTableFormat>(
-        store,
-        before,
-        after,
-        maximum_changes,
-        limits,
-        budget,
-        cancellation,
-    )
-    .await
+    diff_async::<S, FileTableFormat>(store, before, after, maximum_changes, limits, budget, cancellation).await
 }
 
 pub(crate) async fn diff_tree_entries_async<S: AsyncObjectStore>(
-    store: &S,
-    before: Option<ObjectId>,
-    after: Option<ObjectId>,
-    maximum_changes: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
 ) -> Result<Diff<LogicalName, TreeEntry>, OperationFailure<DiffError>> {
-    diff_async::<S, TreeFormat>(
-        store,
-        before,
-        after,
-        maximum_changes,
-        limits,
-        budget,
-        cancellation,
-    )
-    .await
+    diff_async::<S, TreeFormat>(store, before, after, maximum_changes, limits, budget, cancellation).await
 }
 
 #[cfg(all(test, feature = "memory"))]

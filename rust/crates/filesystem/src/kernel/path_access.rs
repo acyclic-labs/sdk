@@ -388,6 +388,27 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         -> Result<(), ObjectStoreError> {
         self.store.put_many_with_native_work(writes, work, cancellation).await
     }
+    async fn flush_before_publish(&self, scope: async_storage::PublicationScope<'_>,
+        budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<crate::PublicationHold> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            match self.store.flush_before_publish(scope, remaining, cancellation).await {
+                Ok(receipt) => {
+                    compose_backend(&mut accounting, receipt.work, resident)?;
+                    Ok(receipt.value)
+                }
+                Err(failure) => {
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    Err(failure.error.into())
+                }
+            }
+        }.await;
+        let work = accounting.spent();
+        result.map(|value| ObjectReceipt { value, work })
+            .map_err(|error| ObjectFailure::new(object_error(error), work))
+    }
     #[cfg(not(target_arch = "wasm32"))]
     async fn flush_before_publish_with_native_work(&self, scope: async_storage::PublicationScope<'_>,
         work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
@@ -400,14 +421,23 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         scope: crate::PublicationScope<'_>, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        let resident = self.resident_bytes()?;
-        let receipt = self.store.prepare_generation_publication(
-            request, proof, append, scope, budget_after_resident(budget, resident)?, cancellation,
-        ).await.map_err(|failure| {
-            merge_backend_failure(WorkCounters::default(), *failure.work, resident, failure.error)
-        })?;
-        let work = merge_backend_peak(WorkCounters::default(), receipt.work, resident, budget)?;
-        Ok(ObjectReceipt { value: (), work })
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            let resident = self.extra_resident()?;
+            let remaining = provider_remaining(&accounting, resident)?;
+            match self.store.prepare_generation_publication(
+                request, proof, append, scope, remaining, cancellation,
+            ).await {
+                Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
+                Err(failure) => {
+                    compose_backend(&mut accounting, *failure.work, resident)?;
+                    Err(failure.error.into())
+                }
+            }
+        }.await;
+        let work = accounting.spent();
+        result.map(|()| ObjectReceipt { value: (), work })
+            .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn prepare_generation_publication_with_native_work(
@@ -419,6 +449,12 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         self.store.prepare_generation_publication_with_native_work(
             request, proof, append, scope, original, cancellation,
         ).await
+    }
+    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
+        self.store.collection()
+    }
+    fn collection_sweeps(&self) -> u64 {
+        self.store.collection_sweeps()
     }
     async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
         cancellation: &CancellationToken) -> ObjectResult<ObjectRead> {

@@ -2164,153 +2164,71 @@ fn generated_multi_operation_transactions_observe_the_candidate_in_order()
     }
     Ok(())
 }
-
 #[test]
-fn generation_nested_work_and_allocation_boundaries_are_total()
+fn generation_shared_work_and_allocation_boundaries_are_total()
 -> Result<(), Box<dyn std::error::Error>> {
-    let prior = WorkCounters {
-        bytes_copied: 2,
-        peak_allocation_bytes: 3,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        bytes_hashed: 4,
-        peak_allocation_bytes: 5,
-        ..WorkCounters::default()
-    };
     let budget = WorkBudget::UNBOUNDED;
-    let remaining = nested_budget(prior, budget, 7)?;
+    let cancellation = CancellationToken::new();
+    let mut allocations = AllocationLedger::default();
+    let mut work = WorkCounters { bytes_copied: 2, ..WorkCounters::default() };
+    allocations.claim_bytes(7, 0, &mut work, budget)?;
+    let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, budget, &cancellation);
+    let _claim = accounting.claim_owned(5, 0)?;
+    accounting.charge(WorkCounters { bytes_hashed: 4, ..WorkCounters::default() })?;
+    assert_eq!(accounting.spent().bytes_copied, 2);
+    assert_eq!(accounting.spent().bytes_hashed, 4);
+    assert_eq!(accounting.spent().peak_allocation_bytes, 12);
+    let remaining = accounting.remaining()?;
     assert_eq!(remaining.bytes_copied, u64::MAX - 2);
-    assert_eq!(remaining.peak_allocation_bytes, u64::MAX - 7);
-    let merged = merge_nested(prior, nested, 7, budget)?;
-    assert_eq!(merged.bytes_copied, 2);
-    assert_eq!(merged.bytes_hashed, 4);
-    assert_eq!(merged.peak_allocation_bytes, 12);
+    assert_eq!(remaining.peak_allocation_bytes, u64::MAX - 12);
+    let normal = failed(GenerationMutationError::MissingSource);
+    assert!(matches!(normal, crate::FsError::Mutation(GenerationMutationError::MissingSource)));
+    assert_eq!(accounting.spent().peak_allocation_bytes, 12);
+    let live_overflow = accounting.claim_owned(u64::MAX, 0).map_err(accounting_error)
+        .err().ok_or("original live-capacity overflow succeeded")?;
+    assert!(matches!(live_overflow, crate::FsError::Mutation(GenerationMutationError::Work(WorkError::Overflow))));
+    drop(accounting);
+    let exact = work;
+    let capacity_denial = allocations.claim_bytes(1, 1, &mut work, exact)
+        .err().ok_or("exact live-capacity budget admitted growth")?;
+    assert!(matches!(capacity_denial, AllocationError::Work(WorkError::BudgetExceeded { .. })));
+    assert_eq!(allocations.live_bytes(), 12);
+    assert_eq!(work, exact);
+    let mut counter_overflow = WorkCounters { bytes_hashed: u64::MAX, ..WorkCounters::default() };
+    let denied = counter_overflow.charge(&WorkCounters { bytes_hashed: 1, ..WorkCounters::default() }, &budget)
+        .err().ok_or("shared original counter overflow succeeded")?;
+    assert!(matches!(denied, WorkError::Overflow));
+    assert_eq!(counter_overflow.bytes_hashed, u64::MAX);
 
-    let insufficient_peak = nested_budget(prior, prior, 4)
-        .err()
-        .ok_or("nested budget admitted unreserved live bytes")?;
+    let mut item_accounting = KernelAccounting::standalone(budget, &cancellation);
+    account_items(&mut item_accounting, 2)?;
+    assert_eq!(item_accounting.spent().items_examined, 2);
+    let exact = item_accounting.spent();
+    if let KernelAccounting::Standalone { budget, .. } = &mut item_accounting { *budget = exact; }
+    let rejection = account_items(&mut item_accounting, 1).err().ok_or("item budget overflow succeeded")?;
+    assert!(matches!(rejection, crate::FsError::Mutation(GenerationMutationError::Work(WorkError::BudgetExceeded { .. }))));
+    assert_eq!(item_accounting.spent(), exact);
     assert!(matches!(
-        insufficient_peak.error,
-        GenerationMutationError::Work(WorkError::Overflow)
+        allocation_failure(AllocationError::Work(WorkError::Overflow)),
+        crate::FsError::Mutation(GenerationMutationError::Work(WorkError::Overflow))
     ));
-    let merge_peak_overflow = merge_nested(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        budget,
-    )
-    .err()
-    .ok_or("nested peak overflow succeeded")?;
-    assert!(matches!(
-        merge_peak_overflow.error,
-        GenerationMutationError::Work(WorkError::Overflow)
-    ));
-    let merge_counter_overflow = merge_nested(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        budget,
-    )
-    .err()
-    .ok_or("nested counter overflow succeeded")?;
-    assert!(matches!(
-        merge_counter_overflow.error,
-        GenerationMutationError::Work(WorkError::Overflow)
-    ));
-
-    let normal = nested_failure(prior, nested, 7, GenerationMutationError::MissingSource);
-    assert!(matches!(
-        normal.error,
-        GenerationMutationError::MissingSource
-    ));
-    assert_eq!(normal.work.peak_allocation_bytes, 12);
-    let failure_peak_overflow = nested_failure(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        GenerationMutationError::MissingSource,
-    );
-    assert!(matches!(
-        failure_peak_overflow.error,
-        GenerationMutationError::Work(WorkError::Overflow)
-    ));
-    let failure_counter_overflow = nested_failure(
-        WorkCounters {
-            bytes_hashed: u64::MAX,
-            ..WorkCounters::default()
-        },
-        WorkCounters {
-            bytes_hashed: 1,
-            ..WorkCounters::default()
-        },
-        0,
-        GenerationMutationError::MissingSource,
-    );
-    assert!(matches!(
-        failure_counter_overflow.error,
-        GenerationMutationError::Work(WorkError::Overflow)
-    ));
-
-    let mut item_work = WorkCounters::default();
-    charge_items(&mut item_work, 2, budget)?;
-    assert_eq!(item_work.items_examined, 2);
-    let exact = item_work;
-    let item_rejection = charge_items(&mut item_work, 1, exact)
-        .err()
-        .ok_or("item budget overflow succeeded")?;
-    assert!(matches!(
-        item_rejection.error,
-        GenerationMutationError::Work(WorkError::BudgetExceeded { .. })
-    ));
-
-    let allocation_work = WorkCounters {
-        object_probes: 1,
-        ..WorkCounters::default()
-    };
-    assert!(matches!(
-        allocation_failure(AllocationError::Work(WorkError::Overflow), allocation_work).error,
-        GenerationMutationError::Work(WorkError::Overflow)
-    ));
-    for allocation in [AllocationError::Overflow, AllocationError::ReleaseInvariant] {
-        assert!(matches!(
-            allocation_failure(allocation, allocation_work).error,
-            GenerationMutationError::Work(WorkError::Overflow)
-        ));
+    for error in [AllocationError::Overflow, AllocationError::ReleaseInvariant] {
+        assert!(matches!(allocation_failure(error), crate::FsError::Mutation(GenerationMutationError::Work(WorkError::Overflow))));
     }
-    for allocation in [
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        assert!(matches!(
-            allocation_failure(allocation, allocation_work).error,
-            GenerationMutationError::AllocationFailed
-        ));
+    for error in [AllocationError::InvalidCapacity, AllocationError::CapacityExceeded, AllocationError::AllocationFailed] {
+        assert!(matches!(allocation_failure(error), crate::FsError::Mutation(GenerationMutationError::AllocationFailed)));
     }
-    assert!(matches!(
-        path_cancelled(),
-        GenerationMutationError::Path(PathLookupError::Tree(TreeReadError::Cancelled))
-    ));
-
+    assert!(matches!(path_cancelled(), GenerationMutationError::Path(PathLookupError::Tree(TreeReadError::Cancelled))));
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let values = reserve_exact::<u64>(3, &mut allocations, &mut work, budget)?;
-    assert_eq!(values.capacity(), 3);
-    assert_eq!(logical_vec_bytes(&values)?, 24);
-    assert_eq!(allocations.live_bytes(), 24);
+    let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, budget, &cancellation);
+    let values = reserve_owned::<u64>(3, &mut accounting)?;
+    assert_eq!(values.value.capacity(), 3);
+    assert_eq!(logical_vec_bytes(&values.value)?, 24);
+    if let KernelAccounting::BorrowedStandalone { allocations, .. } = &accounting { assert_eq!(allocations.live_bytes(), 24); }
+    drop_owned(values, 24, &mut accounting)?;
+    drop(accounting);
+    assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
@@ -2326,9 +2244,6 @@ fn defensive_transaction_state(
         records,
         directory_edits,
         removed_directories,
-        allocations: AllocationLedger::default(),
-        work: WorkCounters::default(),
-        budget: WorkBudget::UNBOUNDED,
         config: config(),
     }
 }
@@ -2379,19 +2294,25 @@ fn defensive_transaction_invariants_fail_closed_before_backend_mutation()
         Vec::new(),
         Vec::new(),
     );
+    let mut allocations = AllocationLedger::default();
+    let mut work = WorkCounters::default();
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation);
+    let mut allocation = KernelOwnedAllocation::Standalone;
+    let mut leaf = MutationLeaf { accounting: &mut accounting, allocation: &mut allocation };
     assert!(matches!(
         invalid_parent
-            .parent_directory(1)
-            .map_err(|failure| failure.error),
+            .parent_directory(&mut leaf, 1)
+            .map_err(generation_error),
         Err(GenerationMutationError::MissingParent)
     ));
     assert!(matches!(
         invalid_parent
-            .drop_link(Binding {
+            .drop_link(&mut leaf, Binding {
                 file_id,
                 kind: FileKind::Fifo,
             })
-            .map_err(|failure| failure.error),
+            .map_err(generation_error),
         Err(GenerationMutationError::InconsistentState)
     ));
 
@@ -2408,70 +2329,77 @@ fn defensive_transaction_invariants_fail_closed_before_backend_mutation()
             },
         },
     };
-    let mut missing_mutation = defensive_transaction_state(
-        Vec::new(),
-        vec![RecordState {
-            base: Some(directory),
-            working: directory,
-            present: true,
-        }],
-        vec![DirectoryEdit {
-            directory_id,
-            order: 0,
-            retained_name_bytes: 0,
-            mutation: None,
-        }],
-        Vec::new(),
-    );
+    let missing_mutation = defensive_transaction_state(Vec::new(),
+    vec![RecordState {
+        base: Some(directory),
+        working: directory,
+        present: true,
+    }],
+    vec![DirectoryEdit {
+        directory_id,
+        order: 0,
+        retained_name_bytes: 0,
+        mutation: None,
+    }],
+    Vec::new(),);
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut missing_mutation = Owned { value: missing_mutation, allocation: KernelOwnedAllocation::Standalone };
     let failure = poll_ready(missing_mutation.rewrite_directories(
         &MemoryObjectStore::default(),
         config(),
+        &mut accounting,
         &CancellationToken::new(),
     ))
     .ok_or("defensive directory rewrite unexpectedly suspended")?
     .err()
     .ok_or("missing directory mutation unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::InconsistentState
     ));
 
-    let mut wrong_payload = defensive_transaction_state(
-        Vec::new(),
-        vec![record],
-        vec![DirectoryEdit {
-            directory_id: file_id,
-            order: 0,
-            retained_name_bytes: 0,
-            mutation: Some(TreeMutation::Remove {
-                name: name("missing")?,
-                expected_file_id: None,
-            }),
-        }],
-        vec![file_id],
-    );
+    let wrong_payload = defensive_transaction_state(Vec::new(),
+    vec![record],
+    vec![DirectoryEdit {
+        directory_id: file_id,
+        order: 0,
+        retained_name_bytes: 0,
+        mutation: Some(TreeMutation::Remove {
+            name: name("missing")?,
+            expected_file_id: None,
+        }),
+    }],
+    vec![file_id],);
+    let mut wrong_payload = Owned { value: wrong_payload, allocation: KernelOwnedAllocation::Standalone };
     let failure = poll_ready(wrong_payload.rewrite_directories(
         &MemoryObjectStore::default(),
         config(),
+        &mut accounting,
         &CancellationToken::new(),
     ))
     .ok_or("wrong-payload directory rewrite unexpectedly suspended")?
     .err()
     .ok_or("non-directory mutation unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::MissingParent
     ));
+    let mut wrong_payload = Owned {
+        value: defensive_transaction_state(Vec::new(), vec![record], Vec::new(), vec![file_id]),
+        allocation: KernelOwnedAllocation::Standalone,
+    };
     let failure = poll_ready(wrong_payload.verify_removed_directories(
         &MemoryObjectStore::default(),
         config(),
+        &mut accounting,
         &CancellationToken::new(),
     ))
     .ok_or("removed-directory proof unexpectedly suspended")?
     .err()
     .ok_or("non-directory removal unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::InconsistentState
     ));
     Ok(())
@@ -2498,23 +2426,17 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         limits,
         WorkBudget::UNBOUNDED,
     )?;
-    let failure = TransactionState::new(
-        &one,
-        InitialLookups {
-            paths: Vec::new(),
-            path_bytes: 0,
-            identities: Vec::new(),
-            identity_bytes: 0,
-        },
-        config(),
-        AllocationLedger::default(),
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
+    fn fixture_state(plan: &MutationPlan, lookups: &InitialLookups) -> Result<TransactionState, crate::FsError> {
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut allocation = KernelOwnedAllocation::Standalone;
+        TransactionState::new(plan, lookups, config(), &mut MutationLeaf { accounting: &mut accounting, allocation: &mut allocation })
+    }
+    let failure = fixture_state(&one, &InitialLookups { paths: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
     .err()
     .ok_or("lookup cardinality mismatch unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::InconsistentState
     ));
 
@@ -2530,34 +2452,22 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         limits,
         WorkBudget::UNBOUNDED,
     )?;
-    let failure = TransactionState::new(
-        &duplicate_path,
-        InitialLookups {
-            paths: vec![
-                PathBatchEntry {
-                    record: Some(first),
-                    parent: None,
-                    resolved_components: 1,
-                },
-                PathBatchEntry {
-                    record: Some(second),
-                    parent: None,
-                    resolved_components: 1,
-                },
-            ],
-            path_bytes: 0,
-            identities: Vec::new(),
-            identity_bytes: 0,
+    let failure = fixture_state(&duplicate_path, &InitialLookups { paths: Owned { value: vec![
+        PathBatchEntry {
+            record: Some(first),
+            parent: None,
+            resolved_components: 1,
         },
-        config(),
-        AllocationLedger::default(),
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
+        PathBatchEntry {
+            record: Some(second),
+            parent: None,
+            resolved_components: 1,
+        },
+    ], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
     .err()
     .ok_or("contradictory duplicate path lookup unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::InconsistentState
     ));
 
@@ -2580,23 +2490,11 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         parent: None,
         resolved_components: 0,
     };
-    let failure = TransactionState::new(
-        &duplicate_created,
-        InitialLookups {
-            paths: vec![absent, absent],
-            path_bytes: 0,
-            identities: Vec::new(),
-            identity_bytes: 0,
-        },
-        config(),
-        AllocationLedger::default(),
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
+    let failure = fixture_state(&duplicate_created, &InitialLookups { paths: Owned { value: vec![absent, absent], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
     .err()
     .ok_or("duplicate created identity unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::FileIdentityAlreadyExists
     ));
 
@@ -2619,58 +2517,34 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         },
         ..first
     };
-    let failure = TransactionState::new(
-        &distinct_paths,
-        InitialLookups {
-            paths: vec![
-                PathBatchEntry {
-                    record: Some(first),
-                    parent: None,
-                    resolved_components: 1,
-                },
-                PathBatchEntry {
-                    record: Some(conflicting_first),
-                    parent: None,
-                    resolved_components: 1,
-                },
-            ],
-            path_bytes: 0,
-            identities: Vec::new(),
-            identity_bytes: 0,
+    let failure = fixture_state(&distinct_paths, &InitialLookups { paths: Owned { value: vec![
+        PathBatchEntry {
+            record: Some(first),
+            parent: None,
+            resolved_components: 1,
         },
-        config(),
-        AllocationLedger::default(),
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
+        PathBatchEntry {
+            record: Some(conflicting_first),
+            parent: None,
+            resolved_components: 1,
+        },
+    ], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
     .err()
     .ok_or("contradictory base records unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::FileIdentityAlreadyExists
     ));
 
-    let failure = TransactionState::new(
-        &one,
-        InitialLookups {
-            paths: vec![PathBatchEntry {
-                record: Some(first),
-                parent: None,
-                resolved_components: 1,
-            }],
-            path_bytes: 0,
-            identities: Vec::new(),
-            identity_bytes: 0,
-        },
-        config(),
-        AllocationLedger::default(),
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-    )
+    let failure = fixture_state(&one, &InitialLookups { paths: Owned { value: vec![PathBatchEntry {
+        record: Some(first),
+        parent: None,
+        resolved_components: 1,
+    }], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
     .err()
     .ok_or("base and created identity collision unexpectedly succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::FileIdentityAlreadyExists
     ));
     Ok(())
@@ -2682,18 +2556,175 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = reserve_exact::<u8>(
-        usize::MAX,
-        &mut allocations,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-    )
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation);
+    let failure = reserve_owned::<u8>(usize::MAX, &mut accounting)
     .err()
     .ok_or("impossible transaction vector allocation succeeded")?;
     assert!(matches!(
-        failure.error,
+        generation_error(failure),
         GenerationMutationError::AllocationFailed
     ));
+    drop(accounting);
     assert_eq!(allocations.live_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn original_identity_operations(
+    source: &[Mutation], accounting: &mut KernelAccounting<'_>,
+) -> Result<(Vec<Mutation>, KernelOwnedAllocation), crate::FsError> {
+    assert!(source.iter().all(|operation| matches!(operation, Mutation::File { .. } | Mutation::CloneFileRange { .. })));
+    let mut operations = reserve_owned::<Mutation>(source.len(), accounting)?;
+    let delta = WorkCounters { bytes_copied: usize_to_u64(source.len()).checked_mul(size_of::<Mutation>() as u64).ok_or(WorkError::Overflow)?, ..WorkCounters::default() };
+    accounting.admit(delta)?;
+    operations.value.extend(source.iter().cloned());
+    accounting.record_completed(delta)?;
+    Ok((operations.value, operations.allocation))
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_generation_preserves_real_identities_order_and_root_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let fixture = fixture(&store)?;
+    let source_id = FileId::from_bytes([2; 16]);
+    let destination_id = FileId::from_bytes([4; 16]);
+    let mut base = apply_generation_mutations(
+        &store, &fixture.generation,
+        vec![Mutation::Create { path: path(&["target"])?, record: regular(destination_id, fixture.metadata)? }],
+        config(), WorkBudget::UNBOUNDED,
+    )?.root;
+    base.parents.push(GenerationId::new(Digest::from_bytes([17; 32])));
+    let content = blob(&store, b"XY")?;
+    let source = [
+        Mutation::File { file_id: source_id, mutation: FileMutation::SetMetadata { metadata: fixture.changed_metadata } },
+        Mutation::File { file_id: source_id, mutation: FileMutation::Write { offset: 1, length: 2, content, content_offset: 0 } },
+        Mutation::CloneFileRange { source_file_id: source_id, source_offset: 0, destination_file_id: destination_id, destination_offset: 2, length: 3 },
+        Mutation::File { file_id: destination_id, mutation: FileMutation::Resize { logical_bytes: 5 } },
+    ];
+    let ordinary = apply_generation_mutations(&store, &base, source.to_vec(), config(), WorkBudget::UNBOUNDED)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let (operations, input_guard) = original_identity_operations(&source, &mut accounting)?;
+    let KernelOwnedAllocation::NativeOriginal(input_guard) = input_guard else { return Err("input lost original custody".into()); };
+    let (receipt, operations, root_guard) = poll_ready(apply_generation_mutations_retaining_with_accounting(
+        &store, &base, operations, config(), &mut accounting, &cancellation,
+    )).ok_or("original generation transaction suspended")??;
+    let KernelOwnedAllocation::NativeOriginal(root_guard) = root_guard else { return Err("root lost original custody".into()); };
+    assert!(root_guard.shares_ledger(&input_guard));
+    assert_eq!(root_guard.bytes(), logical_vec_bytes(&receipt.root.parents)?);
+    assert_eq!(receipt.root, ordinary.root);
+    assert_eq!(receipt.work, original.receipt());
+    assert!(receipt.work.backend_read_operations > 0);
+    assert!(receipt.work.backend_write_operations > 0);
+    assert_eq!(operations, source);
+    assert_eq!(inline_at(&store, &receipt.root, "a")?, b"pXYload");
+    assert_eq!(inline_at(&store, &receipt.root, "target")?, b"papXY");
+    assert_eq!(inline_at(&store, &base, "a")?, b"payload");
+    assert_eq!(inline_at(&store, &base, "target")?, b"payload");
+    let source_record = lookup_file_record(&store, receipt.root.file_table, source_id, DecodeLimits::for_volume(config()), WorkBudget::UNBOUNDED)?
+        .record.ok_or("source identity disappeared")?;
+    let destination_record = lookup_file_record(&store, receipt.root.file_table, destination_id, DecodeLimits::for_volume(config()), WorkBudget::UNBOUNDED)?
+        .record.ok_or("destination identity disappeared")?;
+    assert_eq!(source_record.file_id, source_id);
+    assert_eq!(destination_record.file_id, destination_id);
+    assert_eq!(source_record.metadata, fixture.changed_metadata);
+    assert_eq!(destination_record.metadata, fixture.metadata);
+    assert_eq!(original.live_allocation_bytes(), baseline + input_guard.bytes() + root_guard.bytes());
+    drop(operations);
+    drop(input_guard);
+    assert_eq!(original.live_allocation_bytes(), baseline + root_guard.bytes());
+    drop(receipt);
+    drop(root_guard);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NoGenerationCalls;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AsyncObjectStore for NoGenerationCalls {
+    fn decoded_cache_get(&self, _: crate::async_storage::DecodedCacheKey)
+    -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::storage::ObjectStoreError> {
+        panic!("denied generation entered provider cache");
+    }
+    async fn put(&self, _: ObjectId, _: Bytes, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<()> {
+        panic!("denied generation entered ordinary write");
+    }
+    async fn read(&self, _: ObjectId, _: u64, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
+        panic!("denied generation entered ordinary read");
+    }
+    async fn read_many(&self, _: &[crate::storage::ObjectReadRequest], _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
+        panic!("denied generation entered ordinary batch");
+    }
+    async fn contains(&self, _: ObjectId, _: WorkBudget, _: &CancellationToken) -> crate::storage::ObjectResult<bool> {
+        panic!("denied generation entered ordinary probe");
+    }
+    async fn read_with_native_work(&self, _: ObjectId, _: u64, _: &crate::NativeMaterializationWork, _: &CancellationToken)
+    -> Result<crate::async_storage::NativeObjectRead, crate::storage::ObjectStoreError> {
+        panic!("denied generation entered original read");
+    }
+    async fn read_many_with_native_work(&self, _: &[crate::storage::ObjectReadRequest], _: &crate::NativeMaterializationWork, _: &CancellationToken)
+    -> Result<crate::async_storage::NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+        panic!("denied generation entered original batch");
+    }
+    async fn put_hashed_with_native_work(&self, _: crate::storage::HashedObject, _: &crate::NativeMaterializationWork, _: &CancellationToken)
+    -> Result<(), crate::storage::ObjectStoreError> {
+        panic!("denied generation entered original write");
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_generation_denies_identity_scratch_before_provider_calls()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let fixture = fixture(&store)?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let source = [Mutation::File { file_id: FileId::from_bytes([2; 16]), mutation: FileMutation::ValidateRegular }];
+    let (operations, input_guard) = original_identity_operations(&source, &mut accounting)?;
+    let before = original.receipt();
+    let error = poll_ready(apply_generation_mutations_retaining_with_accounting(
+        &NoGenerationCalls, &fixture.generation, operations, config(), &mut accounting, &cancellation,
+    )).ok_or("denied original generation suspended")?.err().ok_or("exhausted original allocated identity scratch")?;
+    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+    assert_eq!(original.receipt(), before);
+    drop(error);
+    drop(input_guard);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn original_root_clone_denial_releases_parents_without_copy()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let mut root = fixture(&store)?.generation;
+    root.parents.push(GenerationId::new(Digest::from_bytes([17; 32])));
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let error = clone_generation_root_with_accounting(&root, &mut accounting).err()
+        .ok_or("zero original copy budget cloned parents")?;
+    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+    assert_eq!(original.receipt().bytes_copied, 0);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.receipt().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }

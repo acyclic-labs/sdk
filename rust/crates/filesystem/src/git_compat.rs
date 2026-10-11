@@ -75,7 +75,7 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
                     let mut components = directory.components().to_vec();
                     components.push(entry.name);
                     let child = NamespacePath::new(components, limits)
-                        .map_err(|error| WorkspaceError::path(error.to_string()))?;
+                        .map_err(WorkspaceError::from)?;
                     pending.push((path, child));
                 } else if entry.file.description().kind == FileKind::Regular {
                     regular.push((path, entry.file));

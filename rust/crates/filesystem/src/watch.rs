@@ -193,6 +193,8 @@ pub enum WatchBatch {
         next_sequence: WatchSequence,
         /// Bounded hints moved from the native queue without path copies.
         changes: Vec<WatchChange>,
+        /// Original queued-payload custody; keep it until the moved hints die.
+        original: WatchBatchOriginal,
     },
     /// All hints from this epoch must be discarded and a baseline rescanned.
     RescanRequired {
@@ -201,6 +203,49 @@ pub enum WatchBatch {
         /// Exact invalidation class.
         reason: WatchInvalidationReason,
     },
+}
+
+/// Physical allocation custody moved with a native hint interval.
+#[derive(Debug, Default)]
+pub struct WatchBatchOriginal {
+    allocations: Vec<[Option<crate::NativeAllocation>; 2]>,
+    // A zero-byte split of the actual externally returned change-vector guard.
+    storage: Option<crate::NativeAllocation>,
+}
+
+impl Clone for WatchBatchOriginal {
+    fn clone(&self) -> Self { Self::default() }
+}
+
+impl PartialEq for WatchBatchOriginal {
+    fn eq(&self, _other: &Self) -> bool { true }
+}
+
+impl Eq for WatchBatchOriginal {}
+
+impl WatchBatchOriginal {
+    pub(crate) fn change_has_native_payload_custody(&self, index: usize) -> bool {
+        self.allocations.get(index)
+            .is_some_and(|allocations| allocations.iter().any(Option::is_some))
+    }
+
+    pub(crate) fn has_native_changes_storage_custody(&self) -> bool { self.storage.is_some() }
+
+    fn reserve<W: crate::demand::SourceDemandReadWork>(
+        capacity: usize, retain_guards: bool, work: &mut W,
+    ) -> Result<Self, NativeWatchError> {
+        if !retain_guards { return Ok(Self::default()); }
+        let mut allocations = Vec::new();
+        if capacity != 0 {
+            // Guard headers are private metadata, not newly owned hint data.
+            work.charge(WorkCounters {
+                allocation_operations: 1, ..WorkCounters::UNCHARGED
+            }).map_err(demand_watch_error)?;
+            allocations.try_reserve_exact(capacity)
+                .map_err(|_| NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into()))?;
+        }
+        Ok(Self { allocations, storage: None })
+    }
 }
 
 /// Bounded native watcher configuration.
@@ -289,35 +334,51 @@ impl NativeWatchOptions {
 #[derive(Debug)]
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pending_rename: Option<PendingRename>,
     /// Host path of the outstanding fence cookie, cleared on delivery.
     fence: Option<PathBuf>,
     /// Host subtrees whose events are never hints, in fence preference order.
     excluded: Vec<PathBuf>,
+    excluded_allocation: Option<crate::NativeAllocation>,
+    _queue_allocation: Option<crate::NativeAllocation>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[derive(Debug)]
 struct PendingRename {
     tracker: usize,
     from: NamespacePath,
     to: Option<NamespacePath>,
+    allocation: Option<crate::NativeAllocation>,
+}
+
+struct QueuedWatchChange {
+    change: WatchChange,
+    allocations: [Option<crate::NativeAllocation>; 2],
+}
+
+impl QueuedWatchChange {
+    fn new(change: WatchChange, allocations: [Option<crate::NativeAllocation>; 2]) -> Self {
+        Self { change, allocations }
+    }
 }
 
 impl SharedState {
     const fn new(invalidation: Option<WatchInvalidationReason>) -> Self {
         Self {
             invalidation,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             pending_rename: None,
             fence: None,
             excluded: Vec::new(),
+            excluded_allocation: None,
+            _queue_allocation: None,
         }
     }
 
     fn seal_invalidation(&mut self) -> Option<WatchInvalidationReason> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         if self.invalidation.is_none() && self.pending_rename.is_some() {
             self.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
         }
@@ -330,14 +391,19 @@ struct NativeEventContext {
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     maximum_queued_changes: u32,
+    _root_allocation: Option<crate::NativeAllocation>,
 }
 
 enum NativeWatchDriver {
     Adapter(NativeEventWatcher),
-    #[cfg(target_os = "linux")]
-    Source { watcher: crate::source_watch::NativeSourceWatch, root: PathBuf },
+    Source {
+        watcher: crate::source_watch::NativeSourceWatch,
+        root: PathBuf,
+        _root_allocation: Option<crate::NativeAllocation>,
+    },
+    StartupFailure(Arc<crate::source_watch::SourceWatchStartupFailure>),
 }
 
 impl NativeWatchDriver {
@@ -345,7 +411,7 @@ impl NativeWatchDriver {
         match self {
             Self::Adapter(watcher) => watcher.watch(path, mode),
             #[cfg(target_os = "linux")]
-            Self::Source { watcher, root } => {
+            Self::Source { watcher, root, .. } => {
                 if mode != RecursiveMode::NonRecursive {
                     return Err(notify::Error::generic("the source driver is nonrecursive"));
                 }
@@ -355,6 +421,12 @@ impl NativeWatchDriver {
                 watcher.admit_measured(relative, &mut work)
                     .map(|_| ()).map_err(|error| notify::Error::generic(&error.to_string()))
             }
+            #[cfg(not(target_os = "linux"))]
+            Self::Source { root, .. } => {
+                if path == root { Ok(()) }
+                else { Err(notify::Error::generic("held child registrations use the native demand engine")) }
+            }
+            Self::StartupFailure(_) => Err(notify::Error::generic("native watcher startup is pending cleanup")),
         }
     }
 
@@ -362,35 +434,97 @@ impl NativeWatchDriver {
         match self {
             Self::Adapter(watcher) => watcher.unwatch(path),
             #[cfg(target_os = "linux")]
-            Self::Source { watcher, root } => {
+            Self::Source { watcher, root, .. } => {
                 let relative = path.strip_prefix(root)
                     .map_err(|_| notify::Error::generic("unwatch path escaped its held root"))?;
                 let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
                 watcher.unadmit_measured(relative, &mut work)
                     .map_err(|error| notify::Error::generic(&error.to_string()))
             }
+            #[cfg(not(target_os = "linux"))]
+            Self::Source { .. } => Err(notify::Error::generic("the original held root remains registered")),
+            Self::StartupFailure(_) => Err(notify::Error::generic("native watcher startup is pending cleanup")),
+        }
+    }
+
+    fn watch_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, path: &Path, mode: RecursiveMode, work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Source { watcher, root, .. } => {
+                if mode != RecursiveMode::NonRecursive {
+                    return Err(NativeWatchError::BoundedObservationUnavailable.into());
+                }
+                let relative = path.strip_prefix(root)
+                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
+                watcher.admit_with_work(relative, work).map(|_| ())
+            }
+            #[cfg(windows)]
+            Self::Source { root, .. } if path == root => Ok(()),
+            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
+        }
+    }
+
+    fn unwatch_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, path: &Path, work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Source { watcher, root, .. } => {
+                let relative = path.strip_prefix(root)
+                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
+                watcher.unadmit_with_work(relative, work)
+            }
+            #[cfg(windows)]
+            Self::Source { watcher, root, .. } if path == root => watcher.stop_with_work(work),
+            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
         }
     }
 }
 
-#[cfg(target_os = "linux")]
-struct LinuxHintInvalidation(Arc<Mutex<SharedState>>);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct RootHintInvalidation(Arc<Mutex<SharedState>>);
 
-#[cfg(target_os = "linux")]
-impl crate::source_watch::HostChangeSink for LinuxHintInvalidation {
-    fn host_changed(&self, changes: &[crate::source_watch::HostChange]) {
-        if changes.iter().any(|change| matches!(change, crate::source_watch::HostChange::Everything))
-            && let Ok(mut state) = self.0.lock()
-        {
-            state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl crate::source_watch::HostChangeSink for RootHintInvalidation {
+    fn logical_owned_bytes(&self) -> u64 { 0 }
+    fn host_changed(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_with_work(changes, work)
+    }
+
+    fn host_changed_with_native_work(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_with_work(changes, work)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl RootHintInvalidation {
+    fn host_changed_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        for change in changes {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            if cfg!(target_os = "macos") || matches!(change, crate::source_watch::HostChange::Everything) {
+                self.0.lock().map_err(|_| NativeWatchError::StatePoisoned)?
+                    .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+            }
         }
+        Ok(())
     }
 }
 
 #[cfg(target_os = "linux")]
 struct LinuxEventDelivery {
     context: NativeEventContext,
-    sender: SyncSender<WatchChange>,
+    sender: SyncSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
     queued: Arc<AtomicU32>,
     fenced: Arc<Condvar>,
@@ -398,38 +532,51 @@ struct LinuxEventDelivery {
 
 #[cfg(target_os = "linux")]
 impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
-    fn event(&self, event: Event) {
-        let mask = match event.kind {
-            EventKind::Create(_) => libc::IN_CREATE,
-            EventKind::Remove(_) => libc::IN_DELETE,
-            EventKind::Modify(ModifyKind::Name(RenameMode::From)) => libc::IN_MOVED_FROM,
-            EventKind::Modify(ModifyKind::Name(RenameMode::To)) => libc::IN_MOVED_TO,
-            EventKind::Modify(ModifyKind::Metadata(_)) => libc::IN_ATTRIB,
-            EventKind::Modify(_) => libc::IN_MODIFY,
-            _ => 0,
-        };
-        let cancellation = CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        for path in &event.paths {
-            if self.event_measured(path, mask, event.attrs.tracker().unwrap_or(0), &mut work).is_err() {
-                let _ = self.invalidate_measured(&mut work);
-                break;
-            }
-        }
+    fn logical_owned_bytes(&self) -> u64 {
+        size_of::<Self>() as u64 + self.context.root.capacity() as u64
     }
 
     fn invalidate_measured(
         &self, work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        let mut state = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-        self.fenced.notify_all();
-        Ok(())
+        self.invalidate_with_work(work)
     }
 
     fn event_measured(
         &self, relative: &Path, mask: u32, cookie: usize, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.event_with_work(relative, mask, cookie, work)
+    }
+
+    fn event_with_native_work(
+        &self, relative: &Path, mask: u32, cookie: usize, work: &mut crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.event_with_work(relative, mask, cookie, work)
+    }
+
+    fn invalidate_with_native_work(
+        &self, work: &mut crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.invalidate_with_work(work)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxEventDelivery {
+    fn invalidate_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        {
+            let mut state = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+        }
+        self.fenced.notify_all();
+        Ok(())
+    }
+
+    fn event_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, relative: &Path, mask: u32, cookie: usize, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         use crate::demand::DemandError;
         work.check()?;
@@ -456,13 +603,15 @@ impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
             return Ok(());
         }
-        if self.queued.load(Ordering::Acquire)
+        let completes_rename = mask & libc::IN_MOVED_TO != 0
+            && state.pending_rename.as_ref().is_some_and(|pending| pending.tracker == cookie);
+        if !completes_rename && self.queued.load(Ordering::Acquire)
             .saturating_add(u32::from(state.pending_rename.is_some())) >= self.context.maximum_queued_changes
         {
             state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             return Ok(());
         }
-        let (path, bytes) = match namespace_hint_measured(relative, self.context.profile, self.context.limits, work) {
+        let payload = match namespace_hint_with_work(relative, self.context.profile, self.context.limits, work) {
             Ok(path) => path,
             Err(DemandError::InvalidRequest) => {
                 state.invalidation = Some(WatchInvalidationReason::UnrepresentablePath);
@@ -470,36 +619,46 @@ impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
             }
             Err(error) => return Err(error),
         };
+        let bytes = payload.1;
         let result = (|| {
+            let payload = payload;
             if mask & libc::IN_MOVED_FROM != 0 {
                 if cookie == 0 || state.pending_rename.is_some() {
                     state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
                 } else {
-                    state.pending_rename = Some(PendingRename { tracker: cookie, from: path, to: None });
+                    state.pending_rename = Some(PendingRename {
+                        tracker: cookie, from: payload.0, to: None, allocation: payload.2,
+                    });
                 }
                 return Ok(());
             }
-            let output = WorkCounters { items_returned: 1, ..WorkCounters::default() };
-            work.work.admit(&output, &work.budget)?;
+            if mask & libc::IN_MOVED_TO != 0
+                && (cookie == 0 || !state.pending_rename.as_ref().is_some_and(|pending| pending.tracker == cookie))
+            {
+                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                return Ok(());
+            }
+            work.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
             let change = if mask & libc::IN_MOVED_TO != 0 {
-                if cookie == 0 || !state.pending_rename.as_ref().is_some_and(|pending| pending.tracker == cookie) {
-                    state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                    return Ok(());
-                }
                 let pending = state.pending_rename.take().expect("matched native rename cookie");
-                WatchChange::Renamed { from: pending.from, to: path }
-            } else if mask & libc::IN_CREATE != 0 {
-                WatchChange::Created(path)
-            } else if mask & libc::IN_DELETE != 0 {
-                WatchChange::Removed(path)
-            } else if mask & libc::IN_ATTRIB != 0 {
-                WatchChange::MetadataChanged(path)
+                QueuedWatchChange::new(
+                    WatchChange::Renamed { from: pending.from, to: payload.0 },
+                    [pending.allocation, payload.2],
+                )
             } else {
-                WatchChange::Modified(path)
+                let change = if mask & libc::IN_CREATE != 0 {
+                    WatchChange::Created(payload.0)
+                } else if mask & libc::IN_DELETE != 0 {
+                    WatchChange::Removed(payload.0)
+                } else if mask & libc::IN_ATTRIB != 0 {
+                    WatchChange::MetadataChanged(payload.0)
+                } else {
+                    WatchChange::Modified(payload.0)
+                };
+                QueuedWatchChange::new(change, [payload.2, None])
             };
             match self.sender.try_send(change) {
                 Ok(()) => {
-                    work.record(output)?;
                     self.queued.fetch_add(1, Ordering::Release);
                 }
                 Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
@@ -508,60 +667,180 @@ impl crate::source_watch::NativeEventSink for LinuxEventDelivery {
             }
             Ok::<(), DemandError>(())
         })();
-        work.release(bytes)?;
+        if bytes != 0 { work.release(bytes)?; }
         result
     }
 }
 
-#[cfg(target_os = "linux")]
-fn namespace_hint_measured(
-    relative: &Path, profile: FilesystemProfile, limits: VolumeLimits, work: &mut crate::demand::DemandWork,
-) -> Result<(NamespacePath, u64), crate::demand::DemandError> {
-    use crate::demand::DemandError;
-    let mut count = 0_usize;
-    for component in relative.components() {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-        if !matches!(component, Component::Normal(_)) { return Err(DemandError::InvalidRequest); }
-        count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+enum HintName<'a> {
+    Host(&'a std::ffi::OsStr),
+    #[cfg(windows)]
+    Wide(&'a [u16]),
+}
+
+fn host_hint_name(component: Component<'_>) -> Result<HintName<'_>, crate::demand::DemandError> {
+    match component {
+        Component::Normal(name) => Ok(HintName::Host(name)),
+        _ => Err(crate::demand::DemandError::InvalidRequest),
     }
-    let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
-    work.allocate(backing)?;
-    let mut claimed = backing;
-    let mut components = Vec::with_capacity(count);
-    let result = (|| {
-        for component in relative.components() {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-            let Component::Normal(name) = component else { return Err(DemandError::InvalidRequest); };
-            let (encoding, bytes) = crate::native_name::host_name_bytes_measured(
-                name, profile, limits.maximum_component_bytes, work,
-            )?;
-            claimed = claimed.checked_add(bytes.capacity() as u64).ok_or(WorkError::Overflow)?;
-            components.push(LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                .map_err(|_| DemandError::InvalidRequest)?);
+}
+
+fn namespace_hint_with_work<W: crate::demand::SourceDemandReadWork>(
+    relative: &Path, profile: FilesystemProfile, limits: VolumeLimits, work: &mut W,
+) -> Result<(NamespacePath, u64, Option<crate::NativeAllocation>), crate::demand::DemandError> {
+    namespace_hint_names_with_work(relative.components().map(host_hint_name), profile, limits, work)
+}
+
+fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
+    names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
+    profile: FilesystemProfile, limits: VolumeLimits, work: &mut W,
+) -> Result<(NamespacePath, u64, Option<crate::NativeAllocation>), crate::demand::DemandError> {
+    use crate::demand::DemandError;
+    work.check()?;
+    let original = if work.is_native_original() {
+        Some(work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?
+            .materialization_work()?)
+    } else {
+        None
+    };
+    let mut count = 0_usize;
+    for name in names.clone() {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+        let _ = name?;
+        count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+        if count > usize::from(limits.maximum_path_depth) {
+            return Err(DemandError::InvalidRequest);
         }
-        NamespacePath::new(components, limits).map_err(|_| DemandError::InvalidRequest)
+    }
+    let reserve = |allocations: &mut crate::kernel::allocation::AllocationLedger,
+                   counters: &mut WorkCounters, budget, cancellation: &CancellationToken| {
+        cancellation.check().map_err(NativeWatchError::Cancelled)?;
+        let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
+        allocations.claim_bytes(backing, u64::from(backing != 0), counters, budget)
+            .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
+        let mut components = Vec::<LogicalName>::new();
+        components.try_reserve_exact(count).map_err(|_| {
+            NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into())
+        })?;
+        let actual = components.capacity().checked_mul(size_of::<LogicalName>())
+            .ok_or(WorkError::Overflow)? as u64;
+        if actual > backing {
+            allocations.record_owned_bytes(actual - backing, counters)
+                .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
+            counters.verify(budget)?;
+        }
+        Ok::<_, NativeWatchError>(components)
+    };
+    // The tuple's field order frees every physical name before retiring custody.
+    let mut owned = if let Some(original) = &original {
+        let (components, allocation) = original.with_owned_allocations(reserve)?;
+        (components, Some(allocation))
+    } else {
+        (work.with_original_leaf(|actual| {
+            let (allocations, counters, budget, cancellation) = actual.allocation_parts();
+            let before = allocations.live_bytes();
+            let result = reserve(allocations, counters, budget, cancellation);
+            if result.is_err() {
+                allocations.release(allocations.live_bytes() - before)
+                    .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
+            }
+            result
+        })?, None)
+    };
+    let mut claimed = if original.is_some() { 0 } else {
+        owned.0.capacity().checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64
+    };
+    let result = (|| {
+        for name in names {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            let name = name?;
+            let ((encoding, bytes), mut allocation) = if let Some(original) = &original {
+                let result = match name {
+                    HintName::Host(name) => crate::native_name::host_name_bytes_with_native_work(
+                        name, profile, limits.maximum_component_bytes, original,
+                    ),
+                    #[cfg(windows)]
+                    HintName::Wide(name) => crate::native_name::host_wide_name_bytes_with_native_work(
+                        name, profile, limits.maximum_component_bytes, original,
+                    ),
+                };
+                let (name, allocation) = result.map_err(|error| match error {
+                    crate::NativeTreeMaterializationError::InvalidLayout => DemandError::InvalidRequest,
+                    error => NativeWatchError::NativeWork(error).into(),
+                })?;
+                (name, Some(allocation))
+            } else {
+                let name = work.with_original_leaf(|actual| match name {
+                    HintName::Host(name) => crate::native_name::host_name_bytes_measured(
+                        name, profile, limits.maximum_component_bytes, actual,
+                    ),
+                    #[cfg(windows)]
+                    HintName::Wide(name) => crate::native_name::host_wide_name_bytes_measured(
+                        name, profile, limits.maximum_component_bytes, actual,
+                    ),
+                })?;
+                claimed = claimed.checked_add(name.1.capacity() as u64).ok_or(WorkError::Overflow)?;
+                (name, None)
+            };
+            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+                .map_err(|_| DemandError::InvalidRequest)?;
+            // Keep the name before its guard on every custody-transfer error.
+            let mut incoming = (name, allocation.take());
+            if let (Some(owner), Some(allocation)) = (&mut owned.1, &mut incoming.1) {
+                owner.absorb(allocation).map_err(NativeWatchError::from)?;
+            }
+            owned.0.push(incoming.0);
+        }
+        NamespacePath::new(std::mem::take(&mut owned.0), limits)
+            .map_err(|_| DemandError::InvalidRequest)
     })();
     match result {
-        Ok(path) => Ok((path, claimed)),
+        Ok(path) => Ok((path, claimed, owned.1.take())),
         Err(error) => {
-            work.release(claimed)?;
+            drop(owned);
+            if claimed != 0 { work.release(claimed)?; }
             Err(error)
         }
     }
 }
 
 #[cfg(windows)]
+fn wide_hint_names(path: &[u16]) -> impl Iterator<Item = Result<HintName<'_>, crate::demand::DemandError>> + Clone {
+    path.split(|unit| matches!(*unit, 47 | 92))
+        .filter(|name| !name.is_empty()).map(|name| Ok(HintName::Wide(name)))
+}
+
+#[cfg(windows)]
+struct WindowsDirectoryKey {
+    path: Vec<u16>,
+    allocation: Option<crate::materializer::NativeAllocation>,
+}
+
+#[cfg(windows)]
+impl std::ops::Deref for WindowsDirectoryKey {
+    type Target = Vec<u16>;
+    fn deref(&self) -> &Self::Target { &self.path }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsDirectoryKey {
+    fn drop(&mut self) {
+        drop(std::mem::take(&mut self.path));
+        drop(self.allocation.take());
+    }
+}
+
+#[cfg(windows)]
 struct WindowsDirectoryWatch {
-    path: Arc<Vec<u16>>,
+    path: Arc<WindowsDirectoryKey>,
     identity: NativeRootIdentity,
     watcher: crate::source_watch::NativeSourceWatch,
-    owned_bytes: u64,
 }
 
 #[cfg(windows)]
 struct WindowsHintDelivery {
     context: NativeEventContext,
-    sender: SyncSender<WatchChange>,
+    sender: SyncSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
     queued: Arc<AtomicU32>,
     fenced: Arc<Condvar>,
@@ -569,41 +848,211 @@ struct WindowsHintDelivery {
 
 #[cfg(windows)]
 struct WindowsDirectorySink {
-    prefix: Arc<Vec<u16>>,
+    prefix: Arc<WindowsDirectoryKey>,
     delivery: Arc<WindowsHintDelivery>,
+    root_events: bool,
+    _allocation: Option<crate::materializer::NativeAllocation>,
 }
 
 #[cfg(windows)]
 impl crate::source_watch::HostChangeSink for WindowsDirectorySink {
-    fn host_changed(&self, changes: &[crate::source_watch::HostChange]) {
+    fn logical_owned_bytes(&self) -> u64 {
+        size_of::<Self>() as u64
+            + if self.root_events { size_of::<WindowsDirectoryKey>() as u64 + self.prefix.capacity() as u64 * 2 } else { 0 }
+    }
+    fn host_changed(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_with_work(changes, work)
+    }
+
+    fn host_changed_with_native_work(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_with_work(changes, work)
+    }
+
+    fn host_changed_wide(
+        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_wide_with_work(changes, work)
+    }
+
+    fn host_changed_wide_with_native_work(
+        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.host_changed_wide_with_work(changes, work)
+    }
+}
+
+#[cfg(windows)]
+impl WindowsDirectorySink {
+    fn host_changed_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, changes: &[crate::source_watch::HostChange], work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
         use crate::source_watch::HostChange;
-        use std::os::windows::ffi::OsStringExt as _;
         for change in changes {
-            let path = match change {
-                HostChange::Rebound(path) | HostChange::Altered(path) => path,
-                HostChange::File(_) => continue,
-                HostChange::Everything | HostChange::Unconfirmed => {
-                    if let Ok(mut state) = self.delivery.shared.lock() {
-                        state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-                    }
-                    continue;
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            match change {
+                HostChange::Rebound(path) | HostChange::Altered(path) => {
+                    let names = wide_hint_names(&self.prefix).chain(path.components().map(host_hint_name));
+                    self.deliver_names_measured(names, None, work)?;
                 }
-            };
-            // Decoding/delivery is the existing driver's ordinary asynchronous
-            // path, not finite directory admission. Preserve flexible UTF-16.
-            let prefix = PathBuf::from(std::ffi::OsString::from_wide(&self.prefix));
-            let absolute = self.delivery.context.root.join(prefix).join(path);
-            let event = Ok(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(absolute));
-            accept_native_event(&event, &self.delivery.context, &self.delivery.sender,
-                &self.delivery.shared, &self.delivery.queued);
-            if let (Ok(event), Ok(mut state)) = (&event, self.delivery.shared.lock())
-                && state.fence.as_ref().is_some_and(|fence| event.paths.contains(fence))
+                HostChange::File(_) => {}
+                HostChange::Everything | HostChange::Unconfirmed => self.invalidate_measured(work)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn host_changed_wide_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::source_watch::HostChangeWide;
+        let mut file = 1;
+        for change in changes {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            if let HostChangeWide::File(identity) = change {
+                file = usize::try_from(*identity).map_err(|_| WorkError::Overflow)?;
+                break;
+            }
+        }
+        for change in changes {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            match change {
+                HostChangeWide::Path { action, path } => {
+                    self.deliver_names_measured(wide_hint_names(&self.prefix).chain(wide_hint_names(path)),
+                        self.root_events.then_some((*action, file)), work)?;
+                }
+                HostChangeWide::File(_) => {}
+                HostChangeWide::Everything | HostChangeWide::Unconfirmed => self.invalidate_measured(work)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn invalidate_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        work.check()?;
+        self.delivery.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
+            .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+        self.delivery.fenced.notify_all();
+        Ok(())
+    }
+
+    fn deliver_names_measured<'a, W: crate::demand::SourceDemandReadWork>(
+        &self,
+        names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
+        action: Option<(u32, usize)>,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        work.check()?;
+        let mut state = self.delivery.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        if state.invalidation.is_some() { return Ok(()); }
+        let completes_rename = action.is_some_and(|(action, cookie)| action == 5
+            && state.pending_rename.as_ref().is_some_and(|pending| pending.tracker == cookie));
+        if !completes_rename && self.delivery.queued.load(Ordering::Acquire)
+            .saturating_add(u32::from(state.pending_rename.is_some()))
+            >= self.delivery.context.maximum_queued_changes
+        {
+            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+            return Ok(());
+        }
+        let payload = match namespace_hint_names_with_work(
+            names, self.delivery.context.profile, self.delivery.context.limits, work,
+        ) {
+            Ok(path) => path,
+            Err(DemandError::InvalidRequest) => {
+                state.invalidation = Some(WatchInvalidationReason::UnrepresentablePath);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let bytes = payload.1;
+        let result = (|| {
+            let payload = payload;
+            for excluded in &state.excluded {
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                let relative = excluded.strip_prefix(&self.delivery.context.root)
+                    .map_err(|_| DemandError::InvalidRequest)?;
+                if namespace_starts_with_host_measured(&payload.0, relative, work)? { return Ok(()); }
+            }
+            if payload.0.is_root() {
+                state.invalidation = Some(WatchInvalidationReason::RootChanged);
+                return Ok(());
+            }
+            if let Some((4, cookie)) = action {
+                if state.pending_rename.is_some() {
+                    state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                } else {
+                    state.pending_rename = Some(PendingRename {
+                        tracker: cookie, from: payload.0, to: None, allocation: payload.2,
+                    });
+                }
+                return Ok(());
+            }
+            if action.is_some_and(|(action, cookie)| action == 5
+                && !state.pending_rename.as_ref().is_some_and(|pending| pending.tracker == cookie))
             {
-                state.fence = None;
-                self.delivery.fenced.notify_all();
+                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+                return Ok(());
+            }
+            work.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+            let change = match action {
+                Some((1, _)) => QueuedWatchChange::new(WatchChange::Created(payload.0), [payload.2, None]),
+                Some((2, _)) => QueuedWatchChange::new(WatchChange::Removed(payload.0), [payload.2, None]),
+                Some((5, _)) => {
+                    let pending = state.pending_rename.take().expect("matched native rename identity");
+                    QueuedWatchChange::new(
+                        WatchChange::Renamed { from: pending.from, to: payload.0 },
+                        [pending.allocation, payload.2],
+                    )
+                }
+                _ => QueuedWatchChange::new(WatchChange::Modified(payload.0), [payload.2, None]),
+            };
+            match self.delivery.sender.try_send(change) {
+                Ok(()) => {
+                    self.delivery.queued.fetch_add(1, Ordering::Release);
+                }
+                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                    state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+                }
+            }
+            Ok::<(), DemandError>(())
+        })();
+        if bytes != 0 { work.release(bytes)?; }
+        result
+    }
+}
+
+#[cfg(windows)]
+fn namespace_starts_with_host_measured<W: crate::demand::SourceDemandReadWork>(
+    path: &NamespacePath, host: &Path, work: &mut W,
+) -> Result<bool, crate::demand::DemandError> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let mut names = path.components().iter();
+    for component in host.components() {
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+        let (Component::Normal(host), Some(name)) = (component, names.next()) else { return Ok(false); };
+        if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
+            let mut bytes = name.as_bytes().chunks_exact(2);
+            for unit in host.encode_wide() {
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                if bytes.next() != Some(unit.to_le_bytes().as_slice()) { return Ok(false); }
+            }
+            if bytes.next().is_some() { return Ok(false); }
+        } else {
+            let Some(host) = host.to_str() else { return Ok(false); };
+            if name.as_bytes().len() != host.len() { return Ok(false); }
+            for (expected, actual) in name.as_bytes().iter().zip(host.as_bytes()) {
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                if expected != actual { return Ok(false); }
             }
         }
     }
+    Ok(true)
 }
 
 /// One live native watcher over a materialized checkout root.
@@ -617,11 +1066,12 @@ pub struct NativeWatch {
     root: PathBuf,
     recursive: bool,
     watched_directories: Vec<PathBuf>,
-    receiver: Receiver<WatchChange>,
-    #[cfg(windows)]
-    windows_root: crate::native_host::HostRoot,
+    receiver: Receiver<QueuedWatchChange>,
+    held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
     windows_directories: Vec<WindowsDirectoryWatch>,
+    #[cfg(windows)]
+    windows_backing_allocation: Option<crate::materializer::NativeAllocation>,
     #[cfg(windows)]
     windows_delivery: Arc<WindowsHintDelivery>,
     queued: Arc<AtomicU32>,
@@ -629,11 +1079,78 @@ pub struct NativeWatch {
     fenced: Arc<Condvar>,
     fences: u64,
     excluded: Vec<(NamespacePath, PathBuf)>,
+    excluded_allocation: Option<crate::NativeAllocation>,
     epoch: WatchEpoch,
     next_sequence: WatchSequence,
     rescan_in_progress: bool,
     root_identity: NativeRootIdentity,
     complete: bool,
+    original_work: Option<crate::NativeMaterializationWork>,
+    root_allocation: Option<crate::NativeAllocation>,
+    pending_source_watch: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
+    owner_allocation: Option<crate::NativeAllocation>,
+}
+
+impl std::fmt::Debug for NativeWatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeWatch")
+            .field("root_identity", &self.root_identity)
+            .field("epoch", &self.epoch)
+            .finish_non_exhaustive()
+    }
+}
+
+struct NativeWatchHeldRoot {
+    root: Option<crate::native_host::HostRoot>,
+    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+    original: Option<crate::NativeMaterializationWork>,
+}
+
+impl std::ops::Deref for NativeWatchHeldRoot {
+    type Target = crate::native_host::HostRoot;
+    fn deref(&self) -> &Self::Target {
+        self.root.as_ref().expect("a settled watcher has no remaining root operations")
+    }
+}
+
+impl NativeWatchHeldRoot {
+    fn close_with_native_work(
+        &mut self, work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, crate::NativeTreeMaterializationError> {
+        work.admit(WorkCounters::UNCHARGED)?;
+        if self.root.is_none() { return Ok(false); }
+        let mut superseded_cleanup = None;
+        let cleanup = if self.original.as_ref().is_some_and(|original| original.shares_ledger(work)) {
+            self.cleanup.as_mut().expect("native root close retains its original credit")
+                .bind_current_work(work)?;
+            self.cleanup.take().expect("native root close was reserved before its open")
+        } else {
+            // Admit the current invocation's close before taking custody.
+            // The birth reservation remains resident until physical close.
+            let cleanup = work.reserve_cleanup_write()?;
+            superseded_cleanup = self.cleanup.take();
+            cleanup
+        };
+        let root = self.root.take().expect("the held directory remains owned until close admission");
+        let ((), recorded) = cleanup.attempt_recorded(|| drop(root));
+        drop(superseded_cleanup);
+        recorded?;
+        Ok(true)
+    }
+}
+
+impl Drop for NativeWatchHeldRoot {
+    fn drop(&mut self) {
+        if let Some(root) = self.root.take() {
+            if let Some(cleanup) = self.cleanup.take() {
+                // This exact original close was reserved before opening.
+                // The primitive releases the meter before physical close.
+                let _ = cleanup.attempt_recorded(|| drop(root));
+            } else {
+                drop(root);
+            }
+        }
+    }
 }
 
 impl NativeWatch {
@@ -681,10 +1198,92 @@ impl NativeWatch {
         .map_err(|failure| failure.error)
     }
 
+    /// Transfers an actual already-paid owner allocation on this same ledger.
+    ///
+    /// # Errors
+    /// Rejection leaves the borrowed incoming guard and its custody unchanged.
+    pub fn retain_owner_allocation(
+        &mut self, incoming: &mut crate::NativeAllocation,
+    ) -> Result<(), crate::NativeTreeMaterializationError> {
+        let original = self.original_work.as_ref()
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        if !original.shares_ledger(incoming.work())
+            || !original.shares_resource_allowance(incoming.work()) {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+        }
+        if let Some(owner) = &mut self.owner_allocation {
+            owner.absorb(incoming)
+        } else {
+            self.owner_allocation = Some(incoming.split_off(incoming.bytes())?);
+            Ok(())
+        }
+    }
+
+    /// Settles the same native producer, its child producers, and held root.
+    ///
+    /// Denial or physical failure leaves this exact watcher queryable in its
+    /// existing root owner's pending slot. Success permits its physical Drop;
+    /// ordinary adapter watches are outside this original native boundary.
+    ///
+    /// Returns `true` only after every owned physical producer is stopped,
+    /// the held root is closed, and queued/pending data is retired.
+    ///
+    /// # Errors
+    /// Returns the original cancellation, work, physical stop, or close error.
+    pub fn shutdown_with_native_work(
+        &mut self, original: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeWatchError> {
+        original.admit(WorkCounters::UNCHARGED)?;
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(original);
+        if let Some(pending) = self.pending_source_watch.as_ref() {
+            pending.stop_with_native_work(original).map_err(demand_watch_error)?;
+            if !pending.is_stopped() { return Err(NativeWatchError::SourceUnavailable); }
+            drop(self.pending_source_watch.take());
+        }
+        #[cfg(windows)]
+        {
+            self.clear_windows_directories_with_work(&mut work).map_err(demand_watch_error)?;
+        }
+        match &self.watcher {
+            NativeWatchDriver::Source { watcher, .. } => {
+                watcher.stop_with_work(&mut work).map_err(demand_watch_error)?;
+                if !watcher.is_stopped() { return Err(NativeWatchError::SourceUnavailable); }
+            }
+            NativeWatchDriver::StartupFailure(owner) => {
+                owner.stop_with_native_work(original).map_err(demand_watch_error)?;
+                if !owner.is_stopped() { return Err(NativeWatchError::SourceUnavailable); }
+            }
+            NativeWatchDriver::Adapter(_) => return Err(NativeWatchError::BoundedObservationUnavailable),
+        }
+        self.held_root.close_with_native_work(original)?;
+        loop {
+            crate::demand::SourceDemandReadWork::charge(
+                &mut work, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
+            ).map_err(demand_watch_error)?;
+            match self.receiver.try_recv() {
+                Ok(change) => {
+                    self.queued.fetch_sub(1, Ordering::AcqRel);
+                    drop(change);
+                    original.record_admitted(WorkCounters::UNCHARGED)?;
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        let mut state = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        #[cfg(any(target_os = "linux", windows))]
+        let pending = state.pending_rename.take();
+        let fence = state.fence.take();
+        state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+        drop(state);
+        #[cfg(any(target_os = "linux", windows))]
+        drop(pending);
+        drop(fence);
+        original.record_admitted(WorkCounters::UNCHARGED)?;
+        Ok(true)
+    }
+
     /// Opens the existing watcher with explicit preparation work/cancellation.
-    /// Charges each root request and watcher registration before calling it;
-    /// failure retains all admitted requests. Linux recursive registration is
-    /// not constant-size and is rejected by this bounded root-only boundary.
+    /// Ordinary and original native callers use the same physical engine.
     pub fn open_with_profile_measured(
         root: impl AsRef<Path>,
         profile: FilesystemProfile,
@@ -693,177 +1292,292 @@ impl NativeWatch {
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Self>, NativeWatchError> {
         let span = crate::obs::span!(
-            DEBUG,
-            "acyclic.fs.watch.open",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
+            DEBUG, "acyclic.fs.watch.open",
+            outcome = crate::obs::Empty, error.kind = crate::obs::Empty,
         );
-        let mut work = WorkCounters::default();
-        let mut charge = |write: bool| -> Result<(), NativeWatchError> {
-            cancellation.check()?;
-            let next = work.checked_add(WorkCounters {
-                backend_read_operations: u64::from(!write),
-                backend_write_operations: u64::from(write),
-                ..WorkCounters::default()
-            })?;
-            next.verify(budget)?;
-            work = next;
-            Ok(())
-        };
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
         let result = crate::obs::scope(&span, || {
-            let options = options.validate()?;
-            if cfg!(target_os = "linux") && options.recursive && budget.has_finite_allowances() {
-                return Err(NativeWatchError::InvalidOptions);
-            }
-            let requested_root = root.as_ref();
-            charge(false)?;
-            let admission = requested_root.symlink_metadata()?;
-            if admission.file_type().is_symlink() {
+            Self::open_with_profile_engine(root.as_ref(), profile, options, &mut work, None)
+        });
+        let spent = work.receipt();
+        crate::obs::measured_on(
+            &span,
+            result.map(|value| OperationReceipt { value, work: spent })
+                .map_err(|error| OperationFailure::new(error, spent)),
+            |receipt| &receipt.work,
+        )
+    }
+
+    /// Opens the same held-root watcher on the invocation's original ledger.
+    ///
+    /// The caller's existing root owner must retain a returned startup-failure
+    /// watch and settle it through [`Self::shutdown_with_native_work`].
+    /// Root paths are borrowed for held-root admission before their owned copy.
+    pub fn open_with_profile_with_native_work(
+        root: &Path, profile: FilesystemProfile, options: NativeWatchOptions,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeWatchError> {
+        Self::open_with_profile_engine(
+            root, profile, options,
+            &mut crate::demand::NativeSourceWork::from_native_materialization_work(original),
+            Some(original),
+        )
+    }
+
+    fn copy_startup_path<W: crate::demand::SourceDemandReadWork>(
+        path: &Path, work: &mut W, original: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(PathBuf, Option<crate::NativeAllocation>), NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        if let Some(original) = original {
+            let (path, allocation) = original.copy_path(path)?;
+            Ok((path, Some(allocation)))
+        } else {
+            let (path, _) = crate::native_host::clone_path_with_work(path, work)
+                .map_err(demand_watch_error)?;
+            Ok((path, None))
+        }
+    }
+
+    fn startup_control<W: crate::demand::SourceDemandReadWork>(
+        work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        // Refcount/control headers are not logical data, but this known
+        // controlled allocator call is still admitted before it happens.
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })
+            .map_err(demand_watch_error)
+    }
+
+    fn open_with_profile_engine<W: crate::demand::SourceDemandReadWork>(
+        requested_root: &Path, profile: FilesystemProfile, options: NativeWatchOptions,
+        work: &mut W, original: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<Self, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        let options = options.validate()?;
+        if cfg!(target_os = "linux") && options.recursive
+            && (original.is_some() || work.remaining().map_err(demand_watch_error)?.has_finite_allowances())
+        {
+            return Err(NativeWatchError::InvalidOptions);
+        }
+        if original.is_some() && !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+            return Err(NativeWatchError::NativeWorkUnavailable);
+        }
+        let use_adapter = if cfg!(target_os = "linux") {
+            options.recursive
+        } else if cfg!(windows) {
+            false
+        } else {
+            original.is_none()
+        };
+        let ordinary_root;
+        let root_path = if original.is_some() {
+            requested_root
+        } else {
+            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
+                .map_err(demand_watch_error)?;
+            if requested_root.symlink_metadata()?.file_type().is_symlink() {
                 return Err(NativeWatchError::RootIsNotDirectory);
             }
-            charge(false)?;
-            let root = requested_root.canonicalize()?;
-            charge(false)?;
-            let root_file = open_native_root(&root)?;
-            charge(false)?;
-            let metadata = root_file.metadata()?;
-            if !metadata.is_dir() {
-                return Err(NativeWatchError::RootIsNotDirectory);
-            }
-            charge(false)?;
-            let root_identity = NativeRootIdentity::from_file(&root_file)?;
-            #[cfg(windows)]
-            let complete = {
-                charge(false)?;
-                crate::native_host::reports_every_change(&root_file)?
+            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
+                .map_err(demand_watch_error)?;
+            ordinary_root = requested_root.canonicalize()?;
+            &ordinary_root
+        };
+        let cleanup = original.map(|work| work.reserve_cleanup_write()).transpose()?;
+        let held = crate::native_host::HostRoot::open_with_work(root_path, work)
+            .map_err(demand_watch_error)?;
+        let held_root = NativeWatchHeldRoot {
+            root: Some(held), cleanup, original: original.cloned(),
+        };
+        let metadata = held_root.stat_with_work(Path::new(""), work).map_err(demand_watch_error)?;
+        if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
+        let root_identity = held_root.identity();
+        if metadata.identity().map_err(demand_watch_error)? != root_identity {
+            return Err(NativeWatchError::RootChanged);
+        }
+        #[cfg(windows)]
+        let complete = crate::native_host::reports_every_change_with_work(
+            &held_root.directory_handle(), work,
+        ).map_err(demand_watch_error)?;
+        #[cfg(not(windows))]
+        let complete = true;
+        let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
+        let capacity = usize::try_from(options.maximum_queued_changes)
+            .map_err(|_| NativeWatchError::InvalidOptions)?;
+        let queue_bytes = (capacity as u64).checked_mul(size_of::<WatchChange>() as u64)
+            .ok_or(WorkError::Overflow)?;
+        let queue_allocation = if let Some(original) = original {
+            Some(original.claim(queue_bytes)?)
+        } else {
+            work.allocate(queue_bytes).map_err(demand_watch_error)?;
+            None
+        };
+        Self::startup_control(work)?;
+        let (sender, receiver) = sync_channel(capacity);
+        Self::startup_control(work)?;
+        let queued = Arc::new(AtomicU32::new(0));
+        Self::startup_control(work)?;
+        let mut state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
+        state._queue_allocation = queue_allocation;
+        let shared = Arc::new(Mutex::new(state));
+        Self::startup_control(work)?;
+        let fenced = Arc::new(Condvar::new());
+        #[cfg(windows)]
+        let (context_root, context_allocation) = Self::copy_startup_path(&root, work, original)?;
+        #[cfg(windows)]
+        let context = NativeEventContext {
+            root: context_root, root_identity, profile, limits: options.limits,
+            #[cfg(any(target_os = "linux", windows))]
+            maximum_queued_changes: options.maximum_queued_changes,
+            _root_allocation: context_allocation,
+        };
+        #[cfg(windows)]
+        let windows_delivery = {
+            Self::startup_control(work)?;
+            Arc::new(WindowsHintDelivery {
+                context, sender: sender.clone(), shared: Arc::clone(&shared),
+                queued: Arc::clone(&queued), fenced: Arc::clone(&fenced),
+            })
+        };
+        #[cfg(target_os = "linux")]
+        let linux_sender = sender.clone();
+        #[cfg(not(windows))]
+        let callback = if use_adapter {
+            let (context_root, context_allocation) = Self::copy_startup_path(&root, work, original)?;
+            let context = NativeEventContext {
+                root: context_root, root_identity, profile, limits: options.limits,
+                #[cfg(target_os = "linux")]
+                maximum_queued_changes: options.maximum_queued_changes,
+                _root_allocation: context_allocation,
             };
-            #[cfg(not(windows))]
-            let complete = true;
-            let capacity = usize::try_from(options.maximum_queued_changes)
-                .map_err(|_| NativeWatchError::InvalidOptions)?;
-            let (sender, receiver) = sync_channel(capacity);
-            let queued = Arc::new(AtomicU32::new(0));
-            let shared = Arc::new(Mutex::new(SharedState::new(Some(
-                WatchInvalidationReason::InitialSnapshotRequired,
-            ))));
-            let fenced = Arc::new(Condvar::new());
             let callback_shared = Arc::clone(&shared);
             let callback_fenced = Arc::clone(&fenced);
             let callback_queued = Arc::clone(&queued);
-            let callback_context = NativeEventContext {
-                root: root.clone(),
-                root_identity,
-                profile,
-                limits: options.limits,
-                #[cfg(target_os = "linux")]
-                maximum_queued_changes: options.maximum_queued_changes,
-            };
-            #[cfg(windows)]
-            let windows_delivery = Arc::new(WindowsHintDelivery {
-                context: NativeEventContext {
-                    root: root.clone(), root_identity, profile, limits: options.limits,
-                },
-                sender: sender.clone(),
-                shared: Arc::clone(&shared),
-                queued: Arc::clone(&queued),
-                fenced: Arc::clone(&fenced),
-            });
-            charge(true)?;
-            #[cfg(target_os = "linux")]
-            let linux_sender = sender.clone();
-            let callback = move |event: notify::Result<Event>| {
-                    accept_native_event(
-                        &event,
-                        &callback_context,
-                        &sender,
-                        &callback_shared,
-                        &callback_queued,
-                    );
-                    // Signal only after the cookie's own hint is handled: delivery is
-                    // ordered, so every earlier host change is already queued.
-                    if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
-                        && state
-                            .fence
-                            .as_ref()
-                            .is_some_and(|fence| event.paths.contains(fence))
-                    {
-                        state.fence = None;
-                        callback_fenced.notify_all();
-                    }
-                };
-            #[cfg(target_os = "linux")]
-            let mut watcher = if options.recursive {
-                NativeWatchDriver::Adapter(NativeEventWatcher::new(callback, notify::Config::default())
-                    .map_err(|error| NativeWatchError::Backend(error.to_string()))?)
-            } else {
-                let held_root = crate::native_host::HostRoot::from_held_dir_with_identity(
-                    cap_std::fs::Dir::from_std_file(root_file), root_identity,
-                );
-                let events = Arc::new(LinuxEventDelivery {
-                    context: NativeEventContext {
-                        root: root.clone(), root_identity, profile, limits: options.limits,
-                        maximum_queued_changes: options.maximum_queued_changes,
-                    },
-                    sender: linux_sender,
-                    shared: Arc::clone(&shared),
-                    queued: Arc::clone(&queued),
-                    fenced: Arc::clone(&fenced),
-                });
-                let source = crate::source_watch::NativeSourceWatch::start_with_events(
-                    &held_root, Arc::new(LinuxHintInvalidation(Arc::clone(&shared))), events,
-                )?;
-                NativeWatchDriver::Source { watcher: source, root: root.clone() }
-            };
-            #[cfg(not(target_os = "linux"))]
-            let mut watcher = NativeWatchDriver::Adapter(
-                NativeEventWatcher::new(callback, notify::Config::default())
-                    .map_err(|error| NativeWatchError::Backend(error.to_string()))?,
-            );
-            charge(true)?;
-            watcher
-                .watch(
-                    &root,
-                    if options.recursive {
-                        RecursiveMode::Recursive
-                    } else {
-                        RecursiveMode::NonRecursive
-                    },
-                )
-                .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
-            cancellation.check()?;
-            Ok(Self {
-                watcher,
-                watched_directories: vec![root.clone()],
-                root,
-                recursive: options.recursive,
-                receiver,
-                #[cfg(windows)]
-                windows_root: crate::native_host::HostRoot::from_held_dir_with_identity(
-                    cap_std::fs::Dir::from_std_file(root_file), root_identity,
-                ),
-                #[cfg(windows)]
-                windows_directories: Vec::new(),
-                #[cfg(windows)]
-                windows_delivery,
-                queued,
-                shared,
-                fenced,
-                fences: 0,
-                excluded: Vec::new(),
-                epoch: WatchEpoch(0),
-                next_sequence: WatchSequence(0),
-                rescan_in_progress: false,
-                root_identity,
-                complete,
+            Some(move |event: notify::Result<Event>| {
+                accept_native_event(&event, &context, &sender, &callback_shared, &callback_queued);
+                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
+                    && state.fence.as_ref().is_some_and(|fence| event.paths.contains(fence))
+                {
+                    state.fence = None;
+                    callback_fenced.notify_all();
+                }
             })
-        });
-        crate::obs::measured_on(
-            &span,
-            result
-                .map(|value| OperationReceipt { value, work })
-                .map_err(|error| OperationFailure::new(error, work)),
-            |receipt| &receipt.work,
-        )
+        } else {
+            None
+        };
+        let (driver_root, driver_allocation) = if use_adapter {
+            (PathBuf::new(), None)
+        } else {
+            Self::copy_startup_path(&root, work, original)?
+        };
+        let mut watched_directories = Vec::new();
+        if use_adapter {
+            work.allocate(0).map_err(demand_watch_error)?;
+            watched_directories.try_reserve_exact(1).map_err(|_| NativeWatchError::AllocationFailed)?;
+            let (directory, _) = crate::native_host::clone_path_with_work(&root, work)
+                .map_err(demand_watch_error)?;
+            watched_directories.push(directory);
+        }
+        #[cfg(target_os = "linux")]
+        let source_result = if options.recursive {
+            None
+        } else {
+            let (event_root, event_allocation) = Self::copy_startup_path(&root, work, original)?;
+            Self::startup_control(work)?;
+            let events = Arc::new(LinuxEventDelivery {
+                context: NativeEventContext {
+                    root: event_root, root_identity, profile, limits: options.limits,
+                    maximum_queued_changes: options.maximum_queued_changes,
+                    _root_allocation: event_allocation,
+                },
+                sender: linux_sender, shared: Arc::clone(&shared),
+                queued: Arc::clone(&queued), fenced: Arc::clone(&fenced),
+            });
+            Self::startup_control(work)?;
+            let sink = Arc::new(RootHintInvalidation(Arc::clone(&shared)));
+            Some(crate::source_watch::NativeSourceWatch::start_with_events_with_work(
+                &held_root, sink, events, work,
+            ))
+        };
+        #[cfg(windows)]
+        let source_result = {
+            Self::startup_control(work)?;
+            let prefix = Arc::new(WindowsDirectoryKey { path: Vec::new(), allocation: None });
+            Self::startup_control(work)?;
+            let sink = Arc::new(WindowsDirectorySink {
+                prefix, delivery: Arc::clone(&windows_delivery), root_events: true,
+                _allocation: None,
+            });
+            Some(crate::source_watch::NativeSourceWatch::start_held_with_sink_with_work(
+                &held_root, sink, complete, options.recursive, work,
+            ))
+        };
+        #[cfg(target_os = "macos")]
+        let source_result = if use_adapter {
+            None
+        } else {
+            Self::startup_control(work)?;
+            let sink = Arc::new(RootHintInvalidation(Arc::clone(&shared)));
+            Some(crate::source_watch::NativeSourceWatch::start_with_work(&held_root, sink, work))
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        let source_result: Option<Result<crate::source_watch::NativeSourceWatch, crate::DemandError>> = None;
+        let mut startup_failure = None;
+        let watcher = if let Some(source) = source_result {
+            match source {
+                Ok(watcher) => NativeWatchDriver::Source {
+                    watcher, root: driver_root, _root_allocation: driver_allocation,
+                },
+                Err(crate::DemandError::SourceWatchStartup(owner)) => {
+                    startup_failure = Some(Arc::clone(&owner));
+                    NativeWatchDriver::StartupFailure(owner)
+                }
+                Err(error) => return Err(demand_watch_error(error)),
+            }
+        } else {
+            Self::startup_control(work)?;
+            #[cfg(not(windows))]
+            let adapter = NativeEventWatcher::new(callback.expect("the legacy adapter owns its callback"), notify::Config::default())
+                .map_err(NativeWatchError::OriginalBackend)?;
+            #[cfg(windows)]
+            unreachable!("Windows always uses its original held source");
+            #[cfg(not(windows))]
+            {
+                work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+                    .map_err(demand_watch_error)?;
+                let mut adapter = adapter;
+                adapter.watch(&root, if options.recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })
+                    .map_err(NativeWatchError::OriginalBackend)?;
+                NativeWatchDriver::Adapter(adapter)
+            }
+        };
+        let watch = Self {
+            watcher, root, recursive: options.recursive, watched_directories,
+            receiver, held_root,
+            #[cfg(windows)]
+            windows_directories: Vec::new(),
+            #[cfg(windows)]
+            windows_backing_allocation: None,
+            #[cfg(windows)]
+            windows_delivery,
+            queued, shared, fenced, fences: 0,
+            excluded: Vec::new(), excluded_allocation: None,
+            epoch: WatchEpoch(0), next_sequence: WatchSequence(0),
+            rescan_in_progress: false, root_identity, complete,
+            original_work: original.cloned(), root_allocation, owner_allocation: None,
+            pending_source_watch: None,
+        };
+        if let Some(cause) = startup_failure {
+            return Err(NativeWatchError::SourceStartupFailed { cause, watch });
+        }
+        let checked = if let Some(original) = original {
+            original.admit(WorkCounters::UNCHARGED)
+        } else {
+            work.check().map_err(crate::materializer::native_materialization_work_error)
+        };
+        match checked {
+            Ok(()) => Ok(watch),
+            Err(cause) => Err(NativeWatchError::StartupFailed { cause, watch }),
+        }
     }
 
     /// Whether the root's file system reports every change, or that it lost
@@ -886,9 +1600,9 @@ impl NativeWatch {
     /// that cannot be represented on this host, or a backend registration
     /// failure.
     pub fn watch_directory(&mut self, directory: &NamespacePath) -> Result<(), NativeWatchError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         return self.watch_directory_ordinary(directory);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         {
             let cancellation = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -904,7 +1618,7 @@ impl NativeWatch {
 
     // Ordinary adapters may perform their existing unbounded path conversion.
     // Finite demand observation never calls their opaque registration API.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     fn watch_directory_ordinary(&mut self, directory: &NamespacePath) -> Result<(), NativeWatchError> {
         if self.recursive || directory.is_root() {
             return Ok(());
@@ -950,32 +1664,41 @@ impl NativeWatch {
         directory: &NamespacePath,
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
+        self.watch_directory_with_work(directory, work)
+    }
+
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn watch_directory_with_native_work(
+        &mut self, directory: &NamespacePath, work: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.watch_directory_with_work(
+            directory, &mut crate::demand::NativeSourceWork::from_native_materialization_work(work),
+        )
+    }
+
+    pub(crate) fn watch_directory_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, directory: &NamespacePath, work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
+        if let Some(owner) = &self.pending_source_watch {
+            return Err(crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner)));
+        }
         if self.recursive || directory.is_root() {
             return Ok(());
         }
         #[cfg(windows)]
-        return self.watch_directory_wide_measured(directory, work);
+        return self.watch_directory_wide_with_work(directory, work);
         #[cfg(not(any(windows, target_os = "linux")))]
         return Err(NativeWatchError::BoundedObservationUnavailable.into());
         #[cfg(target_os = "linux")]
         {
         let mut candidate = PathBuf::new();
         let mut candidate_bytes = 0_u64;
-        let mut retained_bytes = 0_u64;
         let result = (|| {
-            let mut baseline = (self.watched_directories.capacity() as u64)
-                .checked_mul(size_of::<PathBuf>() as u64).ok_or(WorkError::Overflow)?;
-            for path in &self.watched_directories {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                baseline = baseline.checked_add(path.capacity() as u64).ok_or(WorkError::Overflow)?;
-            }
-            work.adopt(baseline)?;
-            retained_bytes = baseline;
-            grow_watch_path_measured(&mut candidate, &self.root, work, &mut candidate_bytes)?;
+            grow_watch_path_with_work(&mut candidate, &self.root, work, &mut candidate_bytes)?;
             for component in directory.components() {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let (name, name_bytes) = watch_host_name_measured(component, work)?;
+                let (name, name_bytes) = watch_host_name_with_work(component, work)?;
                 let mut host_components = Path::new(&name).components();
                 if !matches!(host_components.next(), Some(Component::Normal(_)))
                     || host_components.next().is_some()
@@ -984,7 +1707,7 @@ impl NativeWatch {
                     work.release(name_bytes)?;
                     return Err(NativeWatchError::UnrepresentablePath.into());
                 }
-                let grown = grow_watch_path_measured(&mut candidate, Path::new(&name), work, &mut candidate_bytes);
+                let grown = grow_watch_path_with_work(&mut candidate, Path::new(&name), work, &mut candidate_bytes);
                 drop(name);
                 work.release(name_bytes)?;
                 grown?;
@@ -998,7 +1721,7 @@ impl NativeWatch {
                         }
                         break;
                     }
-                    Err(error) => return Err(NativeWatchError::from(error).into()),
+                    Err(error) => return Err(error.into()),
                 };
                 if metadata.file_type().is_symlink() {
                     return Err(NativeWatchError::SymbolicLinkDirectory.into());
@@ -1014,109 +1737,52 @@ impl NativeWatch {
                     }
                     let relative = candidate.strip_prefix(&self.root)
                         .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                    if !watcher.admit_measured(relative, work)? { return Ok(()); }
+                    watcher.admit_with_work(relative, work)?;
                 }
                 NativeWatchDriver::Adapter(_) => {
                     return Err(NativeWatchError::BoundedObservationUnavailable.into());
                 }
             }
-            let mut left = 0_usize;
-            let mut right = self.watched_directories.len();
-            while left < right {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let middle = left + (right - left) / 2;
-                match self.watched_directories[middle].cmp(&candidate) {
-                    std::cmp::Ordering::Equal => return Ok(()),
-                    std::cmp::Ordering::Less => left = middle + 1,
-                    std::cmp::Ordering::Greater => right = middle,
-                }
-            }
-            if self.watched_directories.len() == self.watched_directories.capacity() {
-                let capacity = self.watched_directories.len().checked_add(1).ok_or(WorkError::Overflow)?;
-                let bytes = (capacity as u64).checked_mul(size_of::<PathBuf>() as u64)
-                    .ok_or(WorkError::Overflow)?;
-                let old_bytes = (self.watched_directories.capacity() as u64)
-                    .checked_mul(size_of::<PathBuf>() as u64).ok_or(WorkError::Overflow)?;
-                let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-                work.work.admit(&copied, &work.budget)?;
-                work.allocate(bytes)?;
-                work.record(copied)?;
-                let mut grown = Vec::with_capacity(capacity);
-                grown.append(&mut self.watched_directories);
-                self.watched_directories = grown;
-                work.release(old_bytes)?;
-                retained_bytes = retained_bytes.checked_sub(old_bytes)
-                    .and_then(|prior| prior.checked_add(bytes)).ok_or(WorkError::Overflow)?;
-            }
-            let shifted = WorkCounters {
-                bytes_copied: ((self.watched_directories.len() - left) as u64)
-                    .checked_mul(size_of::<PathBuf>() as u64).ok_or(WorkError::Overflow)?,
-                ..WorkCounters::default()
-            };
-            work.work.admit(&shifted, &work.budget)?;
-            work.record(shifted)?;
-            self.watched_directories.insert(left, std::mem::take(&mut candidate));
-            retained_bytes = retained_bytes.checked_add(candidate_bytes).ok_or(WorkError::Overflow)?;
-            candidate_bytes = 0;
             Ok(())
         })();
         drop(candidate);
         work.release(candidate_bytes)?;
-        work.release(retained_bytes)?;
         result
         }
     }
 
     #[cfg(target_os = "linux")]
-    fn clear_linux_directories_measured(
-        &mut self, work: &mut crate::demand::DemandWork,
+    fn clear_linux_directories_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         let NativeWatchDriver::Source { watcher, .. } = &self.watcher else { return Ok(()); };
-        let mut retained = (self.watched_directories.capacity() as u64)
-            .checked_mul(size_of::<PathBuf>() as u64).ok_or(WorkError::Overflow)?;
-        for path in &self.watched_directories {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-            retained = retained.checked_add(path.capacity() as u64).ok_or(WorkError::Overflow)?;
-        }
-        work.adopt(retained)?;
         let result = (|| {
-            watcher.unadmit_measured(Path::new(""), work)?;
+            watcher.unadmit_with_work(Path::new(""), work)?;
             while self.watched_directories.len() > 1 {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                let bytes = removed.capacity() as u64;
                 drop(removed);
-                work.release(bytes)?;
-                retained = retained.checked_sub(bytes).ok_or(WorkError::Overflow)?;
             }
             Ok(())
         })();
-        work.release(retained)?;
         result
     }
 
     #[cfg(windows)]
-    fn watch_directory_wide_measured(
-        &mut self,
-        directory: &NamespacePath,
-        work: &mut crate::demand::DemandWork,
+    fn watch_directory_wide_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, directory: &NamespacePath, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         use crate::demand::DemandError;
         let mut retained_bytes = 0_u64;
         let mut path_bytes = 0_u64;
+        let mut backing_claim = 0_u64;
         let result = (|| {
-            let mut baseline = (self.windows_directories.capacity() as u64)
-                .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?;
-            for observed in &self.windows_directories {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                baseline = baseline.checked_add(observed.owned_bytes).ok_or(WorkError::Overflow)?;
-            }
-            work.adopt(baseline)?;
-            retained_bytes = baseline;
-            let path = crate::demand::native_wide_path(directory, self.windows_delivery.context.limits, work)?;
+            let path = work.with_original_leaf(|work| crate::demand::native_wide_path(
+                directory, self.windows_delivery.context.limits, work,
+            ))?;
             path_bytes = (path.capacity() as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let (mut held, _) = self.windows_root.open_dir_held_wide_with_identity_measured(&[], work)?;
+                let (mut held, _) = self.held_root.open_dir_held_wide_with_identity_with_work(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
@@ -1125,7 +1791,7 @@ impl NativeWatch {
                     }
                     let length = if path[index] == u16::from(b'\\') { index } else { index + 1 };
                     let prefix = &path[..length];
-                    let (next, identity) = match self.windows_root.open_dir_component_wide_measured(
+                    let (next, identity) = match self.held_root.open_dir_component_wide_with_work(
                         &held, &path[component_start..length], work,
                     ) {
                         Ok(observed) => observed,
@@ -1159,14 +1825,14 @@ impl NativeWatch {
                                 .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?,
                             ..WorkCounters::default()
                         };
-                        work.work.admit(&copied, &work.budget)?;
-                        self.windows_directories[at].watcher.stop_measured(work)?;
+                        work.preflight(copied)?;
+                        self.windows_directories[at].watcher.stop_with_work(work)?;
+                        if !self.windows_directories[at].watcher.is_stopped() {
+                            return Err(DemandError::WorkerUnavailable);
+                        }
                         work.record(copied)?;
                         let prior = self.windows_directories.remove(at);
-                        let prior_bytes = prior.owned_bytes;
                         drop(prior);
-                        work.release(prior_bytes)?;
-                        retained_bytes = retained_bytes.checked_sub(prior_bytes).ok_or(WorkError::Overflow)?;
                     }
                     if self.windows_directories.len() == self.windows_directories.capacity() {
                         let count = self.windows_directories.len().checked_add(1).ok_or(WorkError::Overflow)?;
@@ -1175,51 +1841,58 @@ impl NativeWatch {
                         let old_bytes = (self.windows_directories.capacity() as u64)
                             .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?;
                         let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-                        work.work.admit(&copied, &work.budget)?;
-                        work.allocate(bytes)?;
-                        work.record(copied)?;
+                        work.preflight(copied)?;
+                        let allocation = watch_claim_allocation(bytes, work)?;
                         let mut grown = Vec::with_capacity(count);
                         grown.append(&mut self.windows_directories);
                         self.windows_directories = grown;
-                        work.release(old_bytes)?;
-                        retained_bytes = retained_bytes.checked_sub(old_bytes)
-                            .and_then(|prior| prior.checked_add(bytes)).ok_or(WorkError::Overflow)?;
+                        drop(self.windows_backing_allocation.take());
+                        if allocation.is_none() {
+                            work.release(backing_claim)?;
+                            retained_bytes = retained_bytes.checked_sub(backing_claim)
+                                .and_then(|prior| prior.checked_add(bytes)).ok_or(WorkError::Overflow)?;
+                            backing_claim = bytes;
+                        }
+                        self.windows_backing_allocation = allocation;
+                        work.record(copied)?;
                     }
                     let key_bytes = (prefix.len() as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
                     let copied = WorkCounters { bytes_copied: key_bytes, ..WorkCounters::default() };
-                    work.work.admit(&copied, &work.budget)?;
-                    work.allocate(key_bytes)?;
+                    work.preflight(copied)?;
+                    let allocation = watch_claim_allocation(key_bytes, work)?;
+                    if allocation.is_none() {
+                        retained_bytes = retained_bytes.checked_add(key_bytes).ok_or(WorkError::Overflow)?;
+                    }
+                    let mut key = WindowsDirectoryKey { path: prefix.to_vec(), allocation };
                     work.record(copied)?;
-                    let key = prefix.to_vec();
-                    let key_arc_bytes = size_of::<Vec<u16>>() as u64;
-                    if let Err(error) = work.allocate(key_arc_bytes) {
-                        drop(key);
-                        work.release(key_bytes)?;
-                        return Err(error);
+                    let key_arc_bytes = size_of::<WindowsDirectoryKey>() as u64;
+                    let mut allocation = watch_claim_allocation(key_arc_bytes, work)?;
+                    if let (Some(key_allocation), Some(arc_allocation)) = (&mut key.allocation, &mut allocation) {
+                        key_allocation.absorb(arc_allocation).map_err(NativeWatchError::from)?;
+                    } else {
+                        retained_bytes = retained_bytes.checked_add(key_arc_bytes).ok_or(WorkError::Overflow)?;
                     }
                     let key = Arc::new(key);
                     let sink_bytes = size_of::<WindowsDirectorySink>() as u64;
-                    if let Err(error) = work.allocate(sink_bytes) {
-                        drop(key);
-                        work.release(key_bytes + key_arc_bytes)?;
-                        return Err(error);
+                    let allocation = watch_claim_allocation(sink_bytes, work)?;
+                    if allocation.is_none() {
+                        retained_bytes = retained_bytes.checked_add(sink_bytes).ok_or(WorkError::Overflow)?;
                     }
                     let sink = Arc::new(WindowsDirectorySink {
                         prefix: Arc::clone(&key), delivery: Arc::clone(&self.windows_delivery),
+                        root_events: false, _allocation: allocation,
                     });
-                    let watcher = match crate::source_watch::NativeSourceWatch::start_directory_measured(
+                    let watcher = match crate::source_watch::NativeSourceWatch::start_directory_with_work(
                         &held, sink, self.complete, work,
                     ) {
                         Ok(watcher) => watcher,
-                        Err(error) => {
-                            drop(key);
-                            work.release(key_bytes + key_arc_bytes + sink_bytes)?;
-                            return Err(error);
+                        Err(crate::demand::DemandError::SourceWatchStartup(owner)) => {
+                            self.pending_source_watch = Some(Arc::clone(&owner));
+                            return Err(crate::demand::DemandError::SourceWatchStartup(owner));
                         }
+                        Err(error) => return Err(error),
                     };
-                    let owned_bytes = key_bytes + key_arc_bytes + sink_bytes + watcher.owned_bytes();
-                    self.windows_directories.push(WindowsDirectoryWatch { path: key, identity, watcher, owned_bytes });
-                    retained_bytes = retained_bytes.checked_add(owned_bytes).ok_or(WorkError::Overflow)?;
+                    self.windows_directories.push(WindowsDirectoryWatch { path: key, identity, watcher });
                 }
                 Ok(())
             })();
@@ -1234,35 +1907,24 @@ impl NativeWatch {
     }
 
     #[cfg(windows)]
-    fn clear_windows_directories_measured(
-        &mut self,
-        work: &mut crate::demand::DemandWork,
+    fn clear_windows_directories_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
-        if self.windows_directories.is_empty() {
-            return Ok(());
-        }
-        let mut bytes = (self.windows_directories.capacity() as u64)
-            .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?;
-        for observed in &self.windows_directories {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-            bytes = bytes.checked_add(observed.owned_bytes).ok_or(WorkError::Overflow)?;
-        }
-        work.adopt(bytes)?;
         let result = (|| {
             while let Some(observed) = self.windows_directories.last_mut() {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                observed.watcher.stop_measured(work)?;
+                observed.watcher.stop_with_work(work)?;
+                if !observed.watcher.is_stopped() {
+                    return Err(crate::demand::DemandError::WorkerUnavailable);
+                }
                 let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                let freed = removed.owned_bytes;
                 drop(removed);
-                work.release(freed)?;
-                bytes = bytes.checked_sub(freed).ok_or(WorkError::Overflow)?;
             }
             self.windows_directories = Vec::new();
+            drop(self.windows_backing_allocation.take());
             Ok(())
         })();
-        work.release(bytes)?;
         result
     }
 
@@ -1298,15 +1960,21 @@ impl NativeWatch {
                     continue;
                 }
                 let path = entry.path();
-                if !self.watched_directories.contains(&path) {
-                    match self.watcher.watch(&path, RecursiveMode::NonRecursive) {
-                        Ok(()) => {
-                            let at = self.watched_directories.partition_point(|candidate| candidate < &path);
-                            self.watched_directories.insert(at, path.clone());
-                        }
-                        Err(_) if !path.is_dir() => continue,
-                        Err(error) => return Err(NativeWatchError::Backend(error.to_string())),
-                    }
+                let relative = path.strip_prefix(&self.root)
+                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
+                let cancellation = CancellationToken::new();
+                let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+                let (namespace, bytes, allocation) = namespace_hint_with_work(relative, self.profile, self.limits, &mut work)
+                    .map_err(demand_watch_error)?;
+                let observed = self.watch_directory(&namespace);
+                drop(namespace);
+                let guarded = allocation.is_some();
+                drop(allocation);
+                if !guarded { work.release(bytes).map_err(demand_watch_error)?; }
+                match observed {
+                    Ok(()) => {}
+                    Err(_) if !path.is_dir() => continue,
+                    Err(error) => return Err(error),
                 }
                 pending.push(path);
             }
@@ -1314,10 +1982,84 @@ impl NativeWatch {
         Ok(())
     }
 
-    fn forget_removed_directories(&mut self, changes: &[WatchChange]) {
-        if self.recursive {
-            return;
+    fn forget_removed_directories_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, changes: &[WatchChange], work: &mut W,
+        original: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), NativeWatchError> {
+        #[cfg(any(target_os = "linux", windows))]
+        if matches!(self.watcher, NativeWatchDriver::Source { .. }) {
+            for change in changes {
+                let removed = match change {
+                    WatchChange::Removed(path) => [Some(path), None],
+                    WatchChange::Renamed { from, to } => [Some(from), Some(to)],
+                    _ => [None, None],
+                };
+                for path in removed.into_iter().flatten() {
+                    let (relative, bytes, allocation) = if let Some(mut original) = original {
+                        let (relative, allocation) =
+                            crate::native_capture::namespace_to_host_path_with_work(path, &mut original)?;
+                        (relative, 0, Some(allocation))
+                    } else {
+                        let (relative, bytes) =
+                            crate::native_capture::namespace_to_host_path_with_work(path, work)
+                                .map_err(demand_watch_error)?;
+                        (relative, bytes, None)
+                    };
+                    let result = (|| {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let NativeWatchDriver::Source { watcher, .. } = &self.watcher else {
+                                unreachable!("the authoritative source driver remains owned");
+                            };
+                            // The source owns registrations; never copy an SDK
+                            // root cache or adopt previously queued path data.
+                            watcher.unadmit_with_work(&relative, work).map_err(demand_watch_error)
+                        }
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::ffi::OsStrExt;
+                            let mut at = 0;
+                            while at < self.windows_directories.len() {
+                                work.charge(WorkCounters {
+                                    items_examined: 1, ..WorkCounters::UNCHARGED
+                                }).map_err(demand_watch_error)?;
+                                let mut registered = self.windows_directories[at].path.iter();
+                                let matches = relative.as_os_str().encode_wide()
+                                    .all(|unit| registered.next() == Some(&unit))
+                                    && registered.next().is_none_or(|unit| matches!(*unit, 47 | 92));
+                                if !matches {
+                                    at += 1;
+                                    continue;
+                                }
+                                self.windows_directories[at].watcher.stop_with_work(work)
+                                    .map_err(demand_watch_error)?;
+                                if !self.windows_directories[at].watcher.is_stopped() {
+                                    return Err(NativeWatchError::WorkerUnavailable);
+                                }
+                                work.charge(WorkCounters {
+                                    bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
+                                        .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
+                                        .ok_or(WorkError::Overflow)?,
+                                    ..WorkCounters::UNCHARGED
+                                }).map_err(demand_watch_error)?;
+                                drop(self.windows_directories.remove(at));
+                            }
+                            Ok(())
+                        }
+                    })();
+                    drop(relative);
+                    drop(allocation);
+                    let released = work.release(bytes).map_err(demand_watch_error);
+                    result.and(released)?;
+                }
+            }
+            return Ok(());
         }
+        if self.recursive { return Ok(()); }
+        if original.is_some() {
+            return Err(NativeWatchError::BoundedObservationUnavailable);
+        }
+        // Only ordinary adapters retain their legacy opaque cache operations.
         let mut removed = Vec::new();
         for change in changes {
             match change {
@@ -1337,17 +2079,15 @@ impl NativeWatch {
                 continue;
             };
             let removed = self.root.join(relative);
-            let stale = self
-                .watched_directories
-                .iter()
+            let stale = self.watched_directories.iter()
                 .filter(|watched| **watched != self.root && watched.starts_with(&removed))
-                .cloned()
-                .collect::<Vec<_>>();
+                .cloned().collect::<Vec<_>>();
             for watched in stale {
                 let _ = self.watcher.unwatch(&watched);
                 self.watched_directories.retain(|candidate| candidate != &watched);
             }
         }
+        Ok(())
     }
 
 
@@ -1374,14 +2114,26 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        let begun = self.begin_rescan_measured(budget, cancellation)?;
-        let remaining = begun.work.remaining(budget)
-            .map_err(|error| OperationFailure::new(NativeWatchError::Work(error), begun.work))?;
-        let finished = self.finish_rescan_measured(remaining, cancellation)
-            .map_err(|failure| failure.map_with_prior_work(begun.work, |error| error))?;
-        let work = begun.work.checked_add(finished.work)
-            .map_err(|error| OperationFailure::new(NativeWatchError::Work(error), begun.work))?;
-        Ok(OperationReceipt { value: finished.value, work })
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let result = self.accept_lazy_baseline_with_work(&mut work);
+        result
+            .map(|value| OperationReceipt { value, work: work.work })
+            .map_err(|error| OperationFailure::new(error, work.work))
+    }
+
+    /// Admits the lazy baseline on the caller's original native work.
+    pub fn accept_lazy_baseline_with_native_work(
+        &mut self, work: &crate::NativeMaterializationWork,
+    ) -> Result<WatchBatch, NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.accept_lazy_baseline_with_work(&mut source)
+    }
+
+    fn accept_lazy_baseline_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, work: &mut W,
+    ) -> Result<WatchBatch, NativeWatchError> {
+        self.begin_rescan_with_work(work)?;
+        self.finish_rescan_with_work(work)
     }
 
     /// Returns the exact root identity admitted when the watcher opened.
@@ -1400,12 +2152,27 @@ impl NativeWatch {
         &self,
         observed: NativeRootIdentity,
     ) -> Result<(), NativeWatchError> {
-        if observed == self.root_identity {
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        self.verify_root_identity_with_work(observed, &mut work)
+    }
+
+    /// Validates the held and currently named root on original native work.
+    pub fn verify_root_identity_with_native_work(
+        &self, observed: NativeRootIdentity, work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.verify_root_identity_with_work(observed, &mut source)
+    }
+
+    fn verify_root_identity_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, observed: NativeRootIdentity, work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        if observed == self.root_identity && self.root_unchanged_with_work(work).map_err(demand_watch_error)? {
             return Ok(());
         }
-        self.shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
+        self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation = Some(WatchInvalidationReason::RootChanged);
         Err(NativeWatchError::RootChanged)
     }
@@ -1431,79 +2198,69 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchEpoch>, NativeWatchError> {
-        let mut work = WorkCounters::default();
-        let result = (|| {
-            cancellation.check()?;
-            if self.rescan_in_progress {
-                return Err(NativeWatchError::RescanAlreadyInProgress);
-            }
-            let mut shared = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-            let queued = self.queued.load(Ordering::Acquire);
-            for _ in 0..queued {
-                admit_watch_work(&mut work, WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::default()
-                }, budget, cancellation)?;
-                self.receiver.try_recv().map_err(|_| NativeWatchError::StatePoisoned)?;
-                self.queued.fetch_sub(1, Ordering::AcqRel);
-            }
-            shared.invalidation = None;
-            #[cfg(target_os = "linux")]
-            {
-                shared.pending_rename = None;
-            }
-            self.epoch = WatchEpoch(self.epoch.0.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?);
-            self.next_sequence = WatchSequence(0);
-            drop(shared);
-            self.rescan_in_progress = true;
-            #[cfg(windows)]
-            {
-                let remaining = work.remaining(budget)?;
-                let mut directory_work = crate::demand::DemandWork::new(remaining, cancellation);
-                let cleanup = self.clear_windows_directories_measured(&mut directory_work);
-                work = work.checked_add(directory_work.work)?;
-                cleanup.map_err(|error| match error {
-                    crate::demand::DemandError::Observation(error) => error,
-                    crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
-                    crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
-                    crate::demand::DemandError::Io(error) => error.into(),
-                    error => NativeWatchError::Io(error.to_string()),
-                })?;
-            }
-            #[cfg(target_os = "linux")]
-            if !self.recursive {
-                let mut directory_work = crate::demand::DemandWork::new(work.remaining(budget)?, cancellation);
-                let cleanup = self.clear_linux_directories_measured(&mut directory_work);
-                work = work.checked_add(directory_work.work)?;
-                cleanup.map_err(|error| match error {
-                    crate::demand::DemandError::Observation(error) => error,
-                    crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
-                    crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
-                    crate::demand::DemandError::Io(error) => error.into(),
-                    error => NativeWatchError::Io(error.to_string()),
-                })?;
-            }
-            #[cfg(not(target_os = "linux"))]
-            if !self.recursive {
-                while let Some(path) = self.watched_directories.iter().find(|path| **path != self.root) {
-                    let bytes = u64::try_from(path.as_os_str().len()).map_err(|_| NativeWatchError::InvalidOptions)?;
-                    admit_watch_work(&mut work, WorkCounters {
-                        allocation_operations: 1,
-                        bytes_copied: bytes,
-                        peak_allocation_bytes: bytes,
-                        backend_write_operations: 1,
-                        ..WorkCounters::default()
-                    }, budget, cancellation)?;
-                    let path = path.clone();
-                    self.watcher.unwatch(&path).map_err(|error| NativeWatchError::Backend(error.to_string()))?;
-                    self.watched_directories.retain(|candidate| candidate != &path);
-                }
-            }
-            Ok(self.epoch)
-        })();
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let result = self.begin_rescan_with_work(&mut work);
         result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+            .map(|value| OperationReceipt { value, work: work.work })
+            .map_err(|error| OperationFailure::new(error, work.work))
+    }
+
+    /// Starts the original scan without deriving a second work budget.
+    pub fn begin_rescan_with_native_work(
+        &mut self, work: &crate::NativeMaterializationWork,
+    ) -> Result<WatchEpoch, NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.begin_rescan_with_work(&mut source)
+    }
+
+    fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, work: &mut W,
+    ) -> Result<WatchEpoch, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        if self.rescan_in_progress {
+            return Err(NativeWatchError::RescanAlreadyInProgress);
+        }
+        let mut shared = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let queued = self.queued.load(Ordering::Acquire);
+        for _ in 0..queued {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                .map_err(demand_watch_error)?;
+            let removed = self.receiver.try_recv().map_err(|_| NativeWatchError::StatePoisoned)?;
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+            // Queued hints retain their service custody; this observer only
+            // discards the actual payload, even on a different allocation ledger.
+            drop(removed);
+            work.with_original_leaf(|actual| actual.reconcile_native_controls())
+                .map_err(NativeWatchError::Work)?;
+        }
+        shared.invalidation = None;
+        #[cfg(target_os = "linux")]
+        {
+            shared.pending_rename = None;
+        }
+        self.epoch = WatchEpoch(self.epoch.0.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?);
+        self.next_sequence = WatchSequence(0);
+        drop(shared);
+        self.rescan_in_progress = true;
+        #[cfg(windows)]
+        self.clear_windows_directories_with_work(work).map_err(demand_watch_error)?;
+        #[cfg(target_os = "linux")]
+        if !self.recursive {
+            self.clear_linux_directories_with_work(work).map_err(demand_watch_error)?;
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        if !self.recursive {
+            while let Some(index) = self.watched_directories.iter().position(|path| *path != self.root) {
+                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                    .map_err(demand_watch_error)?;
+                self.watcher.unwatch_with_work(&self.watched_directories[index], work)
+                    .map_err(demand_watch_error)?;
+                drop(self.watched_directories.remove(index));
+                work.with_original_leaf(|actual| actual.reconcile_native_controls())
+                    .map_err(NativeWatchError::Work)?;
+            }
+        }
+        Ok(self.epoch)
     }
 
     #[cfg(target_os = "windows")]
@@ -1596,52 +2353,49 @@ impl NativeWatch {
             outcome = crate::obs::Empty,
             error.kind = crate::obs::Empty,
         );
-        let mut work = WorkCounters::default();
-        let result = crate::obs::scope(&span, || {
-            if !self.rescan_in_progress {
-                return Err(NativeWatchError::NoRescanInProgress);
-            }
-            let read = WorkCounters { backend_read_operations: 1, ..WorkCounters::default() };
-            admit_watch_work(&mut work, read, budget, cancellation)?;
-            let observed = match open_native_root(&self.root) {
-                Ok(root) => {
-                    admit_watch_work(&mut work, read, budget, cancellation)?;
-                    NativeRootIdentity::from_file(&root).ok()
-                }
-                Err(_) => None,
-            };
-            cancellation.check()?;
-            if observed != Some(self.root_identity) {
-                self.shared
-                    .lock()
-                    .map_err(|_| NativeWatchError::StatePoisoned)?
-                    .invalidation = Some(WatchInvalidationReason::RootChanged);
-            }
-            self.rescan_in_progress = false;
-            let mut shared = self
-                .shared
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?;
-            Ok(shared.seal_invalidation().map_or(
-                WatchBatch::Changes {
-                    epoch: self.epoch,
-                    first_sequence: self.next_sequence,
-                    next_sequence: self.next_sequence,
-                    changes: Vec::new(),
-                },
-                |reason| WatchBatch::RescanRequired {
-                    epoch: self.epoch,
-                    reason,
-                },
-            ))
-        });
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let result = crate::obs::scope(&span, || self.finish_rescan_with_work(&mut work));
         crate::obs::measured_on(
             &span,
             result
-                .map(|value| OperationReceipt { value, work })
-                .map_err(|error| OperationFailure::new(error, work)),
+                .map(|value| OperationReceipt { value, work: work.work })
+                .map_err(|error| OperationFailure::new(error, work.work)),
             |receipt| &receipt.work,
         )
+    }
+
+    /// Completes the same original scan on the caller's native work.
+    pub fn finish_rescan_with_native_work(
+        &mut self, work: &crate::NativeMaterializationWork,
+    ) -> Result<WatchBatch, NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.finish_rescan_with_work(&mut source)
+    }
+
+    fn finish_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, work: &mut W,
+    ) -> Result<WatchBatch, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        if !self.rescan_in_progress {
+            return Err(NativeWatchError::NoRescanInProgress);
+        }
+        let unchanged = self.root_unchanged_with_work(work).map_err(demand_watch_error)?;
+        work.check().map_err(demand_watch_error)?;
+        let mut shared = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        if !unchanged {
+            shared.invalidation = Some(WatchInvalidationReason::RootChanged);
+        }
+        self.rescan_in_progress = false;
+        Ok(shared.seal_invalidation().map_or(
+            WatchBatch::Changes {
+                epoch: self.epoch,
+                first_sequence: self.next_sequence,
+                next_sequence: self.next_sequence,
+                changes: Vec::new(),
+                original: WatchBatchOriginal::default(),
+            },
+            |reason| WatchBatch::RescanRequired { epoch: self.epoch, reason },
+        ))
     }
 
     /// Aborts an in-progress baseline and returns the watcher to an explicitly
@@ -1679,33 +2433,322 @@ impl NativeWatch {
     ///
     /// Rejects the root, unrepresentable paths, or poisoned synchronization.
     pub fn exclude_subtrees(&mut self, subtrees: &[NamespacePath]) -> Result<(), NativeWatchError> {
-        let excluded = subtrees
-            .iter()
-            .map(|subtree| {
-                if subtree.is_root() {
-                    return Err(NativeWatchError::UnrepresentablePath);
-                }
-                crate::native_capture::namespace_to_host_path(subtree)
-                    .map(|relative| self.root.join(relative))
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
-            .excluded
-            .clone_from(&excluded);
-        self.excluded = subtrees.iter().cloned().zip(excluded).collect();
+        let cancellation = CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        self.exclude_subtrees_with_work(subtrees, &mut work, None, |path, work| {
+            crate::native_capture::namespace_to_host_path_with_work(path, work)
+                .map(|(path, bytes)| (path, None, bytes)).map_err(demand_watch_error)
+        })
+    }
+
+    /// Copies exclusions on the caller's original native allocation ledger.
+    pub fn exclude_subtrees_with_native_work(
+        &mut self, subtrees: &[NamespacePath], work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.exclude_subtrees_with_work(subtrees, &mut source, Some(work), |path, _| {
+            let mut native = work;
+            crate::native_capture::namespace_to_host_path_with_work(path, &mut native)
+                .map(|(path, allocation)| (path, Some(allocation), 0)).map_err(NativeWatchError::from)
+        })
+    }
+
+    fn exclude_subtrees_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, subtrees: &[NamespacePath], work: &mut W,
+        original: Option<&crate::NativeMaterializationWork>,
+        mut convert: impl FnMut(&NamespacePath, &mut W)
+            -> Result<(PathBuf, Option<crate::NativeAllocation>, u64), NativeWatchError>,
+    ) -> Result<(), NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        // Keep the physical arrays before their ownership guards on every
+        // success and denial path; input and old arrays remain borrowed.
+        let mut replacement = (Vec::new(), Vec::new(), None, None);
+        let own_bytes = subtrees.len().checked_mul(std::mem::size_of::<(NamespacePath, PathBuf)>())
+            .ok_or(WorkError::Overflow)?;
+        let shared_bytes = subtrees.len().checked_mul(std::mem::size_of::<PathBuf>())
+            .ok_or(WorkError::Overflow)?;
+        replacement.2 = Self::claim_exclusion_allocation(own_bytes as u64, work, original)?;
+        replacement.0.try_reserve_exact(subtrees.len())
+            .map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+        let actual_own = replacement.0.capacity().checked_mul(std::mem::size_of::<(NamespacePath, PathBuf)>())
+            .ok_or(WorkError::Overflow)?;
+        Self::reconcile_exclusion_capacity(&mut replacement.2, own_bytes as u64, actual_own as u64, work)?;
+        replacement.3 = Self::claim_exclusion_allocation(shared_bytes as u64, work, original)?;
+        replacement.1.try_reserve_exact(subtrees.len())
+            .map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+        let actual_shared = replacement.1.capacity().checked_mul(std::mem::size_of::<PathBuf>())
+            .ok_or(WorkError::Overflow)?;
+        Self::reconcile_exclusion_capacity(&mut replacement.3, shared_bytes as u64, actual_shared as u64, work)?;
+        for subtree in subtrees {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                .map_err(demand_watch_error)?;
+            if subtree.is_root() {
+                return Err(NativeWatchError::UnrepresentablePath);
+            }
+            let relative = convert(subtree, work)?;
+            let mut host = if let Some(original) = original {
+                original.join_path(&self.root, &relative.0)
+                    .map(|(path, allocation)| (path, Some(allocation)))?
+            } else {
+                let copied = self.root.as_os_str().len().checked_add(relative.0.as_os_str().len())
+                    .ok_or(WorkError::Overflow)?;
+                let capacity = copied.checked_add(1).ok_or(WorkError::Overflow)?;
+                work.allocate_for(capacity as u64, WorkCounters {
+                    bytes_copied: copied as u64, ..WorkCounters::default()
+                }).map_err(demand_watch_error)?;
+                let mut path = PathBuf::new();
+                path.try_reserve_exact(capacity)
+                    .map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+                Self::reconcile_exclusion_capacity(&mut None, capacity as u64, path.capacity() as u64, work)?;
+                path.push(&self.root);
+                path.push(&relative.0);
+                (path, None)
+            };
+            let relative_bytes = relative.2;
+            drop(relative);
+            if relative_bytes != 0 {
+                work.release(relative_bytes).map_err(demand_watch_error)?;
+            }
+            if let Some(allocation) = &mut host.1 {
+                allocation.resize_retained(host.0.capacity() as u64)?;
+            }
+            let mut shared = if let Some(original) = original {
+                original.copy_path(&host.0)
+                    .map(|(path, allocation)| (path, Some(allocation)))?
+            } else {
+                crate::native_host::clone_path_with_work(&host.0, work)
+                    .map(|(path, _)| (path, None)).map_err(demand_watch_error)?
+            };
+            if let Some(allocation) = &mut shared.1 {
+                allocation.resize_retained(shared.0.capacity() as u64)?;
+            }
+            let mut namespace = Self::copy_exclusion_namespace(subtree, work, original)?;
+            Self::retain_exclusion_allocation(&mut replacement.2, &mut namespace.1)?;
+            Self::retain_exclusion_allocation(&mut replacement.2, &mut host.1)?;
+            Self::retain_exclusion_allocation(&mut replacement.3, &mut shared.1)?;
+            replacement.0.push((namespace.0, host.0));
+            replacement.1.push(shared.0);
+        }
+        work.check().map_err(demand_watch_error)?;
+        self.publish_exclusions(replacement)
+    }
+
+    fn reconcile_exclusion_capacity<W: crate::demand::SourceDemandReadWork>(
+        allocation: &mut Option<crate::NativeAllocation>, admitted: u64, actual: u64, work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        if let Some(allocation) = allocation {
+            allocation.resize_retained(actual)?;
+        } else if actual > admitted {
+            // This is new allocator-selected capacity, not adopted old data.
+            work.adopt(actual - admitted).map_err(demand_watch_error)?;
+        } else if admitted > actual {
+            work.release(admitted - actual).map_err(demand_watch_error)?;
+        }
         Ok(())
+    }
+
+    fn claim_exclusion_allocation<W: crate::demand::SourceDemandReadWork>(
+        bytes: u64, work: &mut W, original: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<Option<crate::NativeAllocation>, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        if let Some(original) = original {
+            Ok(Some(original.claim(bytes)?))
+        } else {
+            work.allocate(bytes).map_err(demand_watch_error)?;
+            Ok(None)
+        }
+    }
+
+    fn copy_exclusion_namespace<W: crate::demand::SourceDemandReadWork>(
+        path: &NamespacePath, work: &mut W, original: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(NamespacePath, Option<crate::NativeAllocation>), NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        let copy = |allocations: &mut crate::kernel::allocation::AllocationLedger,
+                    counters: &mut WorkCounters, budget, cancellation: &CancellationToken| {
+            path.clone_with_ledger(allocations, counters, budget, cancellation)
+                .map_err(crate::demand::DemandError::from).map_err(demand_watch_error)
+        };
+        if let Some(original) = original {
+            original.with_owned_allocations(copy)
+                .map(|(path, allocation)| (path, Some(allocation)))
+        } else {
+            work.with_original_leaf(|actual| {
+                let (allocations, counters, budget, cancellation) = actual.allocation_parts();
+                copy(allocations, counters, budget, cancellation)
+            }).map(|path| (path, None))
+        }
+    }
+
+    fn retain_exclusion_allocation(
+        owner: &mut Option<crate::NativeAllocation>, incoming: &mut Option<crate::NativeAllocation>,
+    ) -> Result<(), NativeWatchError> {
+        if let Some(owned) = owner {
+            if let Some(incoming) = incoming {
+                owned.absorb(incoming)?;
+            }
+        } else {
+            *owner = incoming.take();
+        }
+        Ok(())
+    }
+
+    fn publish_exclusions(
+        &mut self,
+        replacement: (
+            Vec<(NamespacePath, PathBuf)>,
+            Vec<PathBuf>,
+            Option<crate::NativeAllocation>,
+            Option<crate::NativeAllocation>,
+        ),
+    ) -> Result<(), NativeWatchError> {
+        // The tuple owns data before its guards, including lock-failure paths.
+        let mut shared = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let old_shared = std::mem::replace(&mut shared.excluded, replacement.1);
+        let old_shared_allocation = std::mem::replace(&mut shared.excluded_allocation, replacement.3);
+        let old = std::mem::replace(&mut self.excluded, replacement.0);
+        let old_allocation = std::mem::replace(&mut self.excluded_allocation, replacement.2);
+        drop(shared);
+        // Never run the original allocation retirement under the state mutex.
+        drop(old_shared);
+        drop(old);
+        drop(old_shared_allocation);
+        drop(old_allocation);
+        Ok(())
+    }
+
+    /// Drains the original native cursor within `budget` and `timeout`.
+    ///
+    /// Deadline expiry and backends without an ordered-drain proof invalidate
+    /// the hint stream instead of pretending asynchronous delivery ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns native, cancellation, synchronization, and admission errors
+    /// with their actually spent prefix.
+    pub fn fence_measured(
+        &mut self, timeout: Duration, budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<()>, NativeWatchError> {
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        let result = self.fence_with_work(timeout, &mut work);
+        result
+            .map(|()| OperationReceipt { value: (), work: work.work })
+            .map_err(|error| OperationFailure::new(error, work.work))
+    }
+
+    /// Fences the actual native producers on the caller's original work.
+    ///
+    /// The shared meter is entered only for admission and accounting leaves,
+    /// never while observing the host, waiting, or delivering native callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original native, admission, or synchronization cause. A
+    /// partially started producer remains owned and cannot prove delivery.
+    pub fn fence_with_native_work(
+        &mut self, timeout: Duration, work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.fence_with_work(timeout, &mut source)
+    }
+
+    fn fence_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self, timeout: Duration, work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        let pending = match (&self.pending_source_watch, &self.watcher) {
+            (Some(owner), _) | (_, NativeWatchDriver::StartupFailure(owner)) => Some(owner),
+            _ => None,
+        };
+        if let Some(owner) = pending {
+            let error = demand_watch_error(crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner)));
+            self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidation.get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+            self.fenced.notify_all();
+            return Err(error);
+        }
+        let started = Instant::now();
+        if timeout.is_zero() {
+            self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
+                .invalidation.get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+            self.fenced.notify_all();
+            return Ok(());
+        }
+        if !self.root_unchanged_with_work(work).map_err(demand_watch_error)? {
+            self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
+                .invalidation = Some(WatchInvalidationReason::RootChanged);
+            self.fenced.notify_all();
+            return Ok(());
+        }
+        #[cfg(windows)]
+        let mut children_delivered = true;
+        #[cfg(windows)]
+        for observed in &self.windows_directories {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                .map_err(demand_watch_error)?;
+            children_delivered &= observed.watcher
+                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
+                .map_err(demand_watch_error)?;
+        }
+        let delivered = match &self.watcher {
+            NativeWatchDriver::Source { watcher, .. } => watcher
+                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
+                .map_err(demand_watch_error)?,
+            NativeWatchDriver::StartupFailure(owner) => {
+                return Err(demand_watch_error(crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner))));
+            }
+            NativeWatchDriver::Adapter(_) => {
+                #[cfg(target_os = "macos")]
+                { false }
+                #[cfg(not(target_os = "macos"))]
+                { return Err(NativeWatchError::BoundedObservationUnavailable); }
+            }
+        };
+        #[cfg(windows)]
+        let delivered = delivered && children_delivered;
+        let unchanged = self.root_unchanged_with_work(work).map_err(demand_watch_error)?;
+        let mut state = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        if !unchanged {
+            state.invalidation = Some(WatchInvalidationReason::RootChanged);
+        } else if !delivered {
+            state.invalidation.get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+        }
+        drop(state);
+        self.fenced.notify_all();
+        Ok(())
+    }
+
+    /// Observes the held and current physical root without adopting its graph.
+    pub fn root_unchanged_with_native_work(
+        &self, work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeWatchError> {
+        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
+        self.root_unchanged_with_work(&mut source).map_err(demand_watch_error)
+    }
+
+    fn root_unchanged_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        work.check()?;
+        let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
+        let held = root.stat_with_work(Path::new(""), work)?.identity()?;
+        match crate::native_host::root_path_identity_with_work(&self.root, work) {
+            Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
+            Err(crate::demand::DemandError::Io(error))
+                if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Waits until every host change completed before this call is queued.
     ///
-    /// Native delivery is asynchronous (`FSEvents` most visibly), so a poll
-    /// alone can miss a write that finished before it. The fence creates and
-    /// removes a uniquely named cookie inside the first excluded subtree that
-    /// is a directory (creating the first one when none is), then waits for
-    /// the cookie's ordered notification. Excluded cookies are never hints.
+    /// Original-work watchers drain their actual native source on that same
+    /// work; ordinary source watchers use the unbounded measured projection.
+    /// An ordinary adapter creates and removes a uniquely named cookie inside
+    /// an excluded directory, then waits for its ordered notification.
+    /// Excluded cookies are never hints.
     ///
     /// A fence either proves delivery or invalidates the watcher: when the
     /// cookie cannot be placed, written, or observed within `timeout`, the
@@ -1713,8 +2756,17 @@ impl NativeWatch {
     ///
     /// # Errors
     ///
-    /// Returns only poisoned synchronization.
+    /// Returns native, admission, pending-startup, and synchronization failures.
     pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
+        if let Some(work) = self.original_work.clone() {
+            return self.fence_with_native_work(timeout, &work);
+        }
+        if !matches!(self.watcher, NativeWatchDriver::Adapter(_))
+            || self.pending_source_watch.is_some()
+        {
+            return self.fence_measured(timeout, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map(|_| ()).map_err(|failure| failure.error);
+        }
         let span = crate::obs::span!(
             DEBUG,
             "acyclic.fs.watch.fence",
@@ -1815,157 +2867,202 @@ impl NativeWatch {
     ///
     /// # Errors
     ///
-    /// Fails before output allocation for zero bounds, cancellation, an active
-    /// rescan, poisoned state, sequence overflow, allocation failure, or an
-    /// exceeded exact work budget.
+    /// Returns the actual spent prefix on cancellation, admission, native-root,
+    /// allocation, sequence, or synchronization failure. A failure after taking
+    /// a hint invalidates the stream instead of publishing a partial interval.
     pub fn poll(
         &mut self,
         maximum_changes: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        if maximum_changes == 0 {
-            return Err(OperationFailure::before_work(
-                NativeWatchError::ZeroPollLimit,
-            ));
+        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        match self.poll_with_work(maximum_changes, &mut work, None, |_| Ok(())) {
+            Ok((value, _)) => Ok(OperationReceipt { value, work: work.work }),
+            Err(error) => Err(OperationFailure::new(error, work.work)),
         }
-        if self.rescan_in_progress {
-            return Err(OperationFailure::before_work(
-                NativeWatchError::RescanInProgress,
-            ));
-        }
-        if let Some(reason) = self.invalidation()? {
-            return Ok(OperationReceipt {
-                value: WatchBatch::RescanRequired {
-                    epoch: self.epoch,
-                    reason,
-                },
-                work: WorkCounters::default(),
-            });
-        }
-        let root_work = WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        };
-        root_work
-            .verify(budget)
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        self.verify_current_root()?;
-        if let Some(reason) = self.invalidation()? {
-            return Ok(OperationReceipt {
-                value: WatchBatch::RescanRequired {
-                    epoch: self.epoch,
-                    reason,
-                },
-                work: root_work,
-            });
-        }
-        self.poll_contiguous(maximum_changes, budget, root_work)
     }
 
-    fn poll_contiguous(
-        &mut self,
-        maximum_changes: u32,
-        budget: WorkBudget,
-        initial_work: WorkCounters,
-    ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
-        if queued == 0 {
-            return Ok(OperationReceipt {
-                value: WatchBatch::Changes {
-                    epoch: self.epoch,
-                    first_sequence: self.next_sequence,
-                    next_sequence: self.next_sequence,
-                    changes: Vec::new(),
-                },
-                work: initial_work,
-            });
-        }
-        let capacity = usize::try_from(queued)
-            .map_err(|_| OperationFailure::before_work(NativeWatchError::InvalidOptions))?;
-        let allocation_bytes = capacity
-            .checked_mul(size_of::<WatchChange>())
-            .map(crate::foundation::usize_to_u64)
-            .ok_or_else(|| {
-                OperationFailure::before_work(NativeWatchError::Work(WorkError::Overflow))
-            })?;
-        let mut work = initial_work
-            .checked_add(WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: allocation_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let mut changes = Vec::new();
-        changes
-            .try_reserve_exact(capacity)
-            .map_err(|_| OperationFailure::new(NativeWatchError::AllocationFailed, work))?;
-        while changes.len() < capacity {
-            match self.receiver.try_recv() {
-                Ok(change) => {
-                    self.queued.fetch_sub(1, Ordering::AcqRel);
-                    changes.push(change);
+    /// Polls on the caller's original ledger, retaining the actual output buffer.
+    ///
+    /// Keep the returned allocation until the batch's change vector is freed.
+    /// Queued path allocations remain on their original producer ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns native-root, admission, cancellation, queue, and sequence errors.
+    pub fn poll_with_native_work(
+        &mut self, maximum_changes: u32, original: &crate::NativeMaterializationWork,
+    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError> {
+        self.poll_with_native_work_guarded(maximum_changes, original, |_| Ok(()))
+    }
+
+    /// Runs the consumer's guarded publication before committing watch progress.
+    ///
+    /// The callback runs outside the original ledger lock. Any error after
+    /// dequeueing invalidates this same root without replacing its typed cause.
+    /// Keep both the batch and returned output allocation through hint use.
+    ///
+    /// # Errors
+    ///
+    /// Returns poll failures or the callback's original typed demand failure.
+    pub fn poll_with_native_work_guarded<F>(
+        &mut self, maximum_changes: u32, original: &crate::NativeMaterializationWork,
+        before_publish: F,
+    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError>
+    where
+        F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
+    {
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(original);
+        let (batch, allocation) =
+            self.poll_with_work(maximum_changes, &mut work, Some(original), before_publish)?;
+        Ok((batch, allocation.expect("original polling retains its actual output buffer")))
+    }
+
+    fn poll_with_work<W, F>(
+        &mut self, maximum_changes: u32, work: &mut W,
+        original: Option<&crate::NativeMaterializationWork>, mut before_publish: F,
+    ) -> Result<(WatchBatch, Option<crate::NativeAllocation>), NativeWatchError>
+    where
+        W: crate::demand::SourceDemandReadWork,
+        F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
+    {
+        work.check().map_err(demand_watch_error)?;
+        if maximum_changes == 0 { return Err(NativeWatchError::ZeroPollLimit); }
+        if self.rescan_in_progress { return Err(NativeWatchError::RescanInProgress); }
+        // Data always drops before either its old payload or new buffer guards.
+        let mut owned = (
+            Vec::<WatchChange>::new(), WatchBatchOriginal::default(),
+            original.map(|original| original.retain_owned(0)).transpose()?,
+        );
+        let mut ordinary_bytes = 0;
+        let mut dequeued = false;
+        let result = (|| {
+            let mut reason = self.invalidation().map_err(|failure| failure.error)?;
+            if reason.is_none() {
+                self.verify_current_root_with_work(work)?;
+                reason = self.invalidation().map_err(|failure| failure.error)?;
+            }
+            let mut batch = if let Some(reason) = reason {
+                WatchBatch::RescanRequired { epoch: self.epoch, reason }
+            } else {
+                let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
+                let capacity = usize::try_from(queued)
+                    .map_err(|_| NativeWatchError::InvalidOptions)?;
+                let next = self.next_sequence.0.checked_add(u64::from(queued))
+                    .ok_or(NativeWatchError::SequenceExhausted)?;
+                let bytes = capacity.checked_mul(size_of::<WatchChange>())
+                    .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
+                if capacity != 0 {
+                    if let Some(original) = original {
+                        owned.2 = Some(original.claim(bytes)?);
+                    } else {
+                        work.allocate(bytes).map_err(demand_watch_error)?;
+                        ordinary_bytes = bytes;
+                    }
+                    owned.0.try_reserve_exact(capacity)
+                        .map_err(|_| NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into()))?;
+                    let actual = owned.0.capacity().checked_mul(size_of::<WatchChange>())
+                        .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
+                    if let Some(allocation) = &mut owned.2 {
+                        allocation.reconcile_capacity(actual)?;
+                    } else {
+                        work.with_original_leaf(|work| {
+                            work.reconcile_native_allocation(&mut ordinary_bytes, actual)
+                        }).map_err(demand_watch_error)?;
+                    }
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.invalidate(WatchInvalidationReason::BackendError)?;
-                    break;
+                owned.1 = WatchBatchOriginal::reserve(
+                    capacity, original.is_some() || self.original_work.is_some(), work,
+                )?;
+                owned.1.storage = owned.2.as_mut()
+                    .map(|allocation| allocation.split_off(0)).transpose()?;
+                while owned.0.len() < capacity {
+                    // The queued count witnesses actual items before their sole
+                    // consumer takes them; no post-dequeue quota check substitutes.
+                    work.charge(WorkCounters {
+                        items_examined: 1, items_returned: 1, ..WorkCounters::UNCHARGED
+                    }).map_err(demand_watch_error)?;
+                    let change = match self.receiver.try_recv() {
+                        Ok(change) => change,
+                        Err(TryRecvError::Empty) => {
+                            self.invalidate_after_poll_failure(WatchInvalidationReason::BackendError);
+                            return Err(NativeWatchError::NativeWork(
+                                crate::NativeTreeMaterializationError::InvalidLayout,
+                            ));
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            self.invalidate_after_poll_failure(WatchInvalidationReason::BackendError);
+                            return Err(NativeWatchError::SourceUnavailable);
+                        }
+                    };
+                    dequeued = true;
+                    self.queued.fetch_sub(1, Ordering::AcqRel);
+                    let guarded = change.allocations.iter().any(Option::is_some);
+                    if owned.1.allocations.capacity() != 0 {
+                        if owned.1.allocations.len() == owned.1.allocations.capacity() {
+                            return Err(NativeWatchError::NativeWork(
+                                crate::NativeTreeMaterializationError::InvalidLayout,
+                            ));
+                        }
+                        owned.1.allocations.push(change.allocations);
+                    } else if guarded {
+                        return Err(NativeWatchError::NativeWork(
+                            crate::NativeTreeMaterializationError::InvalidLayout,
+                        ));
+                    }
+                    owned.0.push(change.change);
+                }
+                self.forget_removed_directories_with_work(&owned.0, work, original)?;
+                WatchBatch::Changes {
+                    epoch: self.epoch, first_sequence: self.next_sequence,
+                    next_sequence: WatchSequence(next),
+                    changes: std::mem::take(&mut owned.0),
+                    original: std::mem::take(&mut owned.1),
+                }
+            };
+            // Serialize invalidation with publication, but never hold the work
+            // meter across arbitrary consumer code or physical data destruction.
+            let shared = self.shared.clone();
+            let mut state = shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            if let Some(reason) = state.seal_invalidation() {
+                drop(batch);
+                batch = WatchBatch::RescanRequired { epoch: self.epoch, reason };
+                if let Some(allocation) = &mut owned.2 {
+                    allocation.substitute(0)?;
+                } else if ordinary_bytes != 0 {
+                    work.release(ordinary_bytes).map_err(demand_watch_error)?;
+                    ordinary_bytes = 0;
                 }
             }
+            before_publish(&batch).map_err(demand_watch_error)?;
+            work.check().map_err(demand_watch_error)?;
+            if let WatchBatch::Changes { next_sequence, .. } = &batch {
+                self.next_sequence = *next_sequence;
+            }
+            Ok(batch)
+        })();
+        match result {
+            Ok(batch) => Ok((batch, owned.2.take())),
+            Err(error) => {
+                drop(owned);
+                if ordinary_bytes != 0 { let _ = work.release(ordinary_bytes); }
+                if dequeued {
+                    self.invalidate_after_poll_failure(WatchInvalidationReason::NativeRescanRequired);
+                }
+                Err(error)
+            }
         }
-        if let Some(reason) = self.invalidation()? {
-            return Ok(OperationReceipt {
-                value: WatchBatch::RescanRequired {
-                    epoch: self.epoch,
-                    reason,
-                },
-                work,
-            });
-        }
-        let count = crate::foundation::usize_to_u64(changes.len());
-        let next = self
-            .next_sequence
-            .0
-            .checked_add(count)
-            .ok_or_else(|| OperationFailure::new(NativeWatchError::SequenceExhausted, work))?;
-        work = work
-            .checked_add(WorkCounters {
-                items_examined: count,
-                items_returned: count,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let first_sequence = self.next_sequence;
-        self.next_sequence = WatchSequence(next);
-        self.forget_removed_directories(&changes);
-        Ok(OperationReceipt {
-            value: WatchBatch::Changes {
-                epoch: self.epoch,
-                first_sequence,
-                next_sequence: self.next_sequence,
-                changes,
-            },
-            work,
-        })
     }
 
-    fn verify_current_root(&self) -> Result<(), OperationFailure<NativeWatchError>> {
-        let observed = open_native_root(&self.root)
-            .and_then(|root| NativeRootIdentity::from_file(&root))
-            .ok();
-        if observed == Some(self.root_identity) {
+    fn verify_current_root_with_work<W: crate::demand::SourceDemandReadWork>(
+        &self, work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        if self.held_root.root.is_none() { return Err(NativeWatchError::SourceUnavailable); }
+        if self.root_unchanged_with_work(work).map_err(demand_watch_error)? {
             return Ok(());
         }
-        self.shared
-            .lock()
-            .map_err(|_| OperationFailure::before_work(NativeWatchError::StatePoisoned))?
+        self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation = Some(WatchInvalidationReason::RootChanged);
         Ok(())
     }
@@ -1979,16 +3076,11 @@ impl NativeWatch {
             .map_err(|_| OperationFailure::before_work(NativeWatchError::StatePoisoned))
     }
 
-    fn invalidate(
-        &self,
-        reason: WatchInvalidationReason,
-    ) -> Result<(), OperationFailure<NativeWatchError>> {
-        let mut shared = self
-            .shared
-            .lock()
-            .map_err(|_| OperationFailure::before_work(NativeWatchError::StatePoisoned))?;
-        shared.invalidation.get_or_insert(reason);
-        Ok(())
+    fn invalidate_after_poll_failure(&self, reason: WatchInvalidationReason) {
+        // Recovery must remain possible even after cancellation or poisoning.
+        let mut state = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.invalidation.get_or_insert(reason);
+        self.fenced.notify_all();
     }
 }
 
@@ -2003,6 +3095,20 @@ fn admit_watch_work(
     next.verify(budget)?;
     *work = next;
     Ok(())
+}
+
+#[cfg(windows)]
+fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
+    bytes: u64, work: &mut W,
+) -> Result<Option<crate::materializer::NativeAllocation>, crate::demand::DemandError> {
+    work.check()?;
+    if work.is_native_original() {
+        let native = work.native_source_work()
+            .ok_or(crate::demand::DemandError::NativeWorkUnavailable)?.materialization_work()?;
+        return native.claim(bytes).map(Some).map_err(|error| NativeWatchError::from(error).into());
+    }
+    work.allocate(bytes)?;
+    Ok(None)
 }
 
 impl crate::demand::DemandDirectoryObserver for Mutex<NativeWatch> {
@@ -2023,15 +3129,25 @@ impl crate::demand::DemandDirectoryObserver for Mutex<NativeWatch> {
             .map(|value| OperationReceipt { value, work: work.work })
             .map_err(|error| OperationFailure::new(error, work.work))
     }
+
+    #[cfg(feature = "native-mount")]
+    fn observe_directory_with_native_work(
+        &self, directory: &NamespacePath, mut work: crate::demand::NativeSourceWork<'_>,
+    ) -> Result<(), crate::demand::DemandError> {
+        crate::native_host::NativeHostWork::check(&work)?;
+        self.lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .watch_directory_with_work(directory, &mut work)
+    }
 }
 
 #[cfg(target_os = "linux")]
 /// Grows one owned path only after its logical capacity and copied bytes have
 /// been admitted. Temporary name buffers are accounted separately.
-fn grow_watch_path_measured(
+fn grow_watch_path_with_work<W: crate::demand::SourceDemandReadWork>(
     candidate: &mut PathBuf,
     part: &Path,
-    work: &mut crate::demand::DemandWork,
+    work: &mut W,
     owned_bytes: &mut u64,
 ) -> Result<(), crate::demand::DemandError> {
     let last = candidate.as_os_str().as_encoded_bytes().last().copied();
@@ -2043,12 +3159,16 @@ fn grow_watch_path_measured(
         .and_then(|bytes| bytes.checked_add(separator)).ok_or(WorkError::Overflow)?;
     let bytes = capacity as u64;
     let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::default() };
-    work.work.admit(&copied, &work.budget)?;
+    work.preflight(copied)?;
     work.allocate(bytes)?;
-    work.record(copied)?;
     let mut grown = PathBuf::with_capacity(capacity);
     grown.push(candidate.as_path());
     grown.push(part);
+    if let Err(error) = work.record(copied) {
+        drop(grown);
+        work.release(bytes)?;
+        return Err(error);
+    }
     drop(std::mem::replace(candidate, grown));
     work.release(*owned_bytes)?;
     *owned_bytes = bytes;
@@ -2058,9 +3178,9 @@ fn grow_watch_path_measured(
 #[cfg(target_os = "linux")]
 /// The same exact spelling conversion as native capture, with each temporary
 /// owned buffer admitted rather than hiding conversion behind a watch charge.
-fn watch_host_name_measured(
+fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
     component: &LogicalName,
-    work: &mut crate::demand::DemandWork,
+    work: &mut W,
 ) -> Result<(std::ffi::OsString, u64), crate::demand::DemandError> {
     use crate::kernel::NameEncoding;
     use std::ffi::OsString;
@@ -2071,10 +3191,15 @@ fn watch_host_name_measured(
             {
                 use std::os::unix::ffi::OsStringExt as _;
                 let bytes = u64::try_from(source.len()).map_err(|_| WorkError::Overflow)?;
-                work.work.admit(&WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }, &work.budget)?;
+                work.preflight(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?;
                 work.allocate(bytes)?;
-                work.record(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?;
-                Ok((OsString::from_vec(source.to_vec()), bytes))
+                let name = OsString::from_vec(source.to_vec());
+                if let Err(error) = work.record(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }) {
+                    drop(name);
+                    work.release(bytes)?;
+                    return Err(error);
+                }
+                Ok((name, bytes))
             }
         }
         NameEncoding::WindowsUtf16Le => {
@@ -2094,12 +3219,19 @@ fn watch_host_name_measured(
                 items_examined: decoded_items,
                 ..WorkCounters::default()
             };
-            work.work.admit(&copied, &work.budget)?;
+            work.preflight(copied)?;
             work.allocate(logical)?;
-            work.record(copied)?;
             let mut name = String::with_capacity(bytes);
-            for decoded in char::decode_utf16(units) {
-                name.push(decoded.map_err(|_| NativeWatchError::UnrepresentablePath)?);
+            let result = (|| {
+                for decoded in char::decode_utf16(units) {
+                    name.push(decoded.map_err(|_| NativeWatchError::UnrepresentablePath)?);
+                }
+                work.record(copied)
+            })();
+            if let Err(error) = result {
+                drop(name);
+                work.release(logical)?;
+                return Err(error);
             }
             Ok((OsString::from(name), logical))
         }
@@ -2109,7 +3241,7 @@ fn watch_host_name_measured(
 fn accept_native_event(
     event: &notify::Result<Event>,
     context: &NativeEventContext,
-    sender: &SyncSender<WatchChange>,
+    sender: &SyncSender<QueuedWatchChange>,
     shared: &Arc<Mutex<SharedState>>,
     queued: &Arc<AtomicU32>,
 ) {
@@ -2152,6 +3284,7 @@ fn accept_native_event(
                         tracker,
                         from: path,
                         to: None,
+                        allocation: None,
                     });
                 }
                 RenameMode::To => {
@@ -2202,7 +3335,7 @@ fn accept_native_event(
             state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             break;
         }
-        match sender.try_send(change) {
+        match sender.try_send(QueuedWatchChange::new(change, [None, None])) {
             Ok(()) => {
                 queued.fetch_add(1, Ordering::Release);
             }
@@ -2449,6 +3582,85 @@ pub enum NativeWatchError {
     /// Native backend setup failed.
     #[error("native watcher backend failed: {0}")]
     Backend(String),
+    /// Original partial source startup cause, already retained before failure.
+    #[error(transparent)]
+    SourceStartup(Arc<crate::source_watch::SourceWatchStartupFailure>),
+    /// A partial source and the complete same root watcher remain owned.
+    #[error("native source watcher startup failed: {cause}")]
+    SourceStartupFailed {
+        /// Original preallocated source failure custody.
+        #[source]
+        cause: Arc<crate::source_watch::SourceWatchStartupFailure>,
+        /// Exact complete root watcher, retained for bounded settlement.
+        watch: NativeWatch,
+    },
+    /// Original finite-boundary I/O cause; no diagnostic allocation is made.
+    #[error("native watcher I/O failed: {0}")]
+    OriginalIo(#[source] std::io::Error),
+    /// Original native preparation admission or allocation cause.
+    #[error(transparent)]
+    NativeWork(#[from] crate::NativeTreeMaterializationError),
+    /// Original backend setup cause, moved without formatting it.
+    #[error("native watcher backend failed: {0}")]
+    OriginalBackend(#[source] notify::Error),
+    /// A started watcher remains owned after a later preparation failure.
+    #[error("native watcher startup failed: {cause}")]
+    StartupFailed {
+        /// Original typed preparation cause.
+        #[source]
+        cause: crate::NativeTreeMaterializationError,
+        /// Same actual watcher, retained for explicitly bounded shutdown.
+        watch: NativeWatch,
+    },
+    /// Original source reference is stale.
+    #[error("source reference is stale")]
+    StaleSource,
+    /// Original source version is stale.
+    #[error("source node changed during the request")]
+    StaleVersion,
+    /// Original directory cursor is stale.
+    #[error("source directory cursor is expired or mismatched")]
+    StaleCursor,
+    /// Original directory cursor is busy.
+    #[error("source directory cursor is in use")]
+    CursorBusy,
+    /// Original held source root is unavailable.
+    #[error("source root is unavailable")]
+    SourceUnavailable,
+    /// Original requested source path is absent.
+    #[error("source path is absent")]
+    Absent,
+    /// Original source node is not a regular file.
+    #[error("source node is not a regular file")]
+    NotRegularFile,
+    /// Original source node is not a directory.
+    #[error("source node is not a directory")]
+    NotDirectory,
+    /// Original source request is invalid.
+    #[error("source request is invalid")]
+    InvalidRequest,
+    /// Original native source worker is unavailable.
+    #[error("native source worker failed")]
+    WorkerUnavailable,
+    /// Original source does not support native custody.
+    #[error("source does not support original native work custody")]
+    NativeWorkUnavailable,
+    /// Original mounted source cause, moved without formatting or boxing.
+    #[cfg(feature = "native-mount")]
+    #[error(transparent)]
+    Mount(crate::native_mount::MountSourceError),
+    /// Original Linux metadata cause.
+    #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
+    #[error(transparent)]
+    LinuxMetadata(crate::native_host::LinuxMetadataError),
+    /// Original macOS metadata cause.
+    #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
+    #[error(transparent)]
+    MacMetadata(crate::native_host::MacMetadataError),
+    /// Original Windows metadata cause.
+    #[cfg(all(windows, any(feature = "native-mount", test)))]
+    #[error(transparent)]
+    WindowsMetadata(crate::native_host::WindowsMetadataError),
     /// Watcher state synchronization was poisoned.
     #[error("native watcher state is poisoned")]
     StatePoisoned,
@@ -2480,7 +3692,36 @@ pub enum NativeWatchError {
 
 impl From<std::io::Error> for NativeWatchError {
     fn from(error: std::io::Error) -> Self {
-        Self::Io(error.to_string())
+        Self::OriginalIo(error)
+    }
+}
+
+fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
+    match error {
+        crate::demand::DemandError::Observation(error) => error,
+        crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
+        crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
+        crate::demand::DemandError::Io(error) => error.into(),
+        crate::demand::DemandError::SourceWatchStartup(owner) => NativeWatchError::SourceStartup(owner),
+        crate::demand::DemandError::StaleSource => NativeWatchError::StaleSource,
+        crate::demand::DemandError::StaleVersion => NativeWatchError::StaleVersion,
+        crate::demand::DemandError::StaleCursor => NativeWatchError::StaleCursor,
+        crate::demand::DemandError::CursorBusy => NativeWatchError::CursorBusy,
+        crate::demand::DemandError::SourceUnavailable => NativeWatchError::SourceUnavailable,
+        crate::demand::DemandError::Absent => NativeWatchError::Absent,
+        crate::demand::DemandError::NotRegularFile => NativeWatchError::NotRegularFile,
+        crate::demand::DemandError::NotDirectory => NativeWatchError::NotDirectory,
+        crate::demand::DemandError::InvalidRequest => NativeWatchError::InvalidRequest,
+        crate::demand::DemandError::WorkerUnavailable => NativeWatchError::WorkerUnavailable,
+        crate::demand::DemandError::NativeWorkUnavailable => NativeWatchError::NativeWorkUnavailable,
+        #[cfg(feature = "native-mount")]
+        crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
+        #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
+        crate::demand::DemandError::LinuxMetadata(error) => NativeWatchError::LinuxMetadata(error),
+        #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
+        crate::demand::DemandError::MacMetadata(error) => NativeWatchError::MacMetadata(error),
+        #[cfg(all(windows, any(feature = "native-mount", test)))]
+        crate::demand::DemandError::WindowsMetadata(error) => NativeWatchError::WindowsMetadata(error),
     }
 }
 
@@ -2502,6 +3743,53 @@ mod demand_admission_tests {
         Ok(Mutex::new(NativeWatch::open_with_profile(
             root, FilesystemProfile::Portable, options,
         )?))
+    }
+
+    #[test]
+    fn cancelled_fence_keeps_the_native_cursor_and_spends_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let mut watch = watcher(root.path())?.into_inner().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let epoch = watch.epoch;
+        let sequence = watch.next_sequence;
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let failure = watch.fence_measured(Duration::from_secs(1), WorkBudget::UNBOUNDED, &cancellation)
+            .expect_err("cancellation precedes every root or native cursor request");
+        assert!(matches!(failure.error, NativeWatchError::Cancelled(_)));
+        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(watch.epoch, epoch);
+        assert_eq!(watch.next_sequence, sequence);
+        Ok(())
+    }
+
+    #[test]
+    fn finite_fence_denies_the_root_read_before_its_native_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let mut watch = watcher(root.path())?.into_inner().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let failure = watch.fence_measured(Duration::from_secs(1), WorkBudget {
+            backend_read_operations: 0, ..WorkBudget::UNBOUNDED
+        }, &CancellationToken::new()).expect_err("the held-root fence cannot overrun a zero read allowance");
+        assert!(matches!(failure.error, NativeWatchError::Work(_)));
+        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.source_bytes_read, 0);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_empty_fence_uses_the_actual_remaining_read_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let mut watch = watcher(root.path())?.into_inner().map_err(|_| NativeWatchError::StatePoisoned)?;
+        let receipt = watch.fence_measured(Duration::from_secs(1), WorkBudget {
+            source_bytes_read: 16, ..WorkBudget::UNBOUNDED
+        }, &CancellationToken::new())?;
+        assert_eq!(receipt.work.source_bytes_read, 0, "EAGAIN is a native proof, not a fabricated page read");
+        assert!(receipt.work.backend_read_operations >= 3, "root fences bracket the actual original inotify read");
+        Ok(())
     }
 
     #[test]
@@ -2703,9 +3991,13 @@ mod demand_admission_tests {
         assert_eq!(held.windows_directories[1].path.as_slice(),
             &[u16::from(b'a'), u16::from(b'\\'), u16::from(b'b')]);
         drop(held);
-        let repeated = watch.observe_directory(&path, windows_budget(), &CancellationToken::new())?;
+        let repeated = watch.observe_directory(&path, WorkBudget {
+            peak_allocation_bytes: 64 * 1024, ..windows_budget()
+        }, &CancellationToken::new())?;
         assert_eq!(repeated.work.backend_write_operations, 0);
         assert!(repeated.work.backend_read_operations > 0, "held identities must be revalidated");
+        assert!(repeated.work.peak_allocation_bytes < 64 * 1024,
+            "existing retained child buffers are borrowed, not readmitted as new request data");
         Ok(())
     }
 

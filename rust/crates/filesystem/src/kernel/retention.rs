@@ -1,7 +1,7 @@
 //! Canonical independently addressable generation-retention facts.
 
-use super::codec::{CanonicalDecodeError, Decoder, Encoder};
-use super::allocation::AllocationLedger;
+use super::codec::{CanonicalDecodeError, Decoder, Encoder, EncodeAccounting, EncodeAllocationStep, EncodeWorkStep};
+use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use super::volume::{CONFIG_ENCODED_BYTES, decode_config, encode_config};
 use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
@@ -134,40 +134,141 @@ fn encode_retention_created_with_permit(
     cancellation: Option<&CancellationToken>,
     live_owned_bytes: u64,
 ) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
-    let mut work = WorkCounters::default();
+    let mut work = WorkCounters::UNCHARGED;
     let mut allocations = AllocationLedger::default();
     let result = (|| {
         if let Some(token) = cancellation { token.check()?; }
         validate(value)?;
         allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
             .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
-        work.charge_items(1, &budget)?;
-        let length = DOMAIN.len() + 2 + 16 + 1 + 4 + value.label.len() + 1 + 32 + CONFIG_ENCODED_BYTES;
-        let copied = (48 + value.label.len()) as u64;
-        work.admit(&WorkCounters { bytes_encoded: length as u64, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-        if let Some(token) = cancellation { token.check()?; }
-        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
-            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
-        let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, length)?;
-        let header = (DOMAIN.len() + 2) as u64;
-        work.charge(&WorkCounters { bytes_encoded: header, ..WorkCounters::default() }, &budget)?;
-        let actual = encoder.capacity() as u64;
-        if actual > admitted {
-            allocations.claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
-                .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
-            work.verify(budget)?;
-        }
-        encoder.fixed(&value.volume_id.into_bytes());
-        encoder.u8(value.kind.tag());
-        encoder.bounded_bytes(value.label.as_bytes())?;
-        encoder.u8(value.generation_root.kind.canonical_tag());
-        encoder.fixed(value.generation_root.digest.as_bytes());
-        encode_config(&mut encoder, value.config);
-        work.charge(&WorkCounters { bytes_encoded: length as u64 - header, bytes_copied: copied, ..WorkCounters::default() }, &budget)?;
-        Ok(encoder.finish())
+        encode_retention_created_on_ledger(value, &mut allocations, &mut work, budget, cancellation)
     })();
     result.map(|value| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(error, work))
+}
+
+/// Funds the identical retention writer on the original accounting ledger.
+/// The transferred owned label must already be retained by the caller.
+pub(crate) fn encode_retention_created_with_accounting(
+    value: &RetentionCreated,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
+    accounting.check()?;
+    validate(value).map_err(retention_created_fs_error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_original = accounting.native_work().is_some();
+    let mut encoding = EncodeAccounting::new(accounting);
+    let result = encode_retention_created_with_steps(
+        value,
+        |step| encoding.observe(step),
+        |error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if native_original {
+                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
+            }
+            let _ = error;
+            CanonicalDecodeError::AllocationFailed.into()
+        },
+    );
+    encoding.finish(result)
+}
+
+fn retention_created_fs_error(error: RetentionCreatedError) -> crate::FsError {
+    match error {
+        RetentionCreatedError::Work(error) => crate::FsError::Work(error),
+        RetentionCreatedError::Cancelled(error) => crate::FsError::Cancelled(error),
+        error => error.into(),
+    }
+}
+
+fn encode_retention_created_on_ledger(
+    value: &RetentionCreated,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<u8>, RetentionCreatedError> {
+    let before = allocations.live_bytes();
+    let result = encode_retention_created_with_steps(
+        value,
+        |step| {
+            match step {
+                EncodeWorkStep::Check => {
+                    if let Some(token) = cancellation { token.check()?; }
+                }
+                EncodeWorkStep::Admit(delta) => work.admit(&delta, &budget)?,
+                EncodeWorkStep::Completed(delta) => {
+                    work.try_add_assign(&delta)?;
+                    work.verify(budget)?;
+                    if let Some(token) = cancellation { token.check()?; }
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+                    allocations.claim_elements::<u8>(capacity, work, budget)
+                        .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
+                    if actual_bytes > admitted_bytes {
+                        allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
+                            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+                    } else if actual_bytes < admitted_bytes {
+                        allocations.release(admitted_bytes - actual_bytes)
+                            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+                    }
+                    work.verify(budget)?;
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) =>
+                    work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED }, &budget)?,
+                EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
+                    work.try_add_assign(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED })?;
+                    work.verify(budget)?;
+                    if let Some(token) = cancellation { token.check()?; }
+                }
+            }
+            Ok(())
+        },
+        |_| RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed),
+    );
+    if result.is_err() {
+        let owned = allocations.live_bytes().checked_sub(before).ok_or(crate::WorkError::Overflow)?;
+        allocations.release(owned)
+            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+    }
+    result
+}
+
+fn encode_retention_created_with_steps<E: From<CanonicalDecodeError>>(
+    value: &RetentionCreated,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E> {
+    observe(EncodeWorkStep::Check)?;
+    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+    observe(EncodeWorkStep::Admit(item))?;
+    observe(EncodeWorkStep::Completed(item))?;
+    let length = DOMAIN.len() + 2 + 16 + 1 + 4 + value.label.len() + 1 + 32 + CONFIG_ENCODED_BYTES;
+    let mut encoder = Encoder::with_exact_capacity_with_steps(
+        DOMAIN, VERSION, length,
+        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+    )?;
+    let fields = WorkCounters {
+        bytes_encoded: (16 + 1 + 4 + value.label.len() + 1 + 32) as u64,
+        bytes_copied: (48 + value.label.len()) as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    observe(EncodeWorkStep::Admit(fields))?;
+    encoder.fixed(&value.volume_id.into_bytes());
+    encoder.u8(value.kind.tag());
+    encoder.bounded_bytes(value.label.as_bytes())?;
+    encoder.u8(value.generation_root.kind.canonical_tag());
+    encoder.fixed(value.generation_root.digest.as_bytes());
+    observe(EncodeWorkStep::Completed(fields))?;
+    let config = WorkCounters {
+        bytes_encoded: CONFIG_ENCODED_BYTES as u64, ..WorkCounters::UNCHARGED
+    };
+    observe(EncodeWorkStep::Admit(config))?;
+    encode_config(&mut encoder, value.config);
+    observe(EncodeWorkStep::Completed(config))?;
+    Ok(encoder.finish())
 }
 
 /// Decodes one exact bounded immutable retention fact.
@@ -206,9 +307,50 @@ pub fn decode_retention_created(
 /// Encodes the terminal deletion fact for one workspace authority.
 #[must_use]
 pub fn encode_workspace_deleted(volume_id: VolumeId) -> Vec<u8> {
-    let mut encoder = Encoder::new(DELETED_DOMAIN, VERSION);
-    encoder.fixed(&volume_id.into_bytes());
-    encoder.finish()
+    encode_workspace_deleted_with_permit(volume_id, WorkBudget::UNBOUNDED, None)
+        .map(|receipt| receipt.value)
+        .expect("unbounded terminal deletion encoding allocation failed")
+}
+
+/// Encodes the same terminal deletion record with finite producer admission.
+pub fn encode_workspace_deleted_measured(
+    volume_id: VolumeId,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
+    encode_workspace_deleted_with_permit(volume_id, budget, Some(cancellation))
+}
+
+fn encode_workspace_deleted_with_permit(
+    volume_id: VolumeId,
+    budget: WorkBudget,
+    cancellation: Option<&CancellationToken>,
+) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
+    let mut work = WorkCounters::UNCHARGED;
+    let mut allocations = AllocationLedger::default();
+    let result = (|| {
+        if let Some(token) = cancellation { token.check()?; }
+        work.charge_items(1, &budget)?;
+        let length = DELETED_DOMAIN.len() + 2 + 16;
+        work.admit(&WorkCounters { bytes_encoded: length as u64, bytes_copied: 16, ..WorkCounters::UNCHARGED }, &budget)?;
+        let admitted = allocations.claim_elements::<u8>(length, &mut work, budget)
+            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+        let mut encoder = Encoder::with_exact_capacity(DELETED_DOMAIN, VERSION, length)?;
+        let header = (DELETED_DOMAIN.len() + 2) as u64;
+        work.charge(&WorkCounters { bytes_encoded: header, ..WorkCounters::UNCHARGED }, &budget)?;
+        let actual = encoder.capacity() as u64;
+        if actual > admitted {
+            allocations.claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
+                .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+            work.verify(budget)?;
+        }
+        if let Some(token) = cancellation { token.check()?; }
+        encoder.fixed(&volume_id.into_bytes());
+        work.charge(&WorkCounters { bytes_encoded: 16, bytes_copied: 16, ..WorkCounters::UNCHARGED }, &budget)?;
+        Ok(encoder.finish())
+    })();
+    result.map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(error, work))
 }
 
 /// Decodes one terminal workspace deletion fact.
@@ -244,8 +386,8 @@ fn validate(value: &RetentionCreated) -> Result<(), RetentionCreatedError> {
     Ok(())
 }
 
-fn invariant(message: &str) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(message.to_owned())
+fn invariant(message: &'static str) -> CanonicalDecodeError {
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
 #[cfg(test)]

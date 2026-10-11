@@ -14,10 +14,39 @@ use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep};
 /// [`PortablePath`], this type preserves raw POSIX bytes and Windows UTF-16LE
 /// names. A volume executor additionally checks that every component encoding
 /// is admitted by that volume's filesystem profile.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug)]
 pub struct NamespacePath {
     components: Vec<LogicalName>,
     encoded_bytes: u32,
+    logical_owned_bytes: u64,
+}
+
+impl Clone for NamespacePath {
+    fn clone(&self) -> Self {
+        Self::from_owned_components(self.components.clone(), self.encoded_bytes)
+            .expect("simultaneously allocated path buffers fit the address space")
+    }
+}
+
+impl PartialEq for NamespacePath {
+    fn eq(&self, other: &Self) -> bool {
+        self.components == other.components && self.encoded_bytes == other.encoded_bytes
+    }
+}
+
+impl Eq for NamespacePath {}
+
+impl Ord for NamespacePath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.components.cmp(&other.components)
+            .then_with(|| self.encoded_bytes.cmp(&other.encoded_bytes))
+    }
+}
+
+impl PartialOrd for NamespacePath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Pure accounting boundaries of the one canonical Unicode path producer.
@@ -30,6 +59,21 @@ pub(crate) enum NamespacePathStep<'a> {
 }
 
 impl NamespacePath {
+    fn from_owned_components(
+        components: Vec<LogicalName>, encoded_bytes: u32,
+    ) -> Result<Self, NamespacePathError> {
+        let vector_bytes = components.capacity()
+            .checked_mul(std::mem::size_of::<LogicalName>())
+            .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))?;
+        let logical_owned_bytes = components.iter().try_fold(vector_bytes, |total, name| {
+            total.checked_add(name.retained_bytes())
+                .ok_or(NamespacePathError::Work(crate::WorkError::Overflow))
+        })?;
+        let logical_owned_bytes = u64::try_from(logical_owned_bytes)
+            .map_err(|_| NamespacePathError::Work(crate::WorkError::Overflow))?;
+        Ok(Self { components, encoded_bytes, logical_owned_bytes })
+    }
+
     /// Constructs one bounded absolute namespace path.
     ///
     /// # Errors
@@ -41,10 +85,7 @@ impl NamespacePath {
         limits: VolumeLimits,
     ) -> Result<Self, NamespacePathError> {
         let encoded_bytes = namespace_encoded_bytes(components.iter(), limits)?;
-        Ok(Self {
-            components,
-            encoded_bytes,
-        })
+        Self::from_owned_components(components, encoded_bytes)
     }
 
     /// Checks exact encoded component lengths without allocating names.
@@ -272,7 +313,7 @@ impl NamespacePath {
             steps(NamespacePathStep::Performed(&delta))?;
             names.push(LogicalName::from_validated_bytes(encoding, bytes));
         }
-        Ok(Self { components: names, encoded_bytes })
+        Self::from_owned_components(names, encoded_bytes).map_err(E::from)
     }
 
     /// Copies exact canonical names, including opaque native code units,
@@ -586,14 +627,20 @@ impl NamespacePath {
             steps(NamespacePathStep::Performed(&delta))?;
             components.push(LogicalName::from_validated_bytes(name.encoding(), bytes));
         }
-        Ok(Self { components, encoded_bytes })
+        Self::from_owned_components(components, encoded_bytes).map_err(E::from)
+    }
+
+    /// Exact cached backing capacity of the component vector and owned names.
+    /// Allocator bookkeeping and the inline path value are excluded.
+    #[must_use]
+    pub const fn logical_owned_bytes(&self) -> u64 {
+        self.logical_owned_bytes
     }
 
     /// Exact logical capacity retained by this owned path.
     #[must_use]
-    pub fn retained_bytes(&self) -> u64 {
-        (self.components.capacity() * std::mem::size_of::<LogicalName>()) as u64
-            + self.components.iter().map(|name| name.retained_bytes() as u64).sum::<u64>()
+    pub const fn retained_bytes(&self) -> u64 {
+        self.logical_owned_bytes
     }
 
     /// Returns whether this is the volume root.
@@ -643,10 +690,8 @@ impl NamespacePath {
                 .saturating_sub(1)
         };
         let components = self.components.get(..self.components.len() - 1)?.to_vec();
-        Some(Self {
-            components,
-            encoded_bytes,
-        })
+        Some(Self::from_owned_components(components, encoded_bytes)
+            .expect("simultaneously allocated path buffers fit the address space"))
     }
 
     pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
@@ -774,7 +819,7 @@ impl NamespacePath {
                 decoder, profile, limits.maximum_component_bytes, cancellation, steps,
             )?);
         }
-        Ok(Self { components, encoded_bytes })
+        Self::from_owned_components(components, encoded_bytes).map_err(E::from)
     }
 
     /// Returns whether this path is equal to or below `ancestor`.
