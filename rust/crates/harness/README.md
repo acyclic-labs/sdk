@@ -212,6 +212,15 @@ capability recipes with or without the SDK-work observer. The observed route
 admits canonical digest work and actual capability-key copies before execution;
 it does not allocate temporary directory-prefix strings or grant WRITE.
 
+`Capabilities::new_with_native_work` takes borrowed names (including chained
+policy/journal iterators), examines duplicates without copying them, and retains
+known String slots plus actual UTF-8 capacity on the original ledger.
+`RuntimeScope::new_with_native_work` consumes that paid set without cloning it;
+its private custody follows the grants, while the returned guard covers the
+scope's logical Self slot without claiming a heap allocation. Native run-limit
+and limit validation keep ordinary wire codes and authority attenuation, with
+cancellation and static denial text. Drop each returned value before its guard.
+
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
 `Bindings::local()` starts without authority or implicit providers. `HarnessBuilder::bindings` installs its scope, registries, provider boundaries, and concurrency together. An imported binding scope can only be narrowed; configure local root grants on `HarnessBuilder` before building, or construct the desired scope in the binding set before importing it. Later builder calls can register more tasks and tools.

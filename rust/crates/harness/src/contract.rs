@@ -937,6 +937,56 @@ impl Capabilities {
         Self(values.into_iter().map(Into::into).collect())
     }
 
+    /// Builds exactly the requested grants on the original native ledger.
+    ///
+    /// Duplicate names are examined but not copied. Retained accounting covers
+    /// each known String slot and its actual character capacity; opaque standard
+    /// library B-tree node allocations are not reported as SDK allocations.
+    /// The caller must drop the capability set before releasing its custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work<'a>(
+        values: impl IntoIterator<Item = &'a str>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let mut target = BTreeSet::new();
+        for value in values {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            }).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+            if target.contains(value) {
+                continue;
+            }
+            let slot = std::mem::size_of::<String>() as u64;
+            let bytes = slot.checked_add(value.len() as u64).ok_or_else(|| {
+                crate::Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::Overflow,
+                    ),
+                    custody: None,
+                }
+            })?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(slot)?;
+            let copy = io.clone_text(value)?;
+            target.insert(copy);
+        }
+        io.check_cancellation()?;
+        Ok((Self(target), io.into_custody()))
+    }
+
+    /// Copies the original records through the same bounded native constructor.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<(Self, acyclic_fs::NativeAllocation)> {
+        Self::new_with_native_work(self.iter(), work)
+    }
+
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
@@ -1446,6 +1496,61 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capabilities_examine_duplicates_without_copying_them() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 3,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
+            bytes_copied: 6,
+            items_examined: 4,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let (caps, custody) = Capabilities::new_with_native_work(
+            ["é", "read", "é", "read"], &work,
+        ).expect("two distinct UTF-8 grants");
+        assert_eq!(caps.iter().collect::<Vec<_>>(), ["read", "é"]);
+        assert_eq!(work.receipt().items_examined, 4);
+        assert_eq!(work.receipt().bytes_copied, 6);
+        assert_eq!(work.receipt().allocation_operations, 3);
+        assert_eq!(custody.bytes(), caps.0.iter().map(|text| {
+            std::mem::size_of::<String>() as u64 + text.capacity() as u64
+        }).sum::<u64>());
+        assert!(custody.work().shares_ledger(&work));
+        drop(caps);
+        drop(custody);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capability_budget_and_cancellation_precede_character_copy() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork,
+            NativeTreeMaterializationError, WorkBudget, WorkError};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 2,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
+            bytes_copied: 1,
+            items_examined: 2,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let before = work.receipt();
+        assert!(matches!(Capabilities::new_with_native_work(["é"], &work),
+            Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter: "bytes_copied", .. }),
+                ..
+            })));
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        cancellation.cancel();
+        assert!(matches!(Capabilities::new_with_native_work(["read"], &work),
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+    }
 
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {

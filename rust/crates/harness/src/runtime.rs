@@ -1924,7 +1924,7 @@ impl TaskRunLimits {
 }
 
 /// Effective runtime authority and bounds; child scopes may only narrow them.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct RuntimeScope {
     grants: Capabilities,
     limits: Limits,
@@ -1935,6 +1935,28 @@ pub struct RuntimeScope {
     extension_schemas: Option<SchemaRegistry>,
     resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     created_access: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
+    // Ordinary Clone copies data but does not claim native metadata provenance.
+    // This original input guard is last, after every owned variable-capacity field.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_grants_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl Clone for RuntimeScope {
+    fn clone(&self) -> Self {
+        Self {
+            grants: self.grants.clone(),
+            limits: self.limits,
+            run_limits: self.run_limits,
+            extensions: self.extensions.clone(),
+            extensions_sealed: self.extensions_sealed,
+            extension_runtime: self.extension_runtime.clone(),
+            extension_schemas: self.extension_schemas.clone(),
+            resource_proofs: self.resource_proofs.clone(),
+            created_access: self.created_access.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_grants_custody: None,
+        }
+    }
 }
 
 impl RuntimeScope {
@@ -1951,7 +1973,69 @@ impl RuntimeScope {
             extension_schemas: None,
             resource_proofs: Vec::new(),
             created_access: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_grants_custody: None,
         })
+    }
+
+    /// Moves already-paid grants into a checked native root, without a copy.
+    ///
+    /// The scope retains the supplied original grants custody intrinsically.
+    /// The returned guard covers this scope's known logical Self slot; no heap
+    /// allocation is performed for that stack metadata. Distinct original
+    /// grants and construction ledgers remain distinct, without policy rejection.
+    /// Drop the scope before its returned guard.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        grants: (Capabilities, acyclic_fs::NativeAllocation),
+        limits: Limits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        Self::validate_limits_with_native_work(&limits, work)?;
+        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let scope = Self {
+            grants: grants.0,
+            limits,
+            run_limits: TaskRunLimits::default(),
+            extensions: None,
+            extensions_sealed: false,
+            extension_runtime: None,
+            extension_schemas: None,
+            resource_proofs: Vec::new(),
+            created_access: None,
+            _native_grants_custody: Some(grants.1),
+        };
+        Ok((scope, custody))
+    }
+
+    /// Checks the same wire bounds without allocating a native denial message.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_limits_with_native_work(
+        limits: &Limits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        use crate::conversation::*;
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if limits.file_bytes == 0 || limits.file_bytes > MAX_LIMIT_FILE_BYTES
+            || limits.path_bytes == 0 || limits.path_bytes as u64 > MAX_PATH_BYTES as u64
+            || limits.attachments == 0 || limits.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
+            || limits.render_bytes == 0 || limits.render_bytes > MAX_LIMIT_RENDER_BYTES
+            || limits.model_steps == 0 || limits.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
+            || limits.model_events_per_step == 0
+            || limits.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
+            || limits.tool_calls_per_step == 0
+            || limits.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
+            || limits.context_messages == 0
+            || limits.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "harness limits are invalid",
+            });
+        }
+        Ok(())
     }
 
     /// Attenuates every grant and numeric bound.
@@ -1981,6 +2065,8 @@ impl RuntimeScope {
             extension_schemas: self.extension_schemas.clone(),
             resource_proofs: self.resource_proofs.clone(),
             created_access: self.created_access.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_grants_custody: None,
         })
     }
 
@@ -1989,6 +2075,53 @@ impl RuntimeScope {
         self.run_limits.allows(&limits)?;
         self.run_limits = limits;
         Ok(self)
+    }
+
+    /// Applies the ordinary scalar attenuation rules on the original ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn with_run_limits_with_native_work(
+        mut self,
+        limits: TaskRunLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        Self::validate_run_limits_with_native_work(&limits, work)?;
+        for (ancestor, descendant) in [
+            (self.run_limits.concurrency.map(|value| value as u64),
+                limits.concurrency.map(|value| value as u64)),
+            (self.run_limits.max_steps.map(|value| value as u64),
+                limits.max_steps.map(|value| value as u64)),
+            (self.run_limits.deadline_epoch_ms, limits.deadline_epoch_ms),
+        ] {
+            if ancestor.is_some_and(|bound| descendant.is_none_or(|value| value > bound)) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "task scope cannot widen run limits",
+                });
+            }
+        }
+        self.run_limits = limits;
+        Ok(self)
+    }
+
+    /// Checks task scalar wire bounds with cancellation and static denials.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_run_limits_with_native_work(
+        limits: &TaskRunLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        use crate::conversation::MAX_EXACT_JS_INTEGER as MAX_JS_INTEGER;
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if limits.concurrency.is_some_and(|value| value == 0 || value as u64 > MAX_JS_INTEGER)
+            || limits.max_steps.is_some_and(|value| value == 0 || value as u64 > MAX_JS_INTEGER)
+            || limits.deadline_epoch_ms.is_some_and(|value| value == 0 || value > MAX_JS_INTEGER)
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "task run limits are invalid",
+            });
+        }
+        Ok(())
     }
 
     /// Exact task execution bounds pinned at admission.
@@ -7181,6 +7314,85 @@ mod tests {
     use crate::resources::ProviderRef;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_root_moves_original_caps_without_sealing_or_minting_proofs() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 2,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 4096,
+            bytes_copied: 4,
+            items_examined: 1,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let paid = Capabilities::new_with_native_work(["read"], &work)
+            .expect("original grants");
+        let original_bytes = paid.1.bytes();
+        let prefix = work.receipt();
+        let (scope, custody) = RuntimeScope::new_with_native_work(
+            paid, Limits::default(), &work,
+        ).expect("native root");
+        assert_eq!(scope.grants().iter().collect::<Vec<_>>(), ["read"]);
+        assert_eq!(scope._native_grants_custody.as_ref().unwrap().bytes(), original_bytes);
+        assert!(scope._native_grants_custody.as_ref().unwrap().work().shares_ledger(&work));
+        assert_eq!(custody.bytes(), std::mem::size_of::<RuntimeScope>() as u64);
+        assert_eq!(work.receipt().bytes_copied, prefix.bytes_copied);
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        assert!(!scope.is_sealed());
+        assert!(scope.resource_proofs().is_empty());
+        assert!(scope.created_access().is_none());
+        let ordinary = scope.clone();
+        assert!(ordinary._native_grants_custody.is_none());
+        assert_eq!(ordinary.grants(), scope.grants());
+        drop(ordinary);
+        drop(scope);
+        drop(custody);
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            allocation_operations: 2,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 4096,
+            bytes_copied: 4,
+            items_examined: 1,
+            ..WorkBudget::default()
+        };
+        let original = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original grants ledger");
+        let construction = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("independent construction ledger");
+        let paid = Capabilities::new_with_native_work(["read"], &original)
+            .expect("paid input");
+        let (scope, custody) = RuntimeScope::new_with_native_work(
+            paid, Limits::default(), &construction,
+        ).expect("independent guards are legitimate");
+        assert!(scope._native_grants_custody.as_ref().unwrap().work().shares_ledger(&original));
+        assert!(custody.work().shares_ledger(&construction));
+        let prefix = construction.receipt();
+        let invalid = Limits { file_bytes: 0, ..Limits::default() };
+        assert!(matches!(RuntimeScope::validate_limits_with_native_work(&invalid, &construction),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        let scope = scope.with_run_limits_with_native_work(
+            TaskRunLimits { concurrency: Some(1), ..TaskRunLimits::default() },
+            &construction,
+        ).expect("bounded concurrency");
+        assert!(matches!(scope.with_run_limits_with_native_work(
+            TaskRunLimits::default(), &construction,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(construction.receipt().allocation_operations, prefix.allocation_operations);
+        assert_eq!(construction.receipt().bytes_copied, prefix.bytes_copied);
+        drop(custody);
+        cancellation.cancel();
+        assert!(matches!(RuntimeScope::validate_limits_with_native_work(
+            &Limits::default(), &construction,
+        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    }
 
     fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
         let header = format!("export interface {name} {{");
