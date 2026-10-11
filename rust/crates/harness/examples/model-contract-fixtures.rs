@@ -51,7 +51,7 @@ fn main() -> Result<()> {
         }],
         max_output_tokens: Some(32),
     };
-    let prepared = PreparedModelRequest::prepare(request, Limits::default())?;
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     println!(
         "{}",
         json!({

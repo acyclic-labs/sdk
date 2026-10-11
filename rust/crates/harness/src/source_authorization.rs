@@ -236,10 +236,6 @@ impl ProjectSourceAuthorization {
         Ok(label)
     }
 
-    pub(crate) fn verify_scope(&self, verifier: &AuthorityVerifier) -> Result<()> {
-        self.verify_scope_with_work(verifier, &mut None)
-    }
-
     pub(crate) fn verify_scope_with_work(
         &self, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -296,7 +292,7 @@ pub struct ProjectSourceReadHandle {
 impl ProjectSourceReadHandle {
     // Only the owning kernel calls this after authenticating retained graph facts.
     pub(crate) fn seal(authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier) -> Result<Self> {
-        authorization.verify_scope(verifier)?;
+        authorization.verify_scope_with_work(verifier, &mut None)?;
         let proof = VerifiedProjectSourceRead { authorization: &authorization };
         let grant = ContentGrant::from_verified_project_source(&proof);
         Ok(Self { authorization, grant })

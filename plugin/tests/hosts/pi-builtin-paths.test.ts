@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, pinnedPiCli, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { nodeExecutable, pinnedPiCli } from "./pi-fixture.ts";
+import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
 
 const execute = promisify(execFile);
 
@@ -200,7 +201,7 @@ interface BuiltinReport {
   results: BuiltinResult[];
 }
 
-test("required pinned CLI model builtins use original held view IO before reading or mutating host paths", { timeout: 240_000 }, async () => {
+test("required pinned CLI model builtins use original held view IO before reading or mutating host paths", async () => {
   assert.equal(VERSION, "1.1.0");
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-builtin-paths-", import.meta.url)));
   let fixture: InstalledNativeFixture | undefined;
@@ -227,7 +228,7 @@ test("required pinned CLI model builtins use original held view IO before readin
     await fixture.start();
     const rootTools = ["read","write","edit","bash","powershell","grep","find","ls",
       "acyclic_spawn","acyclic_wait","acyclic_cancel","acyclic_agents","acyclic_foreign_read"];
-    const invocation = execute(process.execPath, [pinnedPiCli,
+    const invocation = execute(nodeExecutable, [pinnedPiCli,
       "--print","--mode","text","--session",fixture.session,
       "--provider","acyclic-native-qualification","--model","probe",
       "--no-extensions","--no-mcp","--tools",rootTools.join(","),
@@ -321,4 +322,4 @@ test("required pinned CLI model builtins use original held view IO before readin
     if (originalFailure !== undefined) throw originalFailure;
     if (failures.length) throw new AggregateError(failures,"owned builtin qualification cleanup failed");
   }
-});
+}, { timeout: 240_000 });

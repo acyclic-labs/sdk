@@ -556,14 +556,6 @@ impl NativeStockExecutor {
         self.stock.clone_with_native_work(work)
     }
 
-    /// Applies the ordinary sampling configuration without a second executor engine.
-    pub(crate) fn without_tools_with_native_work(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        self.require_original_work(work)?;
-        let old = std::mem::replace(&mut self.stock.tools, ToolRegistry::new());
-        drop(old);
-        Ok(self)
-    }
-
     /// Carries the original command's native journal route without altering its issued context.
     pub(crate) fn with_native_interactions(
         mut self, interactions: Arc<dyn crate::runtime::InteractionRouter>,
@@ -1222,37 +1214,6 @@ impl StockExecutor {
         Ok(NativeStockExecutor {
             stock, context: None, operation: None, interactions: None, custody: io.into_native_custody(retained)?,
         })
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl NativeStockExecutor {
-    pub(crate) fn with_context_stage_with_native_work(
-        mut self, stage: Arc<dyn crate::context::ContextStage>, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.require_original_work(work)?;
-        let mut custody = self.stock.context.append_with_native_work(stage, work)?;
-        self.custody.absorb(&mut custody)?;
-        Ok(self)
-    }
-
-    /// Binds the original context to an already configured owner, preserving its scope.
-    pub(crate) fn with_task_context_existing_owner_with_native_work(
-        mut self, context: &crate::runtime::ToolContext, operation: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.require_original_work(work)?;
-        context.validate_stock_scope_with_native_work(&self.stock.tool_scope, self.stock.limits, work)?;
-        let original = context.native_task().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "stock callback has no original issued native context"))?;
-        if !original.native_metadata_matches(work)
-            || original.context().durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
-            || self.stock.task.as_ref().is_some_and(|(_, task, fence)| !original.context().original_task_binding_matches(*task, fence)) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock owner differs from the issued native context"));
-        }
-        self.context = Some(Arc::clone(original));
-        self.operation = Some(operation);
-        Ok(self)
     }
 }
 

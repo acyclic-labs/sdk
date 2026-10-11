@@ -26,7 +26,7 @@ use uuid::Uuid;
 mod created_access;
 pub(crate) mod bounded_io;
 pub(crate) use bounded_io::PreparationIo;
-pub use created_access::FilesystemResourceCreationProvider;
+pub use created_access::{FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 
 const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;

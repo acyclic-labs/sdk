@@ -484,10 +484,10 @@ fn compile_json_schema_engine<'a>(
     let before = io.map(|io| io.receipt().items_examined).unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _encoded;
-    let encoded = match io {
+    let encoded: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
         Some(io) => io.encode_json(schema, io.remaining()?.bytes_encoded, false)?,
-        _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
+        _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?.into(),
     };
     #[cfg(feature = "filesystem")]
     {
@@ -1355,19 +1355,21 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
     match cause {
         Native::InvalidLayout
         | Native::InvalidPreimage
-        | Native::InvalidPath(_)
+        | Native::InvalidPath(..)
         | Native::OverlappingPaths
         | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
-        Native::MissingTarget(_) | Native::MissingPreimage(_) => ErrorCode::NotFound,
-        Native::ExternalMutation(_)
-        | Native::UnexpectedBackup(_)
+        Native::MissingTarget(..) | Native::MissingPreimage(..) => ErrorCode::NotFound,
+        Native::ExternalMutation(..)
+        | Native::UnexpectedBackup(..)
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
-        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(_) => ErrorCode::Unsupported,
+        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(..) => ErrorCode::Unsupported,
         Native::Io(_)
         | Native::Cancelled
+        | Native::OriginalWorkPoisoned
+        | Native::MissingCustody
         | Native::Work(_)
-        | Native::Allocation(_)
+        | Native::Allocation(..)
         | Native::AllocationFailed(_)
         | Native::IndeterminatePreparation => ErrorCode::Storage,
     }
@@ -1559,17 +1561,7 @@ mod tests {
         assert!(validate_component_label("alpha", "label").is_ok());
         assert!(validate_component_label(&"é".repeat(127), "label").is_ok());
         assert!(validate_component_label(&"😀".repeat(63), "label").is_ok());
-        for value in [
-            "",
-            ".",
-            "..",
-            "/",
-            "\\",
-            "a\n",
-            "a\u{00a0}",
-            "a\u{2003}",
-            "a\u{007f}",
-        ] {
+        for value in ["", ".", "..", "/", "\\", "a\n", "a\u{00a0}", "a\u{2003}", "a\u{007f}"] {
             assert!(
                 validate_component_label(value, "label").is_err(),
                 "{value:?}"

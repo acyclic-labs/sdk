@@ -531,7 +531,7 @@ where
         (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
             caller_project.clone_with_work(&mut observer)?)
     };
-    let provider = crate::executor::clone_preparation(stream_provider, Some(&io))?;
+    let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
         Some(handle) => {
             let mut history = io.history_io();

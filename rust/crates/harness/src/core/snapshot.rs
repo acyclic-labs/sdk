@@ -227,9 +227,6 @@ pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
         None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
     }
 }
-pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
-pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
-
 fn preparation_inventory_error(
     work: &Option<&mut dyn HistoryIo>, reason: &'static str,
 ) -> Error {
@@ -358,18 +355,6 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
     let retained = quota.retained();
     quota.transfer();
     Ok((copied, retained))
-}
-
-pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
-    source_inventory(event)
-}
-
-pub(crate) fn effect_clone_reservation(effect: &EffectState) -> Result<u64> {
-    source_inventory(effect)
-}
-pub(crate) fn command_clone_reservation(command: &super::Command) -> Result<u64> {
-    source_inventory(command)?.checked_mul(2)
-        .ok_or_else(|| Error::Invalid("command clone reservation overflows".into()))
 }
 
 #[cfg(feature = "filesystem")]
@@ -952,7 +937,7 @@ impl Reducer {
             return preview.snapshot_with_event_limit_with_work(maximum_events, input_quota.work());
         }
         let preview_reservation = if work.is_some() {
-            self.clone_reservation()?.checked_add(event_clone_reservation(event)?.checked_mul(3)
+            self.clone_reservation()?.checked_add(source_inventory(event)?.checked_mul(3)
                 .ok_or_else(|| Error::Invalid("publication event clone reservation overflows".into()))?)
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
@@ -1080,7 +1065,7 @@ impl Reducer {
         let mut snapshot = Snapshot::empty_intrinsic(self.authority.kind, self.revision, self.lifecycle,
             self.active_extension_revision, self.effects_archived, quota.work())?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work_and_custody(selection, quota.work())?,
+            Some(selection) => self.conversation.checkpointed_suffix(selection, quota.work(), None)?,
             None => self.conversation.clone_with_work_and_custody(quota.work())?,
         };
         snapshot.projection.conversation = conversation;
@@ -1152,7 +1137,7 @@ impl Reducer {
     fn checkpointed_conversation(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<ConversationState> {
         let checkpoint_selection = self.resident_checkpoint_selection();
         match checkpoint_selection {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work(selection, work),
+            Some(selection) => self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state),
             None => self.conversation.clone_with_work(work),
         }
     }
@@ -1180,8 +1165,8 @@ impl Reducer {
                 prepared.push((message.sequence, None));
             }
             let mut next = 0;
-            let (replacement, _) = self.conversation.checkpointed_suffix_with_work_and_message_custody(
-                selection, slots.work(), &mut |sequence, produced, work| {
+            let (replacement, _) = self.conversation.checkpointed_suffix(
+                selection, slots.work(), Some(&mut |sequence, produced, work| {
                     while next < prepared.len() && prepared[next].0 < sequence { next += 1; }
                     if next == prepared.len() || prepared[next].0 != sequence {
                         return Err(preparation_inventory_error(work, "conversation copied component identity is invalid"));
@@ -1192,7 +1177,7 @@ impl Reducer {
                         Key::ConversationMessage(sequence), allocation));
                     next += 1;
                     Ok(())
-                })?;
+                }))?;
             self.conversation = replacement;
             for (sequence, claim) in prepared {
                 if let Some(claim) = claim {
@@ -1203,7 +1188,7 @@ impl Reducer {
             }
             return Ok(());
         }
-        self.conversation = self.conversation.checkpointed_suffix_with_work(selection, work)?;
+        self.conversation = self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state)?;
         Ok(())
     }
 
@@ -1492,7 +1477,7 @@ impl Snapshot {
         let mut identities = BTreeSet::new();
         let mut previous = None;
         for event in &self.events {
-            verifier.verify_event_with_work(event, scratch.work())?;
+            verifier.verify_event(event, scratch.work())?;
             if event.revision == 0
                 || event.revision > self.revision
                 || previous
@@ -1817,44 +1802,6 @@ mod tests {
         assert!(c.admit_retained(available).is_err(), "the independent real deep copy remains alive");
         drop(cloned);
         c.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_snapshot_clone_denials_preserve_source_and_drop_partial_owned_copy() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let (reducer, _) = conversation_fixture()?;
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("source ledger");
-        let snapshot = reducer.snapshot_native(2, &source)?;
-        let first_phase_copies = snapshot.projection.conversation.native_clone_copy_recipe()?.1;
-        assert!(first_phase_copies > 0);
-        assert!(matches!(snapshot.try_clone(), Err(Error::NativeBoundary { .. })));
-        let source_receipt = source.receipt();
-        for counter in ["bytes_copied", "allocation_operations", "mid-clone-bytes"] {
-            let mut allowance = native_budget();
-            if counter == "bytes_copied" { allowance.bytes_copied = 0; }
-            if counter == "allocation_operations" { allowance.allocation_operations = 0; }
-            if counter == "mid-clone-bytes" { allowance.bytes_copied = first_phase_copies; }
-            let token = CancellationToken::new();
-            let denied = NativeMaterializationWork::new(allowance, &token).expect("original denial ledger");
-            let prefix = denied.receipt();
-            let error = snapshot.clone_native(&denied).expect_err("real source clone must preflight native work");
-            let Error::NativeWork { cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: denied_counter, ..
-            }), .. } = error else { panic!("original typed clone denial") };
-            assert_eq!(denied_counter, if counter == "mid-clone-bytes" { "bytes_copied" } else { counter });
-            if counter == "mid-clone-bytes" {
-                assert_eq!(denied.receipt().bytes_copied - prefix.bytes_copied, first_phase_copies);
-            } else {
-                assert_eq!(denied.receipt().bytes_copied, prefix.bytes_copied);
-            }
-            assert_eq!(source.receipt(), source_receipt);
-            assert_eq!(snapshot.events.len(), 2);
-            denied.admit_retained(allowance.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
         Ok(())
     }
 

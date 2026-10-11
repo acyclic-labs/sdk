@@ -193,21 +193,16 @@ pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
 pub(crate) fn audited_preparation_diagnostic_bytes(
     input_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
-    diagnostic_capacity_bytes(input_bytes, preparation_serde_diagnostic_label_bytes(), native_code)
+    multiply_with_code(diagnostic_bytes(input_bytes, preparation_serde_diagnostic_label_bytes(), native_code)?, 2, native_code)
 }
 
 /// Pure quota arithmetic for an SDK-issued shape and an audited closed DTO. `schema_label_bytes` MUST cover actual field/discriminator/type names, list punctuation and custom STATIC diagnostics.
 pub fn json_typed_diagnostic_owned_bytes(
     shape: JsonValueShape, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
-    diagnostic_capacity_bytes(shape.input_bytes(), schema_label_bytes, native_code)
+    multiply_with_code(diagnostic_bytes(shape.input_bytes(), schema_label_bytes, native_code)?, 2, native_code)
 }
 
-fn diagnostic_capacity_bytes(
-    input_bytes: u64, schema_label_bytes: u64, native_code: Option<crate::wire::ErrorCode>,
-) -> Result<u64> {
-    multiply_with_code(diagnostic_bytes(input_bytes, schema_label_bytes, native_code)?, 2, native_code)
-}
 
 const COMMON_DIAGNOSTIC_TEXT: &str = concat!(
     "unknown variant ``, expected one of unknown field ``, expected one of ",

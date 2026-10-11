@@ -124,14 +124,16 @@ pub(crate) async fn list_tree_entries_at_or_after_async_with_custody<S: AsyncObj
 }
 
 /// Executes the canonical cursor machine with actual original-owned results.
-pub(crate) async fn list_tree_entries_async_with_accounting<S: AsyncObjectStore>(
-    store: &S, root: ObjectId, after: Option<&LogicalName>, maximum_entries: u32,
-    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_async_with_accounting::<S, TreeFormat>(
-        store, root, after, maximum_entries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
+pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncObjectStore>(
+    store: &'a S, root: ObjectId, after: Option<&'a LogicalName>, maximum_entries: u32,
+    limits: DecodeLimits, accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
+    cancellation: CancellationToken, data_custody: Option<&'a super::ProofDataCustody>,
+) -> impl std::future::Future<Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>> + Send + 'a + use<'a, 'accounting, S> {
+    async move {
+        persistent_pagination::paginate_async_with_accounting::<S, TreeFormat>(
+            store, root, after, maximum_entries, limits, accounting, &cancellation, data_custody,
+        ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
+    }
 }
 
 pub(crate) async fn list_tree_entries_at_or_after_async_with_accounting<S: AsyncObjectStore>(

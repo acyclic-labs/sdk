@@ -30,6 +30,7 @@ fn prepared(revision: &str) -> Result<PreparedModelRequest> {
             max_output_tokens: Some(4),
         },
         Limits::default(),
+        None,
     )
 }
 

@@ -34,16 +34,6 @@ struct ObservedWrite<'a> {
     work: &'a WorkCounters,
 }
 
-pub(super) struct DispatchPayload {
-    pub(super) dispatch: EffectDispatch,
-    _custody: Option<NativeAllocation>,
-}
-
-pub(super) struct ObservedPayload {
-    pub(super) observed: NativeObservation,
-    pub(super) _custody: Option<NativeAllocation>,
-}
-
 struct SupervisorPayload {
     dispatch: EffectDispatch,
     path: StreamPath,
@@ -72,7 +62,7 @@ struct SupervisorGraph<P: StreamProvider> {
 
 pub(super) fn dispatch_payload(
     dispatch: EffectDispatch, work: Option<&NativeMaterializationWork>,
-) -> NativeResult<DispatchPayload> {
+) -> NativeResult<(EffectDispatch, Option<NativeAllocation>)> {
     let custody = match work {
         Some(work) => {
             let bytes = checked_add(checked_add(dispatch.provider.capacity() as u64,
@@ -81,13 +71,12 @@ pub(super) fn dispatch_payload(
         }
         None => None,
     };
-    Ok(DispatchPayload { dispatch, _custody: custody })
+    Ok((dispatch, custody))
 }
 
 pub(super) fn into_observed_effect(
-    payload: ObservedPayload,
+    observed: NativeObservation, mut custody: Option<NativeAllocation>,
 ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
-    let ObservedPayload { observed, mut _custody } = payload;
     let NativeObservation {
         effect, diagnostic, publication_failure, invocation_failure, published, work: _,
     } = observed;
@@ -95,10 +84,10 @@ pub(super) fn into_observed_effect(
     drop(publication_failure);
     drop(invocation_failure);
     drop(published);
-    if let Some(custody) = _custody.as_mut() {
+    if let Some(custody) = custody.as_mut() {
         custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
     }
-    Ok((effect, _custody))
+    Ok((effect, custody))
 }
 
 fn check(work: Option<&NativeMaterializationWork>) -> NativeResult<()> {
@@ -152,7 +141,7 @@ fn effect_result(receipt: NativeProcessReceipt, finite: bool)
     -> NativeResult<(EffectObservation, Option<NativeAllocation>)>
 {
     if finite {
-        receipt.into_effect_with_native_custody().map(|(effect, guard)| (effect, Some(guard)))
+        receipt.into_effect().map(|(effect, guard)| (effect, Some(guard)))
     } else { Ok((receipt.effect, None)) }
 }
 
@@ -294,9 +283,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 
     pub(super) async fn launch_original(
-        &self, payload: DispatchPayload, work: Option<&NativeMaterializationWork>,
+        &self, payload: (EffectDispatch, Option<NativeAllocation>), work: Option<&NativeMaterializationWork>,
     ) -> NativeResult<(EffectObservation, Option<NativeAllocation>)> {
-        let dispatch = &payload.dispatch;
+        let dispatch = &payload.0;
         self.require_dispatch_original(dispatch, work).await?;
         if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work, None).await? {
             return effect_result(receipt, work.is_some());
@@ -321,8 +310,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         drop(launch);
         let payload = SupervisorPayload {
-            dispatch: payload.dispatch, path,
-            _custody: payload._custody,
+            dispatch: payload.0, path,
+            _custody: payload.1,
         };
         let owner = Arc::clone(&self.owner);
         let view = Arc::clone(self.view.as_ref().ok_or(NativeReceiptError::Record(
@@ -404,17 +393,14 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 effect_kind, request } = dispatch;
             drop(effect_kind);
             drop(request);
-            let result = into_observed_effect(ObservedPayload {
-                observed: NativeObservation {
+            let result = into_observed_effect(NativeObservation {
                     effect: EffectObservation { provider, effect_id, attempt_id, request_digest,
                         guarantee, status: execution.status },
                     diagnostic: execution.diagnostic,
                     publication_failure: execution.publication_failure,
                     invocation_failure: execution.invocation_failure, work: execution.work,
                     published: execution.published,
-                },
-                _custody,
-            });
+                }, _custody);
             drop(_sdk_custody);
             result
         }, work)?;
@@ -673,7 +659,7 @@ mod tests {
         let alias = work.retain_owned(0).unwrap();
         cancellation.cancel();
         let before = work.receipt();
-        let (effect, guard) = receipt.into_effect_with_native_custody().unwrap();
+        let (effect, guard) = receipt.into_effect().unwrap();
         assert!(guard.shares_ledger(&alias));
         assert_eq!(guard.bytes(), receipt_observation::effect_bytes(&effect).unwrap());
         assert_eq!(work.receipt(), before);

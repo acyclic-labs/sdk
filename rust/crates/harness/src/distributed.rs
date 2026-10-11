@@ -1102,7 +1102,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let operation = self.observe_operation_ref_with_work(
             owner, scope, verifier, operation_id, work,
         )?;
-        crate::scheduler::require_execution_owner_with_work(operation, fence, write.settlement(), work)?;
+        crate::scheduler::require_execution_owner(operation, fence, write.settlement(), work)?;
         if let JournalWrite::Model {
             attempt_id,
             step,
@@ -1433,7 +1433,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let (value, value_bytes) = self.load_json_with_work(reference, custody.work()).await?;
         custody.adopt(value_bytes)?;
         if let SchedulerEvent::Orchestrated { operation_id, reducer: None, .. } = event {
-            let decision = self.scheduler.orchestration_with_work(*operation_id, custody.work())?;
+            let decision = self.scheduler.orchestration(*operation_id, custody.work())?;
             let decision_bytes = if custody.work().is_some() { decision.logical_owned_bytes()? } else { 0 };
             custody.adopt(decision_bytes)?;
             if let OrchestrationDecision::Assemble { assembly, values, .. } = &decision {
@@ -1709,7 +1709,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "cancellation requires an authorized direct child"));
         }
         let parent_state = self.authorize_operation_owner_with_work(owner, verifier, parent, work)?;
-        crate::scheduler::require_execution_owner_with_work(parent_state, fence, false, work)?;
+        crate::scheduler::require_execution_owner(parent_state, fence, false, work)?;
         let verified_revision = self.revision;
         self.apply_internal_guarded_with_work(
             operation_id, idempotency_key,
@@ -2372,7 +2372,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .scheduler
                 .operation(*operation_id)
                 .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "model task"))?;
-            crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)?;
+            crate::scheduler::require_execution_owner(operation, fence, false, work)?;
         }
         Ok(CoordinatorApply::Replayed)
     }
@@ -2572,7 +2572,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         };
         let operation = self.scheduler.operation(parent)
             .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "admitting parent"))?;
-        crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)
+        crate::scheduler::require_execution_owner(operation, fence, false, work)
     }
 
     async fn finish_append(
@@ -2751,7 +2751,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .scheduler
                 .operation_blocked_by_dependencies(target, owner)
                 .then_some(target),
-            None => self.scheduler.next_blocked_by_dependencies(owner),
+            None => self.scheduler.blocked_by_dependencies(owner).next(),
         };
         if let Some(operation_id) = blocked {
             self.verify_pull_owner_with_work(authorization, operation_id, work)?;
@@ -2770,9 +2770,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Ok(WorkPull::Idle);
         }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let available = self.scheduler.available_for_with_work(
-            &worker.id, &worker.available, custody.work(),
-        )?;
+        let available = self.scheduler.available_for(&worker.id, &worker.available, custody.work())?;
         let available_bytes = if custody.work().is_some() { available.logical_owned_bytes()? } else { 0 };
         custody.adopt(available_bytes)?;
         let selected = match target {
@@ -2782,7 +2780,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .then_some(target),
             None => self
                 .scheduler
-                .next_ready_for(&available, &worker.labels, owner),
+                .ready(&available, &worker.labels, owner).next(),
         };
         drop(available);
         custody.relinquish(available_bytes)?;
@@ -2898,7 +2896,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(parent)
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?
             .revision;
-        let (outcome, cancel, reduction_digest) = match self.scheduler.orchestration(parent) {
+        let (outcome, cancel, reduction_digest) = match self.scheduler.orchestration(parent, &mut None)? {
             OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None),
             OrchestrationDecision::Assemble {
                 assembly,
@@ -2953,7 +2951,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?;
         let expected_revision = state.revision;
         let OrchestrationDecision::Reduce { reducer, values } =
-            self.scheduler.orchestration(parent)
+            self.scheduler.orchestration(parent, &mut None)?
         else {
             return Err(Error::Conflict("no reducer invocation is ready".into()));
         };
@@ -7728,11 +7726,7 @@ mod tests {
             if fault == 2 {
                 assert!(retained.reservation.is_none());
                 assert!(
-                    crate::scheduler::require_execution_owner(
-                        retained,
-                        &LeaseFence::from(&lease.reservation),
-                        false
-                    )
+                    crate::scheduler::require_execution_owner(retained, &LeaseFence::from(&lease.reservation), false, &mut None)
                     .is_err()
                 );
                 let WorkPull::Claimed(retried) = reopened
@@ -7968,7 +7962,7 @@ mod tests {
             drop(coordinator);
             let mut recovered =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-            assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+            assert_eq!(recovered.scheduler().session_limits(root, &mut None)?, limits);
             assert_eq!(
                 recovered
                     .declare_session(
@@ -8046,7 +8040,7 @@ mod tests {
         ));
         let coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(coordinator.scheduler().session_limits(root)?, limits);
+        assert_eq!(coordinator.scheduler().session_limits(root, &mut None)?, limits);
         assert_eq!(
             coordinator
                 .scheduler()
@@ -8134,7 +8128,7 @@ mod tests {
         );
         let mut recovered =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
-        assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+        assert_eq!(recovered.scheduler().session_limits(root, &mut None)?, limits);
         let lease = recovered
             .pull(&Worker {
                 id: "atomic-worker".into(),

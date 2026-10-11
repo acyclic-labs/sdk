@@ -514,6 +514,7 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
             max_output_tokens: Some(1_024),
         },
         limits,
+        None,
     )?;
     assert_eq!(prepared.request().messages, source.messages);
     Ok(())
@@ -2054,6 +2055,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
             max_output_tokens: Some(32),
         },
         Limits::default(),
+        None,
     )?;
     let request_ref = journal
         .stage(

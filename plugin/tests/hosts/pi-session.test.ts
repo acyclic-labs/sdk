@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { invokePi, loadPiContextHelpers } from "./pi-fixture.ts";
@@ -32,16 +33,7 @@ function probeArguments(session: string, extension: string, model = "probe") {
 }
 
 function spawnMessage(ids: string[]) {
-  return {
-    role: "assistant" as const,
-    content: ids.map(id => ({ type: "toolCall" as const, id, name: "acyclic_spawn", arguments: {} })),
-    api: "openai-responses" as const, provider: "openai", model: "probe",
-    usage: {
-      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "toolUse" as const, timestamp: 3,
-  };
+  return fauxAssistantMessage(ids.map(id => fauxToolCall("acyclic_spawn", {}, { id })), { stopReason: "toolUse", timestamp: 1 });
 }
 
 function userMessages(stdout: string): string[] {

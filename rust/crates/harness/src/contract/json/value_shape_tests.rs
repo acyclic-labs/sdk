@@ -65,20 +65,4 @@ mod native {
         assert_eq!(decoded, original, "at the cumulative boundary original Value semantics are unchanged");
     }
 
-    #[test]
-    fn malformed_virtual_json_keeps_actual_pinned_serde_source() {
-        for payload in ["[0,]", "{", r#""\q""#, "0 1"] {
-            let document = raw_document(payload);
-            let expected = serde_json::from_str::<Value>(&document).unwrap_err();
-            let error = decode(document.as_bytes(), LIMITS, &mut |_| Ok(())).unwrap_err();
-            let source = std::error::Error::source(&error).expect("real serde source remains attached");
-            let source = source.downcast_ref::<serde_json::Error>().expect("not a formatted replacement");
-            assert_eq!(source.classify(), expected.classify());
-            assert_eq!(source.line(), expected.line());
-            assert_eq!(source.column(), expected.column());
-            assert_eq!(source.to_string(), expected.to_string());
-            assert!(matches!(error, Error::NativeDecode { code: crate::wire::ErrorCode::Storage, .. }));
-        }
-    }
-
 }

@@ -31,8 +31,8 @@ pub const MAX_FORK_INHERITED_MESSAGES: u64 = u64::MAX;
 mod summary;
 pub use summary::*;
 
-type DirectManifestReads = BTreeSet<(String, AgentId)>;
-type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
+type DirectManifestReads = BTreeSet<([u8; 32], AgentId)>;
+type ManifestMemberGrants = BTreeMap<[u8; 32], BTreeMap<[u8; 32], BTreeSet<AgentId>>>;
 
 /// Child-owned pointer to one immutable revision of authoritative parent history.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -462,10 +462,6 @@ pub(crate) struct ObservedForkPublicationGuard {
     _allocation: Option<acyclic_fs::NativeAllocation>,
 }
 
-impl ObservedForkPublicationGuard {
-    pub(crate) fn as_ref(&self) -> &dyn ForkPublicationGuard { self.guard.as_ref() }
-}
-
 impl std::ops::Deref for ObservedForkPublicationGuard {
     type Target = dyn ForkPublicationGuard;
     fn deref(&self) -> &Self::Target { self.guard.as_ref() }
@@ -592,7 +588,7 @@ impl CompositeForkVerifier {
             owned.slots::<(String, std::sync::Arc<dyn ForkSeedVerifier>)>(1)?;
             providers.insert(key, verifier);
         }
-        owned.retained = 0;
+        owned.quota.transfer();
         Ok(Self {
             providers,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -636,7 +632,7 @@ impl CompositeForkVerifier {
         let private = self.provider(seed.child_private_volume.provider(), &mut ForkValidationWork::new(work)?)?;
         let guard = acquire_fork_fence(private.as_ref(), seed, work).await?;
         if let Err(error) = self.verify_with_work(seed, work).await {
-            let released = release_fork_guard_with_work(guard.as_ref(), work).await;
+            let released = release_fork_guard_with_work(&*guard, work).await;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let preserve_primary = work.as_ref().is_some_and(|work| work.original_native_work().is_some());
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -662,7 +658,7 @@ impl CompositeForkVerifier {
         seed.validate_with_work(work)?;
         let private = self.provider(seed.child_private_volume.provider(), &mut ForkValidationWork::new(work)?)?;
         match acquire_fork_fence(private.as_ref(), seed, work).await {
-            Ok(guard) => release_fork_guard_with_work(guard.as_ref(), work).await,
+            Ok(guard) => release_fork_guard_with_work(&*guard, work).await,
             // A different operation can acquire the gate after this fork's terminal release.
             Err(error) if error.code() == crate::wire::ErrorCode::Conflict => Ok(()),
             Err(error) => Err(error),
@@ -758,11 +754,11 @@ impl CompositeForkVerifier {
         .await
     }
 
-    async fn verify_reference_files(
-        &self,
+    async fn verify_reference_files<'a>(
+        &'a self,
         seed: &ForkSeed,
-        verified_files: &mut BTreeSet<String>,
-        reference_bytes: &mut BTreeMap<String, u64>,
+        verified_files: &mut BTreeSet<[u8; 32]>,
+        reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
         owned: &mut ForkValidationWork<'_, '_>,
     ) -> Result<()> {
         for file in seed
@@ -770,14 +766,11 @@ impl CompositeForkVerifier {
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
         {
-            let capability = owned.file_capability(file)?;
+            let capability = owned.file_digest(file)?;
             if verified_files.contains(&capability) {
-                let capacity = capability.capacity() as u64;
-                drop(capability);
-                owned.release(capacity)?;
                 continue;
             }
-            owned.slots::<String>(1)?;
+            owned.slots::<[u8; 32]>(1)?;
             verified_files.insert(capability);
             let verifier = self.provider(file.volume().provider(), owned)?;
             reserve_reference_bytes(reference_bytes, verifier.as_ref(), file, owned)?;
@@ -786,11 +779,11 @@ impl CompositeForkVerifier {
         Ok(())
     }
 
-    async fn verify_attachment_manifests(
-        &self,
+    async fn verify_attachment_manifests<'a>(
+        &'a self,
         seed: &ForkSeed,
-        verified_files: &mut BTreeSet<String>,
-        reference_bytes: &mut BTreeMap<String, u64>,
+        verified_files: &mut BTreeSet<[u8; 32]>,
+        reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
         volume_readers: &mut ForkVolumeReaders,
         direct_manifest_reads: &DirectManifestReads,
         member_grants: &ManifestMemberGrants,
@@ -798,17 +791,13 @@ impl CompositeForkVerifier {
     ) -> Result<()> {
         let mut manifest_members = 0_usize;
         for manifest in &seed.attachment_manifests {
-            let manifest_capability = owned.file_capability(manifest)?;
+            let manifest_capability = owned.file_digest(manifest)?;
             let verifier = self.provider(manifest.volume().provider(), owned)?;
             if !verified_files.contains(&manifest_capability) {
-                owned.slots::<String>(1)?;
+                owned.slots::<[u8; 32]>(1)?;
                 verified_files.insert(manifest_capability);
                 reserve_reference_bytes(reference_bytes, verifier.as_ref(), manifest, owned)?;
                 verify_fork_file_with_work(verifier.as_ref(), seed, manifest, owned.work()).await?;
-            } else {
-                let capacity = manifest_capability.capacity() as u64;
-                drop(manifest_capability);
-                owned.release(capacity)?;
             }
             let (bytes, retained) = read_fork_manifest(
                 verifier.as_ref(), seed, manifest, owned.work()).await?;
@@ -840,17 +829,13 @@ impl CompositeForkVerifier {
                 owned,
             )?;
             for item in items {
-                let item_capability = owned.file_capability(&item.file)?;
+                let item_capability = owned.file_digest(&item.file)?;
                 if !verified_files.contains(&item_capability) {
-                    owned.slots::<String>(1)?;
+                    owned.slots::<[u8; 32]>(1)?;
                     verified_files.insert(item_capability);
                     let member_verifier = self.provider(item.file.volume().provider(), owned)?;
                     reserve_reference_bytes(reference_bytes, member_verifier.as_ref(), &item.file, owned)?;
                     verify_fork_file_with_work(member_verifier.as_ref(), seed, &item.file, owned.work()).await?;
-                } else {
-                    let capacity = item_capability.capacity() as u64;
-                    drop(item_capability);
-                    owned.release(capacity)?;
                 }
             }
 
@@ -866,16 +851,12 @@ impl CompositeForkVerifier {
         member_grants: &ManifestMemberGrants,
         owned: &mut ForkValidationWork<'_, '_>,
     ) -> Result<()> {
-        let manifest_capability = owned.file_capability(manifest)?;
+        let manifest_capability = owned.file_digest(manifest)?;
         let mut members = BTreeSet::new();
         for item in items {
-            let capability = owned.file_capability(&item.file)?;
-            if members.contains(&capability) {
-                let capacity = capability.capacity() as u64;
-                drop(capability);
-                owned.release(capacity)?;
-            } else {
-                owned.slots::<String>(1)?;
+            let capability = owned.file_digest(&item.file)?;
+            if !members.contains(&capability) {
+                owned.slots::<[u8; 32]>(1)?;
                 members.insert(capability);
             }
         }
@@ -920,18 +901,15 @@ fn collect_manifest_grants(
     let mut member_grants = ManifestMemberGrants::new();
     for grant in &seed.reference_grants {
         if let Some(manifest) = &grant.attachment_manifest {
-            let manifest_capability = owned.file_capability(manifest)?;
-            let file_capability = owned.file_capability(&grant.file)?;
+            let manifest_capability = owned.file_digest(manifest)?;
+            let file_capability = owned.file_digest(&grant.file)?;
             if manifest_capability == file_capability {
-                owned.slots::<(String, AgentId)>(1)?;
+                owned.slots::<([u8; 32], AgentId)>(1)?;
                 direct_manifest_reads.insert((file_capability, grant.reader));
-                let capacity = manifest_capability.capacity() as u64;
-                drop(manifest_capability);
-                owned.release(capacity)?;
                 continue;
             }
-            owned.slots::<(String, BTreeMap<String, BTreeSet<AgentId>>)>(1)?;
-            owned.slots::<(String, BTreeSet<AgentId>)>(1)?;
+            owned.slots::<([u8; 32], BTreeMap<[u8; 32], BTreeSet<AgentId>>)>(1)?;
+            owned.slots::<([u8; 32], BTreeSet<AgentId>)>(1)?;
             owned.slots::<AgentId>(1)?;
             member_grants
                 .entry(manifest_capability)
@@ -940,8 +918,8 @@ fn collect_manifest_grants(
                 .or_default()
                 .insert(grant.reader);
         } else {
-            let file_capability = owned.file_capability(&grant.file)?;
-            owned.slots::<(String, AgentId)>(1)?;
+            let file_capability = owned.file_digest(&grant.file)?;
+            owned.slots::<([u8; 32], AgentId)>(1)?;
             direct_manifest_reads.insert((file_capability, grant.reader));
         }
     }
@@ -951,9 +929,9 @@ fn collect_manifest_grants(
 /// Precomputed reader authority for a fork.
 struct ForkVolumeReaders {
     all: BTreeSet<AgentId>,
-    selected_projects: BTreeSet<String>,
-    shared: BTreeMap<String, BTreeSet<AgentId>>,
-    implicit: BTreeMap<String, BTreeSet<AgentId>>,
+    selected_projects: BTreeSet<[u8; 32]>,
+    shared: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
+    implicit: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
 }
 
 impl ForkVolumeReaders {
@@ -968,31 +946,24 @@ impl ForkVolumeReaders {
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                let key = owned.volume_capability(volume)?;
-                if selected_projects.contains(&key) {
-                    let capacity = key.capacity() as u64;
-                    drop(key);
-                    owned.release(capacity)?;
-                } else {
-                    owned.slots::<String>(1)?;
+                let key = owned.digest(volume)?;
+                if !selected_projects.contains(&key) {
+                    owned.slots::<[u8; 32]>(1)?;
                     selected_projects.insert(key);
                 }
             }
         }
-        let mut shared = BTreeMap::<String, BTreeSet<AgentId>>::new();
+        let mut shared = BTreeMap::<[u8; 32], BTreeSet<AgentId>>::new();
         for grant in &seed.shared_grants {
             if grant.operations.contains(&VolumeOperation::Read) {
-                let key = owned.volume_capability(&grant.volume)?;
+                let key = owned.digest(&grant.volume)?;
                 if let Some(readers) = shared.get_mut(&key) {
                     if !readers.contains(&grant.child_agent) {
                         owned.slots::<AgentId>(1)?;
                         readers.insert(grant.child_agent);
                     }
-                    let capacity = key.capacity() as u64;
-                    drop(key);
-                    owned.release(capacity)?;
                 } else {
-                    owned.slots::<(String, BTreeSet<AgentId>)>(1)?;
+                    owned.slots::<([u8; 32], BTreeSet<AgentId>)>(1)?;
                     owned.slots::<AgentId>(1)?;
                     shared.insert(key, BTreeSet::from([grant.child_agent]));
                 }
@@ -1012,16 +983,13 @@ impl ForkVolumeReaders {
         volume: &VolumeRef,
         owned: &mut ForkValidationWork<'_, '_>,
     ) -> Result<&BTreeSet<AgentId>> {
-        let key = owned.volume_capability(volume)?;
+        let key = owned.digest(volume)?;
         if self.implicit.contains_key(&key) {
-            let capacity = key.capacity() as u64;
             let readers = self.implicit.get(&key)
                 .ok_or_else(|| Error::Invalid("fork reader cache entry disappeared".into()))?;
-            drop(key);
-            owned.release(capacity)?;
             return Ok(readers);
         }
-        owned.slots::<(String, BTreeSet<AgentId>)>(1)?;
+        owned.slots::<([u8; 32], BTreeSet<AgentId>)>(1)?;
         let mut implicit_readers = BTreeSet::new();
         match volume.class() {
             VolumeClass::AgentPrivate => {
@@ -1048,24 +1016,15 @@ impl ForkVolumeReaders {
     }
 }
 
-fn reserve_reference_bytes(
-    totals: &mut BTreeMap<String, u64>,
-    verifier: &dyn ForkSeedVerifier,
+fn reserve_reference_bytes<'a>(
+    totals: &mut BTreeMap<&'a ProviderRef, u64>,
+    verifier: &'a dyn ForkSeedVerifier,
     file: &FileRef,
     owned: &mut ForkValidationWork<'_, '_>,
 ) -> Result<()> {
-    let key = provider_key(verifier.provider(), owned)?;
-    let total = if totals.contains_key(&key) {
-        let total = totals.get_mut(&key)
-            .ok_or_else(|| Error::Invalid("fork reference total disappeared".into()))?;
-        let capacity = key.capacity() as u64;
-        drop(key);
-        owned.release(capacity)?;
-        total
-    } else {
-        owned.slots::<(String, u64)>(1)?;
-        totals.entry(key).or_default()
-    };
+    let key = verifier.provider();
+    if !totals.contains_key(key) { owned.slots::<(&ProviderRef, u64)>(1)?; }
+    let total = totals.entry(key).or_default();
     *total = total
         .checked_add(file.descriptor().byte_length())
         .ok_or_else(|| Error::Invalid("fork reference bytes overflow".into()))?;
@@ -1183,8 +1142,10 @@ fn decode_fork_manifest(
             .expect("original admitted manifest reservation");
         let guard = owned.work().as_deref_mut().expect("original manifest observer")
             .take_native_custody(reservation).expect("original manifest reservation custody");
-        owned.retained = owned.retained.checked_sub(reservation)
+        let retained = owned.quota.retained().checked_sub(reservation)
             .expect("original manifest reservation belongs to the proof custodian");
+        owned.quota.transfer();
+        owned.quota.adopt(retained)?;
         *custody = Some(guard);
     }
     let items = decoded.map_err(|error| {
@@ -1259,14 +1220,11 @@ impl ContentForkVerifier {
             if file.volume().provider() != &self.provider {
                 continue;
             }
-            let capability = owned.file_capability(file)?;
+            let capability = owned.file_digest(file)?;
             if checked.contains(&capability) {
-                let capacity = capability.capacity() as u64;
-                drop(capability);
-                owned.release(capacity)?;
                 continue;
             }
-            owned.slots::<String>(1)?;
+            owned.slots::<[u8; 32]>(1)?;
             checked.insert(capability);
             self.verify_file_with_work(file, owned.work()).await?;
         }
@@ -1913,8 +1871,7 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
 
 // Logical key/value slots and owned identity buffers, not allocator/node overhead.
 pub(super) struct ForkValidationWork<'a, 'b> {
-    work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
-    retained: u64,
+    quota: crate::wire_codec::CodecQuota<'a, 'b>,
 }
 
 impl<'a, 'b> ForkValidationWork<'a, 'b> {
@@ -1924,19 +1881,19 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
         }
-        Ok(Self { work, retained: 0 })
+        Ok(Self { quota: crate::wire_codec::CodecQuota::from_retained(work, 0) })
     }
 
     pub(super) fn work(&mut self) -> &mut Option<&'b mut dyn crate::store::history::HistoryIo> {
-        self.work
+        self.quota.work()
     }
 
-    fn invalid(&self, reason: &'static str) -> Error {
-        fork_provider_boundary(self.work, crate::wire::ErrorCode::Invalid, reason)
+    fn invalid(&mut self, reason: &'static str) -> Error {
+        fork_provider_boundary(self.work(), crate::wire::ErrorCode::Invalid, reason)
     }
 
     pub(super) fn checkpoint(&mut self) -> Result<()> {
-        if let Some(observer) = self.work.as_deref_mut() {
+        if let Some(observer) = self.work().as_deref_mut() {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
@@ -1944,32 +1901,25 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     pub(super) fn retain(&mut self, bytes: u64) -> Result<()> {
-        if self.work.is_none() { return Ok(()); }
-        let retained = self.retained.checked_add(bytes)
+        if self.work().is_none() { return Ok(()); }
+        let retained = self.quota.retained().checked_add(bytes)
             .ok_or_else(|| self.invalid("fork validation storage overflows"))?;
-        let observer = self.work.as_deref_mut().expect("fork custody observer");
-        observer.admit_owned(bytes)?;
-        observer.retain_owned(bytes)?;
-        self.retained = retained;
-        Ok(())
+        self.quota.replace(retained)
     }
 
     /// Adopts buffers already retained by the same observer without charging their allocation again; the existing guard releases them on every exit.
     pub(super) fn adopt(&mut self, bytes: u64) -> Result<()> {
-        if self.work.is_some() {
-            self.retained = self.retained.checked_add(bytes)
-                .ok_or_else(|| self.invalid("fork custody storage overflows"))?;
+        if self.work().is_some() {
+            self.quota.adopt(bytes).map_err(|_| self.invalid("fork custody storage overflows"))?;
         }
         Ok(())
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> Result<()> {
-        if self.work.is_none() { return Ok(()); }
-        let retained = self.retained.checked_sub(bytes)
+        if self.work().is_none() { return Ok(()); }
+        self.quota.retained().checked_sub(bytes)
             .ok_or_else(|| self.invalid("fork validation storage underflows"))?;
-        self.work.as_deref_mut().expect("fork custody observer").release_owned(bytes)?;
-        self.retained = retained;
-        Ok(())
+        self.quota.relinquish(bytes)
     }
 
     pub(super) fn slots<T>(&mut self, count: usize) -> Result<()> {
@@ -1980,19 +1930,16 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
 
     pub(super) fn canonical<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<Vec<u8>> {
         let bytes = crate::store::history::canonical_bytes_with_work(
-            value, crate::store::default_projection_read_limits().maximum_bytes, self.work,
+            value, crate::store::default_projection_read_limits().maximum_bytes, self.work(),
         )?;
-        if self.work.is_some() {
-            self.retained = self.retained.checked_add(bytes.capacity() as u64)
-                .ok_or_else(|| self.invalid("fork validation storage overflows"))?;
-        }
+        self.adopt(bytes.capacity() as u64)?;
         Ok(bytes)
     }
 
     pub(super) fn digest<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<[u8; 32]> {
         let bytes = self.canonical(value)?;
         let capacity = bytes.capacity() as u64;
-        if let Some(observer) = self.work.as_deref_mut() {
+        if let Some(observer) = self.work().as_deref_mut() {
             observer.hashed_bytes(bytes.len() as u64)?;
         }
         let digest = *blake3::hash(&bytes).as_bytes();
@@ -2005,13 +1952,13 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
         let digest = self.digest(value)?;
         let length = prefix.len().checked_add(64)
             .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
-        if let Some(observer) = self.work.as_deref_mut() {
+        if let Some(observer) = self.work().as_deref_mut() {
             observer.admit_allocation(length as u64)?;
         }
         self.retain(length as u64)?;
         let mut capability = String::new();
         capability.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
-        if let Some(observer) = self.work.as_deref_mut() {
+        if let Some(observer) = self.work().as_deref_mut() {
             observer.copy_bytes(length as u64)?;
         }
         capability.push_str(prefix);
@@ -2021,8 +1968,13 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     pub(super) fn file_capability(&mut self, file: &FileRef) -> Result<String> {
-        file.validate_with_work(self.work)?;
+        file.validate_with_work(self.work())?;
         self.capability("file:read:", file)
+    }
+
+    fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
+        file.validate_with_work(self.work())?;
+        self.digest(file)
     }
 
     pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
@@ -2030,17 +1982,9 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     fn stream_path(&mut self, authority: &Authority) -> Result<String> {
-        let path = authority.stream_path_with_work(self.work)?;
+        let path = authority.stream_path_with_work(self.work())?;
         self.adopt(path.capacity() as u64)?;
         Ok(path)
-    }
-}
-
-impl Drop for ForkValidationWork<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(observer) = self.work.as_deref_mut() {
-            let _ = observer.release_owned(self.retained);
-        }
     }
 }
 
@@ -2258,18 +2202,6 @@ impl ForkRequest {
             }
         }
         work.slots::<AgentId>(self.attached_agents.len())?;
-        if let Some(source) = &self.authorized_source {
-            source.validate()?;
-            if source.operation_id != self.operation_id
-                || !self.selections.iter().any(|selection| matches!(&selection.revision,
-                    ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation))
-                || (source.source_task != source.caller_task
-                    && (self.preparation.inherited_through_sequence != 0 || self.preparation.summary.is_some()))
-            {
-                return Err(Error::Unauthorized("fork workspace authorization does not bind this exact history-free source".into()));
-            }
-        }
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(work.invalid("fork attached agents are not unique"));
@@ -2696,7 +2628,7 @@ impl ForkReport {
                 (resources, omissions, retained)
             };
             // Both real Vec capacities were admitted before their allocator attempts.
-            owned.retained = retained;
+            owned.quota.adopt(retained)?;
             (resources, omissions)
         } else {
             (Vec::new(), Vec::new())
@@ -2749,7 +2681,7 @@ impl ForkReport {
         };
         seed.validate_with_work(owned.work())?;
         // Transfer these actual newly allocated vector slots with the returned seed; failures drop the vectors before the existing custody guard.
-        owned.retained = 0;
+        owned.quota.transfer();
         Ok(seed)
     }
 }
@@ -2933,7 +2865,7 @@ impl ForkSeed {
         }
         self.validate_shared_grants(&selected_shared, &attached, &mut work)?;
         self.validate_reference_grants(&attached, &mut work)?;
-        work.slots::<String>(self.attachment_manifests.len())?;
+        work.slots::<[u8; 32]>(self.attachment_manifests.len())?;
         let mut manifest_ids = BTreeSet::new();
         let mut manifest_bytes = 0_u64;
         for manifest in &self.attachment_manifests {
@@ -2944,53 +2876,30 @@ impl ForkSeed {
                 .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
-                || !manifest_ids.insert(work.file_capability(manifest)?)
+                || !manifest_ids.insert(work.file_digest(manifest)?)
             {
                 return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
             }
         }
-        work.slots::<(String, BTreeSet<AgentId>)>(self.reference_grants.len())?;
-        work.slots::<AgentId>(self.reference_grants.len())?;
-        work.slots::<(String, BTreeMap<String, BTreeSet<AgentId>>)>(self.reference_grants.len())?;
-        work.slots::<(String, BTreeSet<AgentId>)>(self.reference_grants.len())?;
-        work.slots::<AgentId>(self.reference_grants.len())?;
-        let mut direct_manifest_reads = BTreeMap::<String, BTreeSet<AgentId>>::new();
-        let mut member_grants = BTreeMap::<String, BTreeMap<String, BTreeSet<AgentId>>>::new();
         for grant in &self.reference_grants {
             work.checkpoint()?;
             if let Some(manifest) = &grant.attachment_manifest
-                && !manifest_ids.contains(&work.file_capability(manifest)?)
+                && !manifest_ids.contains(&work.file_digest(manifest)?)
             {
                 return Err(work.invalid("reference grant names an unselected attachment manifest"));
             }
-            let file_capability = work.file_capability(&grant.file)?;
-            if let Some(manifest) = &grant.attachment_manifest {
-                let manifest_capability = work.file_capability(manifest)?;
-                if manifest_capability == file_capability {
-                    direct_manifest_reads.entry(file_capability).or_default().insert(grant.reader);
-                } else {
-                    member_grants
-                        .entry(manifest_capability)
-                        .or_default()
-                        .entry(file_capability)
-                        .or_default()
-                        .insert(grant.reader);
-                }
-            } else {
-                direct_manifest_reads.entry(file_capability).or_default().insert(grant.reader);
-            }
         }
+        let (direct_manifest_reads, member_grants) = collect_manifest_grants(self, &mut work)?;
         let mut volume_readers = ForkVolumeReaders::new(self, &mut work)?;
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
-            let capability = work.file_capability(manifest)?;
+            let capability = work.file_digest(manifest)?;
             let implicit_readers = volume_readers.implicit_readers(manifest.volume(), &mut work)?;
             if let Some(grants) = member_grants.get(&capability) {
                 for reader in grants.values().flat_map(|readers| readers.iter()) {
                     work.checkpoint()?;
                     if !implicit_readers.contains(reader)
-                        && !direct_manifest_reads.get(&capability)
-                            .is_some_and(|readers| readers.contains(reader))
+                        && !direct_manifest_reads.contains(&(capability, *reader))
                     {
                         return Err(work.invalid("fork omits a manifest file read grant"));
                     }
@@ -3047,7 +2956,7 @@ impl ForkSeed {
         attached: &BTreeSet<AgentId>,
         work: &mut ForkValidationWork<'_, '_>,
     ) -> Result<()> {
-        work.slots::<(String, AgentId, Option<String>)>(self.reference_grants.len())?;
+        work.slots::<([u8; 32], AgentId, Option<[u8; 32]>)>(self.reference_grants.len())?;
         let mut unique = BTreeSet::new();
         for grant in &self.reference_grants {
             work.checkpoint()?;
@@ -3061,12 +2970,12 @@ impl ForkSeed {
                 return Err(work.invalid("owner needs no inherited reference grant"));
             }
             let identity = (
-                work.file_capability(&grant.file)?,
+                work.file_digest(&grant.file)?,
                 grant.reader,
                 grant
                     .attachment_manifest
                     .as_ref()
-                    .map(|file| work.file_capability(file))
+                    .map(|file| work.file_digest(file))
                     .transpose()?,
             );
             if !unique.insert(identity) {
@@ -3543,9 +3452,6 @@ mod physical_clones {
     }
 
     impl ForkSeed {
-        pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-            self.clone_with_work_and_custody(work).map(|(value, _)| value)
-        }
         pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
             if work.is_none() { return Ok((self.clone(), 0)); }
             let mut quota = CodecQuota::new(work, 0)?;
@@ -3774,76 +3680,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn native_selection_builder_moves_repeated_funded_payloads_and_retires_only_old_backing() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        fixture.validate()?;
-        let cancellation = CancellationToken::new();
-        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
-            .expect("original builder ledger");
-        let (mut request, mut custody) = funded_selection_request(&fixture, &native)?;
-        let parent_pointer = request.parent.id.as_ptr();
-        let original_revision_pointer = match &request.selections[0].revision {
-            ResourceRevision::History(reference) => reference.as_resource().key().as_ptr(),
-            _ => unreachable!("required history"),
-        };
-        let mut saw_spare = false;
-        let mut saw_growth = false;
-        for index in 0..32 {
-            let source = additional_selection(index)?;
-            let (selection, incoming) = funded_selection(&source, &native)?;
-            let input_pointer = match &selection.revision {
-                ResourceRevision::Artifact(reference) => reference.as_resource().key().as_ptr(),
-                _ => unreachable!("artifact"),
-            };
-            let old_capacity = request.selections.capacity();
-            let old_bytes = custody.bytes();
-            let input_bytes = incoming.bytes();
-            let full = request.selections.len() == old_capacity;
-            request.add_selection_with_native_work(selection, &mut custody, incoming, &native)?;
-            let backing_change = (request.selections.capacity() - old_capacity)
-                * std::mem::size_of::<ForkSelection>();
-            assert_eq!(custody.bytes(), old_bytes + input_bytes + backing_change as u64);
-            assert_eq!(request.parent.id.as_ptr(), parent_pointer, "request fields are not cloned");
-            let ResourceRevision::Artifact(reference) = &request.selections.last()
-                .expect("moved selection").revision else { unreachable!("artifact") };
-            assert_eq!(reference.as_resource().key().as_ptr(), input_pointer, "payload is moved");
-            if full { saw_growth = true; } else { saw_spare = true; }
-            request.validate()?;
-        }
-        assert!(saw_growth && saw_spare);
-        let ResourceRevision::History(reference) = &request.selections[0].revision
-            else { unreachable!("history") };
-        assert_eq!(reference.as_resource().key().as_ptr(), original_revision_pointer);
-        let before = custody.bytes();
-        let (duplicate, incoming) = funded_selection(request.selections.last().expect("selection"), &native)?;
-        let length = request.selections.len();
-        let capacity = request.selections.capacity();
-        assert_eq!(request.add_selection_with_native_work(duplicate, &mut custody, incoming, &native)
-            .expect_err("duplicate canonical identity").code(), crate::wire::ErrorCode::Invalid);
-        assert_eq!((request.selections.len(), request.selections.capacity(), custody.bytes()),
-            (length, capacity, before));
-        let (selection, incoming) = funded_selection(&additional_selection(99)?, &native)?;
-        let mut io = crate::store::history::native_work_io(&native)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        assert_eq!(request.validate_selection_view(
-            request.selections.iter().chain(std::iter::once(&selection)),
-            MAX_FORK_RESOURCES + 1, &mut Some(&mut io))
-            .expect_err("maximum selection bound").code(), crate::wire::ErrorCode::Invalid);
-        drop(io);
-        drop(selection);
-        drop(incoming);
-        drop(request);
-        drop(custody);
-        native.admit_retained(physical_fork_clone_budget().peak_allocation_bytes
-            - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_selection_builder_rejects_foreign_missing_and_cancelled_custody_before_mutation() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
@@ -3946,54 +3782,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn native_selection_builder_denies_replacement_allocation_without_retiring_the_old_vector() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let fixture: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let source = additional_selection(3)?;
-        let cancellation = CancellationToken::new();
-        let sizing = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
-            .expect("original sizing ledger");
-        let (request, guard) = funded_selection_request(&fixture, &sizing)?;
-        let (selection, input) = funded_selection(&source, &sizing)?;
-        let mut io = crate::store::history::native_work_io(&sizing)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        request.validate_selection_view(
-            request.selections.iter().chain(std::iter::once(&selection)),
-            request.selections.len() + 1, &mut Some(&mut io))?;
-        drop(io);
-        let setup_and_validation_allocations = sizing.receipt().allocation_operations;
-        drop((request, selection));
-        drop((guard, input));
-        let denied = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: setup_and_validation_allocations, ..physical_fork_clone_budget()
-        }, &cancellation).expect("original replacement-denied ledger");
-        let (mut request, mut guard) = funded_selection_request(&fixture, &denied)?;
-        let (selection, input) = funded_selection(&source, &denied)?;
-        assert_eq!(request.selections.len(), request.selections.capacity(), "full original vector");
-        let pointer = request.selections.as_ptr();
-        let bytes = guard.bytes();
-        let capacity = request.selections.capacity();
-        assert!(matches!(request.add_selection_with_native_work(selection, &mut guard, input, &denied),
-            Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                    acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
-                custody: None,
-            })));
-        assert_eq!(request, fixture);
-        assert_eq!((request.selections.as_ptr(), request.selections.capacity(), guard.bytes()),
-            (pointer, capacity, bytes));
-        assert_eq!(denied.receipt().allocation_operations, setup_and_validation_allocations);
-        drop(request);
-        drop(guard);
-        denied.admit_retained(physical_fork_clone_budget().peak_allocation_bytes
-            - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_capture_validation_keeps_original_policy_without_allocating_a_diagnostic() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
@@ -4043,54 +3831,6 @@ mod tests {
         assert!(matches!(original.clone_with_native_work(&denied), Err(Error::NativeWork { .. })));
         assert_eq!(denied.receipt().bytes_copied, 0);
         assert_eq!(original, Capture::Captured(seed.resources[0].clone()));
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn physical_fork_dto_clones_transfer_exact_produced_fields_without_encoding() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let request: ForkRequest = serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let report = ForkReport {
-            request: request.clone(),
-            captures: seed.resources.iter().cloned().map(Capture::Captured).collect(),
-            child_private_volume: seed.child_private_volume.clone(),
-            child_private_generation: seed.child_private_generation.clone(),
-            inherited_context: seed.inherited_context.clone(),
-            summary: seed.summary.clone(),
-            inherited_through_sequence: seed.inherited_through_sequence,
-            shared_grants: seed.shared_grants.clone(),
-            reference_grants: seed.reference_grants.clone(),
-            history_witness: seed.history_witness,
-            attachment_manifests: seed.attachment_manifests.clone(),
-        };
-        assert_eq!(report.clone_with_work(&mut None)?, report);
-        let cancellation = CancellationToken::new();
-        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
-            .expect("original fork field-copy ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original fork observer");
-        let before = native.receipt();
-        let (copied_request, request_bytes) = request.clone_with_work_and_custody(&mut Some(&mut io))?;
-        let (copied_seed, seed_bytes) = seed.clone_with_work_and_custody(&mut Some(&mut io))?;
-        let (copied_report, report_bytes) = report.clone_with_work_and_custody(&mut Some(&mut io))?;
-        assert_eq!(copied_request, request);
-        assert_eq!(copied_seed, seed);
-        assert_eq!(copied_report, report);
-        let guard = io.into_custody();
-        assert_eq!(guard.bytes(), request_bytes + seed_bytes + report_bytes);
-        assert!(guard.work().shares_ledger(&native));
-        assert!(native.receipt().allocation_operations > before.allocation_operations);
-        assert!(native.receipt().bytes_copied > before.bytes_copied);
-        assert_eq!(native.receipt().bytes_encoded - before.bytes_encoded, 0);
-        assert_eq!(native.receipt().bytes_hashed - before.bytes_hashed, 0);
-        drop((copied_request, copied_seed, copied_report));
-        drop(guard);
-        let available = physical_fork_clone_budget().peak_allocation_bytes
-            - NativeMaterializationWork::accounting_state_bytes();
-        native.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(())
     }
 

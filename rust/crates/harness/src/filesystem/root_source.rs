@@ -1,12 +1,13 @@
 //! Explicit same-graph policy backed by the original Filesystem and lazy stores.
 
 use super::{FilesystemHost, map_error};
-use crate::contract::{JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded};
+use crate::contract::{JsonBounds, canonical_json_bytes_bounded};
 use crate::conversation::{VolumeClass, VolumeRef};
 use crate::core::Authority;
 use crate::source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider};
 use crate::{Error, Result, TaskId};
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, DemandSource, Digest, GenerationId, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget, WorkCounters};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Digest, GenerationId, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget, WorkCounters};
+use acyclic_fs::demand::DemandSource;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -33,13 +34,13 @@ type RootLazyPublication<A, O> = (
 
 #[cfg(not(target_arch = "wasm32"))]
 fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
-    -> impl Iterator<Item = acyclic_fs::LazyWriteMutation<'_>> + Send
+    -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'_>> + Send
 {
     mutations.iter().filter_map(|mutation| match mutation {
         super::WorkspaceMutation::CreateDirectory { path } =>
-            Some(acyclic_fs::LazyWriteMutation::CreateDirectory { path }),
+            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path }),
         super::WorkspaceMutation::PutFile { path, bytes } =>
-            Some(acyclic_fs::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
+            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::PutFile { path, bytes: bytes.clone() }),
         super::WorkspaceMutation::Remove { .. } => None,
     })
 }
@@ -365,9 +366,10 @@ where
             {
                 return Err(Error::Unauthorized("project source belongs to another namespace or provider".into()));
             }
-            let mut admission = SourceAdmission::new(context.maximum_work, context.maximum_bytes, context.cancellation)?;
+            let admission = super::PreparationIo::from_budget(
+                source_budget(context.maximum_work, context.maximum_bytes)?, context.cancellation)?;
             let bounds = JsonBounds { maximum_bytes: context.maximum_bytes, maximum_items: context.maximum_work, maximum_depth: 32 };
-            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, None, &mut |charge| admission.codec(charge))?;
+            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
             let encoded_owned = encoded.len() as u64;
             admission.charge(WorkCounters { bytes_hashed: encoded_owned, ..WorkCounters::default() })?;
             let digest = blake3::hash(&encoded).to_hex();
@@ -386,14 +388,14 @@ where
             }
             let opened = self.host.filesystem.open_workspace_measured(name, admission.remaining()?, context.cancellation).await
                 .map_err(|failure| map_error(failure.error))?;
-            admission.merge(opened.work)?;
-            admission.retain(opened.value.name().as_str().len() as u64)?;
+            admission.charge(opened.work)?;
+            admission.retain_owned(opened.value.name().as_str().len() as u64)?;
             let generation_bytes: [u8; 32] = snapshot.generation.as_resource().key().try_into()
                 .map_err(|_| Error::Invalid("project generation key must be 32 bytes".into()))?;
             let generation_id = GenerationId::new(Digest::from_bytes(generation_bytes));
             let selected = opened.value.generation_measured(generation_id, admission.remaining()?, context.cancellation).await
                 .map_err(|failure| map_error(failure.error))?;
-            admission.merge(selected.work)?;
+            admission.charge(selected.work)?;
             drop(selected.value);
             if let Some(value) = &snapshot.native_snapshot {
                 let Some(lazy) = self.native_source(&snapshot.project) else {
@@ -402,7 +404,7 @@ where
                 if lazy.workspace_id() != opened.value.id() {
                     return Err(Error::Unauthorized("native source names another original workspace".into()));
                 }
-                let encoded = canonical_json_bytes_bounded(value, bounds, None, &mut |charge| admission.codec(charge))?;
+                let encoded = canonical_json_bytes_bounded(value, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
                 let owned = encoded.len() as u64;
                 let frozen = LazySnapshotRef::deserialize(value)
                     .map_err(|_| Error::Invalid("native source is not a lazy snapshot reference".into()))?;
@@ -413,7 +415,7 @@ where
                 }
                 let verified = lazy.validate_snapshot_measured(frozen, admission.remaining()?, context.cancellation).await
                     .map_err(|failure| failure.error)?;
-                admission.merge(verified.work)?;
+                admission.charge(verified.work)?;
             }
             context.cancellation.check().map_err(|_| Error::Unauthorized("project source operation cancelled".into()))?;
             Ok(())
@@ -570,145 +572,22 @@ fn native_source_json<T: serde::Serialize>(
     super::fork_preparer::bounded_io::source_bytes_from_vec(bytes, Some(io))
 }
 
-struct SourceAdmission<'a> {
-    work: WorkCounters,
-    budget: WorkBudget,
-    live: u64,
-    cancellation: &'a acyclic_fs::CancellationToken,
-}
-
-impl<'a> SourceAdmission<'a> {
-    fn new(maximum_work: u64, maximum_bytes: u64, cancellation: &'a acyclic_fs::CancellationToken) -> Result<Self> {
-        if maximum_work == 0 || maximum_work == u64::MAX || maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(Error::Invalid("project source requires finite positive admission".into()));
-        }
-        cancellation.check().map_err(source_cancelled)?;
-        let operations = maximum_work / 14;
-        let bytes = maximum_bytes / 9;
-        Ok(Self {
-            work: WorkCounters::default(), live: 0, cancellation,
-            budget: WorkCounters {
-                authority_records_read: operations, authority_records_appended: operations,
-                authority_bytes_read: bytes, authority_bytes_written: bytes,
-                object_probes: operations, backend_read_operations: operations, backend_write_operations: operations,
-                durability_operations: operations, page_reads: operations, page_writes: operations,
-                object_bytes_read: bytes, object_bytes_written: bytes,
-                bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-                source_bytes_read: bytes, source_path_components: operations, source_entries_visited: operations,
-                output_bytes: bytes, items_examined: operations, items_returned: operations,
-                allocation_operations: operations, peak_allocation_bytes: maximum_bytes, materializations: operations,
-            },
-        })
+fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
+    if maximum_work == 0 || maximum_work == u64::MAX || maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        return Err(Error::Invalid("project source requires finite positive admission".into()));
     }
-
-    fn remaining(&self) -> Result<WorkBudget> {
-        self.cancellation.check().map_err(source_cancelled)?;
-        let mut remaining = self.work.remaining(self.budget).map_err(quota_error)?;
-        remaining.peak_allocation_bytes = self.budget.peak_allocation_bytes.checked_sub(self.live)
-            .ok_or_else(|| Error::Invalid("project source storage accounting overflow".into()))?;
-        Ok(remaining)
-    }
-
-    fn charge(&mut self, delta: WorkCounters) -> Result<()> {
-        self.cancellation.check().map_err(source_cancelled)?;
-        self.work.charge(&delta, &self.budget).map_err(quota_error)
-    }
-
-    fn merge(&mut self, child: WorkCounters) -> Result<()> {
-        let overlap = self.live.checked_add(child.peak_allocation_bytes)
-            .ok_or_else(|| Error::Invalid("project source storage accounting overflow".into()))?;
-        let mut combined = self.work.checked_add(child).map_err(quota_error)?;
-        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(overlap);
-        WorkCounters::default().admit(&combined, &self.budget).map_err(quota_error)?;
-        self.work = combined;
-        Ok(())
-    }
-
-    fn retain(&mut self, bytes: u64) -> Result<()> {
-        self.cancellation.check().map_err(source_cancelled)?;
-        let live = self.live.checked_add(bytes).ok_or_else(|| Error::Invalid("project source storage accounting overflow".into()))?;
-        self.work.charge_allocation(0, live, &self.budget).map_err(quota_error)?;
-        self.live = live;
-        Ok(())
-    }
-
-    fn release(&mut self, bytes: u64) -> Result<()> {
-        self.live = self.live.checked_sub(bytes).ok_or_else(|| Error::Invalid("project source storage release mismatch".into()))?;
-        Ok(())
-    }
-
-    fn codec(&mut self, charge: JsonCodecCharge) -> Result<()> {
-        match charge {
-            JsonCodecCharge::Work { bytes, items } => self.charge(WorkCounters { bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
-            JsonCodecCharge::Copy { bytes } => self.charge(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }),
-            JsonCodecCharge::Read { bytes } => self.charge(WorkCounters { source_bytes_read: bytes, ..WorkCounters::default() }),
-            JsonCodecCharge::Retain { bytes } => self.retain(bytes),
-            JsonCodecCharge::Release { bytes } => self.release(bytes),
-            JsonCodecCharge::CopyAdmission { bytes } => {
-                self.remaining()?;
-                self.work.admit(&WorkCounters { bytes_copied: bytes, ..WorkCounters::default() },
-                    &self.budget).map_err(quota_error)
-            }
-            JsonCodecCharge::AllocationOperation { bytes } =>
-                self.charge(WorkCounters { allocation_operations: u64::from(bytes != 0),
-                    ..WorkCounters::default() }),
-            JsonCodecCharge::Inspect { items } =>
-                self.charge(WorkCounters { items_examined: items, ..WorkCounters::default() }),
-            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
-                let available = self.remaining()?;
-                WorkCounters::default().admit(&WorkCounters {
-                    peak_allocation_bytes: maximum_owned_bytes, ..WorkCounters::default()
-                }, &available).map_err(quota_error)
-            }
-        }
-    }
-}
-
-fn quota_error(error: acyclic_fs::WorkError) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    { Error::NativeFilesystem { source: acyclic_fs::FsError::Work(error), custody: None } }
-    #[cfg(target_arch = "wasm32")]
-    { Error::Invalid(format!("project source quota: {error}")) }
-}
-fn source_cancelled(error: acyclic_fs::CancellationError) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    { Error::NativeFilesystem { source: acyclic_fs::FsError::Cancelled(error), custody: None } }
-    #[cfg(target_arch = "wasm32")]
-    { let _ = error; Error::Unauthorized("project source operation cancelled".into()) }
+    let mut budget = super::finite_budget(maximum_work / 14, maximum_bytes / 9);
+    budget.peak_allocation_bytes = maximum_bytes;
+    Ok(budget)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::conversation::{VolumeOperation, VolumeOwner};
-    use crate::core::{AggregateKind, Limits};
+    use crate::core::AggregateKind;
+    use crate::conversation::Limits;
     use crate::runtime::{TaskAdmissionRecord, TaskRunLimits};
-
-    #[test]
-    fn source_codec_copy_preflight_is_not_spent_or_fabricated_storage() -> Result<()> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut source = SourceAdmission::new(1_400, 900, &cancellation)?;
-        source.codec(JsonCodecCharge::CopyAdmission { bytes: 8 })?;
-        assert_eq!(source.work.bytes_copied, 0);
-        assert_eq!(source.live, 0);
-        source.codec(JsonCodecCharge::Retain { bytes: 8 })?;
-        source.codec(JsonCodecCharge::AllocationOperation { bytes: 8 })?;
-        source.codec(JsonCodecCharge::Copy { bytes: 8 })?;
-        source.codec(JsonCodecCharge::Inspect { items: 3 })?;
-        assert_eq!(source.work.bytes_copied, 8);
-        assert_eq!(source.work.allocation_operations, 1);
-        assert_eq!(source.work.items_examined, 3);
-        assert_eq!(source.live, 8);
-        let prefix = source.work;
-        assert!(matches!(source.codec(JsonCodecCharge::CopyAdmission { bytes: 101 }),
-            Err(Error::NativeFilesystem { source: acyclic_fs::FsError::Work(_), .. })));
-        assert_eq!(source.work, prefix);
-        cancellation.cancel();
-        source.codec(JsonCodecCharge::Release { bytes: 8 })?;
-        assert_eq!(source.live, 0);
-        assert_eq!(source.work, prefix);
-        Ok(())
-    }
 
     fn admission(root: crate::OperationId, project: &VolumeRef) -> Result<TaskAdmissionRecord> {
         Ok(TaskAdmissionRecord {
@@ -749,7 +628,7 @@ mod tests {
         let root_operation = crate::OperationId::from_bytes([44; 16]);
         let root = crate::runtime::task_id_for_admission(root_operation);
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = SourceAdmission::new(14_000_000, 90_000_000, &cancellation)?.budget;
+        let budget = source_budget(14_000_000, 90_000_000)?;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("finite original Root bootstrap ledger");
         let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
