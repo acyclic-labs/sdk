@@ -7547,7 +7547,8 @@ mod native_range_tests {
         permitted.items_examined = 16 * 1024;
         let mut work = DemandWork::new(permitted, &cancellation);
         let meter = NativeDemandReadMeter(std::sync::Mutex::new(&mut work));
-        let alias = acyclic_native_runtime::NativeFile::from_file_measured(transferred, &meter)?;
+        let alias = acyclic_native_runtime::NativeFile::from_file_measured(transferred, &meter)
+            .map_err(|(error, file)| { drop(file); error })?;
         let owned_bytes = alias.logical_owned_bytes();
         assert_eq!(owned_bytes, std::mem::size_of::<std::fs::File>() as u64);
         {

@@ -251,6 +251,55 @@ thread exit or a join. Known SDK payload/control custody remains live through
 its actual data destruction; a refused physical close stays nonterminal with
 the original owner and cause retained.
 
+## Owned warm continuation producer
+
+`PreparedNativeMountStart::restart_with_meter` consumes the previous
+`NativeMountSession` and a newly constructed stock source on the same preborn
+startup custody and caller ledger. It enters the existing six-argument platform
+constructor; it is not path-only recovery or a second mount actor.
+
+Windows namespace permission is issued only by a successful original
+`PrjMarkDirectoryAsPlaceholder` ACK. The supplied instance GUID and original root
+CreatorID remain in that driver's namespace outcome even when subsequent START,
+instance-info, or initialization fails. Later reparse/GUID/root observations
+check consistency only; a cold caller with an existing raw ProjFS reparse point
+is denied. Warm continuation requires physical quiescence, settled capture and
+cleanup DATA, the original volume/writable binding, and the actual retained
+SharedCheckout/root/native-original lineage. The SDK retains checkout aliases
+and measured canonical roots, not an old source's live watcher/FD activation.
+A new source supplies its genuinely fresh capture gate; the permanently retired
+gate is never reset. Sealed lineage is not task or namespace authority.
+
+Every refusal uses the original preborn failure buffer and its enlarged actual
+`size_of` profile. `NativeMountStartupFailure::into_parts` returns
+`(cause, new_owner, Option<old_owner>)`; consumers must retain both owners and
+their namespace DATA through explicit cleanup/inspection. Before destination
+copy admission, only the old owner holds the authentic destination, and the new
+owner has an empty destination plus the supplied source. Taking a capture error
+does not erase the outcome's unsettled-DATA fence.
+
+The ordinary volume callback now checks current READ independently of whether
+the mount was created writable. Authored publication and callbacks use required
+`check_write`; private SDK cache hydration remains READ plus original namespace
+permission. Native memo retirement transfers original DATA/G outside its
+metadata mutex, restoring the same state on refusal or unwind. Failed source
+watch facade Drop signals the watch's existing preborn reader rather than leaking
+its original sink/custody. Original File import failures drop only the returned
+standard handle before returning the unchanged OS error, without synthetic
+metered close work. The signed capture donor `8e8fa4ee8` is already rebased as
+`c08165970df8d64bf21740484acfc0f06a9ffd95`; it is not duplicated.
+
+Source-only handoff: none of these changes establishes current-cutover runtime
+qualification. The integrator must run original finite prepared mount/source
+lifecycle controls on Linux, Darwin interruption/quiescence, and Windows warm
+restart. Windows controls must include cold raw-marker denial, wrong original
+checkout/root/work rejection, old-gate rejection, cancelled restart retaining
+both owners, post-mark constructor failure, pending capture DATA rejection,
+original-creator MOVE with a foreign target, and distinct capture/namespace
+cleanup failures. The real-host ignored
+`prepared_restart_requires_original_issuer_and_fresh_stock_capture_gate` covers
+the successful owned transition and old-gate/cold-marker refusals in source.
+
 ## Dedicated runner prerequisites
 
 - `linux-fuse`: Linux x86-64, the Rust release in `rust-toolchain.toml`, a readable/writable `/dev/fuse`, and
@@ -271,15 +320,16 @@ bash scripts/qualify-native-mount.sh macos-nfs
 powershell -File scripts/qualify-native-mount.ps1 -Backend windows-projfs
 ```
 
-## Projection fix proven by the matrix
+## Historical projection matrix observations
 
-The Windows qualification exposed that orderly `PrjStopVirtualizing` leaves a
-hydrated ProjFS reparse tree at the caller's mount destination. That residue is
-not an ordinary empty directory and prevents reliable reuse. `ProjFsSession`
-now authenticates and removes only that stopped ProjFS cache using the existing
-bounded recovery path, recreates the caller's empty destination, and retains
-cleanup state when cleanup fails so an exact stop retry can finish it. No
-checkout, publication, or distributed-filesystem semantics changed.
+Earlier Windows qualification observed that orderly `PrjStopVirtualizing`
+leaves a hydrated ProjFS reparse tree at the caller's destination. Current
+physical retirement preserves the SDK marker and original user root; it does
+not recursively adopt/delete the stopped path or recreate that root. Only
+genuine original creator capabilities and settled capture permit namespace
+cleanup. Uncaptured authored DATA and namespace cleanup refusals remain in the
+original drain outcome. Reuse is the owned warm continuation described above,
+not authority inferred from that persistent reparse marker.
 
 The Windows metadata case also proved that ProjFS reports a metadata-only
 `FileBasicInfo` change as a handle close without data modification. That close

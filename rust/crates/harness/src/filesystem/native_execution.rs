@@ -1843,20 +1843,39 @@ impl<P: StreamProvider + 'static> OrdinaryVolumeCallback<P> {
         })
     }
 
-    async fn verify_with_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+    async fn verify_with_work(
+        &self, work: &NativeMaterializationWork, require_write: bool,
+    ) -> Result<()> {
+        if require_write && !self.writable {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "read-only original volume callback cannot authorize authored writes",
+            });
+        }
         if !self.work.shares_allocation_context(work) || !self.custody.matches_work(work) {
             return Err(native_root_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
         }
         self.owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
-        if self.writable {
+        if require_write {
             self.owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
         }
         self.owner.verify_with_native_work(false, work).await?;
         self.owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
-        if self.writable {
+        if require_write {
             self.owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
         }
         self.owner.verify_with_native_work(false, work).await
+    }
+
+    fn sdk_check<'a>(
+        &'a self, native: &'a acyclic_fs::native_mount::NativeMountMeterWork,
+        require_write: bool,
+    ) -> std::result::Result<acyclic_fs::native_mount::NativeMountCallbackFuture<'a>,
+        acyclic_fs::native_mount::NativeMountError> {
+        acyclic_fs::native_mount::NativeMountCallbackFuture::new_guarded::<Error, _, _>(native, || async move {
+            let work = native.native_materialization_work();
+            self.verify_with_work(&work, require_write).await
+        })
     }
 }
 
@@ -1865,16 +1884,19 @@ impl<P: StreamProvider + 'static> acyclic_fs::native_mount::NativeMountCallbackG
     fn check<'a>(&'a self, native: &'a acyclic_fs::native_mount::NativeMountMeterWork)
         -> std::result::Result<acyclic_fs::native_mount::NativeMountCallbackFuture<'a>,
             acyclic_fs::native_mount::NativeMountError> {
-        acyclic_fs::native_mount::NativeMountCallbackFuture::new_guarded::<Error, _, _>(native, || async move {
-            let work = native.native_materialization_work();
-            self.verify_with_work(&work).await
-        })
+        self.sdk_check(native, false)
+    }
+
+    fn check_write<'a>(&'a self, native: &'a acyclic_fs::native_mount::NativeMountMeterWork)
+        -> std::result::Result<acyclic_fs::native_mount::NativeMountCallbackFuture<'a>,
+            acyclic_fs::native_mount::NativeMountError> {
+        self.sdk_check(native, true)
     }
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::NativeVolumePublicationGuard for OrdinaryVolumeCallback<P> {
     fn check<'a>(&'a self, work: &'a NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || self.verify_with_work(work))
+        crate::NativeFutureBundle::new(work, || self.verify_with_work(work, true))
     }
 }
 
@@ -2081,6 +2103,15 @@ where
                     // Physical success is recorded before any late owner,
                     // quota or wait refusal can report a partial failure.
                     receipt.mounts.push(proof);
+                    if let Some(cause) = receipt.mounts.last_mut()
+                        .and_then(acyclic_fs::NativeMountDrainProof::take_retained_capture_failure)
+                    {
+                        // The proof already owns the retired physical prefix
+                        // and uncaptured namespace data. Move both semantic
+                        // causes without discarding that receipt or re-running
+                        // a physically completed retirement on retry.
+                        return Err(Error::from(cause));
+                    }
                     self.authenticate_mount_retirement(owner.owner, work).await?;
                 }
                 wait.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)

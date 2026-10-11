@@ -2369,7 +2369,10 @@ where
                     #[cfg(windows)]
                     let file = receipt.host(|work| host_root.open_file_wide_with_work(&host_path.units, work))?.into_std();
                     let meter = receipt.native_meter();
-                    let file = receipt.runtime_result(acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter))?;
+                    let file = receipt.runtime_result(
+                        acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+                            .map_err(|(error, file)| { drop(file); error }),
+                    )?;
                     sync_generation_file(&file, receipt, before_effect).await?;
                     drop(file);
                 }
@@ -2985,10 +2988,15 @@ fn create_file(
         let native = unsafe {
             acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
         };
-        receipt.runtime_result(native)
+        receipt.runtime_result(native.map_err(|(error, file)| { drop(file); error }))
     }
     #[cfg(unix)]
-    { receipt.runtime_result(acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)) }
+    {
+        receipt.runtime_result(
+            acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+                .map_err(|(error, file)| { drop(file); error }),
+        )
+    }
 }
 
 

@@ -2650,10 +2650,11 @@ impl NativeMountSourceWatchOwner {
     pub fn stop_measured(
         &mut self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, super::NativeMountError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        match self.stop_with_work(&mut super::NativeMountWork { work: &mut work }) {
-            Ok(value) => Ok(crate::OperationReceipt { value, work: work.work }),
-            Err(error) => Err(crate::OperationFailure::new(error, work.work)),
+        let work = crate::NativeMaterializationWork::new(budget, cancellation)
+            .map_err(|(error, spent)| crate::OperationFailure::new(error.into(), spent))?;
+        match self.stop_with_meter(&work.native_mount_work()) {
+            Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+            Err(error) => Err(crate::OperationFailure::new(error, work.receipt())),
         }
     }
 }
@@ -2667,16 +2668,10 @@ impl std::ops::Deref for NativeMountSourceWatchOwner {
 
 impl Drop for NativeMountSourceWatchOwner {
     fn drop(&mut self) {
-        if (self.watch.is_some() || self.startup_failure.is_some())
-            && !self.stopped.load(Ordering::Acquire)
-        {
-            // Match the existing native-session final-facade-loss protocol:
-            // preserve until process exit, without claiming physical death.
-            std::mem::forget((
-                self.watch.take(), self.sink.take(), self.startup_failure.take(), self.custody.take(),
-            ));
-            return;
-        }
+        // The existing native watch's preborn reader owns Delivery, its sink,
+        // constructor inputs and intrinsic G. Last facade Drop requests that
+        // same physical retirement; it must not leak the watcher or mint an
+        // executor. This does not publish stopped/detached evidence.
         drop(self.watch.take());
         drop(self.sink.take());
         drop(self.startup_failure.take());
@@ -7343,6 +7338,15 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
+        let mut lineage = self.authored.native_namespace_lineage()?;
+        // The authored checkout alone cannot identify a different lazy
+        // demand provider or a different selected source subtree.
+        lineage.lazy_owner = Some(&self.lazy);
+        lineage.lazy_root = Some(&self.root);
+        Some(lineage)
+    }
+
     fn native_callback_guard(&self) -> Option<Arc<dyn super::NativeMountCallbackGuard>> {
         self.authored.native_callback_guard()
     }
@@ -11329,12 +11333,18 @@ mod tests {
     struct PublicationLifetimeGuard {
         lifetime: crate::CancellationToken,
         visits: Arc<std::sync::atomic::AtomicUsize>,
+        authored_write: bool,
     }
 
-    impl super::super::NativeMountCallbackGuard for PublicationLifetimeGuard {
-        fn check<'a>(
-            &'a self, work: &'a super::super::NativeMountMeterWork,
+    impl PublicationLifetimeGuard {
+        fn verify<'a>(
+            &'a self, work: &'a super::super::NativeMountMeterWork, require_write: bool,
         ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
+            if require_write && !self.authored_write {
+                return Err(super::super::NativeMountError::Lifecycle(
+                    "the installed fixture policy permits READ only",
+                ));
+            }
             super::super::NativeMountCallbackFuture::new_guarded(work, || async move {
                 work.native_materialization_work().charge(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
@@ -11343,6 +11353,20 @@ mod tests {
                 self.lifetime.check().map_err(|_| MountSourceError::Stale)?;
                 Ok::<_, MountSourceError>(())
             })
+        }
+    }
+
+    impl super::super::NativeMountCallbackGuard for PublicationLifetimeGuard {
+        fn check<'a>(
+            &'a self, work: &'a super::super::NativeMountMeterWork,
+        ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
+            self.verify(work, false)
+        }
+
+        fn check_write<'a>(
+            &'a self, work: &'a super::super::NativeMountMeterWork,
+        ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
+            self.verify(work, true)
         }
     }
 
@@ -11356,6 +11380,7 @@ mod tests {
         let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         view.authored = view.authored.with_native_callback_guard(Arc::new(PublicationLifetimeGuard {
             lifetime: owner.clone(), visits: Arc::clone(&visits),
+            authored_write: true,
         }));
         let held = view.open_file(&mount_path("file"))?;
         held.write_range(0, Bytes::from_static(b"after"))?;
@@ -11386,6 +11411,54 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn installed_read_policy_cannot_publish_an_actual_dirty_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("file"), b"before")?;
+        let mut view = mounted_view(source.path(), "installed-read-publication-policy").await?;
+        let held = view.open_file(&mount_path("file"))?;
+        held.write_range(0, Bytes::from_static(b"after"))?;
+        let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // This fixture exercises the installed SDK policy protocol, not an
+        // authenticated Harness task-owner or a fabricated namespace grant.
+        let guard: Arc<dyn super::super::NativeMountCallbackGuard> =
+            Arc::new(PublicationLifetimeGuard {
+                lifetime: crate::CancellationToken::new(),
+                visits: Arc::clone(&visits),
+                authored_write: false,
+            });
+        let caller = crate::CancellationToken::new();
+        let original = native_control_work(crate::WorkBudget::UNBOUNDED, &caller)?;
+        guard.check(&original.native_mount_work())?.await?;
+        assert_eq!(visits.load(Ordering::Acquire), 1);
+        view.authored = view.authored.with_native_callback_guard(guard);
+        let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = view.authored.sync_async_with_permit_native_work_guarded(
+            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+            {
+                let caller_visits = Arc::clone(&caller_visits);
+                move |work: &crate::NativeMaterializationWork| {
+                    let work = work.clone();
+                    let caller_visits = Arc::clone(&caller_visits);
+                    async move {
+                        caller_visits.fetch_add(1, Ordering::AcqRel);
+                        work.admit(crate::WorkCounters::UNCHARGED)
+                            .map_err(MountSourceError::NativeWork)
+                    }
+                }
+            },
+        ).await;
+        assert!(result.is_err());
+        assert_eq!(caller_visits.load(Ordering::Acquire), 0);
+        assert_eq!(visits.load(Ordering::Acquire), 1,
+            "WRITE denial precedes the verification future, despite valid READ");
+        assert_eq!(original.receipt().authority_records_appended, 0);
+        assert!(view.authored.shared_checkout().read_current_state().await.has_pending_mutations());
+        assert_eq!(std::fs::read(source.path().join("file"))?, b"before");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn source_publication_guard_budget_denial_does_not_start_owned_guard_future()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -11397,6 +11470,7 @@ mod tests {
         let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let guard: Arc<dyn super::super::NativeMountCallbackGuard> = Arc::new(PublicationLifetimeGuard {
             lifetime: crate::CancellationToken::new(), visits: Arc::clone(&visits),
+            authored_write: true,
         });
         let before = original.receipt();
         let mut publish = super::super::adapter::source_publication_guard(Some(guard), Some(caller.clone()));

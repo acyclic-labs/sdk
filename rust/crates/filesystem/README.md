@@ -160,6 +160,12 @@ or effects; direct host-configured mounts retain their explicit host role.
 Authorization failure moves its typed cause into a preadmitted per-callback box,
 not a shared diagnostic slot. The same box is unsized without another allocation
 and physically destroyed before its outer allocation custody is released.
+Authored source mutation and publication request the distinct required WRITE
+verification before provider frames/effects and again after completed effects.
+READ verification alone cannot authorize capture, metadata edits, or publication.
+FUSE, Darwin, and Windows retain completed prefixes on post-effect denial rather
+than claiming rollback. Private cache hydration and already-accepted namespace
+retirement use their independent SDK namespace ownership, not authored WRITE.
 Directory pages are non-cloneable intrinsic owners of entry/name/cursor capacity.
 Physical projections transfer and split their existing custody for escaping data,
 without adopting that data again or creating another ledger.
@@ -172,6 +178,19 @@ new unbounded ledger or cancellation token; it does not reset callback policy.
 A cancelled cleanup wait retains unattempted handles. Consumed failed SDK
 shutdowns remain failures, not absence or cleanup-complete evidence. These are
 SDK-observable control attempts, not inferred transport acknowledgements or RSS.
+
+Administrative cold recovery accepts its original explicit unbounded acquisition
+and one actual standard-library thread before destination-fence birth. The same
+preallocated command/return slot runs recover and detach on each caller's unchanged
+finite allowance, retaining the original fence identity and actual pending controls
+on failure. LastDrop signals that worker without joining the destructor. Only after
+all real helper/task/directory controls physically retire may its original prebirth
+one-write credit close the actual fence file. It preserves the on-disk marker and
+authored namespace DATA, even when namespace detach failed; physical close is not
+namespace restoration or permission to unlink. Known SDK path, state, and closure
+DATA retain genuine allocation custody until physical drop. Thread stacks, scheduler
+bookkeeping, Arc headers, and standard-library join internals remain opaque exclusions.
+Mounted native-source paths never enter this administrative mechanism.
 
 Darwin's existing bridge retains an accepted interruption before its SDK instance
 exists. The same mutex orders pre-mount stop checks and instance publication;
@@ -195,6 +214,14 @@ original allocation guards retire together inside the capture phase; a returned
 snapshot does not retain quota for already-freed state. Output containers fund
 their own actual capacity before collection. Primary and reconciliation failures
 remain separately typed at the mounted boundary.
+
+Physical mount retirement does not certify authored capture or namespace
+restoration. When Windows retirement preserves uncaptured or nonempty staging
+data, the existing drain proof owns that original namespace metadata. Taking its
+failure moves one whole lifecycle cause containing both capture and distinct
+cleanup failures; it neither discards the retained data nor authorizes deletion
+or publication. Native callers retain the actual completed physical prefix before
+returning that cause, so retry never retires a completed mount again.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows

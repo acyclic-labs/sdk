@@ -61,7 +61,7 @@ use super::{
 use crate::kernel::{FileMetadata, MetadataField};
 use bytes::Bytes;
 use fuser::{
-    BackgroundSession, BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr,
+    BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr,
     FileHandle as FuseFileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     KernelConfig, LockOwner, MountOption, Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
@@ -2777,12 +2777,37 @@ impl FuseCoreOwner {
 
 struct FuseInvalidatorJob {
     owner: FuseCoreOwner,
-    notifier: Notifier,
+    control: Arc<FuseDriverControl>,
     allocation: Option<crate::NativeAllocation>,
 }
 
 impl FuseInvalidatorJob {
-    fn run(self) { self.owner.run_invalidator(&self.notifier); }
+    fn run(self) {
+        let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while !state.startup_finished {
+            state = self.control.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        drop(state);
+        if let Some(notifier) = self.owner.core.notifier.get() {
+            self.owner.run_invalidator(notifier);
+        }
+        loop {
+            let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while !state.stop_requested && !state.retired {
+                state = self.control.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+            if state.retired { return; }
+            state.stop_requested = false;
+            drop(state);
+            let result = retire_fuse_driver(&self.control, None);
+            let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Err(error) = result {
+                if state.failure.is_none() { state.failure = Some(error); }
+            }
+            self.control.changed.notify_all();
+            if state.retired { return; }
+        }
+    }
 }
 
 pub(super) struct FuseStartupMeterScope {
@@ -3548,12 +3573,24 @@ impl StartupFuseConfig {
         let bytes = (count * std::mem::size_of::<MountOption>()) as u64;
         let allocation = materialization.claim(bytes)?;
         let mut owned = Self { config: Config::default(), allocation };
-        owned.config.mount_options.try_reserve_exact(count)?;
+        owned.config.mount_options.try_reserve_exact(count).map_err(|error| {
+            materialization.runtime_error(materialization.runtime_meter().allocation_failed(error))
+        })?;
+        owned.allocation.reconcile_capacity(
+            (owned.config.mount_options.capacity() * std::mem::size_of::<MountOption>()) as u64,
+        )?;
         let name = "acyclic-fs";
         let copied = crate::WorkCounters { bytes_copied: name.len() as u64, ..crate::WorkCounters::UNCHARGED };
         materialization.admit(copied)?;
-        owned.allocation.grow(name.len() as u64)?;
-        owned.config.mount_options.push(MountOption::FSName(name.to_owned()));
+        let mut name_allocation = materialization.claim(name.len() as u64)?;
+        let mut owned_name = String::new();
+        owned_name.try_reserve_exact(name.len()).map_err(|error| {
+            materialization.runtime_error(materialization.runtime_meter().allocation_failed(error))
+        })?;
+        name_allocation.reconcile_capacity(owned_name.capacity() as u64)?;
+        owned_name.push_str(name);
+        owned.allocation.absorb(&mut name_allocation)?;
+        owned.config.mount_options.push(MountOption::FSName(owned_name));
         materialization.record_admitted(copied)?;
         owned.config.mount_options.push(MountOption::DefaultPermissions);
         owned.config.mount_options.push(MountOption::Exec);
@@ -3571,10 +3608,252 @@ impl Drop for StartupFuseConfig {
     }
 }
 
-/// One background libfuse session.
+/// The original crash-recovery helper engine's closed process frame, prepared
+/// before namespace birth. The owned credit pays actual leaf attempts only;
+/// its finite maximum is not a receipt or a claim of successful detach.
+struct FuseRetirementHelper {
+    path: FuseOwned<Vec<u8>>,
+    program: &'static std::ffi::CStr,
+    frame: Option<acyclic_native_runtime::PreparedClosedProcess>,
+    helper: Option<acyclic_native_runtime::ProcessTree>,
+    completed: bool,
+    failure: Option<NativeMountError>,
+    credit: Arc<crate::materializer::NativeOwnedCleanupCredit>,
+    terminal_credit: Arc<crate::materializer::NativeOwnedCleanupCredit>,
+}
+
+impl FuseRetirementHelper {
+    fn prepare(destination: &Path, work: &crate::NativeMaterializationWork)
+        -> Result<Option<Self>, NativeMountError>
+    {
+        let program = match fuse_recovery_helper(work) {
+            Ok(program) => program,
+            Err(NativeMountError::CapabilityUnavailable(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Self::prepare_program(destination, program, work).map(Some)
+    }
+
+    fn prepare_program(
+        destination: &Path, program: &'static std::ffi::CStr,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        let normal = work.allocation_work();
+        let source = destination.as_os_str().as_bytes();
+        if source.contains(&0) { return Err(NativeMountError::InvalidDestination); }
+        let count = source.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        let copied = crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED };
+        normal.admit(copied)?;
+        let mut allocation = normal.claim(count as u64)?;
+        let mut path = Vec::new();
+        path.try_reserve_exact(count).map_err(|error| {
+            normal.runtime_error(normal.runtime_meter().allocation_failed(error))
+        })?;
+        allocation.reconcile_capacity(path.capacity() as u64)?;
+        path.extend_from_slice(source);
+        path.push(0);
+        normal.record_admitted(copied)?;
+        let path = FuseOwned::native(path, allocation);
+        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process_measured(
+            5, normal.runtime_meter_owner(),
+        ).map_err(|error| normal.runtime_error(error))?;
+        // At most 3,001 observations and 3,000 sleeps in the existing 30s/10ms
+        // helper policy; at most 5,001 observations and 5,000 sleeps in the
+        // runtime's existing 5s/1ms termination policy, plus the physical reap.
+        // EINTR consumes the same finite credit and retains custody on refusal.
+        let observed = 3_001_u64 + 3_000 + 5_001 + 5_000 + 1;
+        // Seven POSIX setup calls, spawn, two SDK destroys, group SIGKILL,
+        // and two retained configuration-destroy retries if those SDK calls fail.
+        let mut reserved = normal.reserve_work(crate::WorkCounters {
+            backend_read_operations: observed + 1,
+            backend_write_operations: 13,
+            items_examined: 6,
+            bytes_copied: (7 * std::mem::size_of::<*mut libc::c_char>()) as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let terminal = reserved.partition_work(crate::WorkCounters {
+            backend_read_operations: 5_001 + 5_000 + 1,
+            backend_write_operations: 3,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let terminal_credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(terminal)?;
+        let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(reserved)?;
+        Ok(Self { path, program, frame: Some(frame), helper: None,
+            completed: false, failure: None, credit, terminal_credit })
+    }
+
+    fn retire(&mut self, identity: Option<crate::NativeRootIdentity>)
+        -> Result<(), NativeMountError>
+    {
+        if self.completed { return Ok(()); }
+        let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
+            .map_err(|_| NativeMountError::InvalidDestination)?;
+        let observed = (|| {
+            if self.failure.is_some() { return Ok(None); }
+            if self.helper.is_none() {
+                if let Some(identity) = identity {
+                    let metadata = fuse_recovery_stat(path, &mut &self.credit)?;
+                    if metadata.st_dev as u64 != identity.device || metadata.st_ino as u64 != identity.object {
+                        return Err(NativeMountError::DestinationBusy);
+                    }
+                }
+                acyclic_native_runtime::ProcessTree::spawn_closed_prepared(
+                    self.program, &[c"-u", c"-q", c"-z", c"--", path],
+                    &mut self.frame, self.credit.as_ref(), &mut self.helper,
+                ).map_err(|error| self.credit.original_work().runtime_error(error))?;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            for observation in 0..=3_000 {
+                let status = self.helper.as_mut().expect("accepted helper remains owned")
+                    .try_wait_measured(self.credit.as_ref())
+                    .map_err(|error| self.credit.original_work().runtime_error(error))?;
+                if status.is_some() || observation == 3_000 || std::time::Instant::now() >= deadline {
+                    return Ok(status);
+                }
+                fuse_recovery_attempt(&mut &self.credit, false, || {
+                    std::thread::sleep(Duration::from_millis(10)); Ok(())
+                })?;
+            }
+            unreachable!("finite helper observation returns at its last admitted visit")
+        })();
+        let status = match observed {
+            Ok(status) => status,
+            Err(error) => { self.failure.get_or_insert(error); None }
+        };
+        // Observation or spawn denial cannot consume the distinct original
+        // signal/reap credits. All accepted PID/configuration owners remain
+        // here if mandatory terminal cleanup itself fails.
+        self.drain_process()?;
+        self.completed = true;
+        if let Some(error) = self.failure.take() { return Err(error); }
+        match status {
+            Some(status) if status.success() => Ok(()),
+            Some(_) => Err(NativeMountError::FuseShutdownFailed),
+            None => Err(NativeMountError::Lifecycle("fusermount retirement exceeded 30 seconds")),
+        }
+    }
+
+    /// Drain only already accepted helper/configuration owners. A successful
+    /// later kernel detach cannot erase a helper left pending by an earlier
+    /// refusal, and must never spawn another helper just to retire its owner.
+    fn drain_process(&mut self) -> Result<(), NativeMountError> {
+        if let Some(helper) = self.helper.as_mut() {
+            helper.terminate_measured(self.terminal_credit.as_ref())
+                .map_err(|error| self.terminal_credit.original_work().runtime_error(error))?;
+            drop(self.helper.take());
+        }
+        drop(self.frame.take());
+        Ok(())
+    }
+}
+
+/// The existing SDK background worker's preborn input. Retained SDK mode keeps
+/// its original mount in the callable while `Session::run` consumes the reader.
+struct FuseSdkInput {
+    state: Mutex<FuseSdkInputState>,
+    ready: Condvar,
+    _allocation: crate::NativeAllocation,
+}
+
+struct FuseSdkInputState {
+    session: Option<fuser::Session<FuseProjection>>,
+    submitted: bool,
+}
+
+impl FuseSdkInput {
+    fn run(&self) -> std::io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while !state.submitted {
+            state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        let session = state.session.take();
+        drop(state);
+        match session { Some(session) => session.run(), None => Ok(()) }
+    }
+
+    fn submit(&self, session: Option<fuser::Session<FuseProjection>>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.submitted { return; }
+        state.session = session;
+        state.submitted = true;
+        self.ready.notify_all();
+    }
+}
+
+/// Physical owners stay in the original invalidator producer, including failed
+/// starts. Caller loans never hold this mutex across SDK/source/accounting I/O.
+struct FuseDriverControl {
+    state: Mutex<FuseDriverControlState>,
+    changed: Condvar,
+    _allocation: crate::NativeAllocation,
+}
+
+struct FuseDriverControlState {
+    physical: Option<FusePhysicalSession>,
+    retirement: Option<super::NativeMountRetirement>,
+    loan_custody: (bool, bool),
+    startup_finished: bool,
+    stop_requested: bool,
+    retired: bool,
+    failure: Option<NativeMountError>,
+}
+
+struct FuseDriverLoan {
+    control: Arc<FuseDriverControl>,
+    physical: Option<FusePhysicalSession>,
+    retirement: Option<super::NativeMountRetirement>,
+    startup: bool,
+    committed: bool,
+}
+
+impl FuseDriverLoan {
+    fn take(control: &Arc<FuseDriverControl>, startup: bool) -> Result<Self, NativeMountError> {
+        let mut state = control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let physical = state.physical.take().ok_or(NativeMountError::ControlPending)?;
+        let retirement = state.retirement.take();
+        state.loan_custody = retirement.as_ref().map_or((false, false), |packet| (
+            packet.destination_guard.is_some(),
+            packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
+        ));
+        Ok(Self { control: Arc::clone(control), physical: Some(physical), retirement,
+            startup, committed: false })
+    }
+}
+
+impl Drop for FuseDriverLoan {
+    fn drop(&mut self) {
+        if self.startup && !self.committed {
+            if let Some(physical) = &self.physical {
+                physical.core.stopping.store(true, Ordering::Release);
+                physical.core.invalidation.notify_all();
+                if let Some(input) = &physical.sdk_input { input.submit(None); }
+            }
+        }
+        let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.physical = self.physical.take();
+        state.retirement = self.retirement.take();
+        state.loan_custody = (false, false);
+        if self.startup {
+            state.startup_finished = true;
+            if !self.committed { state.stop_requested = true; }
+        }
+        self.control.changed.notify_all();
+    }
+}
+
 pub(super) struct FuseSession {
-    session: Option<BackgroundSession>,
+    control: Arc<FuseDriverControl>,
+    core: Arc<ProjectionCore>,
+    core_custody: Option<crate::demand::NativeMountAllocationCustody>,
+    invalidator: Option<std::thread::JoinHandle<()>>,
+}
+
+/// One background libfuse session.
+struct FusePhysicalSession {
+    session: Option<fuser::SessionUnmounter>,
     pending_session: Option<fuser::Session<FuseProjection>>,
+    sdk_input: Option<Arc<FuseSdkInput>>,
+    sdk_worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     core: Arc<ProjectionCore>,
     core_custody: Option<crate::demand::NativeMountAllocationCustody>,
     invalidator: Option<std::thread::JoinHandle<()>>,
@@ -3582,9 +3861,151 @@ pub(super) struct FuseSession {
     invalidator_failed: bool,
     active_root: Option<cap_std::fs::Dir>,
     native_root_identity: Option<crate::NativeRootIdentity>,
+    retirement_helper: Option<FuseRetirementHelper>,
+    birth_cleanup: crate::NativeWorkReservation,
 }
 
-impl FuseSession {
+/// Borrowed controls of the original driver. The birth token is deliberately
+/// separate so cleanup can loan it without moving any accepted SDK resource.
+struct FuseStopState<'a> {
+    session: &'a mut Option<fuser::SessionUnmounter>,
+    pending_session: &'a mut Option<fuser::Session<FuseProjection>>,
+    sdk_input: &'a Option<Arc<FuseSdkInput>>,
+    sdk_worker: &'a mut Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    core: &'a Arc<ProjectionCore>,
+    core_custody: Option<&'a crate::demand::NativeMountAllocationCustody>,
+    invalidator: &'a mut Option<std::thread::JoinHandle<()>>,
+    shutdown_failed: &'a mut bool,
+    invalidator_failed: &'a mut bool,
+    active_root: &'a mut Option<cap_std::fs::Dir>,
+    retirement_helper: &'a mut Option<FuseRetirementHelper>,
+    native_root_identity: Option<crate::NativeRootIdentity>,
+}
+
+enum FuseStopWork<'a, 'b> {
+    Native(&'a super::NativeMountMeterWork),
+    Cleanup(&'a crate::materializer::NativeCleanupLoan<'b>),
+}
+
+impl FuseStopWork<'_, '_> {
+    fn started_io(&self, actual: crate::WorkCounters) -> Result<(), NativeMountError> {
+        match self {
+            Self::Native(native) => native.native_materialization_work().charge(actual)?,
+            Self::Cleanup(loan) => loan.started_io(actual)?,
+        }
+        Ok(())
+    }
+}
+
+impl FuseStopState<'_> {
+    fn stop(self, work: FuseStopWork<'_, '_>) -> Result<(), NativeMountError> {
+        if *self.shutdown_failed { return Err(NativeMountError::FuseShutdownFailed); }
+        if *self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
+        if self.session.is_none() && self.pending_session.is_none() && self.invalidator.is_none()
+            && self.sdk_worker.is_none() && self.active_root.is_none()
+            && self.retirement_helper.is_none() { return Ok(()); }
+        let native = match &work {
+            FuseStopWork::Native(native) => {
+                native.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
+                (*native).clone()
+            }
+            FuseStopWork::Cleanup(loan) => {
+                loan.check_wait()?;
+                loan.original_work().native_mount_work()
+            }
+        };
+        // Original callback scope, not cleanup permission. Existing callback
+        // producers still check their original grants and cancellation.
+        let _active = FuseStartupMeterScope::existing(self.core, self.core_custody, &native)?;
+        let write = crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED };
+        if self.active_root.is_some() {
+            match &work {
+                FuseStopWork::Native(native) => {
+                    let materialization = native.native_materialization_work();
+                    let mut host = &materialization;
+                    let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
+                    let directory = self.active_root.take().expect("preadmitted root capability remains owned");
+                    let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
+                        &mut host, cleanup, || drop(directory),
+                    );
+                    recorded.map_err(NativeMountError::from)?;
+                }
+                FuseStopWork::Cleanup(_) => {
+                    work.started_io(write)?;
+                    // SDK capability-drop attempt, not an internal syscall
+                    // count or namespace acknowledgement.
+                    drop(self.active_root.take());
+                }
+            }
+        }
+        if let Some(session) = self.session.as_mut() {
+            work.started_io(write)?;
+            self.core.stopping.store(true, Ordering::Release);
+            self.core.invalidation.notify_all();
+            // Kernel refusal keeps the actual SDK mount and callable intact.
+            if let Err(error) = session.try_unmount() {
+                if error.raw_os_error() != Some(libc::EPERM) { return Err(error.into()); }
+                let helper = self.retirement_helper.as_mut().ok_or(
+                    NativeMountError::CapabilityUnavailable(
+                        "no canonical fusermount helper is available for retirement".into(),
+                    ),
+                )?;
+                helper.retire(self.native_root_identity)?;
+                work.started_io(write)?;
+                session.try_unmount()?;
+            }
+            drop(self.session.take());
+        }
+        if self.pending_session.is_some() {
+            // Retained SDK construction disables implicit unmount on Drop.
+            drop(self.pending_session.take());
+        }
+        if let Some(input) = self.sdk_input { 
+            let submitted = input.state.lock().unwrap_or_else(PoisonError::into_inner).submitted;
+            if !submitted { input.submit(None); }
+        }
+        if self.sdk_worker.is_some() {
+            work.started_io(crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            })?;
+            let worker = self.sdk_worker.take().expect("accepted SDK worker remains owned");
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error.into()),
+                Err(panic) => return Err(NativeMountError::DriverPanicked {
+                    operation: "FUSE SDK request worker", panic: Mutex::new(panic),
+                }),
+            }
+        }
+        if self.invalidator.is_some() {
+            work.started_io(crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            })?;
+            {
+                let _state = self.core.state.lock();
+                self.core.stopping.store(true, Ordering::Release);
+                self.core.invalidation.notify_all();
+            }
+            let invalidator = self.invalidator.take().expect("admitted invalidator remains owned");
+            let joined = invalidator.join();
+            if joined.is_err() { *self.invalidator_failed = true; }
+            if let Err(panic) = joined {
+                return Err(NativeMountError::DriverPanicked {
+                    operation: "FUSE invalidator shutdown", panic: Mutex::new(panic),
+                });
+            }
+        }
+        if let Some(helper) = self.retirement_helper.as_mut() {
+            helper.drain_process()?;
+        }
+        // Actual SDK workers and helper owners are terminal. Retire unused
+        // preborn backing/credits before upper Source/watch/fence drainage.
+        drop(self.retirement_helper.take());
+        Ok(())
+    }
+}
+
+impl FusePhysicalSession {
     pub(super) fn begin_original_work(
         &self, native: &super::NativeMountMeterWork,
     ) -> Result<FuseStartupMeterScope, NativeMountError> {
@@ -3782,139 +4203,24 @@ impl FuseSession {
             .ok_or(NativeMountError::Lifecycle("session is stopped"))
     }
 
-    /// Ordinary startup delegates to the same actual SDK lifecycle producer.
-    pub(super) fn start(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, super::DriverStartFailure> {
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| NativeMountError::from(cause))?;
-        Self::start_with_work(request, source, &work)
-    }
 
-    /// Preserves the caller's canonical ledger through source registration,
-    /// known caller buffers, and each actual SDK/control boundary. A denied
-    /// post-mount step returns the actual partially started driver owner.
-    pub(super) fn start_with_work(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, super::DriverStartFailure> {
-        work.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
-        Self::start_with_meter(request, source, &work.native_mount_work())
-    }
-
-    pub(super) fn start_with_meter(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-        source_work: &super::NativeMountMeterWork,
-    ) -> Result<Self, super::DriverStartFailure> {
-            let meter = source_work.meter();
-            fuse_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
-            source_work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
-            // Sampling before the root can only label it with an older view.
-            let stamp = source.view_stamp_with_meter(source_work).map_err(source_error)?;
-            let root = source.lookup_with_meter(&MountPath::root(), source_work)
-                .map_err(source_error)?
-                .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
-            if root.node.kind != MountNodeKind::Directory {
-                return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
-            }
-            let metadata = {
-                let materialization = source_work.native_materialization_work();
-                let mut host = &materialization;
-                crate::native_host::unix_name_with_work(
-                    request.destination.as_os_str(), &mut host, fuse_recovery_stat,
-                ).map_err(NativeMountError::from)?
-            };
-            let owner = ProjectionCore::root_with_meter(
-                source, root, stamp, request.writable, metadata.st_uid, metadata.st_gid,
-                source_work,
-            )?;
-            let _startup_meter = FuseStartupMeterScope::new(&owner, source_work)?;
-            let observer: Weak<ProjectionCore> = Arc::downgrade(&owner.core);
-            owner.core.source.observe_view_with_meter(observer, source_work).map_err(source_error)?;
-            let config = StartupFuseConfig::new(request.writable, source_work)?;
-            let mut started = Self {
-                session: None, pending_session: None, core: owner.core,
-                core_custody: Some(owner.custody), invalidator: None,
-                shutdown_failed: false, invalidator_failed: false,
-                active_root: None, native_root_identity: None,
-            };
-            let delta = crate::WorkCounters {
-                backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-            };
-            source_work.native_materialization_work().charge(delta).map_err(NativeMountError::from)?;
-            let filesystem = FuseProjection {
-                core: Arc::clone(&started.core),
-                _core_custody: started.core_custody.clone(),
-                skips_opendir: false, skips_open: false,
-            };
-            match fuser::Session::new(filesystem, &request.destination, &config.config) {
-                Ok(session) => started.pending_session = Some(session),
-                Err(error) => {
-                    // The SDK owns its internal failed-start cleanup; without
-                    // successful detach evidence its outcome is not invented.
-                    started.shutdown_failed = true;
-                    return Err(super::DriverStartFailure::retaining_driver(
-                        started.core.take_handler_error().unwrap_or_else(|| error.into()),
-                        super::DriverSession::Fuse(started),
-                    ));
-                }
-            }
-            let notifier = started.pending_session.as_ref().expect("SDK session retained").notifier();
-            let _ = started.core.notifier.set(notifier.clone());
-            let result = (|| -> Result<(), NativeMountError> {
-                source_work.native_materialization_work().charge(delta)?;
-                let pending = started.pending_session.take().expect("SDK session retained");
-                match pending.spawn() {
-                    Ok(session) => started.session = Some(session),
-                    Err(error) => { started.shutdown_failed = true; return Err(error.into()); }
-                }
-                started.spawn_invalidator(notifier, source_work)?;
-                started.authenticate_root_with_meter(&request.destination, source_work)
-            })();
-            match result {
-                Ok(()) => Ok(started),
-                Err(error) => Err(super::DriverStartFailure::retaining_driver(
-                    error, super::DriverSession::Fuse(started),
-                )),
-            }
-    }
-
-    fn spawn_invalidator(
-        &mut self, notifier: Notifier, native: &super::NativeMountMeterWork,
-    ) -> Result<(), NativeMountError> {
-        let owner = FuseCoreOwner {
-            core: Arc::clone(&self.core),
-            custody: self.core_custody.clone().ok_or(NativeMountError::Lifecycle("FUSE core custody is absent"))?,
-        };
-        let mut job = FuseInvalidatorJob { owner, notifier, allocation: None };
-        let materialization = native.native_materialization_work();
-        let name = "acyclic-fs-fuse-invalidate";
-        let copied = crate::WorkCounters { bytes_copied: name.len() as u64, ..crate::WorkCounters::UNCHARGED };
-        materialization.admit(copied)?;
-        let bytes = (std::mem::size_of_val(&job) as u64).checked_add(name.len() as u64)
-            .ok_or(crate::WorkError::Overflow)?;
-        job.allocation = Some(materialization.claim(bytes)?);
-        let name = name.to_owned();
-        materialization.record_admitted(copied)?;
-        materialization.charge(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })?;
-        self.invalidator = Some(std::thread::Builder::new().name(name).spawn(move || job.run())?);
-        Ok(())
-    }
-
-    /// Uses the same teardown engine as bounded stop, without a work limit.
+    /// Retires this original driver's accepted controls without a new payer.
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
         if self.shutdown_failed { return Err(NativeMountError::FuseShutdownFailed); }
         if self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
         if self.session.is_none() && self.pending_session.is_none() && self.invalidator.is_none()
-            && self.active_root.is_none() {
+            && self.sdk_worker.is_none() && self.active_root.is_none() && self.retirement_helper.is_none() {
             return Ok(());
         }
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| NativeMountError::from(cause))?;
-        self.stop_measured(&work)
+        let loan = self.birth_cleanup.accepted_cleanup_loan();
+        FuseStopState {
+            session: &mut self.session, pending_session: &mut self.pending_session,
+            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
+            core: &self.core, core_custody: self.core_custody.as_ref(),
+            invalidator: &mut self.invalidator, shutdown_failed: &mut self.shutdown_failed,
+            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
+            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
+        }.stop(FuseStopWork::Cleanup(&loan))
     }
 
     /// Admits the actual fuser detach/join and invalidator join separately.
@@ -3927,7 +4233,8 @@ impl FuseSession {
         if self.shutdown_failed { return Err(NativeMountError::FuseShutdownFailed); }
         if self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
         if self.session.is_none() && self.pending_session.is_none() && self.invalidator.is_none()
-            && self.active_root.is_none() { return Ok(()); }
+            && self.sdk_worker.is_none() && self.active_root.is_none()
+            && self.retirement_helper.is_none() { return Ok(()); }
         self.stop_with_meter(&work.native_mount_work())
     }
 
@@ -3936,67 +4243,339 @@ impl FuseSession {
     pub(super) fn stop_with_meter(
         &mut self, native: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
-        if self.shutdown_failed { return Err(NativeMountError::FuseShutdownFailed); }
-        if self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
-        if self.session.is_none() && self.pending_session.is_none() && self.invalidator.is_none()
-            && self.active_root.is_none() {
-            return Ok(());
-        }
-        native.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
-        let _active = FuseStartupMeterScope::existing(&self.core, self.core_custody.as_ref(), native)?;
-        self.close_root_with_meter(native)?;
-        let write = crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED };
-        if let Some(pending) = self.pending_session.as_mut() {
-            native.native_materialization_work().charge(write)?;
-            self.core.stopping.store(true, Ordering::Release);
-            if let Err(error) = pending.unmount() {
-                self.shutdown_failed = true;
-                return Err(error.into());
-            }
-            // Successful SDK unmount cleared its own guard; this physical
-            // session drop cannot issue a hidden second detach.
-            drop(self.pending_session.take());
-        }
-        if self.session.is_some() {
-            native.native_materialization_work().charge(write)?;
-            self.core.stopping.store(true, Ordering::Release);
-            let session = self.session.take().expect("admitted FUSE session remains owned");
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.umount_and_join())) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => { self.shutdown_failed = true; return Err(error.into()); }
-                Err(panic) => {
-                    self.shutdown_failed = true;
-                    return Err(NativeMountError::DriverPanicked {
-                        operation: "FUSE background session shutdown", panic: Mutex::new(panic),
-                    });
-                }
-            }
-        }
-        if self.invalidator.is_some() {
-            native.native_materialization_work().charge(crate::WorkCounters {
-                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
-            })?;
-            {
-                let _state = self.core.state.lock();
-                self.core.stopping.store(true, Ordering::Release);
-                self.core.invalidation.notify_all();
-            }
-            let invalidator = self.invalidator.take().expect("admitted invalidator remains owned");
-            let joined = invalidator.join();
-            if joined.is_err() { self.invalidator_failed = true; }
-            if let Err(panic) = joined {
-                return Err(NativeMountError::DriverPanicked {
-                    operation: "FUSE invalidator shutdown", panic: Mutex::new(panic),
-                });
-            }
-        }
-        Ok(())
+        FuseStopState {
+            session: &mut self.session, pending_session: &mut self.pending_session,
+            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
+            core: &self.core, core_custody: self.core_custody.as_ref(),
+            invalidator: &mut self.invalidator, shutdown_failed: &mut self.shutdown_failed,
+            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
+            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
+        }.stop(FuseStopWork::Native(native))
+    }
+
+    /// Uses only this original driver's accepted birth credits. The wait token
+    /// controls liveness, not original cancellation or namespace authority.
+    pub(super) fn stop_with_cleanup_wait(
+        &mut self, wait: &crate::CancellationToken,
+    ) -> Result<(), NativeMountError> {
+        let loan = self.birth_cleanup.cleanup_loan(wait);
+        FuseStopState {
+            session: &mut self.session, pending_session: &mut self.pending_session,
+            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
+            core: &self.core, core_custody: self.core_custody.as_ref(),
+            invalidator: &mut self.invalidator, shutdown_failed: &mut self.shutdown_failed,
+            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
+            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
+        }.stop(FuseStopWork::Cleanup(&loan))
     }
 
     /// Evidence from the consumed SDK detach, independent of a later failed
     /// invalidator join. A failed SDK detach never becomes absence evidence.
     pub(super) fn namespace_detach_confirmed(&self) -> bool {
         self.session.is_none() && self.pending_session.is_none() && !self.shutdown_failed
+    }
+}
+
+fn retire_fuse_driver(
+    control: &Arc<FuseDriverControl>, wait: Option<&crate::CancellationToken>,
+) -> Result<(), NativeMountError> {
+    let mut loan = FuseDriverLoan::take(control, false)?;
+    let physical = loan.physical.as_mut().expect("physical driver loan");
+    match wait {
+        Some(wait) => physical.stop_with_cleanup_wait(wait)?,
+        None => physical.stop()?,
+    }
+    if let Some(retirement) = loan.retirement.as_mut() {
+        match wait {
+            Some(wait) => { retirement.retire_with_cleanup_wait(wait)?; }
+            None => { retirement.retire_accepted_cleanup()?; }
+        }
+    }
+    let retired = loan.retirement.as_ref().is_none_or(super::NativeMountRetirement::is_retired);
+    drop(loan);
+    let mut state = control.state.lock().unwrap_or_else(PoisonError::into_inner);
+    state.retired = retired;
+    control.changed.notify_all();
+    Ok(())
+}
+
+struct FuseSdkJob {
+    input: Arc<FuseSdkInput>,
+    control: Arc<FuseDriverControl>,
+    core: Arc<ProjectionCore>,
+    _allocation: crate::NativeAllocation,
+}
+
+impl FuseSdkJob {
+    fn run(self) -> std::io::Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.input.run()));
+        self.core.stopping.store(true, Ordering::Release);
+        self.core.invalidation.notify_all();
+        let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.stop_requested = true;
+        self.control.changed.notify_all();
+        drop(state);
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+}
+
+impl FuseSession {
+    pub(super) fn start(
+        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
+    ) -> Result<Self, super::DriverStartFailure> {
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, _)| NativeMountError::from(cause))?;
+        Self::start_with_work(request, source, &work)
+    }
+
+    pub(super) fn start_with_work(
+        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, super::DriverStartFailure> {
+        let mut out = None;
+        let mut retirement = Some(super::NativeMountRetirement {
+            retained_source: Some(Arc::clone(&source)),
+            destination_guard: None,
+            startup_source_watch: None,
+        });
+        match Self::start_into(request, source, &work.native_mount_work(),
+            &mut out, &mut retirement, |_| Ok(())) {
+            Ok(()) => Ok(out.expect("born FUSE driver retained")),
+            Err(error) => {
+                if let Some(driver) = out {
+                    Err(super::DriverStartFailure::retaining_driver(
+                        error.error, super::DriverSession::Fuse(driver)))
+                } else { Err(error) }
+            }
+        }
+    }
+
+    pub(super) fn start_into<F>(
+        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
+        source_work: &super::NativeMountMeterWork, out: &mut Option<Self>,
+        retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
+    ) -> Result<(), super::DriverStartFailure>
+    where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
+        if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
+        fuse_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
+        let materialization = source_work.native_materialization_work();
+        materialization.admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
+        let stamp = source.view_stamp_with_meter(source_work).map_err(source_error)?;
+        let root = source.lookup_with_meter(&MountPath::root(), source_work).map_err(source_error)?
+            .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
+        if root.node.kind != MountNodeKind::Directory {
+            return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
+        }
+        let metadata = crate::native_host::unix_name_with_work(
+            request.destination.as_os_str(), &mut &materialization, fuse_recovery_stat,
+        ).map_err(NativeMountError::from)?;
+        let owner = ProjectionCore::root_with_meter(source, root, stamp, request.writable,
+            metadata.st_uid, metadata.st_gid, source_work)?;
+        let _startup = FuseStartupMeterScope::new(&owner, source_work)?;
+        owner.core.source.observe_view_with_meter(Arc::downgrade(&owner.core), source_work)
+            .map_err(source_error)?;
+        let config = StartupFuseConfig::new(request.writable, source_work)?;
+        let birth_cleanup = materialization.reserve_work(crate::WorkCounters {
+            backend_write_operations: 3, backend_read_operations: 2,
+            ..crate::WorkCounters::UNCHARGED
+        }).map_err(NativeMountError::from)?;
+        let normal = materialization.allocation_work();
+        let retirement_helper = FuseRetirementHelper::prepare(&request.destination, &normal)
+            .map_err(DriverStartFailure::from)?;
+        let input_allocation = normal.claim(std::mem::size_of::<FuseSdkInput>() as u64)
+            .map_err(NativeMountError::from)?;
+        let input = Arc::new(FuseSdkInput {
+            state: Mutex::new(FuseSdkInputState { session: None, submitted: false }),
+            ready: Condvar::new(), _allocation: input_allocation,
+        });
+        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
+            .map_err(NativeMountError::from)?;
+        let control = Arc::new(FuseDriverControl {
+            state: Mutex::new(FuseDriverControlState {
+                physical: Some(FusePhysicalSession {
+                    session: None, pending_session: None, sdk_input: Some(Arc::clone(&input)),
+                    sdk_worker: None, core: Arc::clone(&owner.core),
+                    core_custody: Some(owner.custody.clone()), invalidator: None,
+                    shutdown_failed: false, invalidator_failed: false, active_root: None,
+                    native_root_identity: None, retirement_helper, birth_cleanup,
+                }),
+                retirement: None, loan_custody: (false, false), startup_finished: false, stop_requested: false,
+                retired: false, failure: None,
+            }),
+            changed: Condvar::new(), _allocation: control_allocation,
+        });
+        let mut job = FuseInvalidatorJob {
+            owner: FuseCoreOwner { core: Arc::clone(&owner.core), custody: owner.custody.clone() },
+            control: Arc::clone(&control), allocation: None,
+        };
+        job.allocation = Some(normal.claim(std::mem::size_of_val(&job) as u64)
+            .map_err(NativeMountError::from)?);
+        materialization.charge(crate::WorkCounters {
+            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(NativeMountError::from)?;
+        let invalidator = std::thread::Builder::new().spawn(move || job.run())
+            .map_err(NativeMountError::from)?;
+        *out = Some(Self { control: Arc::clone(&control), core: Arc::clone(&owner.core),
+            core_custody: Some(owner.custody), invalidator: Some(invalidator) });
+        {
+            let mut state = control.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.retirement = retirement.take();
+        }
+        let mut loan = FuseDriverLoan::take(&control, true)?;
+        let allocation = normal.claim(std::mem::size_of::<FuseSdkJob>() as u64)
+            .map_err(NativeMountError::from)?;
+        let job = FuseSdkJob {
+            input: Arc::clone(&input), control: Arc::clone(&control),
+            core: Arc::clone(&owner.core), _allocation: allocation,
+        };
+        materialization.charge(crate::WorkCounters {
+            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(NativeMountError::from)?;
+        let physical = loan.physical.as_mut().expect("constructor owns original driver");
+        physical.sdk_worker = Some(std::thread::Builder::new()
+            .spawn(move || job.run()).map_err(NativeMountError::from)?);
+        if let Some(packet) = loan.retirement.as_mut() { prepare(packet)?; }
+        let physical = loan.physical.as_mut().expect("constructor owns original driver");
+        materialization.charge(crate::WorkCounters {
+            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+        }).map_err(NativeMountError::from)?;
+        physical.shutdown_failed = true;
+        let filesystem = FuseProjection {
+            core: Arc::clone(&physical.core), _core_custody: physical.core_custody.clone(),
+            skips_opendir: false, skips_open: false,
+        };
+        let started = fuser::Session::new_retained_into(filesystem, &request.destination,
+            &config.config, &mut physical.pending_session, &mut physical.session);
+        // The preissued callable owns even helper-born/no-device prefixes.
+        // Its actual retirement result, never a missing Session, proves detach.
+        physical.shutdown_failed = physical.session.is_none();
+        if let Some(session) = physical.pending_session.as_mut() {
+            let _ = physical.core.notifier.set(session.notifier());
+        }
+        if let Err(error) = started {
+            return Err(physical.core.take_handler_error().unwrap_or_else(|| error.into()).into());
+        }
+        input.submit(physical.pending_session.take());
+        physical.authenticate_root_with_meter(&request.destination, source_work)?;
+        loan.committed = true;
+        Ok(())
+    }
+
+    fn with_physical<T>(
+        &self, operation: impl FnOnce(&mut FusePhysicalSession) -> Result<T, NativeMountError>,
+    ) -> Result<T, NativeMountError> {
+        let mut loan = FuseDriverLoan::take(&self.control, false)?;
+        operation(loan.physical.as_mut().expect("actual physical driver loan"))
+    }
+
+    pub(super) fn begin_original_work(
+        &self, work: &super::NativeMountMeterWork,
+    ) -> Result<FuseStartupMeterScope, NativeMountError> {
+        self.with_physical(|physical| physical.begin_original_work(work))
+    }
+    pub(super) fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
+        let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.physical.as_ref().and_then(FusePhysicalSession::native_root_identity)
+    }
+    pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
+        self.with_physical(|physical| physical.invalidate(path))
+    }
+    pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
+        self.with_physical(FusePhysicalSession::revalidate)
+    }
+    pub(super) fn revalidate_measured(&self, work: &crate::NativeMaterializationWork)
+        -> Result<(), NativeMountError> {
+        self.with_physical(|physical| physical.revalidate_measured(work))
+    }
+    pub(super) fn revalidate_with_meter(&self, work: &super::NativeMountMeterWork)
+        -> Result<(), NativeMountError> {
+        self.with_physical(|physical| physical.revalidate_with_meter(work))
+    }
+    pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
+        self.core.take_handler_failure()
+    }
+    pub(super) fn handler_failed(&self) -> bool { self.core.handler_failed.load(Ordering::Acquire) }
+    pub(super) fn completed_callback_work(&self) -> crate::WorkCounters { self.core.completed_callback_work() }
+    #[cfg(test)]
+    pub(super) fn take_requests(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.core.requests.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+    pub(super) fn namespace_detach_confirmed(&self) -> bool {
+        let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.physical.as_ref().is_some_and(FusePhysicalSession::namespace_detach_confirmed)
+    }
+    pub(super) fn controls_pending(&self) -> bool {
+        !self.control.state.lock().unwrap_or_else(PoisonError::into_inner).retired
+    }
+    pub(super) fn retirement_ownership(&self) -> (bool, bool) {
+        let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.retirement.as_ref().map_or(state.loan_custody, |packet| (
+            packet.destination_guard.is_some(),
+            packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
+        ))
+    }
+    pub(super) fn stop(&mut self) -> Result<(), NativeMountError> { self.finish_stop(None) }
+    pub(super) fn stop_with_cleanup_wait(&mut self, wait: &crate::CancellationToken)
+        -> Result<(), NativeMountError> { self.finish_stop(Some(wait)) }
+    pub(super) fn stop_measured(&mut self, work: &crate::NativeMaterializationWork)
+        -> Result<(), NativeMountError> {
+        self.with_physical(|physical| physical.stop_measured(work))?;
+        self.finish_stop(None)
+    }
+    pub(super) fn stop_with_meter(&mut self, work: &super::NativeMountMeterWork)
+        -> Result<(), NativeMountError> {
+        self.with_physical(|physical| physical.stop_with_meter(work))?;
+        self.finish_stop(None)
+    }
+    fn finish_stop(&mut self, wait: Option<&crate::CancellationToken>) -> Result<(), NativeMountError> {
+        if let Some(wait) = wait { wait.check().map_err(crate::DemandError::from)?; }
+        self.core.stopping.store(true, Ordering::Release);
+        self.core.invalidation.notify_all();
+        let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.stop_requested = true;
+        self.control.changed.notify_all();
+        while !state.retired {
+            if let Some(error) = state.failure.take() { return Err(error); }
+            drop(state);
+            if let Some(wait) = wait { wait.check().map_err(crate::DemandError::from)?; }
+            state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !state.retired && state.failure.is_none() {
+                state = self.control.changed.wait_timeout(state, Duration::from_millis(10))
+                    .unwrap_or_else(PoisonError::into_inner).0;
+            }
+        }
+        let failure = state.failure.take();
+        drop(state);
+        if self.invalidator.is_some() {
+            self.with_physical(|physical| {
+                let mut loan = physical.birth_cleanup.accepted_cleanup_loan();
+                loan.started_io(crate::WorkCounters {
+                    backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+                })?;
+                Ok(())
+            })?;
+            let worker = self.invalidator.take().expect("original invalidator join remains owned");
+            worker.join().map_err(|panic| NativeMountError::DriverPanicked {
+                operation: "FUSE retirement producer", panic: Mutex::new(panic),
+            })?;
+        }
+        match failure { Some(error) => Err(error), None => Ok(()) }
+    }
+}
+
+impl Drop for FuseSession {
+    fn drop(&mut self) {
+        self.core.stopping.store(true, Ordering::Release);
+        self.core.invalidation.notify_all();
+        let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.stop_requested = true;
+        self.control.changed.notify_all();
+        // The existing producer owns all SDK/namespace/source controls. The
+        // caller's JoinHandle drop only detaches its opaque standard wait tail.
     }
 }
 
@@ -4027,19 +4606,26 @@ impl FuseRecoveryControl {
         Ok(())
     }
 
+    /// Retires only the accepted helper, never the destination namespace.
+    /// The caller supplies its original prebirth administrative work; each
+    /// failed signal, reap or close leaves the same tree and payload owner here.
+    pub(super) fn retire_controls_with_work(
+        &mut self, original: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        self.retire_helper(original)
+    }
+
     /// Every path, retry, probe, spawn action, observation, signal, and reap is
     /// admitted at its actual leaf. Failure retains the tree in this control,
     /// so the caller must retain the same destination fence alongside it.
+    /// A retry's finite action work need not share the helper creator's ledger:
+    /// the retained tree and helper_work keep their intrinsic original owner.
     pub(super) fn recover_measured(
         &mut self, destination: &Path, native: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
         let materialization = native.native_materialization_work();
         let work = &materialization;
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        if self.helper_work.as_ref().is_some_and(|original|
-            !original.shares_ledger(work) || !original.shares_resource_allowance(work)) {
-            return Err(NativeMountError::ControlPending);
-        }
         let mounted = fuse_recovery_is_mounted(destination, work)?;
         self.detached = !mounted;
         if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_helper(work)?; }
@@ -4236,6 +4822,41 @@ impl FuseProjection {
         self.core.source.as_ref()
     }
 
+    /// Checks task/effect authority separately from original request accounting.
+    fn check_source_write(&self, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
+        match (&self.core.callback_guard, self.core.source.native_callback_guard()) {
+            (None, None) => Ok(()),
+            (Some(original), Some(current)) if Arc::ptr_eq(original, &current) =>
+                super::adapter::CallbackRuntime::existing()?
+                    .verify_native_callback_write_guard(original.as_ref(), work)
+                    .map_err(FuseRequestError::from),
+            _ => Err(NativeMountError::ControlPending.into()),
+        }
+    }
+
+    fn source_write<T>(
+        &self,
+        work: &super::NativeMountMeterWork,
+        effect: impl FnOnce() -> Result<T, FuseRequestError>,
+    ) -> Result<T, FuseRequestError> {
+        self.check_source_write(work)?;
+        let result = effect();
+        if let Err(refusal) = self.check_source_write(work) {
+            // The effect really ran. Preserve its authentic failure, when
+            // present, rather than replacing it with the later authority loss.
+            let cause = match result {
+                Err(cause) => cause.into_native(),
+                Ok(_) => refusal.into_native(),
+            };
+            let errno = native_callback_errno(&cause);
+            self.core.retain_handler_failure(super::NativeMountCallbackFailure {
+                cause, work: work.meter().lock().work,
+            });
+            return Err(FuseRequestError::Errno(errno));
+        }
+        result
+    }
+
     /// The name `name` under `parent`, as spelled and as recorded.
     fn child(&self, state: &ProjectionState, parent: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<ChildName, FuseRequestError> {
         Ok(ChildName::new(
@@ -4370,6 +4991,7 @@ impl FuseProjection {
         changes: &AttributeChanges,
         work: &super::NativeMountMeterWork,
     ) -> Result<(FileAttr, Duration), FuseRequestError> {
+        if !changes.is_empty() { self.check_source_write(work)?; }
         let source = self.source(work);
         let _names = self.core.names()?;
         let (facts, open_file) = {
@@ -4392,9 +5014,9 @@ impl FuseProjection {
             let stamp = source.view_stamp_with_meter(work)?;
             match (&open_file, current.through) {
                 (Some(open_file), _) => {
-                    open_file
+                    self.source_write(work, || open_file
                         .set_attributes_with_meter(metadata, changes.size, work)
-                        .map_err(FuseRequestError::from)?;
+                        .map_err(FuseRequestError::from))?;
                     Resolved {
                         lookup: open_file.lookup_with_meter(work).map_err(FuseRequestError::from)?,
                         stamp,
@@ -4402,9 +5024,9 @@ impl FuseProjection {
                     }
                 }
                 (None, Some(path)) => {
-                    source
+                    self.source_write(work, || source
                         .set_attributes_with_meter(&path, metadata, changes.size, work)
-                        .map_err(FuseRequestError::from)?;
+                        .map_err(FuseRequestError::from))?;
                     resolve_node(
                         source,
                         Err(NodeFacts::Names {
@@ -4434,6 +5056,7 @@ impl FuseProjection {
         create: impl FnOnce(&MountPath, &super::NativeMountMeterWork) -> Result<MountLookup, FuseRequestError>,
         work: &super::NativeMountMeterWork,
     ) -> Result<Entry, FuseRequestError> {
+        self.check_source_write(work)?;
         let source = self.source(work);
         let _names = self.core.names()?;
         let child = {
@@ -4442,7 +5065,7 @@ impl FuseProjection {
             self.child(&state, parent, name, work)?
         };
         let stamp = source.view_stamp_with_meter(work)?;
-        let lookup = create(&child.spelled, work).map_err(FuseRequestError::from)?;
+        let lookup = self.source_write(work, || create(&child.spelled, work))?;
         // A directory just created is empty as of a position sampled after
         // its creation, when no name beneath it was bound since before it.
         let empty = if lookup.node.kind == MountNodeKind::Directory {
@@ -4491,6 +5114,7 @@ impl FuseProjection {
     }
 
     fn remove_name(&self, parent: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
+        self.check_source_write(work)?;
         let source = self.source(work);
         let _names = self.core.names_exclusive()?;
         let child = {
@@ -4506,13 +5130,14 @@ impl FuseProjection {
             .map(|inode| source.detach_file_with_meter(path, work).map_err(FuseRequestError::from).and_then(|detached| Ok((inode, fuse_open_file(detached, work)?))))
             .transpose()
             .map_err(FuseRequestError::from)?;
-        source
+        let removed = self.source_write(work, || source
             .remove_with_meter(path, current.map(|lookup| lookup.node.file_id), work)
-            .map_err(FuseRequestError::from)?;
+            .map_err(FuseRequestError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached, work)?;
         }
+        removed?;
         state.remove_path_cache(child.key());
         Ok(())
     }
@@ -4526,6 +5151,7 @@ impl FuseProjection {
         flags: u32,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
+        self.check_source_write(work)?;
         let source = self.source(work);
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP.into());
@@ -4556,13 +5182,14 @@ impl FuseProjection {
             })
             .transpose()
             .map_err(FuseRequestError::from)?;
-        source
+        let renamed = self.source_write(work, || source
             .rename_with_meter(&from.spelled, &to.spelled, replace, work)
-            .map_err(FuseRequestError::from)?;
+            .map_err(FuseRequestError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached, work)?;
         }
+        renamed?;
         // Renaming between spellings of one folded name moves nothing the
         // projection records.
         if from.key() != to.key() {
@@ -4575,6 +5202,7 @@ impl FuseProjection {
     }
 
     fn link_name(&self, inode: u64, new_parent: u64, new_name: &OsStr, work: &super::NativeMountMeterWork) -> Result<Entry, FuseRequestError> {
+        self.check_source_write(work)?;
         let source = self.source(work);
         let _names = self.core.names()?;
         let (from, to, facts) = {
@@ -4593,7 +5221,7 @@ impl FuseProjection {
             .link_count
             .checked_add(1)
             .ok_or(libc::EMLINK)?;
-        source.hard_link_with_meter(&from, &to.spelled, work).map_err(FuseRequestError::from)?;
+        self.source_write(work, || source.hard_link_with_meter(&from, &to.spelled, work).map_err(FuseRequestError::from))?;
         let mut state = self.core.state()?;
         let attr = state.attr(inode, &projected)?;
         let binding = {
@@ -4660,6 +5288,7 @@ impl FuseProjection {
         storing: bool,
         work: &super::NativeMountMeterWork,
     ) -> Result<(u64, FopenFlags), FuseRequestError> {
+        if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
         let source = self.source(work);
         let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
@@ -4760,6 +5389,7 @@ impl FuseProjection {
         stamp_before: Option<ViewStamp>,
         work: &super::NativeMountMeterWork,
     ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>, bool), FuseRequestError> {
+        if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
         // The inode may have outlived its path binding. Check the attached
         // file before O_TRUNC can mutate a replacement at that path.
         let (open_file, opened) = source.open_file_with_lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
@@ -4769,7 +5399,7 @@ impl FuseProjection {
         }
         let truncated = flags & libc::O_TRUNC != 0;
         if truncated {
-            open_file.resize_with_meter(0, work).map_err(FuseRequestError::from)?;
+            self.source_write(work, || open_file.resize_with_meter(0, work).map_err(FuseRequestError::from))?;
         }
         // O_TRUNC (and a lazy-file promotion during open) legitimately
         // changes the node. Validate the attached handle instead of treating
@@ -4868,6 +5498,7 @@ impl FuseProjection {
         flags: i32,
         work: &super::NativeMountMeterWork,
     ) -> Result<(Entry, u64, FopenFlags), FuseRequestError> {
+        self.check_source_write(work)?;
         let source = self.source(work);
         let _names = self.core.names()?;
         let (child, absent_since) = {
@@ -4913,18 +5544,17 @@ impl FuseProjection {
                 if flags & libc::O_TRUNC == 0 {
                     (opened, open_file, false, claimed, confirmed)
                 } else {
-                    open_file.resize_with_meter(0, work).map_err(FuseRequestError::from)?;
+                    self.source_write(work, || open_file.resize_with_meter(0, work).map_err(FuseRequestError::from))?;
                     let resized = open_file.lookup_with_meter(work).map_err(FuseRequestError::from)?;
                     (resized, open_file, true, claimed, confirmed)
                 }
             }
         } else {
             let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
-            let created = match proof {
+            let created = self.source_write(work, || match proof {
                 Some(proof) => source.create_absent_file_with_meter(path, metadata, proof, work),
                 None => source.create_file_with_meter(path, metadata, work),
-            }
-            .map_err(FuseRequestError::from)?;
+            }.map_err(FuseRequestError::from))?;
             let claimed = claim(created.node.file_id)?;
             (
                 created,
@@ -4980,6 +5610,7 @@ impl FuseProjection {
         operation: impl FnOnce(u64) -> Result<T, FuseRequestError>,
         work: &super::NativeMountMeterWork,
     ) -> Result<T, FuseRequestError> {
+        if access == Access::Write { self.check_source_write(work)?; }
         if handle != 0 || !self.skips_open {
             return operation(handle);
         }
@@ -5074,6 +5705,7 @@ impl FuseProjection {
     }
 
     fn write_handle(&self, inode: u64, handle: u64, offset: u64, data: &[u8], work: &super::NativeMountMeterWork) -> Result<u32, FuseRequestError> {
+        self.check_source_write(work)?;
         let operation = {
             let state = self.core.state()?;
             state.admit_write()?;
@@ -5096,9 +5728,9 @@ impl FuseProjection {
 
         let length = u32::try_from(data.len()).map_err(|_| libc::EOVERFLOW)?;
         let bytes = fuse_source_chunk(data, work)?;
-        open_file
+        self.source_write(work, || open_file
             .write_range_with_meter(offset, bytes, work)
-            .map_err(FuseRequestError::from)?;
+            .map_err(FuseRequestError::from))?;
         // The write recorded its change to the node, so these facts are
         // current exactly until the next change.
         let stamp = self.source(work).view_stamp_with_meter(work)?;
@@ -5116,6 +5748,12 @@ impl FuseProjection {
     }
 
     fn flush_handle(&self, inode: u64, handle: u64, force: bool, release: bool, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
+        let authored_flush = {
+            let state = self.core.state()?;
+            let file = state.files.get(&handle).filter(|file| file.inode == inode).ok_or(libc::ESTALE)?;
+            force || (file.dirty && self.source(work).flush_on_handle_close())
+        };
+        if authored_flush { self.check_source_write(work)?; }
         let operation = self.core.state()?.open_handle_operation(inode, handle, work)?;
         let _operation = operation.lock().map_err(|_| libc::EIO)?;
         let (should_flush, open_file) = {
@@ -5136,13 +5774,13 @@ impl FuseProjection {
         // A durability request applies what the handle held back first. The per-handle operation gate remains held, but unrelated
         // FUSE callbacks never wait on the state lock during durable IO.
         let settled = if force {
-            open_file.settle_with_meter(work).map_err(FuseRequestError::from)
+            self.source_write(work, || open_file.settle_with_meter(work).map_err(FuseRequestError::from))
         } else {
             Ok(())
         };
         let flushed = settled.and_then(|()| {
             if should_flush {
-                self.source(work).flush_with_meter(work).map_err(FuseRequestError::from)
+                self.source_write(work, || self.source(work).flush_with_meter(work).map_err(FuseRequestError::from))
             } else {
                 Ok(())
             }
@@ -5263,6 +5901,7 @@ impl FuseProjection {
     }
 
     fn attributes_to_write(&self, inode: u64, work: &super::NativeMountMeterWork) -> Result<AttributeTarget, FuseRequestError> {
+        self.check_source_write(work)?;
         let state = self.core.state()?;
         state.admit_write()?;
         Ok(state.attribute_target(inode, work)?)
@@ -5296,7 +5935,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let target = self.attributes_to_write(inode, work)?;
         let value = fuse_source_chunk(value, work)?;
-        match target {
+        self.source_write(work, || match target {
             AttributeTarget::Handle(open_file) => {
                 open_file.write_attribute_with_meter(name.as_bytes(), value, mode, work)
             }
@@ -5304,8 +5943,7 @@ impl FuseProjection {
                 self.source(work)
                     .write_attribute_with_meter(&path, name.as_bytes(), value, mode, work)
             }
-        }
-        .map_err(FuseRequestError::from)
+        }.map_err(FuseRequestError::from))
     }
 
     fn read_named_attribute(&self, inode: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
@@ -5362,14 +6000,15 @@ impl FuseProjection {
 
     fn remove_named_attribute(&self, inode: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
         let _names = self.core.names()?;
-        match self.attributes_to_write(inode, work)? {
+        let target = self.attributes_to_write(inode, work)?;
+        self.source_write(work, || match target {
             AttributeTarget::Handle(open_file) => open_file.remove_attribute_with_meter(name.as_bytes(), work),
             AttributeTarget::Path(path) => self.source(work).remove_attribute_with_meter(&path, name.as_bytes(), work),
         }
         .map_err(|error| match error {
             MountSourceError::NotFound => FuseRequestError::Errno(libc::ENODATA),
             error => error.into(),
-        })
+        }))
     }
 
     fn allocate(
@@ -5381,6 +6020,7 @@ impl FuseProjection {
         mode: i32,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
+        self.check_source_write(work)?;
         const KEEP_SIZE: i32 = 0x01;
         const PUNCH_HOLE: i32 = 0x02;
         const ZERO_RANGE: i32 = 0x10;
@@ -5405,9 +6045,9 @@ impl FuseProjection {
         } else {
             return Err(libc::EOPNOTSUPP.into());
         };
-        open_file
+        self.source_write(work, || open_file
             .allocate_range_with_meter(offset, length, operation, work)
-            .map_err(FuseRequestError::from)?;
+            .map_err(FuseRequestError::from))?;
         self.core.state()?.mark_handle_dirty(inode, handle)?;
         let stamp = self.source(work).view_stamp_with_meter(work)?;
         let refreshed = Some(open_file.lookup_with_meter(work).map_err(FuseRequestError::from)?);
@@ -5449,6 +6089,7 @@ impl FuseProjection {
         flags: u64,
         work: &super::NativeMountMeterWork,
     ) -> Result<u32, FuseRequestError> {
+        self.check_source_write(work)?;
         let (source_open, destination_open) = {
             let state = self.core.state()?;
             state.admit_write()?;
@@ -5465,7 +6106,7 @@ impl FuseProjection {
             return Ok(0);
         }
         let (transferred, failure) = copy_open_range(
-            self.source(work),
+            self,
             &source_open,
             source_offset,
             &destination_open,
@@ -5491,7 +6132,7 @@ impl FuseProjection {
 /// source can and moving sparse chunks otherwise, retaining late failures with
 /// the SDK-supported completed prefix rather than manufacturing full success.
 fn copy_open_range(
-    source: &dyn MountFilesystem,
+    projection: &FuseProjection,
     source_open: &FuseOpenFile,
     source_offset: u64,
     destination_open: &FuseOpenFile,
@@ -5499,6 +6140,8 @@ fn copy_open_range(
     length: u64,
     work: &super::NativeMountMeterWork,
 ) -> Result<(u32, Option<FuseRequestError>), FuseRequestError> {
+    projection.check_source_write(work)?;
+    let source = projection.source(work);
     let source_lookup = source_open.lookup_with_meter(work).map_err(FuseRequestError::from)?;
     let destination_lookup = destination_open.lookup_with_meter(work).map_err(FuseRequestError::from)?;
     let source_size = source_lookup.node.logical_bytes;
@@ -5507,19 +6150,20 @@ fn copy_open_range(
         return Ok((0, None));
     }
     if source_lookup.node.link_count != 0 && destination_lookup.node.link_count != 0 {
-        match source.clone_range_by_id_with_meter(
+        match projection.source_write(work, || source.clone_range_by_id_with_meter(
             source_lookup.node.file_id,
             source_offset,
             destination_lookup.node.file_id,
             destination_offset,
             copy_length,
             work,
-        ) {
+        ).map_err(FuseRequestError::from)) {
             Ok(()) => return Ok((u32::try_from(copy_length).map_err(|_| libc::EOVERFLOW)?, None)),
-            Err(MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported
+            Err(FuseRequestError::Native(NativeMountError::Source(
+                MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported
                 | MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, .. }
-                | MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, .. }) => {}
-            Err(error) => return Err(error.into()),
+                | MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, .. }))) => {}
+            Err(error) => return Err(error),
         }
     }
     let same_open_file = Arc::ptr_eq(source_open, destination_open);
@@ -5529,6 +6173,11 @@ fn copy_open_range(
     let mut transferred = 0_u64;
     let mut failure = None;
     while transferred < copy_length {
+        if let Err(error) = projection.check_source_write(work) {
+            if transferred == 0 { return Err(error); }
+            failure = Some(error);
+            break;
+        }
         if let Err(error) = fuse_item(work) {
             if transferred == 0 { return Err(error); }
             failure = Some(error);
@@ -5548,9 +6197,9 @@ fn copy_open_range(
             Err(error) => { failure = Some(error.into()); break; }
         };
         let copied = sparse.0.logical_bytes;
-        if let Err(error) = destination_open
+        if let Err(error) = projection.source_write(work, || destination_open
             .write_sparse_range_with_meter(destination_offset + relative, sparse, work)
-            .map_err(FuseRequestError::from)
+            .map_err(FuseRequestError::from))
         {
             if transferred == 0 {
                 return Err(error);
@@ -6152,7 +6801,7 @@ impl Filesystem for FuseProjection {
         respond!(
             reply,
             _request, work,
-            self.source(work).flush_with_meter(work).map_err(FuseRequestError::from),
+            self.source_write(work, || self.source(work).flush_with_meter(work).map_err(FuseRequestError::from)),
             |()| reply.ok()
         );
     }
@@ -6514,6 +7163,92 @@ mod tests {
         crate::facade::MemoryObjectBackend,
     >;
 
+
+    #[test]
+    fn administrative_helper_retains_actual_tree_and_original_payload_on_denial()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let creator = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut control = super::FuseRecoveryControl::default();
+        acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+        ).map_err(|error| creator.runtime_error(error))?;
+        control.helper_work = Some(creator.clone());
+        control.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
+        let creator_receipt = creator.receipt();
+        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        assert!(matches!(control.retire_controls_with_work(&denied),
+            Err(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
+        assert!(control.controls_pending());
+        assert!(!control.helper.as_ref().ok_or("actual tree lost")?.is_reaped());
+        assert!(control.helper_work.as_ref().ok_or("payload owner lost")?.shares_ledger(&creator));
+        assert!(!control.namespace_detach_confirmed());
+        assert_eq!(denied.receipt().backend_write_operations, 0);
+
+        let cancelled_token = crate::CancellationToken::new();
+        let cancelled = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancelled_token,
+        ).map_err(|(cause, _)| cause)?;
+        let cancelled_receipt = cancelled.receipt();
+        cancelled_token.cancel();
+        assert!(control.retire_controls_with_work(&cancelled).is_err());
+        assert_eq!(cancelled.receipt(), cancelled_receipt);
+        assert!(control.controls_pending());
+
+        let original_admin = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_read_operations: 4096, backend_write_operations: 64,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        control.retire_controls_with_work(&original_admin)?;
+        assert!(!control.controls_pending());
+        assert!(control.helper_work.is_none());
+        assert!(control.deadline.is_none());
+        assert!(!control.namespace_detach_confirmed(), "process reap is not namespace evidence");
+        assert_eq!(creator.receipt(), creator_receipt, "retirement uses the supplied original administrative work");
+        assert!(original_admin.receipt().backend_write_operations > 0);
+        assert!(original_admin.receipt().backend_read_operations > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn administrative_recovery_retry_uses_its_own_finite_action_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let creator = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let mut control = super::FuseRecoveryControl::default();
+        acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+        ).map_err(|error| creator.runtime_error(error))?;
+        control.helper_work = Some(creator.clone());
+        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        assert!(matches!(control.recover_measured(temporary.path(), &denied.native_mount_work()),
+            Err(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
+        assert!(control.controls_pending());
+        assert!(!control.namespace_detach_confirmed());
+        assert!(control.helper_work.as_ref().ok_or("payload owner lost")?.shares_ledger(&creator));
+        let retry = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_read_operations: 4096, backend_write_operations: 64,
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        let creator_receipt = creator.receipt();
+        control.recover_measured(temporary.path(), &retry.native_mount_work())?;
+        assert!(!control.controls_pending());
+        assert!(control.namespace_detach_confirmed(), "only the real directory probe establishes absence");
+        assert!(control.helper_work.is_none());
+        assert_eq!(creator.receipt(), creator_receipt);
+        assert!(retry.receipt().backend_read_operations >= 2);
+        assert!(retry.receipt().backend_write_operations > 0);
+        Ok(())
+    }
     fn regular(file_id: FileId, logical_bytes: u64) -> MountLookup {
         MountLookup {
             node: MountNode {
@@ -7550,6 +8285,119 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("installed FUSE callback owner has no authored WRITE permission")]
+    struct FuseWriteDenied;
+
+    struct FuseWriteGuard {
+        original: crate::NativeMaterializationWork,
+        writable: std::sync::atomic::AtomicBool,
+    }
+
+    impl super::super::NativeMountCallbackGuard for FuseWriteGuard {
+        fn check<'a>(&'a self, work: &'a super::super::NativeMountMeterWork)
+            -> Result<super::super::NativeMountCallbackFuture<'a>, crate::NativeMountError>
+        {
+            if !self.original.shares_ledger(&work.native_materialization_work()) {
+                return Err(crate::NativeMountError::ControlPending);
+            }
+            super::super::NativeMountCallbackFuture::new(work, || async move {
+                work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
+                Ok(())
+            })
+        }
+
+        fn check_write<'a>(&'a self, work: &'a super::super::NativeMountMeterWork)
+            -> Result<super::super::NativeMountCallbackFuture<'a>, crate::NativeMountError>
+        {
+            if !self.original.shares_ledger(&work.native_materialization_work()) {
+                return Err(crate::NativeMountError::ControlPending);
+            }
+            if !self.writable.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(super::super::NativeMountCallbackReservation::prepare(work)?
+                    .into_error(FuseWriteDenied));
+            }
+            super::super::NativeMountCallbackFuture::new_guarded(work, || async move {
+                if self.writable.load(std::sync::atomic::Ordering::Acquire) { Ok(()) }
+                else { Err(FuseWriteDenied) }
+            })
+        }
+    }
+
+    #[test]
+    fn installed_write_denial_preserves_reads_and_post_effect_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let (checkouts, config) = memory_checkout(
+            posix_config(), crate::model::CheckoutMode::tracking_transaction(), 1,
+        )?;
+        let shared = Arc::new(super::super::SharedCheckout::new(
+            checkouts.into_iter().next().ok_or("one checkout")?,
+        ));
+        let around = MemorySource::new(Arc::clone(&shared), config)?;
+        let path = name("write-authority");
+        let created = around.create_file(&path, FileMetadata::default())?;
+        let original = crate::NativeMaterializationWork::new(
+            finite_handler_policy(), &crate::CancellationToken::new(),
+        ).map_err(|(cause, _)| cause)?;
+        let guard = Arc::new(FuseWriteGuard {
+            original: original.clone(), writable: std::sync::atomic::AtomicBool::new(false),
+        });
+        let source = MemorySource::new_at_meter(
+            shared, config, crate::kernel::NamespacePath::root(),
+            original.claim(0)?, &original.native_mount_work(),
+        )?.with_native_callback_guard(guard.clone());
+        let source = source.into_arc_meter(&original.native_mount_work())?;
+        let core = Arc::new(super::ProjectionCore::new(
+            source.clone(), empty_projection_state(), finite_handler_policy(),
+            &crate::CancellationToken::new(),
+        )?);
+        let projection = super::FuseProjection {
+            core: Arc::clone(&core), _core_custody: None, skips_opendir: false, skips_open: false,
+        };
+        let work = core.callback_meter()?.ok_or("installed original")?;
+        assert!(projection.open_source(source.as_ref(), &path, created.node.file_id,
+            libc::O_RDONLY, None, &work).is_ok(), "READ does not require authored WRITE");
+        assert!(projection.open_source(source.as_ref(), &path, created.node.file_id,
+            libc::O_TRUNC, None, &work).is_err());
+        assert!(around.lookup(&path)?.is_some());
+        let denied = |result: Result<(), super::FuseRequestError>| {
+            assert!(matches!(result, Err(super::FuseRequestError::Native(
+                crate::NativeMountError::CallbackDenied { .. }))));
+        };
+        denied(projection.remove_name(ROOT_INODE, std::ffi::OsStr::new("write-authority"), &work));
+        denied(projection.rename_name(ROOT_INODE, std::ffi::OsStr::new("write-authority"),
+            ROOT_INODE, std::ffi::OsStr::new("renamed"), 0, &work));
+        denied(projection.link_name(0, ROOT_INODE, std::ffi::OsStr::new("linked"), &work).map(|_| ()));
+        denied(projection.write_handle(0, 0, 0, b"denied", &work).map(|_| ()));
+        denied(projection.allocate(0, 0, 0, 1, 0, &work));
+        denied(projection.copy_range(0, 0, 0, 0, 0, 0, 1, 0, &work).map(|_| ()));
+        denied(projection.create_node(ROOT_INODE, std::ffi::OsStr::new("denied-directory"),
+            |path, work| source.create_directory_with_meter(path, FileMetadata::default(), work)
+                .map_err(super::FuseRequestError::from), &work).map(|_| ()));
+        denied(projection.write_named_attribute(0, std::ffi::OsStr::new("user.denied"),
+            b"denied", 0, 0, &work));
+        denied(projection.remove_named_attribute(0, std::ffi::OsStr::new("user.denied"), &work));
+        assert!(projection.source_write(&work, || source.remove_with_meter(
+            &path, Some(created.node.file_id), &work,
+        ).map_err(super::FuseRequestError::from)).is_err());
+        assert!(around.lookup(&path)?.is_some(), "pre-effect refusal cannot remove the file");
+        guard.writable.store(true, std::sync::atomic::Ordering::Release);
+        let removed = projection.source_write(&work, || {
+            source.remove_with_meter(&path, Some(created.node.file_id), &work)
+                .map_err(super::FuseRequestError::from)?;
+            guard.writable.store(false, std::sync::atomic::Ordering::Release);
+            Ok(())
+        });
+        assert!(removed.is_err(), "revocation after the real remove cannot report success");
+        assert!(around.lookup(&path)?.is_none(), "no fictitious rollback");
+        let retained = core.take_handler_failure().ok_or("post-effect refusal custody")?;
+        assert!(matches!(retained.cause, crate::NativeMountError::CallbackDenied { .. }));
+        assert_eq!(retained.work, original.receipt());
+        assert_eq!(core.completed_callback_work(), crate::WorkCounters::UNCHARGED);
+        Ok(())
+    }
+
 
     fn finite_handler_policy() -> crate::WorkBudget {
         crate::WorkBudget {
@@ -7894,14 +8742,19 @@ mod tests {
             Arc::new(source), empty_projection_state(), crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?);
-        let mut session = super::FuseSession {
+        let birth = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).map_err(|(cause, _)| cause)?;
+        let mut session = super::FusePhysicalSession {
             session: None,
             pending_session: None,
+            sdk_input: None, sdk_worker: None, retirement_helper: None,
             core: Arc::clone(&core),
             core_custody: None,
             invalidator: Some(std::thread::spawn(|| {})),
-            invalidator_custody: None,
-            invalidator_bytes: 0,
+            birth_cleanup: birth.reserve_work(crate::WorkCounters {
+                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
+            })?,
             shutdown_failed: false,
             invalidator_failed: false,
             active_root: None, native_root_identity: None,
@@ -7958,6 +8811,216 @@ mod tests {
         assert!(matches!(session.stop_measured(&stopped),
             Err(crate::NativeMountError::FuseInvalidatorFailed)));
         assert_eq!(stopped.receipt(), stopped_prefix);
+        Ok(())
+    }
+
+    fn exercise_original_birth_cleanup(ordinary: bool)
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::fd::AsRawFd;
+        let (source, _) = shared_sources()?;
+        let core = Arc::new(super::ProjectionCore::new(
+            Arc::new(source), empty_projection_state(), crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?);
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_read_operations: 1, backend_write_operations: 1,
+            allocation_operations: 1,
+            peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(),
+            ..crate::WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        let birth_cleanup = original.reserve_work(crate::WorkCounters {
+            backend_read_operations: 1, backend_write_operations: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let directory = tempfile::tempdir()?;
+        let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
+        let fd = root.as_raw_fd();
+        let joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed = Arc::clone(&joined);
+        let mut session = super::FusePhysicalSession {
+            session: None, pending_session: None, core: Arc::clone(&core), core_custody: None,
+            sdk_input: None, sdk_worker: None, retirement_helper: None,
+            invalidator: Some(std::thread::spawn(move || completed.store(true, super::Ordering::Release))),
+            shutdown_failed: false, invalidator_failed: false,
+            active_root: Some(root), native_root_identity: None, birth_cleanup,
+        };
+        let before = original.receipt();
+        assert_eq!(original.remaining()?.backend_read_operations, 0);
+        assert_eq!(original.remaining()?.backend_write_operations, 0);
+        cancellation.cancel();
+        let refused_wait = crate::CancellationToken::new();
+        refused_wait.cancel();
+        assert!(session.stop_with_cleanup_wait(&refused_wait).is_err());
+        assert!(session.active_root.is_some() && session.invalidator.is_some());
+        assert_eq!(original.receipt(), before);
+        assert!(!core.stopping.load(super::Ordering::Acquire));
+        if ordinary {
+            session.stop()?;
+        } else {
+            session.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
+        }
+        assert!(session.active_root.is_none() && session.invalidator.is_none());
+        assert!(joined.load(super::Ordering::Acquire));
+        // No replacement handle was opened between the physical drop and
+        // this direct descriptor query.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        let after = original.receipt();
+        assert_eq!(after.backend_write_operations - before.backend_write_operations, 1);
+        assert_eq!(after.backend_read_operations - before.backend_read_operations, 1);
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert!(original.cancellation().is_cancelled(), "original root was never masked");
+        assert_eq!(session.birth_cleanup.remaining_work(), crate::WorkCounters::UNCHARGED);
+        if ordinary {
+            session.stop()?;
+        } else {
+            session.stop_with_cleanup_wait(&refused_wait)?;
+        }
+        assert_eq!(original.receipt(), after, "terminal replay attempts no I/O");
+        Ok(())
+    }
+
+    #[test]
+    fn birth_cleanup_closes_actual_root_and_joins_original_thread_after_root_cancel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_original_birth_cleanup(false)
+    }
+
+    #[test]
+    fn ordinary_stop_uses_actual_original_birth_credit_after_root_cancel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_original_birth_cleanup(true)
+    }
+
+    #[test]
+    fn last_facade_drop_signals_the_original_keeper_and_retires_its_actual_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        // Already-owned ordinary Source: this fixture proves physical-driver
+        // retirement, not Source/watch/fence retirement.
+        let core = Arc::new(super::ProjectionCore::new(
+            Arc::new(source), empty_projection_state(), finite_handler_policy(),
+            &crate::CancellationToken::new(),
+        )?);
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
+            backend_read_operations: 0, backend_write_operations: 1,
+            ..finite_handler_policy()
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(
+            &original.native_mount_work(),
+        )?;
+        let birth_cleanup = original.reserve_work(crate::WorkCounters {
+            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+        })?;
+        let directory = tempfile::tempdir()?;
+        let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
+        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64)?;
+        let control = Arc::new(super::FuseDriverControl {
+            state: super::Mutex::new(super::FuseDriverControlState {
+                physical: Some(super::FusePhysicalSession {
+                    session: None, pending_session: None, sdk_input: None, sdk_worker: None,
+                    core: Arc::clone(&core), core_custody: Some(custody.clone()),
+                    invalidator: None, shutdown_failed: false, invalidator_failed: false,
+                    active_root: Some(root), native_root_identity: None, retirement_helper: None,
+                    birth_cleanup,
+                }),
+                retirement: Some(super::super::NativeMountRetirement {
+                    retained_source: None, destination_guard: None, startup_source_watch: None,
+                }),
+                loan_custody: (false, false), startup_finished: true, stop_requested: false,
+                retired: false, failure: None,
+            }),
+            changed: super::Condvar::new(), _allocation: control_allocation,
+        });
+        let job_allocation = original.claim(std::mem::size_of::<super::FuseInvalidatorJob>() as u64)?;
+        let job = super::FuseInvalidatorJob {
+            owner: super::FuseCoreOwner { core: Arc::clone(&core), custody: custody.clone() },
+            control: Arc::clone(&control), allocation: Some(job_allocation),
+        };
+        let (done, terminal) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || { job.run(); done.send(()).unwrap(); });
+        let facade = super::FuseSession {
+            control: Arc::clone(&control), core: Arc::clone(&core),
+            core_custody: Some(custody), invalidator: None,
+        };
+        let before = original.receipt();
+        cancellation.cancel();
+        drop(facade);
+        terminal.recv_timeout(std::time::Duration::from_secs(10))?;
+        worker.join().map_err(|_| "the actual keeper panicked")?;
+        let state = control.state.lock().unwrap_or_else(super::PoisonError::into_inner);
+        assert!(state.retired && state.failure.is_none());
+        let physical = state.physical.as_ref().ok_or("the actual physical holder disappeared")?;
+        assert!(physical.active_root.is_none());
+        assert_eq!(physical.birth_cleanup.remaining_work(), crate::WorkCounters::UNCHARGED);
+        assert!(state.retirement.as_ref().is_some_and(super::super::NativeMountRetirement::is_retired));
+        assert_eq!(original.receipt().backend_write_operations - before.backend_write_operations, 1);
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations,
+            "last facade drop and the real keeper terminal phase allocate no new controls");
+        assert!(original.cancellation().is_cancelled());
+        Ok(())
+    }
+
+    #[test]
+    fn preborn_helper_frame_reaps_real_child_after_original_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                backend_read_operations: 16_004, backend_write_operations: 13,
+                ..finite_handler_policy()
+            }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let directory = tempfile::tempdir()?;
+        // /bin/true exits successfully with the real helper's five arguments.
+        // This tests actual process custody, not a namespace-detach assertion.
+        let mut helper = super::FuseRetirementHelper::prepare_program(
+            directory.path(), c"/bin/true", &original,
+        )?;
+        let before = original.receipt();
+        cancellation.cancel();
+        helper.retire(None)?;
+        assert!(helper.completed && helper.helper.is_none() && helper.frame.is_none());
+        let after = original.receipt();
+        assert_eq!(after.allocation_operations, before.allocation_operations,
+            "all known argv/environment/control backing existed before birth");
+        assert_eq!(after.backend_write_operations - before.backend_write_operations, 11,
+            "seven setters/initializers, spawn, two destroys, genuine group signal");
+        assert!(after.backend_read_operations >= before.backend_read_operations + 3,
+            "real leader observation, terminal observation and physical reap");
+        assert!(original.cancellation().is_cancelled());
+        helper.retire(None)?;
+        assert_eq!(original.receipt(), after, "terminal replay cannot spawn another process");
+        Ok(())
+    }
+
+    #[test]
+    fn preborn_helper_keeps_original_spawn_cause_after_genuine_sdk_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                backend_read_operations: 16_004, backend_write_operations: 13,
+                ..finite_handler_policy()
+            }, &cancellation,
+        ).map_err(|(cause, _)| cause)?;
+        let directory = tempfile::tempdir()?;
+        let mut helper = super::FuseRetirementHelper::prepare_program(
+            directory.path(), c"/this-native-helper-program-authentically-does-not-exist", &original,
+        )?;
+        let before = original.receipt();
+        cancellation.cancel();
+        let error = helper.retire(None).expect_err("the real posix_spawn must report ENOENT");
+        assert!(matches!(error, crate::NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::Io(error)
+        ) if error.raw_os_error() == Some(libc::ENOENT)));
+        assert!(helper.completed && helper.helper.is_none() && helper.frame.is_none());
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().backend_write_operations - before.backend_write_operations, 10,
+            "real failed spawn and both SDK configuration destroys, no pretend PID signal");
         Ok(())
     }
 
@@ -8200,7 +9263,8 @@ mod tests {
         let request = crate::NativeMountRequest { mount_id: crate::MountId::new(),
             volume_id: source.volume_id()?, destination: temporary.path().to_path_buf(), writable: true };
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 2, ..crate::WorkBudget::UNBOUNDED
+            // Two SDK startup writes plus two withheld birth cleanup writes.
+            backend_write_operations: 4, ..crate::WorkBudget::UNBOUNDED
         }, &cancellation).map_err(|(cause, _)| cause)?;
         let mut failure = match super::FuseSession::start_with_work(&request, source, &work) {
             Ok(_) => panic!("the real invalidator spawn must require its third SDK write"),
@@ -8217,11 +9281,11 @@ mod tests {
         assert!(retained.invalidator.is_none());
         assert!(!retained.namespace_detach_confirmed());
         assert!(std::fs::metadata(temporary.path())?.is_dir());
-        let stop = cache_work(crate::WorkBudget { backend_write_operations: 1,
-            backend_read_operations: 0, allocation_operations: 0, peak_allocation_bytes: 0,
-            ..crate::WorkBudget::UNBOUNDED }, &cancellation);
-        retained.stop_with_meter(&stop)?;
-        assert_eq!(stop.meter().lock().work.backend_write_operations, 1);
+        assert_eq!(work.remaining()?.backend_write_operations, 0);
+        cancellation.cancel();
+        retained.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
+        assert_eq!(work.receipt().backend_write_operations, 3,
+            "only the physically attempted session shutdown consumed birth credit");
         assert!(retained.namespace_detach_confirmed());
         Ok(())
     }
