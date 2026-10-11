@@ -49,7 +49,7 @@ pub(crate) type PiMeasuredResult<T> = std::result::Result<T, (Error, WorkCounter
 
 /// Actual handles returned by dispatch, never reconstructed from route IDs.
 pub(crate) struct PiRootHandle {
-    pub(crate) workspace: LocalLazyWorkspace,
+    pub(crate) workspace: Arc<LocalLazyWorkspace>,
     pub(crate) physical: Arc<SharedPhysicalRoot>,
     _custody: Option<NativeAllocation>,
 }
@@ -67,6 +67,8 @@ impl PiRootHandle {
             return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
                 reason: "root index key custody differs from original source work" });
         }
+        let workspace = workspace.into_arc_with_native_work(work)
+            .map_err(|source| Error::NativeSource { source, custody: None })?;
         let mut entry = work.retain_owned(std::mem::size_of::<(String, Self)>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         key._custody.absorb(&mut entry)
@@ -134,7 +136,6 @@ struct AttachmentInput {
     native_identity: [u8; 16],
     budget: WorkBudget,
 }
-
 
 /// Counts actual closed DTO labels plus serde's expected-list punctuation.
 /// Inventories must include the concrete derives and custom STATIC labels;
@@ -455,7 +456,6 @@ fn root_provider_native_inner<P: StreamProvider + 'static>(
     }))
 }
 
-
 /// Reopens historical successful creation after the root released its lease.
 /// This private construction cannot dispatch, stage a result or acquire a source.
 #[allow(clippy::too_many_arguments, reason = "original archived owner, producers and finite observation")]
@@ -605,10 +605,6 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     provider.context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     Ok(())
 }
-
-
-
-
 
 fn pi_input_grants(owner: &PiOwnerConfig) -> Result<(ContentGrant, ContentGrant)> {
     let authority = owner.authority()?;
@@ -1466,7 +1462,6 @@ pub(crate) fn digest_pi_value<T: Serialize>(
     Ok(OperationReceipt { value: result?, work: work.spent })
 }
 
-
 struct Work {
     spent: WorkCounters,
     budget: WorkBudget,
@@ -1817,6 +1812,8 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 let mut slot = work.retain_owned(std::mem::size_of::<(String, PiRootHandle)>() as u64)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 slot.absorb(&mut owned_key._custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let workspace = workspace.into_arc_with_native_work(work)
+                    .map_err(|source| Error::NativeSource { source, custody: None })?;
                 state.handles.insert(owned_key.value, PiRootHandle { workspace, physical, _custody: Some(slot) });
                 #[cfg(test)]
                 self.test_fault_native("after-root-creation")?;
@@ -2158,20 +2155,12 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         std::mem::take(&mut self.state.lock().await.handles)
     }
 
-    
-
     fn effect_id_with_native_work(&self, work: &NativeMaterializationWork) -> Result<EffectId> {
         acyclic_harness::effect_host::task_effect_id_with_native_work(
             self.owner.policy().root_task, self.preparation.command().operation_id, work)
     }
 
-    
-
     fn maximum(&self) -> u64 { self.owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) }
-
-    
-
-    
 
     fn creation_operation_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         resource: &str, original: &NativeMaterializationWork) -> Result<acyclic_fs::OperationId> {
@@ -2212,10 +2201,6 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             &self.preparation.request().binding.scratch.volume, original_creation, self.maximum(), original).await
     }
 
-
-    
-
-    
 }
 
 impl<P: StreamProvider + 'static> EffectProvider for PiRootProvider<P> {

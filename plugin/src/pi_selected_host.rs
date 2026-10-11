@@ -23,7 +23,6 @@ pub(crate) struct PiRootSourceCut {
     pub(crate) snapshots: BTreeMap<String, LazySnapshotRef>,
 }
 
-
 // Closed selected-command, admission and cursor labels augment the existing
 // canonical Root/SDK leaf inventory; these are actual serde schema labels.
 const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
@@ -192,8 +191,7 @@ impl<'a> PiSelectedHost<'a> {
     let mut key = work.display(&format_args!("{}", self.project_key(&input.binding, requested)?)).map_err(native_error)?;
     let project = &input.binding.project_volumes[&key.0];
     let workspace = if task == self.protected.policy().root_task {
-        self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?
-            .workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
+        Arc::clone(&self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?.workspace)
     } else { self.native.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
     let frozen_custody = if let Some(pinned) = pinned { (pinned, None) } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;
@@ -240,6 +238,10 @@ impl<'a> PiSelectedHost<'a> {
             return Err(denied("immutable mixed-view inspection changed its authorized frozen source"));
         }
         selection.1.absorb(&mut observed.2).map_err(native_error)?;
+    } else if task != self.protected.policy().root_task {
+        let mut qualified = self.native.validate_published_selection_snapshot(
+            task, &inspection, project, frozen, work).await?;
+        selection.1.absorb(&mut qualified).map_err(native_error)?;
     }
     let volume = selection.0.project;
     drop(selection.0.generation);
@@ -975,7 +977,6 @@ impl TaskCommandHost for PiSelectedHost<'_> {
         })
     }
 }
-
 
 fn consume_root<T>(work: &acyclic_fs::NativeMaterializationWork,
     result: crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<T>>) -> Result<T> {

@@ -57,6 +57,63 @@ try {
     run_limits: { concurrency: 1n, max_steps: 16n, deadline_epoch_ms: null },
     session_limits: { active_tasks: 1n, total_tasks: 4n, depth: 1, model_steps: 16n }, concurrency: 1,
   };
+  phase("reject obsolete filesystem storage without losing its original exception");
+  const obsoleteName = `harness-task-obsolete-fs-${id}`;
+  const sentinel = Uint8Array.of(0, 4, 18, 255, 91);
+  const requestResult = request => new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  let ownsObsolete = false;
+  let obsolete;
+  try {
+    const create = indexedDB.open(obsoleteName, 4);
+    create.onupgradeneeded = event => {
+      if (event.oldVersion !== 0) {
+        create.transaction.abort();
+        return;
+      }
+      create.result.createObjectStore("sentinel");
+      ownsObsolete = true;
+    };
+    obsolete = await requestResult(create);
+    if (!ownsObsolete) throw new Error("obsolete-storage fixture did not create its own database");
+    const write = obsolete.transaction("sentinel", "readwrite");
+    write.objectStore("sentinel").put(sentinel, "marker");
+    await new Promise((resolve, reject) => {
+      write.oncomplete = resolve;
+      write.onabort = () => reject(write.error);
+    });
+    obsolete.close();
+    obsolete = undefined;
+    let rejection;
+    try {
+      const unexpected = await WasmTaskRuntime.open(
+        { ...options, filesystem_database: obsoleteName }, owner, registry, scope,
+      );
+      unexpected.free();
+    } catch (error) { rejection = error; }
+    if (!(rejection instanceof DOMException) || rejection.name !== "VersionError") {
+      throw new Error(`runtime storage rejection lost original VersionError: ${String(rejection)}`);
+    }
+    const reopen = indexedDB.open(obsoleteName, 4);
+    reopen.onupgradeneeded = () => reopen.transaction.abort();
+    obsolete = await requestResult(reopen);
+    if (obsolete.version !== 4 || obsolete.objectStoreNames.length !== 1
+      || !obsolete.objectStoreNames.contains("sentinel")) {
+      throw new Error("runtime storage rejection mutated the obsolete database");
+    }
+    const retained = await requestResult(
+      obsolete.transaction("sentinel").objectStore("sentinel").get("marker"),
+    );
+    if (!(retained instanceof Uint8Array) || retained.length !== sentinel.length
+      || !retained.every((byte, index) => byte === sentinel[index])) {
+      throw new Error("runtime storage rejection mutated committed sentinel bytes");
+    }
+  } finally {
+    obsolete?.close();
+    if (ownsObsolete) await requestResult(indexedDB.deleteDatabase(obsoleteName));
+  }
   phase("open ordinary task runtime and real providers");
   let runtime = await WasmTaskRuntime.open(options, owner, registry, scope);
   phase("create authorized journal volume");

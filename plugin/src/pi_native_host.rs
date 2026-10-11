@@ -11,10 +11,10 @@
 //! Finite lazy service construction funds resource metadata and the real known
 //! host payload; the original protected owner is shared without credential copies.
 
-use crate::{LocalAuthorityBackend, LocalCoreStateStore, LocalLazySource, LocalObjectBackend,
+use crate::{LocalAuthorityBackend, LocalObjectBackend,
     LocalLazyWorkspace, LocalSingleMount, PiScratchAllocation, PiTaskBinding, ServiceResources,
     pi_caller, pi_fork::{self, PiForkCoordinator, PiForkOperations, PreparedPiFork}, pi_native::{self, PiNativeLaunchIntent, PiNativeRunner,
-        PiNativeView, PiNativeDrainedProcess, PiPreparedScratch}, pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
+        PiNativeRootSeed, PiPreparedScratch}, pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
     pi_task::{NATIVE_LAUNCH_TASK_COMMAND_KIND, PiTaskExecution, PiTaskInput}};
 use acyclic_fs::{CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult, NativeMaterializationWork,
     OperationReceipt, PublicationPermit, WorkBudget, WorkCounters};
@@ -27,9 +27,9 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     fork::ForkReport,
     filesystem::{BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
         NativeProcessAuthority, NativeProcessDrainProof, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
-        NativeVolumeView, NativeVolumeNamespace, NativeReceiptError,
+        NativeVolumeView, NativeVolumeNamespace, NativeTaskViewDrainReceipt, NativeReceiptError,
         NativePreparationJournalObservation, NativePreparationJournalError,
-        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
+        RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt},
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
@@ -39,8 +39,7 @@ use std::{collections::BTreeMap, sync::{Arc, RwLock}};
 
 pub(crate) type PiNativeRuntime = PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type PiNativeFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
-pub(crate) type PiNativeLiveView = PiNativeView<LocalAuthorityBackend, LocalObjectBackend,
-    LocalLazySource, LocalCoreStateStore>;
+pub(crate) type PiNativeLiveView = NativeVolumeView<LocalAuthorityBackend, LocalObjectBackend>;
 
 pub(crate) struct PiNativeLiveSource {
     pub(crate) view: Arc<PiNativeLiveView>,
@@ -177,6 +176,7 @@ struct BorrowedEffectPlan<'a> {
 #[derive(Default)]
 struct LiveHandles {
     scratch: Option<Scratch>,
+    root_seed: Option<PiNativeRootSeed>,
     session: Option<(acyclic_harness::conversation::FileRef, acyclic_fs::NativeAllocation)>,
     preparation_work: Option<NativeMaterializationWork>,
     // Acquisition precedes snapshot validation. Keep the actual mount owner even
@@ -189,12 +189,12 @@ struct LiveHandles {
     scratch_gate: NativeGate,
     project_gate: NativeGate,
     mounts_drained: bool,
-    drained: Option<PiNativeDrainedProcess>,
     scratch_released: bool,
     dispose_requested: bool,
     preparation_owner: Option<(Arc<TaskJournalOwner<LocalStream>>, Arc<NativeTaskContext>, OperationId)>,
     // The actual SDK proof owns its original view and intrinsic allocation custody.
     process_drained: Option<NativeProcessDrainProof>,
+    drained: Option<NativeTaskViewDrainReceipt>,
 }
 
 impl LiveHandles {
@@ -384,7 +384,6 @@ impl PiNativeCommandHost {
         self.retain_cold_locator(task, locator.0, work)
     }
 
-
     fn retain_cold_locator(&self, task: TaskId, locator: PiNativeColdLocator,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
@@ -406,20 +405,20 @@ impl PiNativeCommandHost {
 
     /// Uses the current original child owner; it never reclaims the parent,
     /// creates resources, re-admits the child, or captures a new source head.
-    pub(crate) async fn hydrate_child(&self, context: &TaskContext,
-        owner: &TaskJournalOwner<LocalStream>, fence: LeaseFence,
-        budget: WorkBudget, cancellation: &CancellationToken,
+    pub(crate) async fn hydrate_child(&self, shared: &Arc<NativeTaskContext>,
+        owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence,
+        budget: WorkBudget, cancellation: &CancellationToken, work: &NativeMaterializationWork,
     ) -> Result<()> {
         if self.prepared(owner.task_id()).is_some() { return Ok(()); }
         let entry = self.registered_entry(owner.task_id())?;
         let locator = entry.cold.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
             .ok_or_else(|| unauthorized("Pi cold child has no authenticated original source capability"))?;
-        let work = self.preparation_work(&entry).await?;
+        self.bind_invocation_work(owner.task_id(), work).await?;
         let coordinator = PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), &self.resources, Arc::clone(&self.protected), &work)?;
+            self.stream.clone(), &self.resources, Arc::clone(&self.protected), work)?;
         let original = pi_fork::original_operation_with_native_work(self.protected.policy().root_task,
-            locator.parent, &locator.sdk_operation, &work)?;
-        let plan = coordinator.load_plan(context, original, budget, cancellation).await?
+            locator.parent, &locator.sdk_operation, work)?;
+        let plan = coordinator.load_plan(shared.context(), original, budget, cancellation).await?
             .ok_or_else(|| unauthorized("Pi cold child has no original immutable preparation plan"))?;
         if plan.commit.caller != locator.parent || plan.commit.sdk_operation != locator.sdk_operation
             || plan.request.child.task_id() != owner.task_id()
@@ -428,7 +427,7 @@ impl PiNativeCommandHost {
         {
             return Err(unauthorized("Pi cold selected source differs from the original sealed preparation"));
         }
-        let prepared = coordinator.restore_admitted(context, owner, fence, &plan,
+        let prepared = coordinator.restore_admitted(shared, owner, fence, &plan,
             locator.selected_source.clone(), budget, cancellation.clone()).await?;
         self.register_prepared(prepared).await
     }
@@ -551,15 +550,17 @@ impl PiNativeCommandHost {
         let prepared = self.source_prepared(task)?;
         if !prepared.binding.project_volumes.values().any(|selected| selected == volume) { return None; }
         let view = self.live_view(task)?;
-        let mount = view.project_mount(volume)?;
+        let mount = self.project_mount(task, volume)?;
         let mapping = view.manifest().volumes.iter().find(|mapping|
             &mapping.volume == volume && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. }))?;
         if mapping.path != mount.path() { return None; }
         Some(display(&mapping.path))
     }
 
-    /// Persist this actual first-selection snapshot before inspect/diff/import.
-    /// Existing requests must replay their retained snapshot, never call again.
+    /// Captures an active source checkpoint or a terminal publication candidate.
+    /// A terminal candidate is metadata only: retain its custody through the
+    /// genuine source-reader factory and validate it before persisting selection.
+    /// Existing requests replay their retained snapshot rather than recapturing.
     pub(crate) async fn selection_snapshot(&self, task: TaskId,
         meter: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
@@ -583,21 +584,40 @@ impl PiNativeCommandHost {
                 drop(snapshots.0);
                 return Ok((snapshot, snapshots.1));
             }
-            let receipt = effect.runner.receipt_with_native_work(&meter).await.map_err(receipt_error)?
-                .ok_or_else(|| Error::Indeterminate(effect.command))?;
-            if receipt.task != task || receipt.command != effect.command || !receipt.observed {
-                return Err(Error::Indeterminate(effect.command));
+            if prepared.binding.project_volumes.len() != 1 {
+                return Err(unauthorized("Pi published child has no unique original project binding"));
             }
-            effect.runner.confirm_process_cleanup_with_work(&prepared.binding, effect.context(),
-                effect.context().scope().limits().file_bytes, meter).await.map_err(receipt_error)?;
-            let (snapshot, snapshot_custody) = prepared.workspace.snapshot_with_native_work(meter).await
-                .map_err(|cause| pi_native::native_view_error(
-                    acyclic_fs::native_mount::MountLifecycleError::Lazy(cause)))?;
-            if snapshot.workspace_id != prepared.native_lazy.workspace_id {
-                return Err(unauthorized("Pi terminal checkpoint replaced its original created workspace"));
-            }
-            Ok((snapshot, snapshot_custody))
+            let project = prepared.binding.project_volumes.values().next()
+                .ok_or_else(|| unauthorized("Pi published child has no original project binding"))?;
+            effect.runner.published_project_candidate_with_native_work(project, meter)?.await
         }.await
+    }
+
+    /// Authorizes a terminal metadata candidate through the actual operation's
+    /// Common Project reader, then rereads the same protected publication.
+    pub(crate) async fn validate_published_selection_snapshot(&self, task: TaskId,
+        inspection: &TaskSourceInspection<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+        project: &acyclic_harness::conversation::VolumeRef, frozen: LazySnapshotRef,
+        meter: &NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeAllocation> {
+        let prepared = self.prepared(task)
+            .ok_or_else(|| unauthorized("Pi published selection has no authenticated creator companion"))?;
+        if prepared.binding.project_volumes.len() != 1
+            || prepared.binding.project_volumes.values().next() != Some(project) {
+            return Err(unauthorized("Pi published selection replaced its original project binding"));
+        }
+        let entry = self.registered_entry(task)?;
+        let effect = entry.handles.lock().await.effect.clone()
+            .ok_or_else(|| unauthorized("Pi published selection has no original native operation"))?;
+        let (snapshot, custody) = effect.runner.inspect_published_project_snapshot_with_native_work(
+            inspection, project, frozen, meter)?.await?;
+        meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
+            .map_err(native_error)?;
+        if snapshot != frozen {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi qualified publication changed its selected snapshot" });
+        }
+        Ok(custody)
     }
 
     pub(crate) fn project_mount(&self, task: TaskId,
@@ -605,7 +625,13 @@ impl PiNativeCommandHost {
     ) -> Option<Arc<LocalSingleMount>> {
         let prepared = self.prepared(task)?;
         if !prepared.binding.project_volumes.values().any(|bound| bound == volume) { return None; }
-        self.live_view(task)?.project_mount(volume)
+        let view = self.live_view(task)?;
+        let entry = self.find_entry(task)?;
+        let mount = entry.handles.try_lock().ok()?.project.clone()?;
+        let mapping = view.manifest().volumes.iter().find(|mapping|
+            &mapping.volume == volume && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. }))?;
+        if mapping.path != mount.path() { return None; }
+        Some(mount)
     }
 
     pub(crate) fn project_work(&self, task: TaskId,
@@ -628,7 +654,12 @@ impl PiNativeCommandHost {
     ) -> Option<PublicationPermit> {
         let prepared = self.prepared(task)?;
         if !prepared.binding.project_volumes.values().any(|bound| bound == volume) { return None; }
-        self.live_view(task)?.project_publication(volume)
+        let view = self.live_view(task)?;
+        if !view.manifest().volumes.iter().any(|mapping| &mapping.volume == volume
+            && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. })) { return None; }
+        let entry = self.find_entry(task)?;
+        let permit = entry.handles.try_lock().ok()?.project_gate.reservation.as_ref()?.permit();
+        Some(permit)
     }
 
     /// The same token already held by this caller's actual native FS view.
@@ -849,11 +880,16 @@ impl PiNativeCommandHost {
     async fn drain_original_process(&self, entry: &NativeEntry, effect: &BoundEffect,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        if entry.handles.lock().await.process_drained.is_some() { return Ok(()); }
+        {
+            let handles = entry.handles.lock().await;
+            if handles.process_drained.is_some() || handles.drained.is_some() { return Ok(()); }
+        }
         let view = self.live_view(effect.owner.task_id()).ok_or(Error::Indeterminate(effect.command))?;
         let proof = effect.runner.drain_with_native_work(&view, work, work.cancellation())?.await?;
         let mut handles = entry.handles.lock().await;
-        if handles.process_drained.is_none() { handles.process_drained = Some(proof); }
+        if handles.process_drained.is_none() && handles.drained.is_none() {
+            handles.process_drained = Some(proof);
+        }
         Ok(())
     }
 
@@ -876,43 +912,36 @@ impl PiNativeCommandHost {
         meter: &NativeMaterializationWork,
     ) -> Result<()> {
         let cancellation = meter.cancellation();
-        async {
-            let entry = self.find_entry(task).ok_or_else(|| unauthorized("Pi cleanup has no original live capabilities"))?;
-            {
-                let handles = entry.handles.lock().await;
-                if handles.mounts_drained && handles.drained.is_some()
-                    && handles.project_gate.is_settled() && handles.scratch_gate.is_settled()
-                    && handles.project_startup_owner.is_none()
-                    && handles.root_seed.is_none()
-                {
-                    return Ok(());
+        let entry = self.registered_entry(task)?;
+        let effect = entry.handles.lock().await.effect.clone()
+            .ok_or_else(|| unauthorized("Pi cleanup has no original native attempt"))?;
+        self.drain_original_process(&entry, &effect, meter).await?;
+        let mut handles = entry.handles.lock().await;
+        if !handles.mounts_drained {
+            let view = self.live_view(task).ok_or(Error::Indeterminate(effect.command))?;
+            let original = handles.preparation_work.as_ref().cloned()
+                .ok_or_else(|| unauthorized("Pi cleanup has no original view work"))?;
+            effect.owner.verify_with_native_work(true, meter).await?;
+            handles.stop_startup_mount(meter, effect.command)?;
+            let LiveHandles { process_drained, drained, .. } = &mut *handles;
+            match view.cleanup_mounts_with_native_work(effect.owner.native_view_owner(),
+                process_drained, drained, &original, meter, cancellation)?.await? {
+                Ok(receipt) => *drained = Some(receipt),
+                Err(failure) => {
+                    *drained = Some(failure.partial_receipt);
+                    return Err(failure.cause);
                 }
             }
-            let effect = entry.handles.lock().await.effect.clone()
-                .ok_or_else(|| unauthorized("Pi cleanup has no original native attempt"))?;
-            self.drain_original_process(&entry, &effect, meter).await?;
-            let prepared = self.prepared(task).ok_or(Error::Indeterminate(effect.command))?;
-            let view = self.live_view(task);
-            let drained = effect.runner.confirm_process_cleanup_with_work(&prepared.binding, effect.context(),
-                effect.context().scope().limits().file_bytes, meter).await.map_err(receipt_error)?;
-            effect.owner.verify_with_native_work(true, &meter).await?;
-            entry.handles.lock().await.stop_startup_mount(&meter, effect.command)?;
-            if let Some(view) = view {
-                view.cleanup_mounts_with_work(&effect.owner, effect.context(), &drained, &meter).await?;
-                *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                let mut handles = entry.handles.lock().await;
-                handles.project = None;
-                handles.mounts_drained = true;
-                handles.drained = Some(drained);
-            }
-            let mut handles = entry.handles.lock().await;
-            if !handles.mounts_drained { return Err(Error::Indeterminate(effect.command)); }
+            handles.mounts_drained = true;
+            handles.project = None;
             handles.project_allocation = None;
-            effect.owner.verify_with_native_work(true, meter).await?;
-            handles.project_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
-            handles.scratch_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
-            Ok(())
-        }.await
+            *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+        if handles.drained.is_none() { return Err(Error::Indeterminate(effect.command)); }
+        effect.owner.verify_with_native_work(true, meter).await?;
+        handles.project_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
+        handles.scratch_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
+        Ok(())
     }
 
     /// Explicit disposal is separate from normal cleanup: it deletes only the
@@ -929,11 +958,13 @@ impl PiNativeCommandHost {
             if handles.scratch_released { return Ok(()); }
             let effect = handles.effect.as_ref().cloned()
                 .ok_or_else(|| unauthorized("Pi disposal has no original native attempt"))?;
-            let scratch = handles.scratch.as_ref().ok_or(Error::Indeterminate(effect.command))?;
-            let drained = handles.drained.as_ref().ok_or(Error::Indeterminate(effect.command))?;
             let proof = effect.owner.child_scratch_creation_proof()?;
+            let LiveHandles { scratch, drained, preparation_work, .. } = &mut *handles;
+            let scratch = scratch.as_mut().ok_or(Error::Indeterminate(effect.command))?;
+            let drained = drained.as_ref().ok_or(Error::Indeterminate(effect.command))?;
+            let original = preparation_work.as_ref().ok_or(Error::Indeterminate(effect.command))?;
             scratch.release_scratch_with_work(&effect.owner, effect.context(), effect.command,
-                drained, &proof, meter).await?;
+                drained, &proof, original, meter).await?;
             // Only the actual protected deletion's successful return retires
             // this transient witness; failures leave the original leaf held.
             handles.scratch_released = true;
@@ -1332,8 +1363,8 @@ impl PiNativeCommandHost {
     ) -> Result<Arc<BoundEffect>> {
         let intent = &mut retained_intent.0;
         let context = shared.context();
-        self.hydrate_child(context, &owner, context.owned_task_fence()?,
-            crate::pi_root_provider::allocation_budget(), work.cancellation()).await?;
+        self.hydrate_child(&shared, &owner, &context.owned_task_fence()?,
+            crate::pi_root_provider::allocation_budget(), work.cancellation(), work).await?;
         let prepared = self.prepared(owner.task_id()).ok_or_else(||
             unauthorized("Pi native first dispatch requires actual reopened sealed preparation capabilities"))?;
         validate_child_binding(&prepared.binding, &input.binding)?;
@@ -1364,7 +1395,7 @@ impl PiNativeCommandHost {
         let caller_environment = pi_caller::issued_environment_with_work(
             &self.protected, &root_session, &prepared.binding, work,
         )?;
-        let mut invocation = self.protected.native_runtime()?
+        let mut invocation = self.protected.native_runtime_with_native_work(work)?
             .bind_invocation_with_work(intent, &caller_environment.0, work)?;
         retained_intent.1.absorb(&mut invocation.1).map_err(native_error)?;
         intent.invocation = invocation.0;
@@ -1376,7 +1407,9 @@ impl PiNativeCommandHost {
         {
             return Ok(bound.clone());
         }
-        handles.preparation_owner = Some((owner.clone(), Arc::clone(&shared), command.operation_id));
+        if handles.preparation_owner.is_none() {
+            handles.preparation_owner = Some((owner.clone(), Arc::clone(&shared), command.operation_id));
+        }
         // All consumers of the live view use a separate lock, released before
         // native dispatch below. Neither the actor nor a grandchild fork waits
         // for the child's process future to finish.
@@ -1473,55 +1506,13 @@ impl PiNativeCommandHost {
                     &mut handles.root_seed, &owner, &options.0, &bindings, &guards, &existing_lazy, work,
                 ).await?);
             }
-            let session = &handles.session.as_ref()
-                .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0;
-            let generation = generation(session)?;
-            let mut conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
-                input.binding.agent_id, context.scope().grants(), &meter)?;
-            let mut verifier = conversation.0.1.verifier_with_native_work(&meter)?;
-            conversation.1.absorb(&mut verifier.1).map_err(native_error)?;
-            let (_, _, scope) = conversation.0;
-            let authority = (verifier.0, scope, conversation.1);
-            let namespace = NativeVolumeNamespace::MaterializedDirectory;
-            let scratch_workspace = accept(self.filesystem.open_measured(&workspace_ref(
-                prepared.binding.scratch.volume.provider().clone(), &prepared.binding.scratch.volume.storage_name()?)?,
-                remaining(&meter)?, &cancellation).await, &meter)?;
-            let scratch_generation = GenerationId::new(Digest::from_bytes(
-                generation.as_resource().key().try_into().map_err(|_| unauthorized("Pi scratch generation is not canonical"))?));
-            let scratch_permit = handles.scratch_gate.reserve(&owner, scratch_workspace,
-                &prepared.binding.scratch.volume, scratch_generation, command.operation_id,
-                &meter, &cancellation, &entry.cleanup_cancellation, existing_only).await?;
-            if handles.scratch.is_none() {
-                let options = pi_native::native_view_options_with_work(&self.resources, &root_session,
-                    owner.task_id(), 2, view_volume_share(budget, 2)?, &meter)?;
-                handles.scratch = Some(pi_native::scratch_view_with_work(&self.resources, &root_session,
-                    &self.protected, &owner, &shared, &prepared.binding, &options.0, &intent, &session,
-                    &[BorrowedNativeVolumeBinding { host: &self.filesystem, volume: &prepared.binding.scratch.volume,
-                        generation: &generation, path: "scratch", writable: true, verifier: &verifier, scope: &scope,
-                        publication: scratch_permit, namespace: &namespace }],
-                    &meter).await?);
-            }
-            let (root_key, project) = prepared.binding.project_volumes.iter().next()
-                .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
-            let project_generation = GenerationRef::new(project.provider().clone(),
-                prepared.native_lazy.authored_generation.digest().into_bytes(), None)?;
-            let writable = context.scope().grants().contains(&project.capability(VolumeOperation::Write)?);
-            let project_permit = handles.project_gate.reserve(&owner, prepared.workspace.workspace().clone(),
-                project, prepared.native_lazy.authored_generation, command.operation_id,
-                &meter, &cancellation, &entry.cleanup_cancellation, existing_only).await?;
-            let LiveHandles { scratch, project: retained_mount, project_allocation,
-                project_startup_owner, .. } = &mut *handles;
-            let scratch = scratch.as_ref().ok_or_else(|| unauthorized("Pi lost its original scratch preparation"))?;
-            let index = scratch.view.manifest().volumes.len();
-            let (mapping, mount) = scratch.mount_project_with_work(&owner, &shared, &prepared.binding, root_key,
-                &prepared.workspace, self.filesystem.clone(), &project_generation, authority,
-                project_permit, index, writable, retained_mount, project_allocation,
-                project_startup_owner, &meter, &cancellation).await?;
-            let view = PiNativeLiveView::bind_with_work(&owner, context, mapping,
-                mount, scratch.view.clone(), &meter).await?;
-            *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(view.clone());
-            view
+            Arc::clone(&handles.scratch.as_ref().ok_or(Error::Indeterminate(command.operation_id))?.view)
         };
+        let original_view_owner = handles.preparation_owner.as_ref()
+            .ok_or(Error::Indeterminate(command.operation_id))?.0.clone();
+        let working_view = view.task_working_view_with_native_work(&original_view_owner, work)?.await?;
+        shared.bind_working_view_with_native_work(working_view, work).await?;
+        *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&view));
         let result_volume = &prepared.binding.results.as_ref().ok_or_else(|| unauthorized("Pi result selection vanished"))?.volume;
         let result_context = Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
         let request = intent.request_with_work(&prepared.binding, view.manifest(), work)?;
@@ -1761,9 +1752,6 @@ fn reserved_environment(key: &str) -> bool {
         .iter().any(|reserved| key.eq_ignore_ascii_case(reserved))
         || key.get(.."ACYCLIC_PI_CALLER_".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
-
-
-
 
 fn receipt_error(error: NativeReceiptError) -> Error {
     match error {
