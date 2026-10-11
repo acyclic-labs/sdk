@@ -13,6 +13,28 @@ use napi_derive::napi;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[napi]
+impl crate::NativeWorkspace {
+    /// Open a genuine checkout of this same workspace, retaining its measured work.
+    #[napi]
+    pub async fn checkout(&self, options: crate::NativeCheckoutOptions, generation_id: Option<Buffer>) -> Result<NativeCheckout> {
+        use acyclic_fs::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
+        let mode = CheckoutMode {
+            access: AccessMode::from_public_str(&options.access).ok_or_else(|| napi::Error::new(napi::Status::InvalidArg, "invalid checkout access"))?,
+            consistency: ConsistencyMode::from_public_str(&options.consistency).ok_or_else(|| napi::Error::new(napi::Status::InvalidArg, "invalid checkout consistency"))?,
+            mutations: MutationMode::from_public_str(&options.mutation_mode).ok_or_else(|| napi::Error::new(napi::Status::InvalidArg, "invalid checkout mutation mode"))?,
+        };
+        let selector = generation_id.as_ref().map_or(Ok(GenerationSelector::Head), |id| {
+            crate::fixed_32(id, "generation identity").map(|bytes| GenerationSelector::Exact(acyclic_fs::GenerationId::new(crate::Digest::from_bytes(bytes))))
+        })?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let receipt = self.inner.engine_checkout_measured(selector, mode, boundary_budget(), &cancellation).await.map_err(napi_error)?;
+        let config = receipt.value.volume_config();
+        Ok(NativeCheckout { inner: Arc::new(crate::SharedCheckout::new(receipt.value)), config,
+            cancellation, acquisition_work: receipt.work })
+    }
+}
+
 /// Immutable actual native archive bytes, retained independently of its capture.
 #[napi]
 pub struct NativeDirectoryArchive { inner: Arc<CoreArchive> }

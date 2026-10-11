@@ -2,7 +2,7 @@
 use crate::account_binding_native::{AccountIssuedCredential, NativeClock, error, lifetime};
 use crate::client_binding::WorkersCancellation;
 use acyclic_native_runtime::account;
-use acyclic_native_runtime::customer_custody::{CustomerCustodyNamespace, CustomerCustodyReference, PendingCustomerLeaf, RestoredCustomerLeaf};
+use acyclic_native_runtime::customer_custody::{CustomerCustodyNamespace, CustomerCustodyReference, PendingCustomerLeaf, PreparedCustomerLeaf, RestoredCustomerLeaf};
 use napi::bindgen_prelude::{BigInt, Buffer};
 use napi::{Result, Status};
 use napi_derive::napi;
@@ -44,21 +44,60 @@ impl NativePendingCustomerLeaf {
         let key = ed25519_dalek::VerifyingKey::from_bytes(&pending.public_key()).map_err(error)?;
         Ok(account::encode_key(&key))
     }
-    /// Atomically seal the original own leaf and distinct SQL session in the OS vault.
+    /// Validate and retain the original OS receipt before its actual vault write.
     #[napi]
-    pub async fn commit(&self, login_origin: String, birth: String, certificate: String, sql_session: String) -> Result<NativeCustomerCredential> {
+    pub async fn prepare_commit(&self, login_origin: String, birth: String, certificate: String, sql_session: String) -> Result<NativePreparedCustomerLeaf> {
         let origin = origin(&login_origin)?;
         let namespace = namespace(&origin, &self.public_key()?, &birth, &certificate)?;
         let pending = self.inner.lock().map_err(|_| error("pending customer leaf unavailable"))?
             .take().ok_or_else(|| error("pending customer leaf consumed"))?;
         let session = Zeroizing::new(sql_session);
-        let leaf = blocking(move || pending.commit(namespace, &birth, &certificate, session).map_err(error)).await?;
-        NativeCustomerCredential::new(leaf, origin)
+        let prepared = blocking(move || pending.prepare(namespace, &birth, &certificate, session).map_err(error)).await?;
+        Ok(NativePreparedCustomerLeaf { inner: Mutex::new(Some(prepared)), origin })
     }
     /// Erase an uncommitted own leaf without touching an existing OS credential.
     #[napi]
     pub fn dispose(&self) -> Result<()> {
         self.inner.lock().map_err(|_| error("pending customer leaf unavailable"))?.take();
+        Ok(())
+    }
+}
+
+/// Actual prepared OS generation; it is not evidence of a published vault item.
+#[napi]
+pub struct NativePreparedCustomerLeaf {
+    inner: Mutex<Option<PreparedCustomerLeaf>>,
+    origin: url::Url,
+}
+#[napi]
+impl NativePreparedCustomerLeaf {
+    /// Original own public key, without exposing its signer.
+    #[napi(getter)]
+    pub fn public_key(&self) -> Result<String> {
+        let guard = self.inner.lock().map_err(|_| error("prepared customer leaf unavailable"))?;
+        let prepared = guard.as_ref().ok_or_else(|| error("prepared customer leaf consumed"))?;
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&prepared.public_key()).map_err(error)?;
+        Ok(account::encode_key(&key))
+    }
+    /// Persist this exact nonsecret reference with the public tuple before commit.
+    #[napi(getter)]
+    pub fn custody_reference(&self) -> Result<String> {
+        let guard = self.inner.lock().map_err(|_| error("prepared customer leaf unavailable"))?;
+        let prepared = guard.as_ref().ok_or_else(|| error("prepared customer leaf consumed"))?;
+        Ok(prepared.reference().encode())
+    }
+    /// Write only the prepared original generation; uncertain ACKs reopen its saved reference.
+    #[napi]
+    pub async fn commit(&self) -> Result<NativeCustomerCredential> {
+        let prepared = self.inner.lock().map_err(|_| error("prepared customer leaf unavailable"))?
+            .take().ok_or_else(|| error("prepared customer leaf consumed"))?;
+        let leaf = blocking(move || prepared.commit().map_err(error)).await?;
+        NativeCustomerCredential::new(leaf, self.origin.clone())
+    }
+    /// Drop only an uncommitted in-memory preparation; never delete an OS item.
+    #[napi]
+    pub fn dispose(&self) -> Result<()> {
+        self.inner.lock().map_err(|_| error("prepared customer leaf unavailable"))?.take();
         Ok(())
     }
 }

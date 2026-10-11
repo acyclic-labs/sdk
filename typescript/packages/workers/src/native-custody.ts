@@ -1,4 +1,4 @@
-import type { NativePendingCustomerLeaf as RawPending, NativeCustomerCredential as RawCredential, NativeIdentityResponse, WorkersCancellation as NativeCancellation } from "../generated/native/binding.js";
+import type { NativePendingCustomerLeaf as RawPending, NativePreparedCustomerLeaf as RawPrepared, NativeCustomerCredential as RawCredential, NativeIdentityResponse, WorkersCancellation as NativeCancellation } from "../generated/native/binding.js";
 import type { AccountHolderMetadata, AccountIssuedCredential } from "./account.js";
 import { inspectAccountHolder } from "./account.js";
 import { isNodeRuntime, loadWorkersNativeModule } from "./binding.js";
@@ -50,7 +50,14 @@ export interface NativeCustomerCredential {
 }
 export interface PendingNativeCustomerLeaf {
   readonly publicKey: string;
-  commit(enrollment: NativeCustomerEnrollment): Promise<NativeCustomerCredential>;
+  prepare(enrollment: NativeCustomerEnrollment): Promise<PreparedNativeCustomerLeaf>;
+  dispose(): void;
+}
+/** Real planned OS receipt; persist it before publication, without claiming the vault write happened. */
+export interface PreparedNativeCustomerLeaf {
+  readonly publicKey: string;
+  readonly custodyReference: NativeCustomerCustodyReference;
+  commit(): Promise<NativeCustomerCredential>;
   dispose(): void;
 }
 async function binding() {
@@ -128,13 +135,22 @@ export async function generateNativeCustomerLeaf(): Promise<PendingNativeCustome
   let raw: RawPending | undefined = (await binding()).generateNativeCustomerLeaf();
   const publicKey = raw.publicKey;
   return Object.freeze({ publicKey,
-    async commit(enrollment: NativeCustomerEnrollment): Promise<NativeCustomerCredential> {
+    async prepare(enrollment: NativeCustomerEnrollment): Promise<PreparedNativeCustomerLeaf> {
       if (raw === undefined) throw new WorkersTransportError("pending customer leaf consumed", "configuration");
       const pending = raw;
       raw = undefined;
       const { origin, birth, certificate, sqlSession } = enrollment;
-      const handle = await pending.commit(origin, birth, certificate, sqlSession);
-      return restored(handle, { origin, publicKey, birth, certificate });
+      let prepared: RawPrepared | undefined = await pending.prepareCommit(origin, birth, certificate, sqlSession);
+      const custodyReference = prepared.custodyReference;
+      return Object.freeze({ publicKey, custodyReference,
+        async commit(): Promise<NativeCustomerCredential> {
+          if (prepared === undefined) throw new WorkersTransportError("prepared customer leaf consumed", "configuration");
+          const original = prepared;
+          prepared = undefined;
+          return restored(await original.commit(), { origin, publicKey, birth, certificate, custodyReference });
+        },
+        dispose(): void { prepared?.dispose(); prepared = undefined; },
+      });
     },
     dispose(): void { raw?.dispose(); raw = undefined; },
   });

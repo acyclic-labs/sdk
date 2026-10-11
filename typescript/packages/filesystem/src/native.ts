@@ -9,6 +9,7 @@ import type {
   FsTransaction,
   FsVolume,
   FsCheckout,
+  CheckoutOptions,
   FsWorkspace,
   NativeBindings,
   NativeFsEngine,
@@ -118,6 +119,7 @@ const nativeGenerationDiff = (value: NativeRawGenerationDiff) => copyGenerationD
 );
 const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
 const checkoutHandles = new WeakMap<FsCheckout, NativeRawCheckout>();
+const checkoutScopes = new WeakMap<FsCheckout, NativeAdapterScope>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, nativeGenerationDiff);
 type NativeAdapterScope = {
   readonly adaptGeneration: typeof adaptGeneration;
@@ -195,8 +197,8 @@ function nativeCapture(capture: NativeDirectoryCapture): NativeRawDirectoryCaptu
   if (raw === undefined) throw new TypeError("capture is not an original native capture");
   return raw;
 }
-function directoryGeneration(generation: FsGeneration): NativeRawGeneration {
-  return nativeBoundary<NativeRawGeneration>(rawGeneration(generation));
+function directoryGeneration(generation: FsGeneration, scope: NativeAdapterScope): NativeRawGeneration {
+  return nativeBoundary<NativeRawGeneration>(scope.rawGeneration(generation));
 }
 function adaptDirectoryArchive(raw: NativeRawDirectoryArchive): NativeDirectoryArchive {
   const archive: NativeDirectoryArchive = {
@@ -207,15 +209,15 @@ function adaptDirectoryArchive(raw: NativeRawDirectoryArchive): NativeDirectoryA
   directoryArchives.set(archive, raw);
   return archive;
 }
-function adaptDirectoryCapture(raw: NativeRawDirectoryCapture): NativeDirectoryCapture {
+function adaptDirectoryCapture(raw: NativeRawDirectoryCapture, scope: NativeAdapterScope): NativeDirectoryCapture {
   const capture: NativeDirectoryCapture = {
     get operationId() { return raw.operationId; },
     get generation() { return raw.generation; },
     get volumeId() { return raw.volumeId; },
     get totalBytes() { return raw.totalBytes; },
     get sha256() { return raw.sha256; },
-    preview(from, to, maximumChanges) { return raw.preview(directoryGeneration(from), directoryGeneration(to), maximumChanges); },
-    apply(from, to, options) { return raw.apply(directoryGeneration(from), directoryGeneration(to), { ...options, operationId: copyBytes(options.operationId) }); },
+    preview(from, to, maximumChanges) { return raw.preview(directoryGeneration(from, scope), directoryGeneration(to, scope), maximumChanges); },
+    apply(from, to, options) { return raw.apply(directoryGeneration(from, scope), directoryGeneration(to, scope), { ...options, operationId: copyBytes(options.operationId) }); },
     recover(stateRoot, operationDirectory, operationId, rollBack) { return raw.recover(stateRoot, operationDirectory, copyBytes(operationId), rollBack); },
   };
   directoryCaptures.set(capture, raw);
@@ -224,12 +226,16 @@ function adaptDirectoryCapture(raw: NativeRawDirectoryCapture): NativeDirectoryC
 /** Capture, commit and retain the actual original root and immutable bounded archive. */
 export async function captureNativeDirectoryArchive(checkout: FsCheckout, options: NativeDirectoryCaptureOptions, lease?: NativeRawOperationWindowLease): Promise<NativeDirectoryArchiveCapture> {
   const value = await nativeCheckout(checkout).captureDirectoryArchive({ ...options, operationId: copyBytes(options.operationId) }, lease);
-  return { capture: adaptDirectoryCapture(value.capture), archive: adaptDirectoryArchive(value.archive) };
+  const scope = checkoutScopes.get(checkout);
+  if (scope === undefined) throw new TypeError("capture checkout has no native engine scope");
+  return { capture: adaptDirectoryCapture(value.capture, scope), archive: adaptDirectoryArchive(value.archive) };
 }
 /** Restore only the existing private original capture record, never recapture the current root. */
-export async function restoreNativeDirectoryCapture(stateRoot: string, operationId: Uint8Array): Promise<NativeDirectoryCapture> {
+export async function restoreNativeDirectoryCapture(filesystem: NativeFsEngine, stateRoot: string, operationId: Uint8Array): Promise<NativeDirectoryCapture> {
+  const handle = fsHandles.get(filesystem);
+  if (handle === undefined) throw new TypeError("capture restoration requires its native filesystem engine");
   const original = copyBytes(operationId);
-  return adaptDirectoryCapture(await (await bindings()).restoreNativeDirectoryCapture(stateRoot, original));
+  return adaptDirectoryCapture(await (await bindings()).restoreNativeDirectoryCapture(stateRoot, original), handle.scope);
 }
 /** Authenticate received chunks with the same native immutable archive contract used by capture. */
 export async function nativeDirectoryArchiveFromChunks(chunks: readonly Uint8Array[], totalBytes: bigint, sha256: string): Promise<NativeDirectoryArchive> {
@@ -247,6 +253,13 @@ export function replaceCapturedNativeDirectoryArchive(checkout: FsCheckout, capt
 /** Read the original immutable logical generation after cold capture-record restoration. */
 export async function exportNativeDirectoryArchive(checkout: FsCheckout, capture: NativeDirectoryCapture, maximumPaths: number): Promise<NativeDirectoryArchive> {
   return adaptDirectoryArchive(await nativeCheckout(checkout).exportDirectoryArchive(nativeCapture(capture), maximumPaths));
+}
+
+/** Acquire a genuine checkout of the same named native workspace used by its generation API. */
+export async function nativeWorkspaceCheckout(workspace: NativeFsWorkspace, options: CheckoutOptions, generationId?: Uint8Array): Promise<FsCheckout> {
+  const scope = workspaceScopes.get(workspace);
+  if (scope === undefined) throw new TypeError("workspace is not a native workspace");
+  return adaptCheckout(await rawWorkspace(workspace, scope).checkout(options, copyOptionalBytes(generationId)), scope);
 }
 
 const PACKAGE_VERSION = "0.2.0";
@@ -538,13 +551,13 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       return adaptSpeculation(raw.createSpeculation(volumeId, generationId, options));
     },
     async createVolume(options): Promise<FsVolume> {
-      return adaptVolume(await raw.createVolume(options));
+      return adaptVolume(await raw.createVolume(options), scope);
     },
     async createVolumeWithId(volumeId, options): Promise<FsVolume> {
-      return adaptVolume(await raw.createVolumeWithId(volumeId, options));
+      return adaptVolume(await raw.createVolumeWithId(volumeId, options), scope);
     },
     async openVolume(volumeId): Promise<FsVolume> {
-      return adaptVolume(await raw.openVolume(volumeId));
+      return adaptVolume(await raw.openVolume(volumeId), scope);
     },
     async exportObject(objectId, maximumBytes) {
       const value = await raw.exportObject(objectId, maximumBytes);
@@ -567,7 +580,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       return { nextObject: value.nextObject, work: parseWork(value.workJson) };
     },
     async restoreVolume(manifest, operationId): Promise<FsVolume> {
-      return adaptVolume(await raw.restoreVolume(nativeManifest(manifest), operationId));
+      return adaptVolume(await raw.restoreVolume(nativeManifest(manifest), operationId), scope);
     },
     async createWorkspace(name: string): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
@@ -598,18 +611,18 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
   return engine;
 }
 
-function adaptVolume(raw: NativeRawVolume): FsVolume {
+function adaptVolume(raw: NativeRawVolume, scope: NativeAdapterScope): FsVolume {
   return {
     get id() { return copyBytes(raw.id); },
     get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
     async diffGenerations(before, after, maximumChanges) {
       return nativeGenerationDiff(await raw.diffGenerations(before, after, maximumChanges));
     },
-    async checkout(options) { return adaptCheckout(await raw.checkout(options)); },
+    async checkout(options) { return adaptCheckout(await raw.checkout(options), scope); },
   };
 }
 
-function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
+function adaptCheckout(raw: NativeRawCheckout, scope: NativeAdapterScope): FsCheckout {
   const checkout: FsCheckout = {
     get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
     async applyTransaction(operations) {
@@ -735,6 +748,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     cancel() { raw.cancel(); },
   };
   checkoutHandles.set(checkout, raw);
+  checkoutScopes.set(checkout, scope);
   return checkout;
 }
 

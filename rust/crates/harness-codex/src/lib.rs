@@ -26,7 +26,8 @@ pub mod events;
 pub mod executor;
 pub mod mcp;
 pub mod meter;
-mod process;
+pub mod process;
+pub mod exec_server;
 pub mod proxy;
 
 pub use config::HomeConfig;

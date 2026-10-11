@@ -32,6 +32,13 @@ The SQL-session callback is Rust-transport-only, not a JS binding or account
 bearer. Local deletion accepts actual absence but never deletes a newer pair;
 it does not revoke admitted requests or bearers. Server revocation is separate.
 
+Initial enrollment consumes `PendingCustomerLeaf::prepare` into an opaque
+`PreparedCustomerLeaf`. This read-only OS validation assigns the one actual
+future pair nonce; persist its nonsecret reference before `commit` writes that
+exact pair. The reference alone proves no publication. After a lost ACK,
+`open_at` accepts only the saved generation; actual absence means uncompleted
+enrollment, never automatic adoption or allocation of another holder.
+
 The implementation selects a platform backend at compile time, with runtime
 fallback where needed:
 

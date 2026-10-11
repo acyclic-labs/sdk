@@ -36,6 +36,12 @@ reconciles into the original volume, retaining unchanged identities and
 metadata. Capture roots must resolve through real directory components, without
 intermediate symlinks or reparse points.
 
+Use `nativeWorkspaceCheckout` for the same named native workspace whose
+`generation(id)` supplies the capture's `preview`/`apply` inputs. Its checkout
+acquisition work comes from the actual Rust receipt; unnamed volumes are not
+cast into unrelated workspace generations. Cold restoration passes the same
+opened native filesystem engine to `restoreNativeDirectoryCapture`.
+
 Retain the original operation ID and private `stateRoot`. After restart,
 `restoreNativeDirectoryCapture` and `exportNativeDirectoryArchive` reopen the
 original receipt and immutable logical generation, never recapture later

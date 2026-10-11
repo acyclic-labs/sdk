@@ -57,9 +57,15 @@ returns Rust-owned signing bytes; finishing checks the actual signature and
 finish-time window. JavaScript never parses or re-encodes this account wire.
 
 `generateNativeCustomerLeaf` and `openNativeCustomerCredential` use the actual
-native addon and OS vault. A device login supplies a transient distinct SQL
-session to `commit`; the restored handle has no private-key/session getter or
-serializer. `requestIdentity` attaches that sealed session inside Rust only to
+native addon and OS vault. Supply the transient distinct SQL session to
+`await pending.prepare(enrollment)`, which validates the original binding and
+returns an opaque prepared handle. Persist its public tuple and actual
+`custodyReference` before `prepared.commit()`. Preparation is not a published
+vault acknowledgement; reopen only the saved reference after an uncertain
+commit, and treat actual absence as an uncompleted enrollment, not a new grant.
+`dispose` drops preparation memory without deleting an uncertain OS item.
+The restored handle has no private-key/session getter or serializer.
+`requestIdentity` attaches that sealed session inside Rust only to
 the configured HTTPS origin's `/v1/identity/` routes, without redirects or
 permission retries. `renew` retains the same own leaf/session and returns a
 generation-bound handle. Lost-ACK retries retain an existing matching pair's
@@ -71,6 +77,12 @@ too; pass it to `openNativeCustomerCredential` after restart so cleanup cannot
 adopt or erase a newer OS generation. `close` only releases the local handle;
 local deletion retries accept actual absence, not a newer pair, and do not
 revoke previously emitted bearers or already dispatched requests.
+
+`WorkersClient` accepts either an explicit static `token` or a named
+`credentialProvider` returning an opaque `bearer` and actual
+`expiresAtUnixMillis` bigint. Renewal uses the same client/channel and propagates
+refresh cancellation. Expired or refused credentials do not trigger a static
+fallback or redispatch an original command.
 
 Browser custody requires a secure origin with real WebCrypto Ed25519/AES-GCM
 and IndexedDB CryptoKey structured cloning; it is not a Workerd storage path.

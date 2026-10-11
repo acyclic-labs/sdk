@@ -1665,7 +1665,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         .map(|receipt| receipt.value)
     }
 
-    pub(crate) async fn engine_checkout_measured(
+    /// Opens an authenticated checkout of this exact workspace with its actual
+    /// bounded acquisition receipt, without selecting another workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-mode, unavailable-generation, authentication, storage,
+    /// cancellation, or bounded-work failures.
+    pub async fn engine_checkout_measured(
         &self,
         selector: GenerationSelector,
         mode: CheckoutMode,
