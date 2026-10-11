@@ -2031,20 +2031,24 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         })
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let io = self.io;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                verifier.read_with_native_work(reference,
-                    reference.descriptor().byte_length(), work)?.await
+                let bytes = verifier.read_with_native_work(reference,
+                    reference.descriptor().byte_length(), work)?.await?;
+                // Its intrinsic original guard owns all byte storage. No
+                // additional History/Preparation retention was acquired.
+                Ok((bytes, 0))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
             let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
                 io.remaining()?, &io.cancellation).await)?;
-            io.retain_owned(bytes.capacity() as u64)?;
-            Ok(acyclic_stream::OwnedBytes::from(bytes))
+            let retained = bytes.capacity() as u64;
+            io.retain_owned(retained)?;
+            Ok((acyclic_stream::OwnedBytes::from(bytes), retained))
         })
     }
 }

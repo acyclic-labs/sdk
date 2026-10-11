@@ -255,6 +255,13 @@ Native readers, journal loads and reference resolvers borrow that carrier throug
 verification/decoding, without extracting raw bytes, rebilling byte capacity,
 creating a meter or treating inline result roots as additional heap allocations.
 Custom readers without this genuine native capability reject before IO.
+The private History adapter returns this same carrier plus a scalar recording
+only separately acquired ordinary-work retention. Native byte reads return
+zero for that scalar because their intrinsic guard already owns the storage.
+Ordinary measured reads capture the actual returned vector capacity before
+moving it into the carrier and acquire that retention once. Consumers destroy
+the carrier before releasing this separate scalar; it is not another byte guard
+or an estimate of opaque `Bytes` capacity.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
