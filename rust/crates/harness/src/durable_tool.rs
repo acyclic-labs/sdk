@@ -171,11 +171,11 @@ impl ResumableTool {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                 reason: "resumable tool has no native machine or journal producer" });
         }
+        let identity = self.machine.identity_with_native_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             self.definition.validate_with_io(Some(&io))?;
             validate_tool_identity(invocation, Some(&io))?;
-            let identity = self.machine.identity();
             if identity.name != self.definition.name || identity.version != self.definition.revision
                 || invocation.name != self.definition.name
             {
@@ -542,7 +542,7 @@ impl DurableToolRunner {
             let mut custody = work.retain_owned(
                 (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>()) as u64)?;
             let mut call_hold;
-            let (call_id, hold) = work.display(&operation_id)?;
+            let (call_id, hold) = work.display(&context.call_id())?;
             call_hold = hold;
             custody.absorb(&mut call_hold)?;
             let mut name_hold;
