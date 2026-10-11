@@ -5898,32 +5898,39 @@ pub(crate) fn require_descendant_grant(
 }
 
 pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool> {
-    if grants.contains(&file.read_capability()?)
-        || grants.contains(&file.volume().capability(VolumeOperation::Read)?)
+    read_granted_with_work(grants, file, &mut None)
+}
+
+pub(crate) fn read_granted_with_work(
+    grants: &Capabilities,
+    file: &FileRef,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<bool> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.as_ref().and_then(|io| io.original_native_work()) {
+        file.validate_with_native_work(native)?;
+    } else {
+        file.validate()?;
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    file.validate()?;
+    if contains_content_grant_with_work(grants, file, "file:read:", work)?
+        || contains_content_grant_with_work(grants, file.volume(), "volume:read:", work)?
+        || contains_content_grant_with_work(
+            grants, &(file.volume(), ""), "directory:read:", work,
+        )?
     {
         return Ok(true);
     }
-    if file
-        .volume()
-        .directory_read_capability("")
-        .is_ok_and(|capability| grants.contains(&capability))
-    {
-        return Ok(true);
-    }
-    let mut prefix = String::new();
-    for segment in file
-        .path()
-        .split('/')
-        .take(file.path().split('/').count().saturating_sub(1))
-    {
-        if !prefix.is_empty() {
-            prefix.push('/');
-        }
-        prefix.push_str(segment);
-        if file
-            .volume()
-            .directory_read_capability(&prefix)
-            .is_ok_and(|capability| grants.contains(&capability))
+    for (slash, _) in file.path().match_indices('/') {
+        let prefix = &file.path()[..slash];
+        if !crate::conversation::is_internal_path(prefix)
+            && contains_content_grant_with_work(
+                grants, &(file.volume(), prefix), "directory:read:", work,
+            )?
         {
             return Ok(true);
         }
@@ -5942,6 +5949,30 @@ pub(crate) fn read_granted_measured(grants: &Capabilities, file: &FileRef, io: &
             && io.contains_capability(grants, &(file.volume(), prefix), "directory:read:")? { return Ok(true); }
     }
     Ok(false)
+}
+
+fn contains_content_grant_with_work<T: Serialize + ?Sized>(
+    grants: &Capabilities,
+    value: &T,
+    prefix: &str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<bool> {
+    let digest = crate::contract::canonical_json_digest_with_work(
+        value, acyclic_stream::MAX_RECORD_BYTES as u64, work,
+    )?;
+    let digest = blake3::Hash::from(digest).to_hex();
+    // All three canonical content prefixes fit this fixed stack buffer.
+    let mut capability = [0; "directory:read:".len() + 64];
+    let end = prefix.len() + digest.len();
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.copy_bytes(end as u64)?;
+    }
+    capability[..prefix.len()].copy_from_slice(prefix.as_bytes());
+    capability[prefix.len()..end].copy_from_slice(digest.as_bytes());
+    let capability = std::str::from_utf8(&capability[..end])
+        .expect("canonical capability prefixes and hash are ASCII");
+    Ok(grants.contains(capability))
 }
 
 /// Typed live group whose cancellation is independent of sibling groups.
@@ -8563,6 +8594,20 @@ mod tests {
         let grants = Capabilities::new([volume.directory_read_capability("")?]);
         assert!(read_granted(&grants, &file)?);
         assert!(!grants.contains(&volume.capability(VolumeOperation::Write)?));
+        for capability in [
+            file.read_capability()?,
+            volume.capability(VolumeOperation::Read)?,
+            volume.directory_read_capability("notes")?,
+            volume.directory_read_capability("notes/nested")?,
+        ] {
+            let grants = Capabilities::new([capability]);
+            assert!(read_granted_with_work(&grants, &file, &mut None)?);
+        }
+        let unrelated = Capabilities::new([
+            volume.directory_read_capability("notes/other")?,
+            volume.capability(VolumeOperation::Write)?,
+        ]);
+        assert!(!read_granted_with_work(&unrelated, &file, &mut None)?);
         Ok(())
     }
 
