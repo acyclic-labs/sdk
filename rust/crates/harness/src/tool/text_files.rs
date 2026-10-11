@@ -409,7 +409,7 @@ impl ToolExecutor for TextTool {
     ) -> Result<()> {
         use super::files::native;
         native::context(context, invocation, work)?;
-        let scope = context.task().scope();
+        let scope = context.effective_scope();
         native::bound(&invocation.arguments, scope.limits().file_bytes, work)?;
         let maximum = self.maximum_result_bytes.min(scope.limits().file_bytes);
         match self.kind {
@@ -424,7 +424,7 @@ impl ToolExecutor for TextTool {
                     return Err(native::invalid("read exceeds its admitted byte bounds"));
                 }
                 native::public_path(input.0.file.path(), work)?;
-                context.task().authorize_file_read_with_native_work(&input.0.file, work)
+                context.authorize_file_read_with_native_work(&input.0.file, work)
             }
             TextKind::Search(options) => {
                 let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
@@ -436,7 +436,7 @@ impl ToolExecutor for TextTool {
                     return Err(native::invalid("search exceeds its admitted input or retained-position bounds"));
                 }
                 native::public_path(input.0.file.path(), work)?;
-                context.task().authorize_file_read_with_native_work(&input.0.file, work)
+                context.authorize_file_read_with_native_work(&input.0.file, work)
             }
         }
     }
@@ -525,11 +525,11 @@ impl TextTool {
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         use super::files::native;
         self.authorize_with_native_context(context, invocation, work)?;
-        let maximum = self.maximum_result_bytes.min(context.task().scope().limits().file_bytes);
+        let maximum = self.maximum_result_bytes.min(context.effective_scope().limits().file_bytes);
         match self.kind {
             TextKind::Read(options) => {
                 let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
-                let read = context.task().read_file_with_native_work(&input.0.file, work).await?;
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
@@ -543,7 +543,7 @@ impl TextTool {
             }
             TextKind::Search(options) => {
                 let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
-                let read = context.task().read_file_with_native_work(&input.0.file, work).await?;
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
@@ -564,27 +564,26 @@ mod native_records {
     use super::*;
     use crate::filesystem::UploadRecord;
 
-    fn total<T>(file: &FileRef, additional: usize) -> Result<u64> {
-        file.logical_owned_bytes()?.checked_add(std::mem::size_of::<T>() as u64)
-            .and_then(|n| n.checked_add(additional as u64))
+    fn total(file: &FileRef, additional: usize) -> Result<u64> {
+        file.logical_owned_bytes()?.checked_add(additional as u64)
             .ok_or_else(|| super::super::files::native::invalid("text tool DTO ownership overflow"))
     }
 
     impl UploadRecord for ReadInput {
-        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, 0) }
+        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, 0) }
     }
     impl UploadRecord for SearchInput {
-        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, self.query.capacity()) }
+        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, self.query.capacity()) }
     }
     impl UploadRecord for ReadResult {
-        fn logical_owned_bytes(&self) -> Result<u64> { total::<Self>(&self.file, self.selection.text.capacity()) }
+        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, self.selection.text.capacity()) }
     }
     impl UploadRecord for SearchResult {
         fn logical_owned_bytes(&self) -> Result<u64> {
             let positions = self.matches.matches.capacity().checked_mul(std::mem::size_of::<TextRange>())
                 .and_then(|n| n.checked_add(self.query.capacity()))
                 .ok_or_else(|| super::super::files::native::invalid("search result ownership overflow"))?;
-            total::<Self>(&self.file, positions)
+            total(&self.file, positions)
         }
     }
 }

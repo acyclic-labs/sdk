@@ -335,15 +335,15 @@ impl ToolExecutor for FileTool {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         native::context(context, invocation, work)?;
-        native::bound(&invocation.arguments, context.task().scope().limits().file_bytes, work)?;
+        native::bound(&invocation.arguments, context.effective_scope().limits().file_bytes, work)?;
         match self {
             Self::Write => {
                 let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
                 native::public_path(&input.0.path, work)?;
-                if input.0.path.len() > context.task().scope().limits().path_bytes {
+                if input.0.path.len() > context.effective_scope().limits().path_bytes {
                     return Err(native::invalid("file path exceeds original task bound"));
                 }
-                context.task().authorize_content_publication_with_native_work(None, work)
+                context.authorize_content_publication_with_native_work(None, work)
             }
             _ => {
                 let value = invocation.arguments.get("file")
@@ -351,10 +351,10 @@ impl ToolExecutor for FileTool {
                 // Edit/patch DTOs include extra fields; decode only the pinned ref.
                 let file = super::decode_with_native_work::<FileRef>(value, work)?;
                 native::public_path(file.0.path(), work)?;
-                context.task().authorize_file_read_with_native_work(&file.0, work)?;
+                context.authorize_file_read_with_native_work(&file.0, work)?;
                 if let Self::Read = self {
-                    let maximum = context.task().scope().limits().render_bytes
-                        .min(context.task().scope().limits().file_bytes);
+                    let maximum = context.effective_scope().limits().render_bytes
+                        .min(context.effective_scope().limits().file_bytes);
                     if maximum == 0 || maximum == u64::MAX
                         || file.0.descriptor().byte_length() > maximum
                     {
@@ -362,7 +362,7 @@ impl ToolExecutor for FileTool {
                     }
                     Ok(())
                 } else {
-                    context.task().authorize_content_publication_with_native_work(Some(&file.0), work)
+                    context.authorize_content_publication_with_native_work(Some(&file.0), work)
                 }
             }
         }
@@ -391,7 +391,7 @@ impl ToolExecutor for FileTool {
             }
             // Never redispatch an uncertain publication. The original owner
             // receipt, not an edited reconstruction, supplies reconciliation.
-            let receipt = context.task().observe_staged_file_once_with_native_work(
+            let receipt = context.observe_staged_file_once_with_native_work(
                 invocation.operation_id, work,
             ).await?;
             match &receipt.0 {
@@ -623,11 +623,10 @@ impl FileTool {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         self.authorize_with_native_context(context, invocation, work)?;
-        let task = context.task();
         match self {
             Self::Read => {
                 let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
-                let mut read = task.read_file_with_native_work(&input.0.file, work).await?;
+                let mut read = context.read_file_with_native_work(&input.0.file, work).await?;
                 read.1.resize_retained(read.1.bytes() + std::mem::size_of::<ToolResult>() as u64)
                     .map_err(super::edit::native_error)?;
                 let text = String::from_utf8(std::mem::take(&mut read.0))
@@ -636,7 +635,7 @@ impl FileTool {
             }
             Self::Write => {
                 let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
-                let file = task.stage_file_once_with_native_work(
+                let file = context.stage_file_once_with_native_work(
                     invocation.operation_id, &input.0.path, input.0.text.as_bytes(),
                     &input.0.media_type, &input.0.display_name, work,
                 ).await?;
@@ -645,15 +644,15 @@ impl FileTool {
             }
             Self::Edit => {
                 let input = super::decode_with_native_work::<EditFileInput>(&invocation.arguments, work)?;
-                let read = task.read_file_with_native_work(&input.0.file, work).await?;
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::edit::exact_replace_engine(
                     source, &input.0.old_text, &input.0.new_text,
-                    task.scope().limits().file_bytes, &mut allocation,
+                    context.effective_scope().limits().file_bytes, &mut allocation,
                 )?;
-                let file = task.stage_file_at_with_native_work(
+                let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
                 let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
@@ -662,7 +661,7 @@ impl FileTool {
             Self::Patch { maximum_work, maximum_hunks } => {
                 let input = super::decode_with_native_work::<PatchFileInput>(&invocation.arguments, work)?;
                 let limits = super::patch::PatchLimits {
-                    maximum_bytes: task.scope().limits().file_bytes,
+                    maximum_bytes: context.effective_scope().limits().file_bytes,
                     maximum_work: *maximum_work, maximum_hunks: *maximum_hunks,
                 };
                 if input.0.file.descriptor().byte_length() > limits.maximum_bytes
@@ -670,12 +669,12 @@ impl FileTool {
                 {
                     return Err(native::invalid("patch input exceeds original task file bound"));
                 }
-                let read = task.read_file_with_native_work(&input.0.file, work).await?;
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
                 let source = std::str::from_utf8(&read.0)
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
-                let file = task.stage_file_at_with_native_work(
+                let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
                 let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
@@ -812,7 +811,7 @@ pub(super) mod native {
 
     impl crate::filesystem::UploadRecord for ReadText {
         fn logical_owned_bytes(&self) -> Result<u64> {
-            Ok((std::mem::size_of::<Self>() + self.0.capacity()) as u64)
+            Ok(self.0.capacity() as u64)
         }
     }
 
@@ -820,7 +819,7 @@ pub(super) mod native {
         ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
             impl crate::filesystem::UploadRecord for $ty {
                 fn logical_owned_bytes(&$value) -> Result<u64> {
-                    let mut bytes = std::mem::size_of::<Self>() as u64;
+                    let mut bytes = 0_u64;
                     $(bytes = bytes.checked_add($bytes as u64)
                         .ok_or_else(|| invalid("file tool DTO ownership overflow"))?;)+
                     Ok(bytes)
