@@ -1427,7 +1427,7 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
         })
 }
 
-/// SDK-private BORROWED Value-to-closed-DTO boundary. Inspect the original paid
+/// Trusted BORROWED Value-to-closed-DTO boundary. Inspect the original paid
 /// tree (including selected virtual Raw inputs), then admit the concrete output
 /// BEFORE the genuine borrowed Value deserializer executes. No source clone,
 /// JSON round trip, encoded-byte charge or invented backend read occurs.
@@ -1436,8 +1436,11 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
 /// Deserialize and visit_string-only visitors are explicitly unsupported.
 /// Consuming from_value callers retain their original semantics and use the
 /// separate inspection/additional-quota helpers instead.
+/// Admission carries the SDK-issued BorrowedConversion shape. It is a concrete
+/// owner quota basis, not an actual receipt, arbitrary-T heap/CPU sandbox, or
+/// universal stack/RSS proof; borrowed source custody remains with the caller.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     source: &Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
     value_schema: JsonValueSchema, charge: &mut F,
 ) -> Result<T> {

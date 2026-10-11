@@ -82,10 +82,10 @@ pub use json::{
     sdk_json_diagnostic_bytes,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use json::{json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted};
+pub use json::{json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted, json_from_value_bounded_native_trusted};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
-    json_from_value_bounded_native_trusted, validate_json_byte_bound_native_trusted,
+    validate_json_byte_bound_native_trusted,
     json_from_slice_seed_bounded_native_trusted,
     canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
     canonical_json_bytes_identity_native_trusted,
