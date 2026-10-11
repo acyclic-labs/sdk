@@ -37,6 +37,7 @@
 //! behind every remembered answer, and nothing of it is cached.
 
 use crate::kernel::FileMetadata;
+use crate::demand::{NativeMountAllocationCustody, NativeMountControlAllocation};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
@@ -46,8 +47,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::SystemTime;
-#[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Enters one driver callback's `acyclic.fs.mount.<callback>` span; the
@@ -76,10 +75,11 @@ pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
 pub(crate) use view_ledger::ViewObserverAdmissions;
+pub(crate) use view_ledger::{ViewLedger, ViewLedgerAdmission, ViewLedgerAdmissions};
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
-pub use lazy::LazyMountSource;
+pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
 pub use customer::{
@@ -121,6 +121,8 @@ pub use storage_accelerations::{
 
 #[cfg(target_os = "macos")]
 mod darwin_mount;
+#[cfg(target_os = "macos")]
+pub use darwin_mount::DarwinTeardownFailure;
 #[cfg(target_os = "linux")]
 mod fuse;
 
@@ -177,13 +179,43 @@ fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
     reason = "used as a map_err adapter, which hands over the error by value"
 )]
 fn errno(error: MountSourceError) -> i32 {
-    match error {
+    match error.semantic_error() {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::Invalid(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) | MountSourceError::Work(_) => libc::EIO,
+        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
+        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
+        MountSourceError::Allocation(_) => libc::ENOMEM,
+        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+            error.raw_os_error().unwrap_or(libc::EIO),
+        MountSourceError::NativeWork(error) => native_materialization_errno(error),
+        MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
+        MountSourceError::NativeWorkspaceCause(cause) => native_workspace_errno(&cause.source),
+        MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
+            native_source_text_errno(*kind),
+        MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
+        MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
         MountSourceError::Stale | MountSourceError::Cancelled => libc::ESTALE,
+        MountSourceError::Engine(_) | MountSourceError::Work(_)
+        | MountSourceError::Filesystem(_) | MountSourceError::ServicesNotInitialized
+        | MountSourceError::ServiceUnavailable(_) | MountSourceError::Retained(_)
+        | MountSourceError::MutationFinalization { .. }
+        | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
+        | MountSourceError::SelectedPublication(_) | MountSourceError::PublicationRetryLimit
+        | MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
+        | MountSourceError::NativeRecordOwnershipConflict(_, _)
+        | MountSourceError::NativeRecordMaterializationInProgress
+        | MountSourceError::NativeRecordIntegrity | MountSourceError::NativeRecordContextTransaction(_, _)
+        | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
+        #[cfg(target_os = "linux")]
+        MountSourceError::LinuxMetadata(_) => libc::EIO,
+        #[cfg(target_os = "macos")]
+        MountSourceError::MacMetadata(_) => libc::EIO,
+        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+        MountSourceError::SourceWatchStartup(_) | MountSourceError::NativeWatchIo(_)
+        | MountSourceError::NativeWatchBackend(_) | MountSourceError::NativeWatchOriginalIo(_)
+        | MountSourceError::NativeWatchOriginalBackend(_)
+        | MountSourceError::NativeWatchStartupFailed { .. }
+        | MountSourceError::NativeWatchSourceStartupFailed { .. } => libc::EIO,
     }
 }
 
@@ -193,7 +225,7 @@ fn errno(error: MountSourceError) -> i32 {
     reason = "used as a map_err adapter, which hands over the error by value"
 )]
 fn source_error(error: MountSourceError) -> NativeMountError {
-    NativeMountError::Driver(error.to_string())
+    error.into()
 }
 
 #[cfg(target_os = "windows")]
@@ -286,6 +318,11 @@ pub struct MountLookup {
 /// bytes.
 pub type ContentSink<'a> = dyn FnMut(u64, Bytes) -> Result<(), MountSourceError> + 'a;
 
+/// Measured pinned content keeps the producer's exact live capacity through the
+/// actual native completion. Ordinary byte-only sinks remain unchanged.
+pub type NativeMountContentSink<'a> =
+    dyn FnMut(u64, crate::kernel::OwnedSourceChunk) -> Result<(), MountSourceError> + 'a;
+
 /// Opaque evidence of the exact external content one lookup observed.
 ///
 /// Only the issuing source interprets it. A driver whose projected metadata
@@ -366,6 +403,110 @@ pub struct MountSparseRange {
 /// cannot stale the handle. After final-link removal, drivers replace all
 /// handles for the inode with one shared detached implementation.
 pub trait MountOpenFile: Send + Sync + 'static {
+    /// Looks up through the operative shared native invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original authentication, cancellation, and work failures.
+    fn lookup_with_meter(&self, work: &NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+    /// Reads an exact owned range admitted on the original invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves the actual read and owned-allocation prefix.
+    fn read_range_with_meter(&self, offset: u64, length: u32, work: &NativeMountMeterWork)
+        -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    /// Reads up to the original bound without losing the producer's capacity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original read, range, and allocation failures.
+    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &NativeMountMeterWork)
+        -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    /// Finds the actual sparse boundary through the original source engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves sparse-tree, storage, and work failures.
+    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &NativeMountMeterWork)
+        -> Result<Option<u64>, MountSourceError>;
+    /// Consumes the caller's exact already-admitted owned payload.
+    ///
+    /// # Errors
+    ///
+    /// Retains the actual mutation prefix and any physically retained payload.
+    fn write_range_with_meter(&self, offset: u64, bytes: crate::kernel::OwnedSourceChunk,
+        work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Changes length through the same operative source invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual sparse-tree, storage, and work failures.
+    fn resize_with_meter(&self, logical_bytes: u64, work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Applies the actual sparse allocation operation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves unsupported, storage, range, and work failures.
+    fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
+        work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Mutates exact metadata and optional size through the same engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual mutation and admission failures.
+    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+        work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Reads an owned named attribute without erasing capacity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original attribute, authentication, and work failures.
+    fn read_attribute_with_meter(&self, name: &[u8], work: &NativeMountMeterWork)
+        -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
+    /// Lists the actual owned native attribute page.
+    ///
+    /// # Errors
+    ///
+    /// Preserves cursor and owned-allocation failures.
+    fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
+        work: &NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
+    /// Consumes an exact already-admitted attribute value.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual mutation and ownership on failure.
+    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+        mode: MountAttributeWriteMode, work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Removes the actual named attribute through the same engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original attribute, storage, and work failures.
+    fn remove_attribute_with_meter(&self, name: &[u8], work: &NativeMountMeterWork)
+        -> Result<(), MountSourceError>;
+    /// Settles this actual handle's queued effects before durability acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual queued, durability, and work failures.
+    fn settle_with_meter(&self, work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Returns the owned sparse range and its original producer's exact claim.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual sparse-tree, read, and owned-allocation failures.
+    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &NativeMountMeterWork)
+        -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
+    /// Consumes the exact already-admitted sparse payload, including capacities
+    /// known before each span's conversion to `Bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Preserves every actual mutation and physically retained payload.
+    fn write_sparse_range_with_meter(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
+        work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+
     /// Returns current identity, size, and metadata for `fstat`-style calls.
     ///
     /// # Errors
@@ -565,15 +706,57 @@ pub struct MountDirectoryEntry {
 }
 
 /// One independently resumable directory-handle page.
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MountDirectoryPage {
     /// Ordered entries after the supplied opaque cursor.
-    pub entries: Vec<MountDirectoryEntry>,
+    entries: Vec<MountDirectoryEntry>,
     /// Opaque continuation owned by this open directory handle.
-    pub next_cursor: Option<Vec<u8>>,
+    next_cursor: Option<Vec<u8>>,
+    ownership: crate::demand::SourcePayloadOwnership,
 }
 
 impl MountDirectoryPage {
+    /// Wraps an ordinary externally-owned page without claiming borrowed work.
+    #[must_use]
+    pub fn new(entries: Vec<MountDirectoryEntry>, next_cursor: Option<Vec<u8>>) -> Self {
+        Self::with_ownership(entries, next_cursor, crate::demand::SourcePayloadOwnership::default())
+    }
+
+    /// Moves an already-admitted page's genuine original allocation custody.
+    /// No new adoption, allocation, or budget is created by this transfer.
+    #[must_use]
+    pub fn with_native_allocation(
+        entries: Vec<MountDirectoryEntry>, next_cursor: Option<Vec<u8>>,
+        allocation: crate::NativeAllocation,
+    ) -> Self {
+        Self::with_ownership(
+            entries, next_cursor,
+            crate::demand::SourcePayloadOwnership::from_native_allocation(allocation),
+        )
+    }
+
+    pub(crate) fn with_ownership(
+        entries: Vec<MountDirectoryEntry>, next_cursor: Option<Vec<u8>>,
+        ownership: crate::demand::SourcePayloadOwnership,
+    ) -> Self {
+        Self { entries, next_cursor, ownership }
+    }
+
+    /// Borrows entries without detaching their physical capacity custody.
+    #[must_use]
+    pub fn entries(&self) -> &[MountDirectoryEntry] { &self.entries }
+
+    /// Borrows this page's opaque continuation.
+    #[must_use]
+    pub fn next_cursor(&self) -> Option<&[u8]> { self.next_cursor.as_deref() }
+
+    /// Internal physical projections transfer data and its exact custody
+    /// together, splitting that custody only for actual escaping payloads.
+    pub(crate) fn into_parts(self) -> (
+        Vec<MountDirectoryEntry>, Option<Vec<u8>>, crate::demand::SourcePayloadOwnership,
+    ) {
+        (self.entries, self.next_cursor, self.ownership)
+    }
+
     /// Known owned capacities of this exact page, excluding borrowed metadata
     /// and opaque allocator overhead. Custody remains live until actual drop.
     ///
@@ -590,6 +773,21 @@ impl MountDirectoryPage {
     }
 }
 
+impl std::fmt::Debug for MountDirectoryPage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MountDirectoryPage")
+            .field("entries", &self.entries).field("next_cursor", &self.next_cursor).finish()
+    }
+}
+
+impl PartialEq for MountDirectoryPage {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries && self.next_cursor == other.next_cursor
+    }
+}
+
+impl Eq for MountDirectoryPage {}
+
 /// One bounded page of exact native named-attribute names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MountAttributePage {
@@ -597,6 +795,22 @@ pub struct MountAttributePage {
     pub names: Vec<Vec<u8>>,
     /// Exact last name when another page exists.
     pub next_cursor: Option<Vec<u8>>,
+}
+
+impl MountAttributePage {
+    /// Exact known owned capacities of this page, excluding allocator overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow before a caller adopts any payload claim.
+    pub fn logical_owned_bytes(&self) -> Result<u64, crate::WorkError> {
+        let slots = self.names.capacity().checked_mul(std::mem::size_of::<Vec<u8>>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        self.names.iter().try_fold(slots, |bytes, name| {
+            bytes.checked_add(name.capacity() as u64).ok_or(crate::WorkError::Overflow)
+        })?.checked_add(self.next_cursor.as_ref().map_or(0, |cursor| cursor.capacity() as u64))
+            .ok_or(crate::WorkError::Overflow)
+    }
 }
 
 /// Native named-attribute write precondition.
@@ -615,7 +829,7 @@ pub enum MountAttributeWriteMode {
 /// Components contain raw Unix name bytes on Linux FUSE/macOS NFS and little-endian
 /// UTF-16 code units on `ProjFS`. The checkout adapter converts them into the
 /// volume's declared logical-name representation without lossy text routing.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MountPath {
     components: Vec<Vec<u8>>,
 }
@@ -653,8 +867,29 @@ impl MountPath {
     }
 }
 
+
+pub(crate) trait MountSourceFailureCause: Send + Sync {
+    fn semantic_error(&self) -> &MountSourceError;
+}
+
+impl std::fmt::Debug for dyn MountSourceFailureCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.semantic_error(), formatter)
+    }
+}
+/// Existing source diagnostic classification; it grants no operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeSourceTextKind {
+    /// Original backend diagnostic.
+    Engine,
+    /// Original invalid input diagnostic.
+    Invalid,
+    /// Original unsupported policy diagnostic.
+    Unsupported,
+}
+
 /// Errors returned by the canonical checkout callback bridge.
-#[derive(Clone, Debug, Error, strum::IntoStaticStr)]
+#[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MountSourceError {
     /// Path is authentically absent.
     #[error("path is absent")]
@@ -671,6 +906,24 @@ pub enum MountSourceError {
     /// Canonical engine operation failed.
     #[error("filesystem engine failure: {0}")]
     Engine(String),
+    /// The canonical filesystem retains its exact original typed cause.
+    #[error(transparent)]
+    Filesystem(crate::FsError),
+    /// The acknowledged operation has no original logical snapshot evidence.
+    #[error("original selected-import snapshot is unavailable")]
+    OriginalSnapshotUnavailable,
+    /// The acknowledged original native publication has not finished reconciliation.
+    #[error("original native publication is indeterminate")]
+    Indeterminate,
+    /// The original SDK seal returned an exact semantic decision.
+    #[error("selected import publication was not committed: {0:?}")]
+    SelectedPublication(crate::CheckoutCommitOutcome),
+    /// Canonical namespace validation retains its exact typed cause.
+    #[error(transparent)]
+    NamespacePath(crate::kernel::NamespacePathError),
+    /// Original native OS cause, moved without allocating a replacement error.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// This mount or callback was fenced or cancelled.
     #[error("mount callback is stale or cancelled")]
     Stale,
@@ -680,6 +933,256 @@ pub enum MountSourceError {
     /// Canonical publication exceeded its exact work allowance.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
+    /// Original native filesystem work cause, without formatting or reboxing.
+    #[error(transparent)]
+    NativeWork(#[from] crate::NativeTreeMaterializationError),
+    /// Original Linux metadata cause, moved without formatting a diagnostic.
+    #[cfg(target_os = "linux")]
+    #[error("filesystem engine failure: source demand failed: {0}")]
+    LinuxMetadata(#[source] crate::native_host::LinuxMetadataError),
+    /// Original macOS metadata cause, moved without formatting a diagnostic.
+    #[cfg(target_os = "macos")]
+    #[error("filesystem engine failure: source demand failed: {0}")]
+    MacMetadata(#[source] crate::native_host::MacMetadataError),
+    /// Original Windows metadata cause, moved without formatting a diagnostic.
+    #[cfg(windows)]
+    #[error("filesystem engine failure: source demand failed: {0}")]
+    WindowsMetadata(#[source] crate::native_host::WindowsMetadataError),
+    /// Original preallocated source-watch failure and its physical owner.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: {0}")]
+    SourceWatchStartup(#[source] Arc<crate::source_watch::SourceWatchStartupFailure>),
+    /// Existing ordinary watch diagnostic, moved without another string.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native watcher I/O failed: {0}")]
+    NativeWatchIo(String),
+    /// Existing ordinary backend diagnostic, moved without another string.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native watcher backend failed: {0}")]
+    NativeWatchBackend(String),
+    /// Original finite watcher I/O cause, with no replacement error box.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native watcher I/O failed: {0}")]
+    NativeWatchOriginalIo(#[source] std::io::Error),
+    /// Original finite watcher backend cause, moved without formatting.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native watcher backend failed: {0}")]
+    NativeWatchOriginalBackend(#[source] notify::Error),
+    /// Same actual started root watcher retained after later admission failure.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native watcher startup failed: {cause}")]
+    NativeWatchStartupFailed {
+        /// Original typed cause, moved without another allocation.
+        #[source]
+        cause: crate::NativeTreeMaterializationError,
+        /// Actual same root watcher to retain through measured terminal cleanup.
+        watch: crate::watch::NativeWatch,
+    },
+    /// Same complete root watcher and already-retained source startup cause.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[error("filesystem engine failure: source demand failed: native source watcher startup failed: {cause}")]
+    NativeWatchSourceStartupFailed {
+        /// Original preallocated partial source failure.
+        #[source]
+        cause: Arc<crate::source_watch::SourceWatchStartupFailure>,
+        /// Actual same complete root watcher to retain for bounded cleanup.
+        watch: crate::watch::NativeWatch,
+    },
+    /// An actual mutation failed and its original completion accounting also failed.
+    /// The primary slot is funded before the first effect and always contains its cause.
+    #[error("mutation failed; original completion accounting also failed")]
+    MutationFinalization {
+        /// Original typed mutation cause in its already admitted physical slot.
+        primary: Box<Option<MountSourceError>>,
+        /// Original completion accounting cause, moved without replacing the primary.
+        cleanup: Box<Option<crate::demand::DemandError>>,
+        /// The physical primary slot drops before its original allocation custody.
+        custody: Option<crate::NativeAllocation>,
+    },
+    /// Original authenticated workspace cause, moved without formatting.
+    #[error(transparent)]
+    WorkspaceCause(crate::WorkspaceError),
+    /// Whole original workspace cause and its already funded outer custody.
+    #[error(transparent)]
+    NativeWorkspaceCause(crate::lazy_workspace::NativeLazyWorkspaceCause),
+    /// Original funded SDK diagnostic; data physically drops before custody.
+    #[error("{text}")]
+    NativeText {
+        /// Original diagnostic classification.
+        kind: NativeSourceTextKind,
+        /// Already constructed and measured diagnostic.
+        text: String,
+        /// Always funded at construction; taken only for owned SDK restoration.
+        allocation: Option<crate::NativeAllocation>,
+    },
+    /// Actual static SDK reason; construction allocates no diagnostic payload.
+    #[error("{text}")]
+    NativeStaticText {
+        /// Original diagnostic classification.
+        kind: NativeSourceTextKind,
+        /// Original constant reason, without string allocation.
+        text: &'static str,
+    },
+    /// Original record IO cause and its already funded data custody.
+    /// The cause drops before the original allocation guard.
+    #[error("native record IO error: {0}")]
+    NativeRecordIo(#[source] std::io::Error, Option<crate::NativeAllocation>),
+    /// Original owned native record parser cause; no diagnostic allocation.
+    #[error("native record JSON error: {0}")]
+    NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
+    /// Actual record lock acquisition timed out.
+    #[error("native record lock timed out: {}", .0.display())]
+    NativeRecordLockTimeout(PathBuf, Option<crate::NativeAllocation>),
+    /// The existing record belongs to a different original owner.
+    #[error("native record ownership conflict: {}", .0.display())]
+    NativeRecordOwnershipConflict(PathBuf, Option<crate::NativeAllocation>),
+    /// The existing journal still holds an incomplete materialization.
+    #[error("native record materialization remains in progress")]
+    NativeRecordMaterializationInProgress,
+    /// Existing native record integrity verification failed.
+    #[error("native record integrity verification failed")]
+    NativeRecordIntegrity,
+    /// Original context-transaction diagnostic already owned by its producer.
+    #[error("native record context transaction failed: {0}")]
+    NativeRecordContextTransaction(String, Option<crate::NativeAllocation>),
+    /// Original corrupt-record location, moved without copying its path.
+    #[error("native record is corrupt: {}", .0.display())]
+    NativeRecordCorrupt(PathBuf, Option<crate::NativeAllocation>),
+    /// A native operation is unsupported before dispatch.
+    #[error("native operation is unsupported")]
+    NativeUnsupported,
+    /// Existing publication attempt exhausted its bounded rebase loop.
+    /// Its original operation remains retained for the caller's explicit retry.
+    #[error("publication raced with repeated head advances; retry retained operation")]
+    PublicationRetryLimit,
+    /// Original fallible allocation failure, without allocating a diagnostic.
+    #[error("native source allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
+    /// Explicit native process-shared services are cold.
+    #[error("native mount services are not initialized")]
+    ServicesNotInitialized,
+    /// Original service-start cause already owned by explicit bootstrap.
+    #[error("native mount service startup failed: {0}")]
+    ServiceUnavailable(#[source] Arc<std::io::Error>),
+    /// Original cause in an already admitted pending/completion owner.
+    #[error("{}", .0.semantic_error())]
+    Retained(Arc<dyn MountSourceFailureCause>),
+}
+
+impl MountSourceError {
+    pub fn semantic_error(&self) -> &Self {
+        let mut error = self;
+        loop {
+            match error {
+                Self::Retained(cause) => error = cause.semantic_error(),
+                Self::MutationFinalization { primary, .. } if primary.is_some() =>
+                    error = primary.as_ref().as_ref().expect("a completed mutation has its original primary"),
+                _ => break,
+            }
+        }
+        error
+    }
+
+    /// Moves only the allocation guard already owned by these native causes.
+    /// The caller retains it outside any original-work fatal-cause slot; this
+    /// does not allocate, clone data, or manufacture custody for borrowed errors.
+    pub(crate) fn take_native_allocation(&mut self) -> Option<crate::NativeAllocation> {
+        self.native_allocation_mut().and_then(Option::take)
+    }
+
+    pub(crate) fn native_allocation_mut(&mut self) -> Option<&mut Option<crate::NativeAllocation>> {
+        match self {
+            Self::NativeRecordIo(_, allocation) | Self::NativeRecordJson(_, allocation)
+            | Self::NativeRecordLockTimeout(_, allocation) | Self::NativeRecordOwnershipConflict(_, allocation)
+            | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
+                Some(allocation),
+            Self::NativeText { allocation, .. } => Some(allocation),
+            Self::MutationFinalization { custody, .. } => Some(custody),
+            Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
+            Self::NativeWork(error) => error.native_failure_allocation_mut(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_materialization_errno(error: &crate::NativeTreeMaterializationError) -> i32 {
+    match error {
+        crate::NativeTreeMaterializationError::Io(error) =>
+            error.raw_os_error().unwrap_or(libc::EIO),
+        crate::NativeTreeMaterializationError::Cancelled => libc::ESTALE,
+        crate::NativeTreeMaterializationError::AllocationFailed(_) => libc::ENOMEM,
+        crate::NativeTreeMaterializationError::PayloadTooLarge { .. } => libc::EFBIG,
+        _ => libc::EIO,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_source_text_errno(kind: NativeSourceTextKind) -> i32 {
+    match kind {
+        NativeSourceTextKind::Engine => libc::EIO,
+        NativeSourceTextKind::Invalid => libc::EINVAL,
+        NativeSourceTextKind::Unsupported => libc::EOPNOTSUPP,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
+    use crate::WorkspaceError;
+    match error {
+        WorkspaceError::Cancelled(_) | WorkspaceError::Filesystem(crate::FsError::Cancelled(_))
+        | WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
+        WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) => native_materialization_errno(error),
+        WorkspaceError::NotFound | WorkspaceError::Filesystem(crate::FsError::NotFound) => libc::ENOENT,
+        WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => libc::ENOTDIR,
+        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
+        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
+        | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => libc::ENOMEM,
+        WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::NotRegularFile
+        | WorkspaceError::NamespacePath(_) => libc::EINVAL,
+        WorkspaceError::ReadLimitExceeded => libc::EFBIG,
+        WorkspaceError::StaleGeneration | WorkspaceError::StaleSource | WorkspaceError::StaleIdentity
+        | WorkspaceError::StaleTarget | WorkspaceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
+        _ => libc::EIO,
+    }
+}
+
+pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -> bool {
+    if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
+        return native_materialization_failure_is_fatal(error);
+    }
+    matches!(crate::workspace::workspace_bounded_error(error),
+        Some(crate::WorkspaceError::Work(_) | crate::WorkspaceError::Cancelled(_)
+            | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })))
+        || matches!(error,
+            crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
+            | crate::WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed))
+}
+
+pub(crate) fn native_materialization_failure_is_fatal(
+    error: &crate::NativeTreeMaterializationError,
+) -> bool {
+    matches!(error,
+        crate::NativeTreeMaterializationError::Work(_)
+        | crate::NativeTreeMaterializationError::Cancelled
+        | crate::NativeTreeMaterializationError::AllocationFailed(_)
+        | crate::NativeTreeMaterializationError::IndeterminatePreparation
+        | crate::NativeTreeMaterializationError::ExternalMutation(_)
+        | crate::NativeTreeMaterializationError::AllocationChanged { .. })
+}
+
+
+impl From<NativeMountStartupAdmissionError> for MountSourceError {
+    fn from(error: NativeMountStartupAdmissionError) -> Self {
+        match error {
+            NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
+            NativeMountStartupAdmissionError::Materialization(error) => Self::NativeWork(error),
+            NativeMountStartupAdmissionError::Demand(error) => lazy::mount_demand_error(error),
+            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
+            NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
+            NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
+        }
+    }
 }
 
 /// An owned permit that pins one coherent projected source view.
@@ -696,163 +1199,397 @@ impl MountViewLease for () {}
 /// Source callbacks and the platform driver use the same allocation ledger,
 /// cancellation roots, and counters. The carrier itself owns no allocation.
 pub struct NativeMountWork<'a> {
-    pub(crate) work: &'a mut crate::demand::DemandWork,
+    pub(crate) work: &'a crate::NativeMaterializationWork,
 }
 
-/// Physical ownership of known native-driver payloads admitted by one original
-/// lifecycle ledger. Clones are aliases, not new allocations or authorities.
+/// An existing shared native invocation, borrowed by source callbacks without
+/// another ledger loan or a work mutex held across queued native waits.
 #[derive(Clone)]
-pub(crate) struct NativeMountAllocationCustody {
-    live: Arc<std::sync::atomic::AtomicU64>,
+pub struct NativeMountMeterWork {
+    meter: Arc<crate::demand::NativeDemandReadMeter>,
+    resource_allowance: Option<Arc<crate::materializer::NativeResourceAllowance>>,
+    capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    invocation: Option<Arc<crate::materializer::NativeInvocationView>>,
 }
 
-struct NativeMountAllocationAdmission {
-    live: std::sync::Weak<std::sync::atomic::AtomicU64>,
-    adopted: u64,
-}
-
-/// Original invocation's weak retirement proofs; fresh invocations do not
-/// acquire permission to release borrowed driver allocations.
-#[derive(Default)]
-pub(crate) struct NativeMountAllocationAdmissions {
-    first: Option<NativeMountAllocationAdmission>,
-    more: Vec<NativeMountAllocationAdmission>,
-}
-
-impl NativeMountAllocationAdmissions {
-    pub(crate) fn freed_bytes(&self) -> u64 {
-        self.first.iter().chain(self.more.iter()).try_fold(0_u64, |freed, entry| {
-            let actual = entry.live.upgrade().map_or_else(|| {
-                // An expired strong owner still has this original weak
-                // allocation. Reconciliation drops it before releasing metadata.
-                if entry.adopted == 0 { 0 }
-                else { std::mem::size_of::<std::sync::atomic::AtomicU64>() as u64 }
-            }, |live| live.load(std::sync::atomic::Ordering::Acquire));
-            freed.checked_add(entry.adopted.checked_sub(actual)?)
-        }).expect("native physical retirement cannot exceed original admitted ownership")
+impl NativeMountMeterWork {
+    /// Aliases the same original native ledger for an external owner guard.
+    ///
+    /// The complete work, allocation custody and cancellation roots remain in
+    /// their original shared carrier; no budget or receipt is reconstructed.
+    #[must_use]
+    pub fn native_materialization_work(&self) -> crate::NativeMaterializationWork {
+        crate::materializer::NativeMaterializationWork::from_native_mount_meter_work(self)
     }
 
-    pub(crate) fn reconcile(
-        &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
-    ) -> Result<(), crate::WorkError> {
-        for entry in self.first.iter_mut().chain(self.more.iter_mut()) {
-            let actual = match entry.live.upgrade() {
-                Some(live) => live.load(std::sync::atomic::Ordering::Acquire),
-                None => {
-                    // This ledger owns the sole weak registration. Free the
-                    // actual allocation before releasing its metadata claim.
-                    drop(std::mem::take(&mut entry.live));
-                    0
-                }
-            };
-            let retired = entry.adopted.checked_sub(actual).ok_or(crate::WorkError::Overflow)?;
-            allocations.release(retired).map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-            entry.adopted = actual;
+    pub(crate) fn from_meter(meter: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
+        Self { meter, resource_allowance: None, capture_origin: None, invocation: None }
+    }
+
+    pub(crate) fn from_native_materialization_work(work: &crate::NativeMaterializationWork) -> Self {
+        Self {
+            meter: Arc::clone(work.native_read_meter()),
+            resource_allowance: work.resource_allowance().cloned(),
+            capture_origin: work.capture_origin().cloned(),
+            invocation: work.invocation_view_state().cloned(),
         }
-        Ok(())
     }
 
-    fn reserve_slot(
-        &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
-        counters: &mut crate::WorkCounters, budget: crate::WorkBudget,
-    ) -> Result<(), NativeMountError> {
-        if self.first.is_none() || self.more.len() < self.more.capacity() { return Ok(()); }
-        let width = std::mem::size_of::<NativeMountAllocationAdmission>();
-        let capacity = self.more.capacity().max(1).checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?;
-        let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let old_bytes = self.more.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let copied = crate::WorkCounters {
-            bytes_copied: self.more.len().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64,
-            ..crate::WorkCounters::UNCHARGED
+    pub(crate) fn resource_allowance(&self) -> Option<&Arc<crate::materializer::NativeResourceAllowance>> {
+        self.resource_allowance.as_ref()
+    }
+    pub(crate) fn capture_origin(&self) -> Option<&std::sync::Weak<crate::demand::CaptureTransientCustody>> {
+        self.capture_origin.as_ref()
+    }
+    pub(crate) fn invocation_view_state(&self) -> Option<&Arc<crate::materializer::NativeInvocationView>> {
+        self.invocation.as_ref()
+    }
+    pub(crate) fn meter(&self) -> &Arc<crate::demand::NativeDemandReadMeter> { &self.meter }
+    pub(crate) fn run_with_meter<T>(
+        &self, operation: impl FnOnce(&NativeMountMeterWork) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        operation(self)
+    }
+}
+
+/// Authentic source-owner authorization checked before a native SDK callback.
+///
+/// Direct host-configured sources need no task guard. Task-backed sources must
+/// install their live owner, fence, exact grants and purpose before preparation.
+/// The accounting header is not authorization evidence.
+pub trait NativeMountCallbackGuard: Send + Sync {
+    /// Admits the real verification future on the callback's original context.
+    ///
+    /// # Errors
+    ///
+    /// Preserves admission failures without allocating another failure carrier.
+    fn check<'a>(
+        &'a self, work: &'a NativeMountMeterWork,
+    ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError>;
+}
+
+/// One directly erased authorization future and its original funded custody.
+///
+/// Destruction always drops the physical future before its allocation guard.
+/// It uses the existing callback runtime, not another executor or request queue.
+pub struct NativeMountCallbackFuture<'a> {
+    future: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a>>,
+    _custody: crate::NativeAllocation,
+}
+
+impl<'a> NativeMountCallbackFuture<'a> {
+    /// Admits the concrete boxed future before invoking its builder.
+    ///
+    /// Only its actual heap payload is charged here. This outer carrier stays
+    /// inline; a caller owning it in another funded heap frame accounts for
+    /// that frame's compiled metadata rather than charging it twice here.
+    ///
+    /// # Errors
+    ///
+    /// A denied claim never constructs or boxes the verification future.
+    pub fn new<F, B>(work: &NativeMountMeterWork, build: B) -> Result<Self, NativeMountError>
+    where
+        F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
+        B: FnOnce() -> F,
+    {
+        let future_bytes = std::mem::size_of::<F>();
+        let allocation = work.native_materialization_work().claim_allocation(
+            future_bytes as u64, u64::from(future_bytes != 0),
+        )?;
+        let future = Box::pin(build());
+        Ok(Self { future, _custody: allocation })
+    }
+
+    /// Preallocates the exact typed failure slot before authorization starts.
+    ///
+    /// A failed verification moves its original cause into that already-funded
+    /// slot and unsizes the same box without allocating a replacement carrier.
+    /// The returned source chain retains the slot's original allocation custody.
+    ///
+    /// # Errors
+    ///
+    /// Preserves slot and future admission failures before invoking the builder.
+    pub fn new_guarded<E, F, B>(
+        work: &NativeMountMeterWork, build: B,
+    ) -> Result<Self, NativeMountError>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+        F: std::future::Future<Output = Result<(), E>> + Send + 'a,
+        B: FnOnce() -> F + Send + 'a,
+    {
+        let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+        let allocation = work.native_materialization_work().claim_allocation(
+            slot_bytes as u64, u64::from(slot_bytes != 0),
+        )?;
+        let failure = NativeMountCallbackReservation {
+            slot: Box::new(NativeMountCallbackCause { source: None }),
+            custody: allocation,
         };
-        counters.admit(&copied, &budget)?;
-        allocations.claim_bytes(bytes, 1, counters, budget)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        let mut vector = Vec::new();
-        if let Err(error) = vector.try_reserve_exact(capacity) {
-            allocations.release(bytes).map_err(|failure| failure.into_work_or(crate::WorkError::Overflow))?;
-            return Err(NativeMountError::Allocation(error));
-        }
-        vector.append(&mut self.more);
-        self.more = vector;
-        allocations.release(old_bytes).map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        counters.charge(&copied, &budget)?;
-        Ok(())
+        Self::new(work, move || async move {
+            match build().await {
+                Ok(()) => {
+                    drop(failure);
+                    Ok(())
+                }
+                Err(error) => Err(failure.into_error(error)),
+            }
+        })
     }
 }
+
+impl std::future::Future for NativeMountCallbackFuture<'_> {
+    type Output = Result<(), NativeMountError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(context)
+    }
+}
+
+/// One callback's preadmitted failure payload, never a shared diagnostic slot.
+struct NativeMountCallbackCause<E> {
+    source: Option<E>,
+}
+
+impl<E> std::fmt::Debug for NativeMountCallbackCause<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeMountCallbackCause")
+    }
+}
+
+impl<E> std::fmt::Display for NativeMountCallbackCause<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("native callback authorization failed")
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for NativeMountCallbackCause<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|source| source as &dyn std::error::Error)
+    }
+}
+
+/// Keeps the actual boxed slot before its guard, including before the
+/// verification future is built and while that future owns the reservation.
+struct NativeMountCallbackReservation<E> {
+    slot: Box<NativeMountCallbackCause<E>>,
+    custody: crate::NativeAllocation,
+}
+
+impl<E: std::error::Error + Send + Sync + 'static> NativeMountCallbackReservation<E> {
+    fn into_error(mut self, error: E) -> NativeMountError {
+        self.slot.source = Some(error);
+        let source: Box<dyn std::error::Error + Send + Sync> = self.slot;
+        NativeMountError::CallbackDenied { source, custody: self.custody }
+    }
+}
+
+/// One existing physical driver's accounting activation, not task authority.
+/// The fixed inline depth permits same-meter scopes to finish out of order.
+#[derive(Default)]
+pub(crate) struct NativeMountMeterActivation {
+    meter: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
+    prior: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
+    resource_allowance: Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
+    prior_resource_allowance: Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
+    capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    prior_capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
+    prior_invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
+    depth: u64,
+    generation: u64,
+}
+
+impl NativeMountMeterActivation {
+    pub(crate) fn upgrade(&self) -> Option<NativeMountMeterWork> {
+        let meter = self.meter.upgrade()?;
+        let resource_allowance = match self.resource_allowance.as_ref() {
+            Some(resource) => Some(resource.upgrade()?),
+            None => None,
+        };
+        let invocation = match self.invocation.as_ref() {
+            Some(invocation) => Some(invocation.upgrade()?),
+            None => None,
+        };
+        Some(NativeMountMeterWork {
+            meter, resource_allowance, capture_origin: self.capture_origin.clone(), invocation,
+        })
+    }
+
+    fn matches(&self, work: &NativeMountMeterWork) -> bool {
+        self.meter.as_ptr() == Arc::as_ptr(&work.meter)
+            && match (&self.resource_allowance, &work.resource_allowance) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.as_ptr() == Arc::as_ptr(right),
+                _ => false,
+            }
+            && match (&self.capture_origin, &work.capture_origin) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.ptr_eq(right),
+                _ => false,
+            }
+            && match (&self.invocation, &work.invocation) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.as_ptr() == Arc::as_ptr(right),
+                _ => false,
+            }
+    }
+
+    pub(crate) fn enter(
+        &mut self, work: &NativeMountMeterWork,
+    ) -> Result<u64, NativeMountError> {
+        if self.depth != 0 && !self.matches(work) {
+            return Err(NativeMountError::ControlPending);
+        }
+        let depth = self.depth.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        if self.depth == 0 {
+            let generation = self.generation.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            self.prior = std::mem::replace(&mut self.meter, Arc::downgrade(&work.meter));
+            self.prior_resource_allowance = std::mem::replace(
+                &mut self.resource_allowance, work.resource_allowance.as_ref().map(Arc::downgrade),
+            );
+            self.prior_capture_origin = std::mem::replace(
+                &mut self.capture_origin, work.capture_origin.clone(),
+            );
+            self.prior_invocation = std::mem::replace(
+                &mut self.invocation, work.invocation.as_ref().map(Arc::downgrade),
+            );
+            self.generation = generation;
+        }
+        self.depth = depth;
+        Ok(self.generation)
+    }
+
+    pub(crate) fn leave(
+        &mut self, work: &NativeMountMeterWork, generation: u64,
+    ) {
+        assert!(self.depth != 0 && self.generation == generation && self.matches(work),
+            "native accounting scope must retire its own activation");
+        self.depth -= 1;
+        if self.depth == 0 {
+            self.meter = std::mem::take(&mut self.prior);
+            self.resource_allowance = std::mem::take(&mut self.prior_resource_allowance);
+            self.capture_origin = std::mem::take(&mut self.prior_capture_origin);
+            self.invocation = std::mem::take(&mut self.prior_invocation);
+        }
+    }
+}
+
+/// Actual SDK callback failure record. The existing context admits this inline
+/// slot before native startup, so denial never allocates a counters Box.
+#[derive(Debug)]
+pub(crate) struct NativeMountCallbackFailure {
+    pub(crate) cause: NativeMountError,
+    pub(crate) work: crate::WorkCounters,
+}
+
+/// Executes one installed SDK handler request with the original constructor's
+/// copied full grants and cancellation, through the existing native queue.
+pub(crate) fn run_native_mount_handler<T>(
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+    operation: impl FnOnce(&NativeMountMeterWork) -> Result<T, NativeMountError>,
+) -> Result<crate::OperationReceipt<T>, NativeMountCallbackFailure> {
+    let work = crate::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| NativeMountCallbackFailure { cause: cause.into(), work })?;
+    let native = work.native_mount_work();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        operation(&native)
+    })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
+        operation: "SDK callback", panic: std::sync::Mutex::new(panic),
+    }));
+    match result {
+        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+        Err(cause) => Err(NativeMountCallbackFailure { cause, work: work.receipt() }),
+    }
+}
+
+/// Startup/revalidation handlers use the already operative invocation. Their
+/// counters stay in that original meter; no second ledger or receipt is merged.
+pub(crate) fn run_native_mount_handler_on_meter<T>(
+    work: &NativeMountMeterWork,
+    operation: impl FnOnce(&NativeMountMeterWork) -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        operation(work)
+    })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
+        operation: "SDK callback", panic: std::sync::Mutex::new(panic),
+    }))
+}
+
 
 impl NativeMountAllocationCustody {
-    pub(crate) fn new(work: &mut crate::demand::DemandWork) -> Result<Self, NativeMountError> {
-        work.check()?;
-        let (admissions, allocations, counters, budget) = work.native_mount_admission_parts()?;
-        admissions.reserve_slot(allocations, counters, budget)?;
-        let copied = crate::WorkCounters {
-            bytes_copied: if admissions.first.is_some() {
-                std::mem::size_of::<NativeMountAllocationAdmission>() as u64
-            } else { 0 },
-            ..crate::WorkCounters::UNCHARGED
-        };
-        counters.admit(&copied, &budget)?;
-        let bytes = std::mem::size_of::<std::sync::atomic::AtomicU64>() as u64;
-        allocations.claim_bytes(bytes, 1, counters, budget)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        let live = Arc::new(std::sync::atomic::AtomicU64::new(bytes));
-        let admission = NativeMountAllocationAdmission { live: Arc::downgrade(&live), adopted: bytes };
-        if admissions.first.is_none() { admissions.first = Some(admission); }
-        else { admissions.more.push(admission); }
-        counters.charge(&copied, &budget)?;
-        Ok(Self { live })
+    /// Metadata-only admission on the original shared ledger. No OS request,
+    /// queued wait or native callback occurs while this guard is held.
+    pub(crate) fn new_with_meter(
+        work: &NativeMountMeterWork,
+    ) -> Result<Self, NativeMountStartupAdmissionError> {
+        Self::new_on_original(&work.native_materialization_work().original_demand_work())
+            .map_err(Into::into)
     }
 
-    /// Admits a concrete allocation before entering its actual leaf.
-    pub(crate) fn claim(
-        &self, bytes: u64, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), NativeMountError> {
-        self.retain(bytes, work, true)
+    pub(crate) fn claim_with_meter(
+        &self, bytes: u64, work: &NativeMountMeterWork,
+    ) -> Result<(), NativeMountStartupAdmissionError> {
+        work.native_materialization_work().original_demand_work()
+            .with_original_leaf(|original| self.claim(bytes, original))?
+            .map_err(Into::into)
     }
 
-    /// Transfers a producer's already-live known claim without adopting or
-    /// allocating it again. Call only after moving that exact owned payload.
-    pub(crate) fn retain_admitted(
-        &self, bytes: u64, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), NativeMountError> {
-        self.retain(bytes, work, false)
+    pub(crate) fn retain_admitted_with_meter(
+        &self, bytes: u64, work: &NativeMountMeterWork,
+    ) -> Result<(), NativeMountStartupAdmissionError> {
+        work.native_materialization_work().original_demand_work()
+            .with_original_leaf(|original| self.retain_admitted(bytes, original))?
+            .map_err(Into::into)
     }
 
-    fn retain(
-        &self, bytes: u64, work: &mut crate::demand::DemandWork, allocate: bool,
-    ) -> Result<(), NativeMountError> {
-        work.check()?;
-        let (admissions, allocations, counters, budget) = work.native_mount_admission_parts()?;
-        let entry = admissions.first.iter_mut().chain(admissions.more.iter_mut())
-            .find(|entry| entry.live.as_ptr() == Arc::as_ptr(&self.live))
-            .ok_or(crate::DemandError::InvalidRequest)?;
-        let adopted = entry.adopted.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
-        self.live.load(std::sync::atomic::Ordering::Acquire).checked_add(bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        if allocate {
-            allocations.claim_bytes(bytes, u64::from(bytes != 0), counters, budget)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        }
-        // Concurrent retirement can only decrease the admitted value.
-        self.live.fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
-        entry.adopted = adopted;
-        Ok(())
+    pub(crate) fn from_admitted_with_meter(
+        bytes: u64, work: &NativeMountMeterWork,
+    ) -> Result<Self, NativeMountStartupAdmissionError> {
+        let custody = Self::new_with_meter(work)?;
+        custody.retain_admitted_with_meter(bytes, work)?;
+        Ok(custody)
     }
 
-    /// Marks only physically dropped payloads. The original ledger, if still
-    /// retained, performs the release during its next reconciliation.
-    pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        let metadata = std::mem::size_of::<std::sync::atomic::AtomicU64>() as u64;
-        self.live.fetch_update(
-            std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire,
-            |live| live.checked_sub(bytes).filter(|live| *live >= metadata),
-        ).map(|_| ()).map_err(|_| crate::WorkError::Overflow)
+    pub(crate) fn is_admitted_with_meter(
+        &self, work: &NativeMountMeterWork,
+    ) -> Result<bool, NativeMountStartupAdmissionError> {
+        work.native_materialization_work().original_demand_work()
+            .with_original_leaf(|original| self.is_admitted(original))?
+            .map_err(Into::into)
     }
+
+    pub(crate) fn attach_known_control_with_meter(
+        &self, owner: NativeMountControlAllocation, work: &NativeMountMeterWork,
+    ) -> Result<(), NativeMountStartupAdmissionError> {
+        work.native_materialization_work().original_demand_work()
+            .with_original_leaf(|original| self.attach_known_control(owner, original))?
+            .map_err(Into::into)
+    }
+
 }
 
-impl NativeMountWork<'_> {
+impl<'a> NativeMountWork<'a> {
+    /// Borrows the complete original producer and its resource allowance.
+    #[must_use]
+    pub const fn new(work: &'a crate::NativeMaterializationWork) -> Self {
+        Self { work }
+    }
+
+    /// Returns the original producer without lending or reconstructing its ledger.
+    #[must_use]
+    pub const fn native_materialization_work(&self) -> &'a crate::NativeMaterializationWork {
+        self.work
+    }
+
+    pub(crate) fn run_with_meter<T>(
+        &mut self, operation: impl FnOnce(&NativeMountMeterWork) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        operation(&self.work.native_mount_work())
+    }
+
     /// Original caller cancellation; this never creates a cleanup authority.
     #[must_use]
     pub fn cancellation(&self) -> &crate::CancellationToken {
@@ -864,8 +1601,8 @@ impl NativeMountWork<'_> {
     /// # Errors
     ///
     /// Returns the original exact admission error.
-    pub fn remaining(&self) -> Result<crate::WorkBudget, crate::WorkError> {
-        self.work.work.remaining(self.work.budget)
+    pub fn remaining(&self) -> Result<crate::WorkBudget, crate::NativeTreeMaterializationError> {
+        self.work.remaining()
     }
 }
 
@@ -875,6 +1612,351 @@ impl NativeMountWork<'_> {
 /// exposes a blocking boundary. Implementations may enter an async runtime but
 /// must enforce finite work and timeout limits internally.
 pub trait MountFilesystem: Send + Sync + 'static {
+    /// Returns the sealed original native accounting and lifetime context.
+    ///
+    /// Ordinary or external implementations have no installed native context.
+    /// This context grants no task, effect, or filesystem authority.
+    ///
+    /// # Errors
+    ///
+    /// A revoked installed context is rejected before provider work.
+    fn native_original_work(&self) -> Result<Option<NativeMountMeterWork>, MountSourceError> {
+        Ok(None)
+    }
+
+    /// Returns an already-funded live authorization guard for a task source.
+    ///
+    /// `None` is the explicit direct-host role, not evidence of task permission.
+    /// Wrappers preserve the original guard rather than installing it late.
+    fn native_callback_guard(&self) -> Option<Arc<dyn NativeMountCallbackGuard>> {
+        None
+    }
+
+    /// Looks up through an already shared original native invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves the original source cause and completed work.
+    fn lookup_with_meter(
+        &self, path: &MountPath, work: &NativeMountMeterWork,
+    ) -> Result<Option<MountLookup>, MountSourceError>;
+    /// Looks up and pins through the same existing invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves source failures without borrowing a mutex across waits.
+    fn lookup_pinned_with_meter(
+        &self, path: &MountPath, work: &NativeMountMeterWork,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError>;
+    /// Registers the actual observer on the same original allocation ledger.
+    ///
+    /// # Errors
+    ///
+    /// Preserves exact allocation, cancellation, and source failures.
+    fn observe_view_with_meter(
+        &self, observer: std::sync::Weak<dyn ViewObserver>, work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Fences actual source changes without another ledger or queue.
+    ///
+    /// # Errors
+    ///
+    /// Preserves settlement and original admission failures.
+    fn fence_changes_with_meter(&self, work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Acquires the actual source binding lease with its physical drop proof.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original allocation, epoch, and cancellation failures.
+    fn acquire_binding_lease_with_meter(
+        &self, expected_epoch: Option<u64>, work: &NativeMountMeterWork,
+    ) -> Result<Box<dyn MountViewLease>, MountSourceError>;
+    /// Captures exact paths through the existing original shared invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves native prefixes, identity, and publication failures.
+    fn capture_host_paths_with_meter(
+        &self, root: &Path, paths: &[MountPath], expected_root_identity: crate::NativeRootIdentity,
+        work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Captures one subtree through the same actual capture producer.
+    ///
+    /// # Errors
+    ///
+    /// Retains the original work prefix and root identity failures.
+    fn capture_host_subtree_with_meter(
+        &self, root: &Path, path: &MountPath, expected_root_identity: crate::NativeRootIdentity,
+        work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Reads a pinned range without erasing the actual owned chunk capacity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves read, sink, and admission failures and their completed work.
+    fn read_pinned_with_meter(
+        &self, path: &MountPath, pin: MountContentPin, offset: u64, length: u64,
+        piece: u32, sink: &mut NativeMountContentSink<'_>, work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Reads actual link bytes and retains their producer-known capacity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original source and cancellation failures.
+    fn read_link_with_meter(
+        &self, path: &MountPath, work: &NativeMountMeterWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    /// Reads the exact range using the existing shared native queue.
+    ///
+    /// # Errors
+    ///
+    /// Retains physically completed reads and real buffer custody.
+    fn read_range_with_meter(
+        &self, path: &MountPath, offset: u64, length: u32, work: &NativeMountMeterWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    /// Reads a page with the original ledger and actual capacity custody.
+    ///
+    /// # Errors
+    ///
+    /// Preserves cursor, source, cancellation, and allocation failures.
+    fn read_directory_with_meter(
+        &self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
+        work: &NativeMountMeterWork,
+    ) -> Result<MountDirectoryPage, MountSourceError>;
+
+    /// Removes the exact binding on a shared original invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual mutation, authority, and admission failures.
+    fn remove_with_meter(
+        &self, path: &MountPath, expected: Option<FileId>, work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Same remove producer on borrowed lifecycle work.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original mutation and work failures.
+    fn remove_with_work(
+        &self, path: &MountPath, expected: Option<FileId>, work: &mut NativeMountWork<'_>,
+    ) -> Result<(), MountSourceError>;
+    /// Renames the exact binding with original source grants.
+    ///
+    /// # Errors
+    ///
+    /// Retains the actual authority and mutation prefix.
+    fn rename_with_meter(
+        &self, source: &MountPath, destination: &MountPath, replace: bool,
+        work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Same rename producer on borrowed lifecycle work.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original authority, allocation, and cancellation failures.
+    fn rename_with_work(
+        &self, source: &MountPath, destination: &MountPath, replace: bool,
+        work: &mut NativeMountWork<'_>,
+    ) -> Result<(), MountSourceError>;
+    /// Mutates actual metadata and optional length through the same source.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual storage, authority, and work failures.
+    fn set_attributes_with_meter(
+        &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
+        work: &NativeMountMeterWork,
+    ) -> Result<(), MountSourceError>;
+    /// Same metadata producer on borrowed lifecycle work.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual partial effects and original causes.
+    fn set_attributes_with_work(
+        &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
+        work: &mut NativeMountWork<'_>,
+    ) -> Result<(), MountSourceError>;
+    /// Flushes the actual candidate on the shared original invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves durability, authority, and settlement failures.
+    fn flush_with_meter(&self, work: &NativeMountMeterWork) -> Result<(), MountSourceError>;
+    /// Same candidate flush producer on borrowed lifecycle work.
+    ///
+    /// # Errors
+    ///
+    /// Preserves all actual completed work before failure.
+    fn flush_with_work(&self, work: &mut NativeMountWork<'_>) -> Result<(), MountSourceError>;
+
+    /// Opens an actual attached handle and reports its pre-erasure SDK payload
+    /// claim. The caller retains the Arc in its existing physical-custody owner.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual binding, allocation, authentication, and work failures.
+    fn open_file_with_meter(&self, path: &MountPath, work: &NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    /// Opens and proves the handle in the same coherent original invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original open and lookup failures.
+    fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &NativeMountMeterWork)
+        -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
+    /// Opens the actual identity just created, without resolving a replacement.
+    ///
+    /// # Errors
+    ///
+    /// Preserves binding, authentication, and allocation failures.
+    fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    /// Captures the actual detached open-file identity with its original claim.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual capture, allocation, storage, and work failures.
+    fn detach_file_with_meter(&self, path: &MountPath, work: &NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    /// Creates an empty regular file through the original source engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authority, storage, and work failures.
+    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMountMeterWork)
+        -> Result<MountLookup, MountSourceError>;
+    /// Preserves the source's actual absent-since proof while creating.
+    ///
+    /// # Errors
+    ///
+    /// Preserves absence, authority, storage, and work failures.
+    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata,
+        absent_since: ViewStamp, work: &NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+    /// Creates an actual directory through the same source engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authority, storage, and work failures.
+    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMountMeterWork)
+        -> Result<MountLookup, MountSourceError>;
+    /// Consumes the exact already-admitted opaque symbolic-link target.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authority, mutation, and retained-payload failures.
+    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+        metadata: FileMetadata, work: &NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+    /// Creates the exact native special-file kind and device identity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual unsupported, authority, storage, and work failures.
+    fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
+        metadata: FileMetadata, work: &NativeMountMeterWork) -> Result<MountLookup, MountSourceError>;
+    /// Reads the exact owned attribute on the operative source invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authentication, read, and owned-allocation failures.
+    fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMountMeterWork)
+        -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
+    /// Lists the actual owned attribute page.
+    ///
+    /// # Errors
+    ///
+    /// Preserves exact cursor and owned-allocation failures.
+    fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
+        work: &NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
+    /// Consumes an exact already-admitted native attribute value.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual mutation, authority, and retained-payload failures.
+    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8],
+        value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMountMeterWork)
+        -> Result<(), MountSourceError>;
+    /// Removes the exact native attribute.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authority, mutation, and work failures.
+    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMountMeterWork)
+        -> Result<(), MountSourceError>;
+    /// Clones the actual immutable range between authenticated file identities.
+    ///
+    /// # Errors
+    ///
+    /// Preserves detached, stale, storage, authority, and work failures.
+    fn clone_range_by_id_with_meter(&self, source_file_id: FileId, source_offset: u64,
+        destination_file_id: FileId, destination_offset: u64, length: u64, work: &NativeMountMeterWork)
+        -> Result<(), MountSourceError>;
+    /// Creates the actual same-volume hard-link binding.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual authority, source identity, and storage failures.
+    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &NativeMountMeterWork)
+        -> Result<(), MountSourceError>;
+    /// Folds the actual source representation and reports exact owned capacity.
+    ///
+    /// # Errors
+    ///
+    /// Preserves representation, allocation, and work failures.
+    fn folded_path_with_meter(&self, path: &MountPath, work: &NativeMountMeterWork)
+        -> Result<Option<(MountPath, u64)>, MountSourceError>;
+    /// Queries actual source stability on the operative invocation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original source and work failures.
+    fn view_is_stable_with_meter(&self, work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+    /// Queries the actual source stamp.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original source and work failures.
+    fn view_stamp_with_meter(&self, work: &NativeMountMeterWork) -> Result<Option<ViewStamp>, MountSourceError>;
+    /// Queries the actual writable binding epoch.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original source and work failures.
+    fn binding_epoch_with_meter(&self, work: &NativeMountMeterWork) -> Result<Option<u64>, MountSourceError>;
+    /// Traverses actual source change history under the original item limits.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original history, cancellation, and work failures.
+    fn unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+    /// Traverses only actual reported changes through the same history engine.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original history, cancellation, and work failures.
+    fn reported_unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+    /// Stops the actual owned source watcher; success confirms physical
+    /// quiescence (or that this source owns no active watcher). `bool` is progress.
+    ///
+    /// # Errors
+    ///
+    /// Preserves actual pending watcher/join custody and every completed leaf.
+    fn shutdown_with_meter(&self, work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+    /// Traverses actual changes to this file identity under original limits.
+    ///
+    /// # Errors
+    ///
+    /// Preserves history, cancellation, and work failures.
+    fn node_unchanged_since_with_meter(&self, file_id: FileId, stamp: ViewStamp,
+        work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+    /// Traverses actual changes to this directory's immediate listing.
+    ///
+    /// # Errors
+    ///
+    /// Preserves original history, cancellation, and work failures.
+    fn listing_unchanged_since_with_meter(&self, path: &MountPath, stamp: ViewStamp,
+        work: &NativeMountMeterWork) -> Result<bool, MountSourceError>;
+
     /// Whether this source can represent native POSIX named attributes.
     ///
     /// macOS must know this before mounting: advertising `namedattr` for a
@@ -1130,7 +2212,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Preserves all physically read/delivered prefixes and real owned buffers.
     fn read_pinned_with_work(
         &self, path: &MountPath, pin: MountContentPin, offset: u64, length: u64,
-        piece: u32, sink: &mut ContentSink<'_>, work: &mut NativeMountWork<'_>,
+        piece: u32, sink: &mut NativeMountContentSink<'_>, work: &mut NativeMountWork<'_>,
     ) -> Result<(), MountSourceError>;
     /// Opens one regular file as an attached path-independent handle.
     ///
@@ -1513,15 +2595,64 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<(), MountSourceError>;
 }
 
-/// Native mount admission and lifecycle failures.
+/// Closed, allocation-free cause set for admission before startup failure
+/// storage exists. A supplied source is retained separately, never boxed anew
+/// after its original invocation has denied memory or been cancelled.
 #[derive(Debug, Error)]
+pub enum NativeMountStartupAdmissionError {
+    /// Original quota or arithmetic failure.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Original native scope, resource, or cancellation cause, moved intact.
+    #[error(transparent)]
+    Materialization(#[from] crate::NativeTreeMaterializationError),
+    /// Original cancellation or demand admission failure.
+    #[error("native startup demand failed: {0}")]
+    Demand(#[source] crate::DemandError),
+    /// Original fallible SDK metadata allocation failure.
+    #[error("native startup allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
+    /// Explicit process-shared services have not been initialized.
+    #[error("native mount services are not initialized")]
+    ServicesCold,
+    /// Explicit startup previously failed with this original shared cause.
+    #[error("native mount service startup failed: {0}")]
+    ServiceUnavailable(#[source] Arc<std::io::Error>),
+}
+
+impl From<crate::DemandError> for NativeMountStartupAdmissionError {
+    fn from(error: crate::DemandError) -> Self {
+        match error {
+            crate::DemandError::Work(error) => Self::Work(error),
+            error => Self::Demand(error),
+        }
+    }
+}
+
+impl From<NativeMountStartupAdmissionError> for NativeMountError {
+    fn from(error: NativeMountStartupAdmissionError) -> Self {
+        match error {
+            NativeMountStartupAdmissionError::Work(error) => Self::Work(error),
+            NativeMountStartupAdmissionError::Materialization(error) => Self::Materialization(error),
+            NativeMountStartupAdmissionError::Demand(error) => error.into(),
+            NativeMountStartupAdmissionError::Allocation(error) => Self::Allocation(error),
+            NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
+            NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
+        }
+    }
+}
+
+/// Native mount admission and lifecycle failures.
+#[derive(Error)]
 pub enum NativeMountError {
     /// This target has no supported native namespace mechanism.
     #[error("native mounts are unsupported on this target")]
     UnsupportedTarget,
     /// Required host driver/device is unavailable.
+    /// Static probe diagnostics borrow their literal; an already-owned dynamic
+    /// diagnostic moves here without allocating another failure carrier.
     #[error("native mount capability is unavailable: {0}")]
-    CapabilityUnavailable(String),
+    CapabilityUnavailable(std::borrow::Cow<'static, str>),
     /// Destination must already exist and be empty.
     #[error("mount destination must be an existing empty directory")]
     InvalidDestination,
@@ -1542,6 +2673,22 @@ pub enum NativeMountError {
     /// Platform driver operation failed.
     #[error("native mount driver failed: {0}")]
     Driver(String),
+    /// A native child process exited with its actual unsuccessful OS status.
+    #[error("native mount {operation} exited with {status}")]
+    DriverExit {
+        /// Exact driver operation whose child exited.
+        operation: &'static str,
+        /// Actual child status, without allocating a replacement diagnostic.
+        status: std::process::ExitStatus,
+    },
+    /// Actual panic payload returned by the driver or thread join.
+    #[error("native mount {operation} panicked")]
+    DriverPanicked {
+        /// Exact driver operation whose panic was observed.
+        operation: &'static str,
+        /// Original already-owned SDK/thread panic, moved without another Box.
+        panic: std::sync::Mutex<Box<dyn std::any::Any + Send>>,
+    },
     /// An admitted native constructor or mutation exceeded its exact work bound.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
@@ -1557,9 +2704,22 @@ pub enum NativeMountError {
     /// A native lifecycle leaf failed with its original OS kind and cause.
     #[error("native mount I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Original native materialization cause, moved without a new error box.
+    #[error(transparent)]
+    Materialization(#[from] crate::NativeTreeMaterializationError),
     /// Original source failure, without allocating a replacement diagnostic.
     #[error("native mount source failed: {0}")]
     Source(#[source] MountSourceError),
+    /// Authentic callback authorization failure in its preallocated typed slot.
+    /// Its already-funded physical box drops before the outer custody guard.
+    #[error("native callback authorization failed")]
+    CallbackDenied {
+        /// Original typed cause in the same preallocated and unsized box.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        /// Actual slot allocation custody, retired only after box destruction.
+        custody: crate::NativeAllocation,
+    },
     /// Static driver diagnostic produced by an actual lifecycle failure.
     #[error("native mount lifecycle failed: {0}")]
     Lifecycle(&'static str),
@@ -1584,6 +2744,55 @@ pub enum NativeMountError {
     /// A fallible native owned-buffer allocation failed with its actual cause.
     #[error("native mount allocation failed: {0}")]
     Allocation(#[from] std::collections::TryReserveError),
+    /// Startup failed after retaining its actual driver and destination fence.
+    #[error("native mount startup failed: {0}")]
+    StartupFailed(#[source] NativeMountStartupFailure),
+    /// No admitted startup-storage allocation exists yet. The supplied actual
+    /// source (and its watcher) remains owned for explicit measured shutdown.
+    #[error("native mount startup admission failed: {cause}")]
+    StartupAdmissionFailed {
+        /// Exact original pre-storage admission cause.
+        #[source]
+        cause: NativeMountStartupAdmissionError,
+        /// Actual supplied source, retained without allocating another owner.
+        source: Arc<dyn MountFilesystem>,
+    },
+    /// Watch construction completed physically but a later source admission
+    /// failed. The original watch and sink remain owned for measured cleanup.
+    #[error("native mount source watch startup failed: {cause}")]
+    SourceWatchStartupFailed {
+        /// Exact original late constructor failure.
+        #[source]
+        cause: crate::DemandError,
+        /// Actual original watch and its admitted allocation custody.
+        owner: NativeMountSourceWatchOwner,
+    },
+    /// The actual FUSE shutdown previously failed; it cannot be called complete.
+    #[cfg(target_os = "linux")]
+    #[error("FUSE shutdown previously failed")]
+    FuseShutdownFailed,
+    /// The actual FUSE invalidator previously failed.
+    #[cfg(target_os = "linux")]
+    #[error("FUSE invalidator previously failed")]
+    FuseInvalidatorFailed,
+    /// Exact native Darwin teardown outcome, retained without a new diagnostic.
+    #[cfg(target_os = "macos")]
+    #[error("Darwin native teardown failed: {0}")]
+    DarwinTeardown(#[source] DarwinTeardownFailure),
+    /// The actual FUSE SDK rejected these precise capability flags.
+    #[cfg(target_os = "linux")]
+    #[error("FUSE rejected capabilities {0:?}")]
+    FuseUnsupportedCapabilities(fuser::InitFlags),
+}
+
+impl std::fmt::Debug for NativeMountError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartupAdmissionFailed { cause, .. } => formatter
+                .debug_struct("StartupAdmissionFailed").field("cause", cause).finish_non_exhaustive(),
+            _ => std::fmt::Display::fmt(self, formatter),
+        }
+    }
 }
 
 impl From<crate::DemandError> for NativeMountError {
@@ -1600,6 +2809,11 @@ impl From<MountSourceError> for NativeMountError {
     fn from(error: MountSourceError) -> Self {
         match error {
             MountSourceError::Work(error) => Self::Work(error),
+            MountSourceError::Io(error) => Self::Io(error),
+            MountSourceError::NativeWork(error) => Self::Materialization(error),
+            MountSourceError::Allocation(error) => Self::Allocation(error),
+            MountSourceError::ServicesNotInitialized => Self::ServicesNotInitialized,
+            MountSourceError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
             error => Self::Source(error),
         }
     }
@@ -1647,6 +2861,23 @@ impl From<NativeMountError> for DriverStartFailure {
     }
 }
 
+impl std::fmt::Debug for DriverStartFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DriverStartFailure")
+            .field("error", &self.error)
+            .field("preserve_destination_fence", &self.preserve_destination_fence)
+            .field("driver_retained", &self.retained_driver.is_some()).finish()
+    }
+}
+impl std::fmt::Display for DriverStartFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+impl std::error::Error for DriverStartFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
+}
+
 /// Real cleanup custody and driver evidence for one retained native session.
 ///
 /// This is not a physical filesystem probe. A viewer that needs current host
@@ -1661,12 +2892,14 @@ pub struct NativeMountCleanupState<'a> {
     pub driver_retained: bool,
     /// The original destination fence remains owned.
     pub destination_fence_retained: bool,
+    /// The supplied source and any actually owned watcher remain retained.
+    pub source_retained: bool,
     /// The driver has actual successful namespace-detach evidence.
     /// This does not imply callbacks, pending controls, or fence cleanup ended.
     pub namespace_detach_confirmed: bool,
     /// The last measured cleanup failed; retained custody requires explicit retry.
     pub measured_cleanup_failed: bool,
-    /// Both the driver and its destination fence were actually released.
+    /// Driver, source/watcher, and destination fence were actually released.
     pub cleanup_complete: bool,
 }
 
@@ -1814,7 +3047,7 @@ impl NativeMountRecoveryOwner {
             return Err(error.into());
         }
         self.measured_action(remove_destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .map(|receipt| receipt.value).map_err(|(error, _work)| error)
     }
 
     /// Recovers and removes only an empty disposable destination on finite work.
@@ -1825,7 +3058,7 @@ impl NativeMountRecoveryOwner {
     /// claims to abort or roll back an already-entered cooperative native call.
     pub fn recover_measured(
         &mut self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, NativeMountError> {
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
         self.measured_action(true, budget, cancellation)
     }
 
@@ -1836,23 +3069,29 @@ impl NativeMountRecoveryOwner {
     /// Retains all actual pending controls and the same original fence.
     pub fn detach_measured(
         &mut self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, NativeMountError> {
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
         self.measured_action(false, budget, cancellation)
     }
 
     fn measured_action(
         &mut self, remove_destination: bool, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, NativeMountError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        match self.finish_with_work(remove_destination, &mut work) {
-            Ok(value) => Ok(crate::OperationReceipt { value, work: work.work }),
-            Err(error) => Err(crate::OperationFailure::new(error, work.work)),
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+        let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
+            Ok(work) => work,
+            Err((error, work)) => {
+                self.state.as_mut().expect("live recovery owner").measured_cleanup_failed = true;
+                return Err((error.into(), work));
+            }
+        };
+        match self.finish_with_work(remove_destination, &work) {
+            Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+            Err(error) => Err((error, work.receipt())),
         }
     }
 
     fn finish_with_work(
-        &mut self, remove_destination: bool, work: &mut crate::demand::DemandWork,
+        &mut self, remove_destination: bool, work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         let state = self.state.as_mut().expect("live recovery owner");
         let result = (|| {
@@ -1864,12 +3103,15 @@ impl NativeMountRecoveryOwner {
             }
             if remove_destination && !state.destination_removed {
                 #[cfg(windows)]
-                projfs::remove_empty_recovery_destination_measured(&state.destination, state.destination_identity, work)?;
+                projfs::remove_empty_recovery_destination_measured(
+                    &state.destination, state.destination_identity, &mut &*work,
+                )?;
                 #[cfg(not(windows))]
                 remove_empty_recovery_destination(&state.destination, work)?;
                 state.destination_removed = true;
             }
-            state.guard.as_mut().expect("original retained fence").release_measured(work)?;
+            state.guard.as_mut().expect("original retained fence")
+                .release_with_meter(&work.native_mount_work())?;
             state.guard.take();
             Ok(true)
         })();
@@ -1890,30 +3132,303 @@ impl Drop for NativeMountRecoveryOwner {
 
 fn recover_driver_with_work(
     control: &mut NativeRecoveryControl, destination: &Path,
-    disposable: bool, work: &mut crate::demand::DemandWork,
+    disposable: bool, work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    { let _ = disposable; control.recover_measured(destination, work) }
+    { let _ = disposable; control.recover_measured(destination, &work.native_mount_work()) }
     #[cfg(target_os = "windows")]
-    { control.recover_measured(destination, disposable, work) }
+    { control.recover_measured(destination, disposable, &mut &*work) }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     { let _ = (control, destination, disposable, work); Err(NativeMountError::UnsupportedTarget) }
 }
 
 #[cfg(not(windows))]
 fn remove_empty_recovery_destination(
-    destination: &Path, work: &mut crate::demand::DemandWork,
+    destination: &Path, work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
     let name = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
-    let result = crate::native_host::open_root_directory_with_work(parent, work)
+    let mut host = work;
+    let result = crate::native_host::open_root_directory_with_work(parent, &mut host)
         .and_then(|directory| crate::native_host::remove_empty_directory_held_with_work(
-            &directory, Path::new(name), work,
+            &directory, Path::new(name), &mut host,
         ));
     match result {
         Ok(()) => Ok(()),
-        Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(crate::NativeTreeMaterializationError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+struct NativeMountStartupFailureState {
+    error: NativeMountError,
+    owner: NativeMountSession,
+}
+
+/// Actual failed constructor custody. Its original error and session remain
+/// available for inspection and bounded retry; no rollback is fabricated.
+pub struct NativeMountStartupFailure {
+    state: Option<Box<NativeMountStartupFailureState>>,
+    custody: Option<crate::NativeAllocation>,
+}
+
+impl NativeMountStartupFailure {
+    /// Original typed constructor failure.
+    #[must_use]
+    pub fn error(&self) -> &NativeMountError { &self.state.as_ref().expect("live startup failure").error }
+    /// Original driver and physical destination fence.
+    #[must_use]
+    pub fn owner(&self) -> &NativeMountSession { &self.state.as_ref().expect("live startup failure").owner }
+    /// Retains the original owner for a bounded cleanup retry.
+    pub fn owner_mut(&mut self) -> &mut NativeMountSession { &mut self.state.as_mut().expect("live startup failure").owner }
+    /// Moves the original cause and session without cloning either owner.
+    #[must_use]
+    pub fn into_parts(mut self) -> (NativeMountError, NativeMountSession) {
+        let NativeMountStartupFailureState { error, owner } = *self.state.take().expect("live startup failure");
+        self.retire_storage();
+        (error, owner)
+    }
+    fn retire_storage(&mut self) {
+        drop(self.custody.take());
+    }
+}
+
+impl std::fmt::Debug for NativeMountStartupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NativeMountStartupFailure")
+            .field("error", self.error()).field("owner", &self.owner().cleanup_state()).finish()
+    }
+}
+impl std::fmt::Display for NativeMountStartupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.error(), formatter)
+    }
+}
+impl std::error::Error for NativeMountStartupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(self.error()) }
+}
+impl Drop for NativeMountStartupFailure {
+    fn drop(&mut self) {
+        drop(self.state.take());
+        self.retire_storage();
+    }
+}
+
+struct NativeMountStartupStorage {
+    buffer: Option<Box<std::mem::MaybeUninit<NativeMountStartupFailureState>>>,
+    custody: Option<crate::NativeAllocation>,
+}
+impl NativeMountStartupStorage {
+    fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountStartupAdmissionError> {
+        let custody = work.claim_allocation(
+            std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1,
+        )?;
+        Ok(Self { buffer: Some(Box::new(std::mem::MaybeUninit::uninit())), custody: Some(custody) })
+    }
+    fn new_with_meter(
+        work: &NativeMountMeterWork,
+    ) -> Result<Self, NativeMountStartupAdmissionError> {
+        Self::new(&work.native_materialization_work())
+    }
+    fn failed(mut self, error: NativeMountError, owner: NativeMountSession) -> NativeMountStartupFailure {
+        let mut buffer = self.buffer.take().expect("admitted constructor storage");
+        buffer.write(NativeMountStartupFailureState { error, owner });
+        // SAFETY: write initialized this exact admitted allocation completely;
+        // conversion transfers it without allocating or copying a second owner.
+        let state = unsafe { buffer.assume_init() };
+        NativeMountStartupFailure { state: Some(state), custody: self.custody.take() }
+    }
+}
+impl Drop for NativeMountStartupStorage {
+    fn drop(&mut self) {
+        drop(self.buffer.take());
+        drop(self.custody.take());
+    }
+}
+
+/// Actual preadmitted failure storage. Preparing before an owned source watcher
+/// starts prevents a later memory denial from forcing that source into Drop.
+pub struct PreparedNativeMountStart {
+    storage: NativeMountStartupStorage,
+}
+
+/// Admits the existing constructor's actual failure-control allocation without
+/// opening the destination or creating another startup engine.
+///
+/// # Errors
+///
+/// Preserves original cold-service, cancellation, and allocation failures.
+pub fn prepare_native_mount_start_with_work(
+    work: &mut NativeMountWork<'_>,
+) -> Result<PreparedNativeMountStart, NativeMountError> {
+    prepare_native_mount_start(work.work).map_err(Into::into)
+}
+
+fn prepare_native_mount_start(
+    work: &crate::NativeMaterializationWork,
+) -> Result<PreparedNativeMountStart, NativeMountStartupAdmissionError> {
+    let _services = adapter::CallbackRuntime::existing_startup()?;
+    work.admit(crate::WorkCounters::UNCHARGED)?;
+    Ok(PreparedNativeMountStart { storage: NativeMountStartupStorage::new(work)? })
+}
+
+/// Admits the same actual startup storage on an already shared original ledger.
+///
+/// # Errors
+///
+/// Preserves exact service, cancellation, allocation and quota causes.
+pub fn prepare_native_mount_start_with_meter(
+    work: &NativeMountMeterWork,
+) -> Result<PreparedNativeMountStart, NativeMountError> {
+    prepare_native_mount_start(&work.native_materialization_work()).map_err(Into::into)
+}
+
+/// Stops a retained source on the caller's original lifecycle ledger. This is
+/// also the reachable cleanup path for an inline early startup-admission owner.
+///
+/// # Errors
+///
+/// Keeps the source borrowed and owned by its caller after any denied or
+/// cancelled native join; no Drop cleanup or second operation ledger is used.
+pub fn shutdown_native_mount_source_with_work(
+    source: &Arc<dyn MountFilesystem>, work: &mut NativeMountWork<'_>,
+) -> Result<bool, NativeMountError> {
+    source.shutdown_with_meter(&work.work.native_mount_work()).map_err(Into::into)
+}
+
+/// Runs the same source shutdown producer with a finite policy and returns its
+/// actual completed prefix while the supplied source remains caller-owned.
+///
+/// # Errors
+///
+/// Preserves original source/native failures and pending physical custody.
+pub fn shutdown_native_mount_source_measured(
+    source: &Arc<dyn MountFilesystem>, budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+    let work = crate::NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(error, work)| (error.into(), work))?;
+    match shutdown_native_mount_source_with_work(source, &mut NativeMountWork::new(&work)) {
+        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+        Err(error) => Err((error, work.receipt())),
+    }
+}
+
+impl PreparedNativeMountStart {
+    /// Starts the same actual platform constructor with its preadmitted storage.
+    ///
+    /// # Errors
+    ///
+    /// Every failure retains the supplied source in the original session owner,
+    /// including cancellation and destination failures before a driver exists.
+    pub fn start_with_work(
+        self, request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
+        work: &mut NativeMountWork<'_>,
+    ) -> Result<NativeMountSession, NativeMountError> {
+        start_native_mount_prepared(request, source, false, work.work, self.storage)
+    }
+
+    /// Starts the same actual constructor on an already operative original Arc.
+    ///
+    /// # Errors
+    ///
+    /// Every late failure retains the original source, driver and fence owner.
+    pub fn start_with_meter(
+        self, request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
+        work: &NativeMountMeterWork,
+    ) -> Result<NativeMountSession, NativeMountError> {
+        start_native_mount_prepared_with_meter(request, source, false, work, self.storage, None)
+    }
+
+    /// Moves an already funded destination into the same native constructor.
+    /// No second buffer allocation or adoption is charged.
+    ///
+    /// # Errors
+    ///
+    /// Retains destination data and its original guard in every late owner.
+    pub fn start_with_native_work(
+        self, request: NativeMountRequest, destination_custody: crate::NativeAllocation,
+        source: Arc<dyn MountFilesystem>, work: &NativeMountMeterWork,
+    ) -> Result<NativeMountSession, NativeMountError> {
+        start_native_mount_prepared_with_meter(
+            request, source, false, work, self.storage, Some(destination_custody),
+        )
+    }
+
+    /// Starts a task-backed source whose live guard was installed before capture.
+    ///
+    /// The supplied guard is the exact already-funded source owner, not a task
+    /// permission inferred from its accounting header or destination spelling.
+    ///
+    /// # Errors
+    ///
+    /// A missing or different guard returns the preadmitted failure owner with
+    /// the original source and destination custody. No startup rollback occurs.
+    pub fn start_with_native_work_and_guard(
+        self, request: NativeMountRequest, destination_custody: crate::NativeAllocation,
+        source: Arc<dyn MountFilesystem>, work: &NativeMountMeterWork,
+        guard: Arc<dyn NativeMountCallbackGuard>,
+    ) -> Result<NativeMountSession, NativeMountError> {
+        let admitted = (|| {
+            let installed = source.native_callback_guard().ok_or(
+                NativeMountError::Lifecycle("task source callback guard is not installed"),
+            )?;
+            if !Arc::ptr_eq(&installed, &guard) {
+                return Err(NativeMountError::Lifecycle(
+                    "task source callback guard differs from its prepared owner",
+                ));
+            }
+            if source.native_original_work()?.is_none() {
+                return Err(NativeMountError::Lifecycle(
+                    "task source has no original native invocation",
+                ));
+            }
+            work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
+            Ok(())
+        })();
+        if let Err(error) = admitted {
+            let owner = NativeMountSession {
+                mount_id: request.mount_id, destination: request.destination,
+                driver: None, destination_guard: None, retained_source: Some(source),
+                startup_source_watch: None,
+                preserve_on_drop: true, measured_cleanup_failed: false,
+                namespace_detach_confirmed: false, namespace_control_pending: false,
+                completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+                retired_callback_failure: std::sync::Mutex::new(None),
+                _destination_custody: Some(destination_custody),
+            };
+            return Err(NativeMountError::StartupFailed(self.storage.failed(error, owner)));
+        }
+        start_native_mount_prepared_with_meter(
+            request, source, false, work, self.storage, Some(destination_custody),
+        )
+    }
+
+    /// Places an original failed source constructor into this precreated owner.
+    /// The caller must keep the returned session until actual watcher cleanup.
+    /// No source Arc or failure Box is constructed after the failure.
+    #[must_use]
+    pub fn retain_source_startup_failure(
+        self, request: NativeMountRequest, destination_custody: crate::NativeAllocation,
+        error: NativeMountError,
+    ) -> NativeMountError {
+        let (startup_source_watch, error) = match error {
+            NativeMountError::SourceWatchStartupFailed { cause, owner } =>
+                (Some(owner), NativeMountError::Demand(cause)),
+            error => (None, error),
+        };
+        let owner = NativeMountSession {
+            mount_id: request.mount_id, destination: request.destination,
+            driver: None, destination_guard: None, retained_source: None,
+            startup_source_watch,
+            preserve_on_drop: true, measured_cleanup_failed: true,
+            namespace_detach_confirmed: false, namespace_control_pending: false,
+            completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+            retired_callback_failure: std::sync::Mutex::new(None),
+            _destination_custody: Some(destination_custody),
+        };
+        NativeMountError::StartupFailed(self.storage.failed(error, owner))
     }
 }
 
@@ -1924,11 +3439,129 @@ pub struct NativeMountSession {
     destination: PathBuf,
     driver: Option<DriverSession>,
     destination_guard: Option<MountDestinationGuard>,
+    retained_source: Option<Arc<dyn MountFilesystem>>,
+    // A genuine source-constructor failure can precede a completed Source Arc.
+    startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     preserve_on_drop: bool,
     measured_cleanup_failed: bool,
+    namespace_detach_confirmed: bool,
+    // Separate actual detach evidence from an unresolved, ownerless control.
+    namespace_control_pending: bool,
+    completed_future_callback_work: crate::WorkCounters,
+    retired_callback_failure: std::sync::Mutex<Option<NativeMountCallbackFailure>>,
+    // Destination data and all native owners physically drop before its guard.
+    _destination_custody: Option<crate::NativeAllocation>,
+}
+
+/// Owned accounting activation for this existing physical namespace. It owns
+/// only aliases of the original SDK context and work; it is not a task grant.
+/// Keep it alive until accepted native I/O has physically settled, including
+/// cancellation. Other clients of this namespace may consume the same budget.
+#[must_use]
+pub struct OwnedNativeMountOriginalWorkScope {
+    _driver: NativeDriverOriginalWorkScope,
+}
+
+impl OwnedNativeMountOriginalWorkScope {
+    /// Retains this same driver's activation in an accepted native I/O payload.
+    /// Clones only preexisting context/work aliases and increments the existing
+    /// inline depth; it creates no heap allocation or additional task authority.
+    ///
+    /// # Errors
+    ///
+    /// Preserves a competing activation or exhausted inline depth before I/O.
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+        let driver = match &self._driver {
+            #[cfg(target_os = "linux")]
+            NativeDriverOriginalWorkScope::Fuse(scope) =>
+                NativeDriverOriginalWorkScope::Fuse(scope.try_clone_for_io()?),
+            #[cfg(target_os = "macos")]
+            NativeDriverOriginalWorkScope::Darwin(scope) =>
+                NativeDriverOriginalWorkScope::Darwin(scope.try_clone_for_io()?),
+            #[cfg(target_os = "windows")]
+            NativeDriverOriginalWorkScope::ProjFs(scope) =>
+                NativeDriverOriginalWorkScope::ProjFs(scope.try_clone_for_io()?),
+        };
+        Ok(Self { _driver: driver })
+    }
+}
+
+
+enum NativeDriverOriginalWorkScope {
+    #[cfg(target_os = "linux")]
+    Fuse(fuse::FuseStartupMeterScope),
+    #[cfg(target_os = "macos")]
+    Darwin(darwin_mount::DarwinStartupMeterScope),
+    #[cfg(target_os = "windows")]
+    ProjFs(projfs::ProjectionWorkScope),
 }
 
 impl NativeMountSession {
+    /// Activates the original meter without borrowing this session across I/O.
+    /// Path, volume and current task authorization must be checked separately.
+    ///
+    /// # Errors
+    ///
+    /// A different active original meter is rejected before any operation.
+    pub fn begin_original_work(
+        &self, work: &NativeMountMeterWork,
+    ) -> Result<OwnedNativeMountOriginalWorkScope, NativeMountError> {
+        let driver = match self.driver.as_ref() {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) =>
+                NativeDriverOriginalWorkScope::Fuse(session.begin_original_work(work)?),
+            #[cfg(target_os = "macos")]
+            Some(DriverSession::DarwinMount(session)) =>
+                NativeDriverOriginalWorkScope::Darwin(session.begin_original_work(work)?),
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) =>
+                NativeDriverOriginalWorkScope::ProjFs(session.begin_original_work(work)?),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => {
+                let _ = work;
+                return Err(NativeMountError::UnsupportedTarget);
+            }
+            None => return Err(NativeMountError::Io(std::io::ErrorKind::NotConnected.into())),
+        };
+        Ok(OwnedNativeMountOriginalWorkScope { _driver: driver })
+    }
+
+    /// Runs native I/O under this original accounting scope. Each accepted I/O
+    /// payload must own a `try_clone_for_io()` fork through physical completion:
+    /// dropping this caller future alone does not drain native jobs.
+    /// This is not client isolation or permission: all namespace activity during
+    /// the activation can consume its budget, and reply delivery stays unknown.
+    ///
+    /// # Errors
+    ///
+    /// Preserves a rejected activation without executing `operation`.
+    pub async fn with_original_work<T, F: std::future::Future<Output = T>>(
+        &self, work: &NativeMountMeterWork,
+        operation: impl FnOnce(&OwnedNativeMountOriginalWorkScope) -> F,
+    ) -> Result<T, NativeMountError> {
+        let scope = self.begin_original_work(work)?;
+        let value = operation(&scope).await;
+        drop(scope);
+        Ok(value)
+    }
+
+    /// Authenticated active kernel-root identity captured by this driver during
+    /// its original constructor. This getter performs no path reopen or stat.
+    #[must_use]
+    pub fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
+        match self.driver.as_ref() {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) => session.native_root_identity(),
+            #[cfg(target_os = "macos")]
+            Some(DriverSession::DarwinMount(session)) => session.native_root_identity(),
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.native_root_identity(),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => None,
+            None => None,
+        }
+    }
+
     /// Stable mount identity.
     #[must_use]
     pub const fn mount_id(&self) -> MountId {
@@ -1968,11 +3601,57 @@ impl NativeMountSession {
             destination: &self.destination,
             driver_retained: self.driver.is_some(),
             destination_fence_retained: self.destination_guard.is_some(),
-            namespace_detach_confirmed: self.driver.as_ref()
-                .is_none_or(driver_namespace_detach_confirmed),
+            source_retained: self.retained_source.is_some() || self.startup_source_watch.is_some(),
+            namespace_detach_confirmed: self.driver.as_ref().map_or(
+                self.namespace_detach_confirmed, driver_namespace_detach_confirmed,
+            ),
             measured_cleanup_failed: self.measured_cleanup_failed,
-            cleanup_complete: self.driver.is_none() && self.destination_guard.is_none(),
+            cleanup_complete: self.driver.is_none() && self.destination_guard.is_none()
+                && self.retained_source.is_none() && self.startup_source_watch.is_none()
+                && !self.namespace_control_pending,
         }
+    }
+
+    /// Moves the first retained fatal SDK callback failure and its actual
+    /// completed request work. Draining it does not replenish grants, clear
+    /// cancellation, or re-enable an unreconciled mutation.
+    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+        let retained = self.retired_callback_failure.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(failure) = retained {
+            return Some((failure.cause, failure.work));
+        }
+        let failure: Option<NativeMountCallbackFailure> = match self.driver.as_ref() {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) => session.take_callback_failure(),
+            #[cfg(target_os = "macos")]
+            Some(DriverSession::DarwinMount(session)) => session.take_callback_failure(),
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.take_callback_failure(),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => None,
+            None => None,
+        };
+        failure.map(|failure| (failure.cause, failure.work))
+    }
+
+    /// Completed future SDK request work, including ordinary errno answers.
+    /// Active startup/revalidation/stop work remains on its original ledger and
+    /// is never folded twice. Peaks are maxima of per-operation logical scopes;
+    /// the aggregate is not a concurrent live-memory or RSS measurement.
+    #[must_use]
+    pub fn completed_callback_work(&self) -> crate::WorkCounters {
+        self.driver.as_ref().map_or(
+            self.completed_future_callback_work, driver_completed_callback_work,
+        )
+    }
+
+    /// Client receipt of a provider reply is not observable through the native
+    /// SDK reply APIs. `None` means unknown delivery, not an observed failure.
+    /// Borrowed terminal provider IPC is outside source/backend work counters.
+    #[must_use]
+    pub fn callback_reply_delivery(&self) -> Option<bool> {
+        None
     }
 
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
@@ -1995,9 +3674,20 @@ impl NativeMountSession {
     pub fn flush_callbacks_with_work(
         &self, work: &mut NativeMountWork<'_>,
     ) -> Result<(), NativeMountError> {
+        self.flush_callbacks_with_meter(&work.work.native_mount_work())
+    }
+
+    /// Flushes the actual SDK callbacks without borrowing work across a wait.
+    ///
+    /// # Errors
+    ///
+    /// Preserves all actual original-meter control and callback prefixes.
+    pub fn flush_callbacks_with_meter(
+        &self, work: &NativeMountMeterWork,
+    ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks_measured(work.work),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks_with_meter(work),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2017,13 +3707,24 @@ impl NativeMountSession {
     pub fn revalidate_with_work(
         &self, work: &mut NativeMountWork<'_>,
     ) -> Result<(), NativeMountError> {
+        self.revalidate_with_meter(&work.work.native_mount_work())
+    }
+
+    /// Revalidates on the same original shared callback and control meter.
+    ///
+    /// # Errors
+    ///
+    /// Retains exact completed SDK/source work on every error.
+    pub fn revalidate_with_meter(
+        &self, work: &NativeMountMeterWork,
+    ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "linux")]
-            Some(DriverSession::Fuse(session)) => session.revalidate_measured(work.work),
+            Some(DriverSession::Fuse(session)) => session.revalidate_with_meter(work),
             #[cfg(target_os = "macos")]
-            Some(DriverSession::DarwinMount(session)) => session.revalidate_measured(work.work),
+            Some(DriverSession::DarwinMount(session)) => session.revalidate_with_meter(work),
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.revalidate_measured(work.work),
+            Some(DriverSession::ProjFs(session)) => session.revalidate_with_meter(work),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             Some(DriverSession::Unsupported) => {
                 let _ = work;
@@ -2115,7 +3816,8 @@ impl NativeMountSession {
     ///
     /// Returns a platform error if the kernel namespace cannot be detached.
     pub fn stop(&mut self) -> Result<bool, NativeMountError> {
-        if self.driver.is_none() && self.destination_guard.is_none() {
+        if self.driver.is_none() && self.destination_guard.is_none()
+            && self.retained_source.is_none() && self.startup_source_watch.is_none() {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -2126,7 +3828,7 @@ impl NativeMountSession {
         }
         self.stop_measured(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+            .map_err(|(error, _work)| error)
     }
 
     /// Detaches through the existing platform driver and destination-fence
@@ -2146,11 +3848,18 @@ impl NativeMountSession {
         &mut self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, NativeMountError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        match self.stop_with_work(&mut NativeMountWork { work: &mut work }) {
-            Ok(value) => Ok(crate::OperationReceipt { value, work: work.work }),
-            Err(error) => Err(crate::OperationFailure::new(error, work.work)),
+    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
+        let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
+            Ok(work) => work,
+            Err((error, work)) => {
+                self.preserve_on_drop = true;
+                self.measured_cleanup_failed = true;
+                return Err((error.into(), work));
+            }
+        };
+        match self.stop_with_work(&mut NativeMountWork::new(&work)) {
+            Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+            Err(error) => Err((error, work.receipt())),
         }
     }
 
@@ -2164,13 +3873,62 @@ impl NativeMountSession {
         &mut self,
         work: &mut NativeMountWork<'_>,
     ) -> Result<bool, NativeMountError> {
-        let result = stop_owned_session_with_work(
-            &mut self.driver,
-            &mut self.destination_guard,
-            work.work,
-            stop_driver_measured,
-            MountDestinationGuard::release_measured,
-        );
+        self.stop_with_meter(&work.work.native_mount_work())
+    }
+
+    /// Continues the same physical cleanup engine on the original shared Arc.
+    ///
+    /// # Errors
+    ///
+    /// Retains the actual source, driver, pending controls and fence for retry.
+    pub fn stop_with_meter(
+        &mut self, work: &NativeMountMeterWork,
+    ) -> Result<bool, NativeMountError> {
+        if self.driver.is_none() && self.namespace_control_pending {
+            self.preserve_on_drop = true;
+            self.measured_cleanup_failed = true;
+            return Err(NativeMountError::ControlPending);
+        }
+        let result = (|| {
+            let mut changed = false;
+            if let Some(driver) = self.driver.as_mut() {
+                stop_driver_with_meter(driver, work)?;
+                self.namespace_detach_confirmed = driver_namespace_detach_confirmed(driver);
+                self.namespace_control_pending = false;
+                // The physical driver has settled callbacks before this copy.
+                // Preserve both totals and the original fault before SDK data
+                // and their context are actually dropped.
+                self.completed_future_callback_work = driver_completed_callback_work(driver);
+                *self.retired_callback_failure.get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    driver_take_callback_failure(driver);
+                drop(self.driver.take());
+                changed = true;
+            }
+            if let Some(source) = self.retained_source.as_ref() {
+                source.shutdown_with_meter(work).map_err(NativeMountError::from)?;
+                // The source confirmed actual watcher quiescence before this
+                // owner releases its Arc; failed/cancelled joins keep it intact.
+                drop(self.retained_source.take());
+                changed = true;
+            }
+            if let Some(owner) = self.startup_source_watch.as_mut() {
+                let stopped = if owner.is_stopped() { Ok(false) } else { owner.stop_with_meter(work) };
+                if owner.is_stopped() {
+                    // Terminal transfer of already owned data is not a new
+                    // native permission, and survives a late admission error.
+                    drop(self.startup_source_watch.take());
+                    changed = true;
+                }
+                stopped?;
+            }
+            if let Some(guard) = self.destination_guard.as_mut() {
+                guard.release_with_meter(work)?;
+                drop(self.destination_guard.take());
+                changed = true;
+            }
+            Ok(changed)
+        })();
         self.preserve_on_drop = result.is_err();
         self.measured_cleanup_failed = result.is_err();
         result
@@ -2242,6 +4000,11 @@ impl Drop for NativeMountSession {
         }
         if self.preserve_on_drop {
             retain_owned_session(&mut self.driver, &mut self.destination_guard);
+            if let Some(source) = self.retained_source.take() {
+                // A caller must keep this session for explicit retry. Losing
+                // the facade cannot run an unbudgeted owned-watcher join.
+                std::mem::forget(source);
+            }
         }
     }
 }
@@ -2262,29 +4025,166 @@ pub fn mount_native(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
 ) -> Result<NativeMountSession, NativeMountError> {
-    let capabilities = probe_native_mount();
-    if !capabilities.available {
-        return Err(NativeMountError::CapabilityUnavailable(
-            capabilities
-                .unavailable_reason
-                .unwrap_or_else(|| "unavailable".to_owned()),
-        ));
+    mount_native_ordinary(request, source, false)
+}
+
+fn mount_native_ordinary(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
+) -> Result<NativeMountSession, NativeMountError> {
+    let cancellation = crate::CancellationToken::new();
+    let work = match crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation) {
+        Ok(work) => work,
+        Err((error, _work)) => return Err(NativeMountError::StartupAdmissionFailed {
+            cause: error.into(), source,
+        }),
+    };
+    // Ordinary bootstrap is explicit, but the supplied source still needs
+    // genuine failure custody if that bootstrap cannot complete.
+    let storage = match NativeMountStartupStorage::new(&work) {
+        Ok(storage) => storage,
+        Err(cause) => return Err(NativeMountError::StartupAdmissionFailed { cause, source }),
+    };
+    let initialized = initialize_native_mount_services().and_then(|()| {
+        acyclic_native_runtime::initialize_native_io_services().map_err(Into::into)
+    });
+    if let Err(error) = initialized {
+        let owner = NativeMountSession {
+            mount_id: request.mount_id, destination: request.destination,
+            driver: None, destination_guard: None, retained_source: Some(source),
+            startup_source_watch: None,
+            preserve_on_drop: true, measured_cleanup_failed: false,
+            namespace_detach_confirmed: false, namespace_control_pending: false,
+            completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+            retired_callback_failure: std::sync::Mutex::new(None),
+            _destination_custody: None,
+        };
+        return Err(NativeMountError::StartupFailed(storage.failed(error, owner)));
     }
-    if request.writable && !capabilities.writable {
-        return Err(NativeMountError::WritableUnavailable(
-            "the selected kernel API cannot prove exact authored effects".to_owned(),
-        ));
+    start_native_mount_prepared(request, source, allow_nonempty, &work, storage)
+}
+
+/// Starts the real platform driver on the caller's original lifecycle ledger.
+/// Process-shared services must have been explicitly initialized beforehand.
+/// Owned request/source carriers are transferred, not counted as new buffers.
+///
+/// # Errors
+///
+/// Admits every actual destination-fence and platform leaf. A partial driver
+/// startup returns [`NativeMountError::StartupFailed`] with its original owner;
+/// no hidden unbounded rollback occurs and cancellation is cooperative.
+pub fn mount_native_with_work(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
+    work: &mut NativeMountWork<'_>,
+) -> Result<NativeMountSession, NativeMountError> {
+    mount_native_start_with_work(request, source, false, work.work)
+}
+
+/// Finite projection of the same native constructor and actual work prefix.
+///
+/// # Errors
+///
+/// Retains original causes and any partially started driver/fence owner.
+pub fn mount_native_measured(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
+    budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+) -> Result<crate::OperationReceipt<NativeMountSession>, (NativeMountError, crate::WorkCounters)> {
+    let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
+        Ok(work) => work,
+        Err((error, work)) => return Err((NativeMountError::StartupAdmissionFailed {
+            cause: error.into(), source,
+        }, work)),
+    };
+    match mount_native_with_work(request, source, &mut NativeMountWork::new(&work)) {
+        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+        Err(error) => Err((error, work.receipt())),
     }
-    let (driver, destination_guard) =
-        start_owned_session(&request.destination, || start_driver(&request, source))?;
-    Ok(NativeMountSession {
-        mount_id: request.mount_id,
-        destination: request.destination,
-        driver: Some(driver),
-        destination_guard: Some(destination_guard),
-        preserve_on_drop: false,
-        measured_cleanup_failed: false,
-    })
+}
+
+fn mount_native_start_with_work(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
+    work: &crate::NativeMaterializationWork,
+) -> Result<NativeMountSession, NativeMountError> {
+    let prepared = match prepare_native_mount_start(work) {
+        Ok(prepared) => prepared,
+        Err(cause) => return Err(NativeMountError::StartupAdmissionFailed { cause, source }),
+    };
+    start_native_mount_prepared(request, source, allow_nonempty, work, prepared.storage)
+}
+
+fn start_native_mount_prepared(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
+    work: &crate::NativeMaterializationWork, storage: NativeMountStartupStorage,
+) -> Result<NativeMountSession, NativeMountError> {
+    start_native_mount_prepared_with_meter(
+        request, source, allow_nonempty, &work.native_mount_work(), storage, None,
+    )
+}
+
+fn start_native_mount_prepared_with_meter(
+    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
+    work: &NativeMountMeterWork, storage: NativeMountStartupStorage,
+    destination_custody: Option<crate::NativeAllocation>,
+) -> Result<NativeMountSession, NativeMountError> {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let guard = (|| {
+        let _services = adapter::CallbackRuntime::existing()?;
+        work.meter.lock().check()?;
+        MountDestinationGuard::acquire_with_meter(&request.destination, allow_nonempty, work)
+    })();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let guard: Result<MountDestinationGuard, NativeMountError> = {
+        let _ = allow_nonempty;
+        Err(NativeMountError::UnsupportedTarget)
+    };
+    let guard = match guard {
+        Ok(guard) => guard,
+        Err(error) => {
+            let owner = NativeMountSession {
+                mount_id: request.mount_id, destination: request.destination,
+                driver: None, destination_guard: None, retained_source: Some(source),
+                startup_source_watch: None,
+                preserve_on_drop: true, measured_cleanup_failed: false,
+                namespace_detach_confirmed: false, namespace_control_pending: false,
+                completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+                retired_callback_failure: std::sync::Mutex::new(None),
+                _destination_custody: destination_custody,
+            };
+            return Err(NativeMountError::StartupFailed(storage.failed(error, owner)));
+        }
+    };
+    // This is a reference alias, not a second allocation or a new source grant.
+    let retained_source = Arc::clone(&source);
+    match start_driver_with_meter(&request, source, work) {
+        Ok(driver) => {
+            drop(storage);
+            Ok(NativeMountSession {
+                mount_id: request.mount_id, destination: request.destination,
+                driver: Some(driver), destination_guard: Some(guard),
+                retained_source: Some(retained_source),
+                startup_source_watch: None,
+                preserve_on_drop: false, measured_cleanup_failed: false,
+                namespace_detach_confirmed: false, namespace_control_pending: false,
+                completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+                retired_callback_failure: std::sync::Mutex::new(None),
+                _destination_custody: destination_custody,
+            })
+        }
+        Err(failure) => {
+            let owner = NativeMountSession {
+                mount_id: request.mount_id, destination: request.destination,
+                driver: failure.retained_driver, destination_guard: Some(guard),
+                retained_source: Some(retained_source),
+                startup_source_watch: None,
+                preserve_on_drop: true, measured_cleanup_failed: false,
+                namespace_detach_confirmed: false,
+                namespace_control_pending: failure.preserve_destination_fence,
+                completed_future_callback_work: crate::WorkCounters::UNCHARGED,
+                retired_callback_failure: std::sync::Mutex::new(None),
+                _destination_custody: destination_custody,
+            };
+            Err(NativeMountError::StartupFailed(storage.failed(failure.error, owner)))
+        }
+    }
 }
 
 /// Starts a native projection mounted directly over an existing,
@@ -2317,31 +4217,7 @@ pub fn mount_native_over_existing(
     }
     #[cfg(not(windows))]
     {
-        let capabilities = probe_native_mount();
-        if !capabilities.available {
-            return Err(NativeMountError::CapabilityUnavailable(
-                capabilities
-                    .unavailable_reason
-                    .unwrap_or_else(|| "unavailable".to_owned()),
-            ));
-        }
-        if request.writable && !capabilities.writable {
-            return Err(NativeMountError::WritableUnavailable(
-                "the selected kernel API cannot prove exact authored effects".to_owned(),
-            ));
-        }
-        let (driver, destination_guard) =
-            start_owned_session_over_existing(&request.destination, || {
-                start_driver(&request, source)
-            })?;
-        Ok(NativeMountSession {
-            mount_id: request.mount_id,
-            destination: request.destination,
-            driver: Some(driver),
-            destination_guard: Some(destination_guard),
-            preserve_on_drop: false,
-            measured_cleanup_failed: false,
-        })
+        mount_native_ordinary(request, source, true)
     }
 }
 
@@ -2525,64 +4401,19 @@ pub fn detach_native_mount_destination_after_crash(
 }
 
 
-fn start_owned_session<D>(
-    destination: &Path,
-    start: impl FnOnce() -> Result<D, DriverStartFailure>,
-) -> Result<(D, MountDestinationGuard), NativeMountError> {
-    let destination_guard = admit_destination(destination)?;
-    finish_started_session(destination_guard, start())
-}
-
-fn finish_started_session<D>(
-    destination_guard: MountDestinationGuard,
-    result: Result<D, DriverStartFailure>,
-) -> Result<(D, MountDestinationGuard), NativeMountError> {
-    match result {
-        Ok(driver) => Ok((driver, destination_guard)),
-        Err(failure) => {
-            if failure.preserve_destination_fence {
-                // Startup left an unknown kernel namespace behind. Keep the
-                // process-owned lock live until process exit rather than
-                // publishing the destination as reusable.
-                std::mem::forget(destination_guard);
-            }
-            Err(failure.error)
-        }
-    }
-}
-
-/// Same as [`start_owned_session`], but admits an existing non-empty
-/// destination (see [`admit_destination_over_existing`]).
-#[cfg(not(windows))]
-fn start_owned_session_over_existing<D>(
-    destination: &Path,
-    start: impl FnOnce() -> Result<D, DriverStartFailure>,
-) -> Result<(D, MountDestinationGuard), NativeMountError> {
-    let destination_guard = admit_destination_over_existing(destination)?;
-    finish_started_session(destination_guard, start())
-}
-
+#[cfg(test)]
 fn admit_destination(destination: &Path) -> Result<MountDestinationGuard, NativeMountError> {
     let guard = MountDestinationGuard::acquire(destination)?;
     validate_destination(destination)?;
     Ok(guard)
 }
 
-/// Same process-fence as [`admit_destination`], but admits an existing
-/// non-empty directory instead of requiring emptiness.
-#[cfg(not(windows))]
-fn admit_destination_over_existing(
-    destination: &Path,
-) -> Result<MountDestinationGuard, NativeMountError> {
-    let guard = MountDestinationGuard::acquire(destination)?;
-    validate_directory(destination)?;
-    Ok(guard)
-}
 
 const NATIVE_FENCE_PREFIX: &str = ".acyclic-fs-mount-";
 const NATIVE_FENCE_SUFFIX: &str = ".lock";
 const NATIVE_FENCE_NAME_BYTES: usize = NATIVE_FENCE_PREFIX.len() + 64 + NATIVE_FENCE_SUFFIX.len();
 const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
+
 
 #[derive(Debug)]
 struct MountDestinationGuard {
@@ -2601,6 +4432,23 @@ impl MountDestinationGuard {
     fn acquire_with_work(
         destination: &Path, allow_nonempty: bool, work: &mut crate::demand::DemandWork,
     ) -> Result<Self, NativeMountError> {
+        Self::acquire_host(destination, allow_nonempty, work)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn acquire_with_meter(
+        destination: &Path, allow_nonempty: bool, meter: &NativeMountMeterWork,
+    ) -> Result<Self, NativeMountError> {
+        let native = meter.native_materialization_work();
+        Self::acquire_host(destination, allow_nonempty, &mut &native)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn acquire_host<W: crate::native_host::NativeHostWork>(
+        destination: &Path, allow_nonempty: bool, work: &mut W,
+    ) -> Result<Self, NativeMountError>
+    where NativeMountError: From<W::Error>,
+    {
         let directory = crate::native_host::open_root_directory_with_work(destination, work)?;
         if !allow_nonempty {
             let (mut reader, allocation) = crate::native_host::read_dir_held_with_work(&directory, work)?;
@@ -2617,9 +4465,12 @@ impl MountDestinationGuard {
             }
         }
         #[cfg(unix)]
-        let canonical = crate::native_host::canonical_directory_path_held_with_work(directory, work)?;
+        let canonical_owner = crate::native_host::canonical_directory_path_held_with_work(directory, work)?;
         #[cfg(windows)]
-        let canonical = crate::native_host::canonical_directory_wide_with_work(&directory, work)?;
+        let canonical_owner = crate::native_host::canonical_directory_wide_with_work(&directory, work)?;
+        // The actual native allocation guard stays after the path in this
+        // tuple, including early-error and panic destruction.
+        let canonical = &canonical_owner.0;
         #[cfg(unix)]
         let canonical_bytes = canonical.as_os_str().len() as u64;
         #[cfg(windows)]
@@ -2632,13 +4483,13 @@ impl MountDestinationGuard {
         };
         let result = (|| {
             work.check()?;
-            work.work.admit(&hashed, &work.budget)?;
+            work.admit(hashed)?;
             let mut identity = blake3::Hasher::new();
             identity.update(b"acyclic-fs/native-mount-destination/v1\0");
             #[cfg(unix)]
-            update_path_identity(&mut identity, &canonical);
+            update_path_identity(&mut identity, canonical);
             #[cfg(windows)]
-            for unit in &canonical { identity.update(&unit.to_le_bytes()); }
+            for unit in canonical { identity.update(&unit.to_le_bytes()); }
             work.record(hashed)?;
             let hex = identity.finalize().to_hex();
             let mut name = [0u8; NATIVE_FENCE_NAME_BYTES];
@@ -2647,11 +4498,7 @@ impl MountDestinationGuard {
             name[NATIVE_FENCE_PREFIX.len() + 64..].copy_from_slice(NATIVE_FENCE_SUFFIX.as_bytes());
             Ok::<_, NativeMountError>(name)
         })();
-        #[cfg(unix)]
-        let canonical_allocation = canonical.capacity() as u64;
-        #[cfg(windows)]
-        let canonical_allocation = canonical.capacity().checked_mul(std::mem::size_of::<u16>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
+        let (canonical, canonical_allocation) = canonical_owner;
         drop(canonical);
         work.release(canonical_allocation)?;
         let name = result?;
@@ -2749,6 +4596,19 @@ impl MountDestinationGuard {
     }
 
     fn release_measured(&mut self, work: &mut crate::demand::DemandWork) -> Result<(), NativeMountError> {
+        self.release_host(work)
+    }
+
+    fn release_with_meter(&mut self, meter: &NativeMountMeterWork) -> Result<(), NativeMountError> {
+        let native = meter.native_materialization_work();
+        self.release_host(&mut &native)
+    }
+
+    fn release_host<W: crate::native_host::NativeHostWork>(
+        &mut self, work: &mut W,
+    ) -> Result<(), NativeMountError>
+    where NativeMountError: From<W::Error>,
+    {
         if self.file.is_none() {
             return Ok(());
         }
@@ -2775,7 +4635,7 @@ impl MountDestinationGuard {
         release_owned_fence(&mut self.file, || {
             match crate::native_host::remove_leaf_with_work(directory, lock_name, work) {
                 Ok(()) => Ok(()),
-                Err(crate::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => Ok(()),
                 Err(error) => Err(error.into()),
             }
         })?;
@@ -2784,21 +4644,26 @@ impl MountDestinationGuard {
     }
 }
 
-fn lock_mount_file_with_work(
-    file: &File, blocking: bool, work: &mut crate::demand::DemandWork,
-) -> Result<(), NativeMountError> {
+fn lock_mount_file_with_work<W: crate::native_host::NativeHostWork>(
+    file: &File, blocking: bool, work: &mut W,
+) -> Result<(), NativeMountError>
+where NativeMountError: From<W::Error>,
+{
     loop {
         let delta = crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED };
-        work.check()?;
-        work.work.admit(&delta, &work.budget)?;
-        let result = fs2::FileExt::try_lock_exclusive(file);
-        work.record(delta)?;
+        let result = work.attempt_io(delta, || {
+            match fs2::FileExt::try_lock_exclusive(file) {
+                Ok(()) => Ok(true),
+                Err(error) if lock_is_contended(&error) => Ok(false),
+                Err(error) => Err(error),
+            }
+        });
         match result {
-            Ok(()) => return Ok(()),
-            Err(error) if lock_is_contended(&error) && blocking => {
+            Ok(true) => return Ok(()),
+            Ok(false) if blocking => {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            Err(error) if lock_is_contended(&error) => return Err(NativeMountError::DestinationBusy),
+            Ok(false) => return Err(NativeMountError::DestinationBusy),
             Err(error) => return Err(error.into()),
         }
     }
@@ -2816,7 +4681,11 @@ fn release_owned_fence<T, E>(
 
 impl Drop for MountDestinationGuard {
     fn drop(&mut self) {
-        let _ = self.release();
+        // A finite fence is retired only by its original invocation. Dropping
+        // it must not invent an unbounded cleanup engine after denied work.
+        if self.parent_directory.is_none() {
+            let _ = self.release();
+        }
     }
 }
 
@@ -2905,6 +4774,7 @@ fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
     hasher.update(path.to_string_lossy().as_bytes());
 }
 
+#[cfg(test)]
 fn validate_destination(destination: &Path) -> Result<(), NativeMountError> {
     validate_directory(destination)?;
     let mut entries =
@@ -2915,9 +4785,8 @@ fn validate_destination(destination: &Path) -> Result<(), NativeMountError> {
     Ok(())
 }
 
-/// The directory half of [`validate_destination`], without the
-/// empty-directory requirement — shared with
-/// [`mount_native_over_existing`]'s admission path.
+/// Ordinary directory validation used only by legacy admission fixtures.
+#[cfg(test)]
 fn validate_directory(destination: &Path) -> Result<(), NativeMountError> {
     let metadata =
         std::fs::symlink_metadata(destination).map_err(|_| NativeMountError::InvalidDestination)?;
@@ -2928,55 +4797,85 @@ fn validate_directory(destination: &Path) -> Result<(), NativeMountError> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_driver(
+fn start_driver_with_meter(
     request: &NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
+    work: &NativeMountMeterWork,
 ) -> Result<DriverSession, DriverStartFailure> {
-    fuse::FuseSession::start(request, source)
+    fuse::FuseSession::start_with_meter(request, source, work)
         .map(DriverSession::Fuse)
         .map_err(Into::into)
 }
 
 #[cfg(target_os = "macos")]
-fn start_driver(
+fn start_driver_with_meter(
     request: &NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
+    work: &NativeMountMeterWork,
 ) -> Result<DriverSession, DriverStartFailure> {
-    darwin_mount::DarwinMountSession::start(request, source).map(DriverSession::DarwinMount)
+    darwin_mount::DarwinMountSession::start_with_meter(request, source, work).map(DriverSession::DarwinMount)
 }
 
 #[cfg(target_os = "windows")]
-fn start_driver(
+fn start_driver_with_meter(
     request: &NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
+    work: &NativeMountMeterWork,
 ) -> Result<DriverSession, DriverStartFailure> {
-    projfs::ProjFsSession::start(request, source).map(DriverSession::ProjFs)
+    projfs::ProjFsSession::start_with_meter(request, source, work).map(DriverSession::ProjFs)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn start_driver(
+fn start_driver_with_meter(
     _request: &NativeMountRequest,
     _source: Arc<dyn MountFilesystem>,
+    _work: &NativeMountMeterWork,
 ) -> Result<DriverSession, DriverStartFailure> {
     Err(NativeMountError::UnsupportedTarget.into())
 }
 
-fn stop_driver_measured(
+fn stop_driver_with_meter(
     driver: &mut DriverSession,
-    work: &mut crate::demand::DemandWork,
+    work: &NativeMountMeterWork,
 ) -> Result<(), NativeMountError> {
     match driver {
         #[cfg(target_os = "linux")]
-        DriverSession::Fuse(session) => session.stop_measured(work),
+        DriverSession::Fuse(session) => session.stop_with_meter(work),
         #[cfg(target_os = "macos")]
-        DriverSession::DarwinMount(session) => session.stop_measured(work),
+        DriverSession::DarwinMount(session) => session.stop_with_meter(work),
         #[cfg(target_os = "windows")]
-        DriverSession::ProjFs(session) => session.stop_measured(work),
+        DriverSession::ProjFs(session) => session.stop_with_meter(work),
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         DriverSession::Unsupported => {
             let _ = work;
             Err(NativeMountError::UnsupportedTarget)
         }
+    }
+}
+
+fn driver_completed_callback_work(driver: &DriverSession) -> crate::WorkCounters {
+    match driver {
+        #[cfg(target_os = "linux")]
+        DriverSession::Fuse(session) => session.completed_callback_work(),
+        #[cfg(target_os = "macos")]
+        DriverSession::DarwinMount(session) => session.completed_callback_work(),
+        #[cfg(target_os = "windows")]
+        DriverSession::ProjFs(session) => session.completed_callback_work(),
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        DriverSession::Unsupported => crate::WorkCounters::UNCHARGED,
+    }
+}
+
+fn driver_take_callback_failure(driver: &DriverSession) -> Option<NativeMountCallbackFailure> {
+    match driver {
+        #[cfg(target_os = "linux")]
+        DriverSession::Fuse(session) => session.take_callback_failure(),
+        #[cfg(target_os = "macos")]
+        DriverSession::DarwinMount(session) => session.take_callback_failure(),
+        #[cfg(target_os = "windows")]
+        DriverSession::ProjFs(session) => session.take_callback_failure(),
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        DriverSession::Unsupported => None,
     }
 }
 
@@ -3280,19 +5179,29 @@ mod tests {
     }
 
     #[test]
-    fn failed_driver_start_releases_destination_ownership() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn measured_destination_write_denial_keeps_actual_read_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("mount");
         std::fs::create_dir(&destination)?;
-
-        let failed = start_owned_session::<()>(&destination, || {
-            Err(NativeMountError::Driver("injected startup failure".to_owned()).into())
-        });
-        assert!(matches!(failed, Err(NativeMountError::Driver(_))));
-        let recovered_after_error = MountDestinationGuard::acquire(&destination)?;
-        drop(recovered_after_error);
-
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = crate::WorkBudget::UNBOUNDED;
+        budget.backend_write_operations = 0;
+        let mut work = crate::demand::DemandWork::new(budget, &cancellation);
+        let error = match MountDestinationGuard::acquire_with_work(&destination, false, &mut work) {
+            Err(error) => error,
+            Ok(_) => panic!("actual registry creation must be admitted"),
+        };
+        assert!(matches!(error, NativeMountError::Work(crate::WorkError::BudgetExceeded {
+            counter: "backend_write_operations", ..
+        })));
+        assert!(work.work.backend_read_operations > 0);
+        assert_eq!(work.work.backend_write_operations, 0);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert!(!temporary.path().join(NATIVE_REGISTRY_NAME).exists());
+        // No fabricated driver failure or unbounded rollback: no destination
+        // lock was created, and the real ordinary engine can acquire it.
+        drop(MountDestinationGuard::acquire(&destination)?);
         Ok(())
     }
 
@@ -3551,6 +5460,40 @@ mod tests {
         reclaim_native_mount_destination_fence(&destination)?;
         reclaim_native_mount_destination_fence(&destination)?;
         let _reclaimed = MountDestinationGuard::acquire(&destination)?;
+        Ok(())
+    }
+
+    #[test]
+    fn shared_destination_fence_retains_original_owner_after_denial()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let destination = temporary.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let cancellation = crate::CancellationToken::new();
+        let original = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+            crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))));
+        let meter = NativeMountMeterWork::from_meter(Arc::clone(&original));
+        let mut guard = MountDestinationGuard::acquire_with_meter(&destination, false, &meter)?;
+        assert!(Arc::ptr_eq(meter.meter(), &original));
+        assert!(guard.parent_directory.is_some());
+        assert!(guard.file.is_some());
+        assert!(matches!(MountDestinationGuard::acquire_with_meter(&destination, false, &meter),
+            Err(NativeMountError::DestinationBusy)));
+        {
+            let mut work = original.lock();
+            work.budget.backend_write_operations = work.work.backend_write_operations;
+        }
+        let before = original.lock().work;
+        let error = guard.release_with_meter(&meter).expect_err("original write allowance denies cleanup");
+        assert!(matches!(error, NativeMountError::Work(crate::WorkError::BudgetExceeded {
+            counter: "backend_write_operations", ..
+        })));
+        assert!(guard.file.is_some());
+        assert_eq!(original.lock().work.backend_write_operations, before.backend_write_operations);
+        original.lock().budget.backend_write_operations = u64::MAX;
+        guard.release_with_meter(&meter)?;
+        assert!(guard.file.is_none());
+        assert_eq!(original.lock().live_allocation_bytes(), 0);
         Ok(())
     }
 
@@ -3908,6 +5851,7 @@ mod tests {
                 first_sequence: WatchSequence::from_u64(1),
                 next_sequence: WatchSequence::from_u64(2),
                 changes: vec![WatchChange::Created(third.clone())],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(host.path())?,
@@ -3965,6 +5909,7 @@ mod tests {
                 first_sequence: WatchSequence::from_u64(2),
                 next_sequence: WatchSequence::from_u64(3),
                 changes: vec![WatchChange::Created(existing.clone())],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(host.path())?,
@@ -4261,6 +6206,7 @@ mod tests {
                     from: file.clone(),
                     to: renamed.clone(),
                 }],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4315,6 +6261,7 @@ mod tests {
                     },
                     WatchChange::Created(renamed.clone()),
                 ],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4364,6 +6311,7 @@ mod tests {
                 first_sequence: WatchSequence::from_u64(14),
                 next_sequence: WatchSequence::from_u64(15),
                 changes: vec![WatchChange::Created(renamed.clone())],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4397,6 +6345,7 @@ mod tests {
                     WatchChange::Created(renamed.clone()),
                     WatchChange::Modified(renamed.clone()),
                 ],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4502,6 +6451,7 @@ mod tests {
                     from: missing,
                     to: arrived.clone(),
                 }],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4558,6 +6508,7 @@ mod tests {
                         to: arrived.clone(),
                     },
                 ],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4595,6 +6546,7 @@ mod tests {
                     WatchChange::Created(created_and_modified.clone()),
                     WatchChange::Modified(created_and_modified.clone()),
                 ],
+                original: Default::default(),
             },
             &CaptureOptions {
                 expected_root_identity: capture_root_identity(&destination)?,
@@ -4700,6 +6652,7 @@ mod tests {
                 first_sequence: WatchSequence::from_u64(0),
                 next_sequence: WatchSequence::from_u64(1),
                 changes: vec![WatchChange::Created(parent.clone())],
+                original: Default::default(),
             },
             &options,
             WorkBudget::UNBOUNDED,
@@ -4726,6 +6679,7 @@ mod tests {
                     WatchChange::Removed(parent.clone()),
                     WatchChange::Removed(child.clone()),
                 ],
+                original: Default::default(),
             },
             &options,
             WorkBudget::UNBOUNDED,
@@ -4813,6 +6767,7 @@ mod tests {
                     WatchChange::Created(created.clone()),
                     WatchChange::Modified(created.clone()),
                 ],
+                original: Default::default(),
             },
             &options,
             WorkBudget::UNBOUNDED,
@@ -4892,6 +6847,7 @@ mod tests {
                     WatchChange::Created(path.clone()),
                     WatchChange::Modified(path.clone()),
                 ],
+                original: Default::default(),
             },
             &CaptureOptions {
                 source_root: temporary.path().to_path_buf(),

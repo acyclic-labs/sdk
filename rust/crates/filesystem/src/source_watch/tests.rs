@@ -1,26 +1,145 @@
 use super::{HostChange, HostChangeSink, NativeSourceWatch};
 use crate::native_host::HostRoot;
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn callback_stop_guard_tracks_nested_owners_and_restores_after_panic() {
+    let first = super::Delivery::new(Arc::new(Recorded::default()));
+    let second = super::Delivery::new(Arc::new(Recorded::default()));
+    let unavailable = |delivery: &super::Delivery| {
+        assert!(matches!(delivery.ensure_stop_available(), Err(crate::demand::DemandError::WorkerUnavailable)));
+    };
+    first.callback(|| {
+        unavailable(&first);
+        assert!(second.ensure_stop_available().is_ok());
+        second.callback(|| {
+            unavailable(&first);
+            unavailable(&second);
+        });
+        unavailable(&first);
+        assert!(second.ensure_stop_available().is_ok());
+    });
+    assert!(first.ensure_stop_available().is_ok());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        first.callback(|| panic!("a callback unwinds"));
+    }));
+    assert!(panic.is_err());
+    assert!(first.ensure_stop_available().is_ok());
+    assert!(second.ensure_stop_available().is_ok());
+}
+
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<HostChange>>);
+struct Recorded(Mutex<Vec<RecordedChange>>);
+
+enum RecordedChange {
+    Host(HostChange),
+    #[cfg(windows)]
+    Wide { action: u32, path: Vec<u16> },
+}
 
 impl HostChangeSink for Recorded {
-    fn host_changed(&self, changes: &[HostChange]) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(changes);
+    fn logical_owned_bytes(&self) -> u64 { 0 } // This is a borrowed test consumer.
+
+    fn host_changed(
+        &self, changes: &[HostChange], work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        for change in changes {
+            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
+            let payload = match change {
+                HostChange::Rebound(path) | HostChange::Altered(path) => path.as_os_str().len() as u64,
+                _ => 0,
+            };
+            self.push_measured(|| RecordedChange::Host(change.clone()), payload, work)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn host_changed_wide(
+        &self, changes: &[super::HostChangeWide<'_>], work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        for change in changes {
+            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
+            match change {
+                super::HostChangeWide::Path { action, path } => self.push_measured(
+                    || RecordedChange::Wide { action: *action, path: path.to_vec() },
+                    (path.len() as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?, work,
+                )?,
+                super::HostChangeWide::File(file) => self.push_measured(
+                    || RecordedChange::Host(HostChange::File(*file)), 0, work,
+                )?,
+                super::HostChangeWide::Everything => self.push_measured(
+                    || RecordedChange::Host(HostChange::Everything), 0, work,
+                )?,
+                super::HostChangeWide::Unconfirmed => self.push_measured(
+                    || RecordedChange::Host(HostChange::Unconfirmed), 0, work,
+                )?,
+            }
+        }
+        Ok(())
     }
 }
 
 impl Recorded {
+    fn push_measured(
+        &self, create: impl FnOnce() -> RecordedChange, payload: u64, work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        let mut changes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let output = crate::WorkCounters { items_returned: 1, ..crate::WorkCounters::default() };
+        work.check()?;
+        work.work.admit(&output, &work.budget)?;
+        let mut claimed = 0;
+        if changes.len() == changes.capacity() {
+            let count = changes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            let old = (changes.capacity() as u64).checked_mul(size_of::<RecordedChange>() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            let new = (count as u64).checked_mul(size_of::<RecordedChange>() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            let copy = crate::WorkCounters { bytes_copied: (changes.len() as u64)
+                .checked_mul(size_of::<RecordedChange>() as u64).ok_or(crate::WorkError::Overflow)?,
+                ..crate::WorkCounters::default() };
+            work.work.admit(&copy, &work.budget)?;
+            work.adopt(old)?;
+            if let Err(error) = work.allocate(new) { work.release(old)?; return Err(error); }
+            work.record(copy)?;
+            let mut replacement = Vec::with_capacity(count);
+            replacement.append(&mut changes);
+            drop(std::mem::replace(&mut *changes, replacement));
+            work.release(old)?;
+            claimed = new;
+        }
+        let result = (|| {
+            let copy = crate::WorkCounters { bytes_copied: payload, ..crate::WorkCounters::default() };
+            work.work.admit(&copy, &work.budget)?;
+            let total = claimed.checked_add(payload).ok_or(crate::WorkError::Overflow)?;
+            work.allocate(payload)?;
+            claimed = total;
+            work.record(copy)?;
+            changes.push(create());
+            work.record(output)?;
+            Ok(())
+        })();
+        work.release(claimed)?;
+        result
+    }
+
     fn take(&self) -> Vec<HostChange> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        let recorded = std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner));
+        // Ordinary test presentation is deliberately outside the native producer.
+        recorded.into_iter().map(|change| match change {
+            RecordedChange::Host(change) => change,
+            #[cfg(windows)]
+            RecordedChange::Wide { action, path } => {
+                use std::os::windows::ffi::OsStringExt as _;
+                let path = PathBuf::from(std::ffi::OsString::from_wide(&path));
+                if action == 3 { HostChange::Altered(path) } else { HostChange::Rebound(path) }
+            }
+        }).collect()
     }
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {

@@ -135,7 +135,6 @@ pub(crate) struct NativeCursorOwnership {
     custody: Option<NativeMountAllocationCustody>,
     borrowed: bool,
     allocation: Option<crate::NativeAllocation>,
-    original: Option<OriginalDemandWork>,
     raw_payload: Option<SourcePayloadOwnership>,
 }
 
@@ -1016,7 +1015,9 @@ impl SourcePayloadOwnership {
     }
 
     /// Partitions already-owned physical backing, without allocating or charging
-    /// a new claim. Each returned guard must follow its own data's physical drop.
+    /// a new claim. Each returned guard follows its data's physical drop.
+    /// An explicit ordinary/unowned packet remains unowned; this does not
+    /// manufacture a native claim or authorize a native provider fallback.
     pub(crate) fn split_owned_payload(
         &mut self, bytes: u64,
     ) -> Result<Self, crate::NativeTreeMaterializationError> {
@@ -1034,7 +1035,9 @@ impl SourcePayloadOwnership {
                 original: self.original.clone(), allocation: None,
             });
         }
-        if bytes != 0 { return Err(crate::WorkError::Overflow.into()); }
+        if self.original.is_some() || self.owned_bytes.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return Err(crate::WorkError::Overflow.into());
+        }
         Ok(Self::default())
     }
 }
@@ -1475,6 +1478,14 @@ pub trait SourceWatch: Send + Sync {
     fn fence_measured(
         &self, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> DemandResult<()>;
+
+    /// Fences this same subscription against the caller's original native
+    /// invocation. No numeric child allowance may replace retained custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
+        crate::native_host::NativeHostWork::check(&work)?;
+        Err(DemandError::NativeWorkUnavailable)
+    }
 
     /// Quiesces this original subscription using the same native engine.
     /// On failure the caller must retain the owner and retry cleanup rather
@@ -3076,8 +3087,15 @@ impl DemandWork {
         }
         let restored = self.refund_native_work(actual);
         let recorded = self.record(actual);
-        let live = self.check();
-        restored.and(recorded).and(live)
+        // This only records work against credit accepted before the action.
+        // Cancellation must not prevent its truthful terminal bookkeeping;
+        // permission for the physical/append action is verified separately.
+        let invariant = if self.cancellation_wait.native_poisoned
+            || self.cancellation_wait.observer_overflow.as_ref()
+                .is_some_and(|overflow| overflow.entries.is_poisoned()) {
+            Err(DemandError::OriginalWorkPoisoned)
+        } else { Ok(()) };
+        restored.and(recorded).and(invariant)
     }
 
     /// Restores an original full budget without losing retained quota proofs.
@@ -4677,6 +4695,11 @@ impl SourceWatch for FilteredWatch {
         self.inner.fence_measured(budget, cancellation)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
+        self.inner.fence_with_native_work(work)
+    }
+
     fn stop_measured(&self, budget: WorkBudget, cancellation: &CancellationToken) -> DemandResult<()> {
         self.inner.stop_measured(budget, cancellation)
     }
@@ -5578,8 +5601,8 @@ pub mod native {
 
     impl Drop for SourceRootPathCustody {
         fn drop(&mut self) {
-            if let Some(custody) = &self.ownership.custody {
-                custody.retire(self.bytes).expect("native root retires only its physical path");
+            if self.ownership.has_native_custody() {
+                self.ownership.retire(self.bytes).expect("native root retires only its physical path");
                 return;
             }
             if let Some(original) = self.original.upgrade() {
@@ -7158,7 +7181,7 @@ pub mod native {
                         source, directory, directory_version: observed, token: lease.token,
                         #[cfg(not(target_arch = "wasm32"))]
                         native_ownership: NativeCursorOwnership {
-                            custody: None, borrowed: false, allocation: None, original: None,
+                            custody: None, borrowed: false, allocation: None,
                             raw_payload: Some(name_ownership),
                         },
                     })
@@ -8199,6 +8222,10 @@ pub mod native {
             let mut work = DemandWork::new(budget, cancellation);
             let result = self.watch.fence_measured(Duration::from_secs(10), &mut work).map(|_| ());
             work.finish(result)
+        }
+
+        fn fence_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
+            self.watch.fence_with_work(Duration::from_secs(10), &mut work).map(|_| ())
         }
 
         fn stop_measured(
@@ -9316,6 +9343,11 @@ mod tests {
         )?;
         ownership.retain(second_bytes, &mut work)?;
         let before = allowance.remaining()?.peak_allocation_bytes;
+        assert!(matches!(
+            ownership.split_owned_payload(first_bytes + second_bytes + 1),
+            Err(crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))
+        ), "a native owner never substitutes an ordinary guard for unclaimed bytes");
+        assert_eq!(allowance.remaining()?.peak_allocation_bytes, before);
         let first_ownership = ownership.split_owned_payload(first_bytes)?;
         assert_eq!(allowance.remaining()?.peak_allocation_bytes, before, "partitioning creates no claim");
         drop(first);
@@ -9326,6 +9358,24 @@ mod tests {
         drop(ownership);
         assert_eq!(allowance.remaining()?.peak_allocation_bytes, WorkBudget::UNBOUNDED.peak_allocation_bytes);
         assert!(scope.receipt().backend_read_operations >= 2, "both real readlink attempts were retained");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_ordinary_payload_partition_never_manufactures_native_custody()
+        -> Result<(), Box<dyn Error>>
+    {
+        let first = Vec::from(b"ordinary first");
+        let second = Vec::from(b"ordinary second");
+        let mut ordinary = SourcePayloadOwnership::default();
+        let first_owner = ordinary.split_owned_payload(first.capacity() as u64)?;
+        assert!(!first_owner.has_native_custody());
+        assert!(!ordinary.has_native_custody());
+        drop(first);
+        drop(first_owner);
+        assert_eq!(second, b"ordinary second");
+        drop(second);
+        drop(ordinary);
         Ok(())
     }
 
@@ -9438,13 +9488,17 @@ mod tests {
         assert!(started.backend_read_operations > before.backend_read_operations);
         assert_eq!(started.items_returned, before.items_returned + 1);
         started.verify(budget)?;
+        std::fs::write(temporary.path().join("visible"), b"changed")?;
+        watch.fence_with_native_work(NativeSourceWork::from_original_work(&original))?;
+        let fenced = scope.receipt();
+        assert!(fenced.backend_read_operations > started.backend_read_operations,
+            "the actual native fence charges the same original resource, not a numeric child");
+        fenced.verify(budget)?;
         drop(original);
         drop(scope);
         drop(root);
         assert!(sink.original.upgrade().is_some(), "the actual watch retains its original root");
         assert!(sink.resource.upgrade().is_some(), "the actual watch retains its birth resource");
-        std::fs::write(temporary.path().join("visible"), b"changed")?;
-        watch.fence_measured(budget, &CancellationToken::new())?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while sink.native_calls.load(std::sync::atomic::Ordering::Acquire) == 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -9672,16 +9726,16 @@ mod tests {
         assert!(watch.logical_owned_bytes() <= subscribed.work.peak_allocation_bytes);
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let failure = watch.fence_measured(WorkCounters::UNCHARGED, &cancellation)
+        let failure = watch.fence_measured(WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled fence must not start host work");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        let failure = watch.stop_measured(WorkCounters::UNCHARGED, &cancellation)
+        let failure = watch.stop_measured(WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled stop retains the original live subscription");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
         watch.fence_measured(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
-        let failure = watch.stop_measured(WorkCounters::UNCHARGED, &subscription_cancellation)
+        let failure = watch.stop_measured(WorkBudget::default(), &subscription_cancellation)
             .expect_err("native quiescence is admitted before starting cleanup");
         assert!(matches!(failure.error, DemandError::Work(_)));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);

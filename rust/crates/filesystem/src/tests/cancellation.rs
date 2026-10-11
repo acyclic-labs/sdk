@@ -337,3 +337,294 @@ fn measured_waiter_waker_drop_cancels_without_losing_release_work() {
     assert_eq!(work.items_examined, 1);
     assert_eq!(work.allocation_operations, 2);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_wait_pre_cancel_and_allocation_denial_leave_registry_unallocated() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget { allocation_operations: 1, ..crate::WorkBudget::UNBOUNDED },
+        &token,
+    ).map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    assert!(matches!(token.prepare_cancelled_with_native_work(&work),
+        Err(CancellationWaitError::Native(crate::NativeTreeMaterializationError::Work(_)))));
+    assert_eq!(work.receipt(), prefix);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+    token.cancel();
+    let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+    assert_eq!(prepared.cleanup_items(), 0);
+    drop(prepared);
+    assert_eq!(work.receipt(), prefix);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_wait_cleanup_credit_is_not_completed_early_or_available_to_other_work() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(error, _)| error).unwrap();
+    let scoped = work.native_volume_work(crate::WorkBudget {
+        items_examined: 2, ..crate::WorkBudget::UNBOUNDED
+    }).unwrap();
+    let prefix = work.receipt();
+    let prepared = token.prepare_cancelled_with_native_work(&scoped).unwrap();
+    assert_eq!(work.receipt().items_examined, prefix.items_examined + 1);
+    let registered = work.receipt();
+    assert!(scoped.charge(crate::WorkCounters {
+        items_examined: 1, ..crate::WorkCounters::UNCHARGED
+    }).is_err());
+    assert_eq!(work.receipt(), registered);
+    token.cancel();
+    drop(prepared);
+    assert_eq!(work.receipt().items_examined, prefix.items_examined + 2);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_wait_growth_transfers_one_backing_claim_and_last_unregister_retires_it() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    let first = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let second = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let old_capacity = token.state.waiters.lock().unwrap().capacity();
+    let before = work.receipt();
+    let third = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let capacity = token.state.waiters.lock().unwrap().capacity();
+    assert!(capacity > old_capacity);
+    assert_eq!(work.receipt().bytes_copied - before.bytes_copied,
+        2 * std::mem::size_of::<Option<Weak<CancellationWaiter>>>() as u64);
+    drop(first);
+    drop(second);
+    assert_eq!(waiter_count(&token), 1);
+    assert_eq!(work.receipt().retained_allocation_bytes,
+        prefix.retained_allocation_bytes
+            + std::mem::size_of::<CancellationWaiter>() as u64
+            + std::mem::size_of::<NativeRegistryLease>() as u64
+            + (capacity * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64);
+    drop(third);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_drained_registry_remains_paid_until_physical_dispatch_then_nodes_retire() {
+    let root = CancellationToken::new();
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &root)
+        .map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    let mut first = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let mut second = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let waker = Waker::from(Arc::new(PanicWake));
+    let mut context = Context::from_waker(&waker);
+    assert!(Pin::new(&mut first).poll(&mut context).is_pending());
+    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+    let counted = Waker::from(counter.clone());
+    assert!(Pin::new(&mut second).poll(&mut Context::from_waker(&counted)).is_pending());
+    let capacity = token.state.waiters.lock().unwrap().capacity();
+    let before = work.receipt();
+    let dispatch = token.prepare_cancel_with_native_work(&work).unwrap();
+    assert!(token.is_cancelled());
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+    assert_eq!(work.receipt().retained_allocation_bytes, before.retained_allocation_bytes);
+    // Only the actual custody lookup has happened; the two wake visits are
+    // original pending credits until dispatch visits their nodes.
+    assert_eq!(work.receipt().items_examined, before.items_examined + 1);
+    dispatch.finish();
+    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    assert_eq!(work.receipt().items_examined, before.items_examined + 3);
+    assert_eq!(work.receipt().retained_allocation_bytes,
+        before.retained_allocation_bytes
+            - (capacity * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64);
+    drop(first);
+    drop(second);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_original_token_registry_has_no_strong_cycle_after_last_future_drop() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(error, _)| error).unwrap();
+    let state = Arc::downgrade(&token.state);
+    let original = work.original_demand_work();
+    let accounting = Arc::downgrade(original.meter());
+    let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+    drop(original);
+    drop(work);
+    drop(token);
+    assert!(accounting.upgrade().is_some());
+    assert!(state.upgrade().is_some());
+    drop(prepared);
+    assert!(accounting.upgrade().is_none());
+    assert!(state.upgrade().is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_growth_custody_follows_existing_ordinary_waiter_until_its_physical_drop() {
+    let token = CancellationToken::new();
+    let mut ordinary = Box::pin(token.cancelled());
+    assert!(ordinary.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+        .map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    let first = token.prepare_cancelled_with_native_work(&work).unwrap();
+    assert_eq!(work.receipt().retained_allocation_bytes,
+        prefix.retained_allocation_bytes + std::mem::size_of::<CancellationWaiter>() as u64,
+        "merely joining the old ordinary registry does not adopt its backing");
+    let second = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let capacity = token.state.waiters.lock().unwrap().capacity();
+    drop(first);
+    drop(second);
+    assert_eq!(work.receipt().retained_allocation_bytes,
+        prefix.retained_allocation_bytes + std::mem::size_of::<NativeRegistryLease>() as u64
+            + (capacity * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64);
+    drop(ordinary);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn concurrent_native_registration_and_last_unregister_leave_no_unpaid_registry() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
+        items_examined: 4_096, allocation_operations: 4_096,
+        bytes_copied: 65_536, live_allocation_bytes: 1_048_576,
+        peak_allocation_bytes: 1_048_576, ..crate::WorkBudget::UNBOUNDED
+    }, &token).map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for _ in 0..100 {
+                    let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+                    std::thread::yield_now();
+                    drop(prepared);
+                }
+            });
+        }
+    });
+    assert_eq!(waiter_count(&token), 0);
+    assert_eq!(token.state.waiters.lock().unwrap().capacity(), 0);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_waker_replacement_can_cancel_the_same_token_without_lock_reentrancy() {
+    struct CancelOnDrop(CancellationToken);
+    impl Wake for CancelOnDrop { fn wake(self: Arc<Self>) {} }
+    impl Drop for CancelOnDrop { fn drop(&mut self) { self.0.cancel(); } }
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
+        items_examined: 2, ..crate::WorkBudget::UNBOUNDED
+    }, &token).map_err(|(error, _)| error).unwrap();
+    let prefix = work.receipt();
+    let mut prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let old = Waker::from(Arc::new(CancelOnDrop(token.clone())));
+    assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(&old)).is_pending());
+    drop(old);
+    assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(Waker::noop())).is_ready());
+    assert!(token.is_cancelled());
+    drop(prepared);
+    assert_eq!(work.receipt().items_examined, prefix.items_examined + 2);
+    assert_eq!(work.receipt().retained_allocation_bytes, prefix.retained_allocation_bytes);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_linked_child_stop_is_local_and_parent_propagation_uses_prepaid_visits() {
+    for stop_parent in [false, true] {
+        let parent = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
+            .map_err(|(error, _)| error).unwrap();
+        let child = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+        let scope = original.native_volume_work(crate::WorkBudget {
+            items_examined: 6, ..crate::WorkBudget::UNBOUNDED
+        }).unwrap();
+        let mut prepared = child.prepare_cancelled_with_native_work(&scope).unwrap();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let wake = Waker::from(Arc::clone(&counter));
+        assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(&wake)).is_pending());
+        assert_eq!(scope.receipt().items_examined, original.receipt().items_examined);
+        assert!(scope.charge(crate::WorkCounters {
+            items_examined: 1, ..crate::WorkCounters::UNCHARGED
+        }).is_err(), "future lookup, slot visits, and cleanup remain reserved, not completed");
+        let before = original.receipt().items_examined;
+        if stop_parent { parent.cancel(); } else { child.cancel(); }
+        assert!(child.is_cancelled());
+        assert_eq!(parent.is_cancelled(), stop_parent);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert!(Pin::new(&mut prepared).poll(&mut Context::from_waker(&wake)).is_ready());
+        assert_eq!(waiter_count(&parent), 0, "local stop detaches its original parent subscription");
+        assert_eq!(original.receipt().items_examined, before + 3,
+            "actual child custody lookup, child slot visit, and parent unregister are completed");
+        drop(prepared);
+        assert_eq!(original.receipt().items_examined, before + 4,
+            "the actual child unregister lookup consumes its separate original cleanup credit");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_linked_child_precancel_and_initial_budget_denial_allocate_nothing() {
+    for pre_cancel in [false, true] {
+        let parent = CancellationToken::new();
+        let budget = if pre_cancel { crate::WorkBudget::UNBOUNDED } else {
+            crate::WorkBudget { allocation_operations: 1, ..crate::WorkBudget::UNBOUNDED }
+        };
+        let original = crate::NativeMaterializationWork::new(budget, &parent)
+            .map_err(|(error, _)| error).unwrap();
+        if pre_cancel { parent.cancel(); }
+        let before = original.receipt();
+        assert!(CancellationToken::linked_child_with_native_work(&parent, &original).is_err());
+        assert_eq!(original.receipt(), before);
+        assert_eq!(waiter_count(&parent), 0);
+        assert_eq!(parent.state.waiters.lock().unwrap().capacity(), 0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_linked_child_parent_registration_and_guards_have_no_strong_cycle() {
+    let parent = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
+        .map_err(|(error, _)| error).unwrap();
+    let child = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+    let parent_state = Arc::downgrade(&parent.state);
+    let child_state = Arc::downgrade(&child.state);
+    let accounting = Arc::downgrade(original.native_read_meter());
+    drop(original);
+    drop(parent);
+    assert!(accounting.upgrade().is_some());
+    drop(child);
+    assert!(child_state.upgrade().is_none());
+    assert!(parent_state.upgrade().is_none());
+    assert!(accounting.upgrade().is_none());
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[test]
+fn native_linked_children_share_one_ancestor_commit_lock_and_never_commit_after_parent_stop() {
+    let parent = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
+        .map_err(|(error, _)| error).unwrap();
+    let first = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+    let second = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+    let mut installed = 0;
+    first.commit_if_both_live(&second, || installed += 1).unwrap();
+    assert_eq!(installed, 1, "the shared parent is deduplicated, not locked recursively twice");
+    parent.cancel();
+    assert!(first.commit_if_both_live(&second, || installed += 1).is_err());
+    assert_eq!(installed, 1);
+}
