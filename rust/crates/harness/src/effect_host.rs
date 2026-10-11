@@ -128,34 +128,30 @@ async fn verify_owner<P: StreamProvider>(
     owner.verify(settlement).await
 }
 
-/// Closed DTO clone admission uses borrowed field lengths, never a JSON tree.
-/// Derive's opaque allocator internals are not reported as explicit SDK reserves.
-fn clone_metadata<T: Clone>(
-    value: &T, copied: u64, owned: impl FnOnce(&T) -> Result<u64>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<T> {
-    let Some(io) = work.as_deref_mut() else { return Ok(value.clone()); };
-    io.check_cancellation()?;
-    io.admit_owned(copied)?;
-    io.admit_copy(copied)?;
-    io.retain_owned(copied)?;
-    let copy = value.clone();
-    let actual = owned(&copy)?;
-    if actual > copied {
-        io.admit_owned(actual - copied)?;
-        io.retain_owned(actual - copied)?;
-    } else if actual < copied {
-        io.release_owned(copied - actual)?;
-    }
-    io.copy_bytes(copied)?;
-    Ok(copy)
-}
-
+/// Uses the audited field-copy producer and transfers its actual original-ledger custody.
 pub(crate) fn clone_file_with_work(
     file: &crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<crate::conversation::FileRef> {
-    clone_metadata(file, file.logical_clone_owned_bytes()?, |file| file.logical_owned_bytes(), work)
+    if work.is_none() { return Ok(file.clone()); }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        let (copy, custody) = {
+            let original = work.as_deref().and_then(|io| io.original_native_work())
+                .ok_or_else(|| Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "effect metadata clone requires its original native ledger",
+                })?;
+            let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+            let copy = file.clone_with_io(&io)?;
+            let retained = io.owned_bytes()?;
+            (copy, io.into_native_custody(retained)?)
+        };
+        work.as_deref_mut().expect("original effect observer").absorb_native_custody(custody)?;
+        return Ok(copy);
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    Err(Error::Unsupported("native effect metadata cloning is unavailable".into()))
 }
 
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {
@@ -199,9 +195,7 @@ fn attestation_owned_bytes(value: &EffectAttestation) -> Result<u64> {
 fn clone_attestation_with_work(
     value: &EffectAttestation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EffectAttestation> {
-    let copied = (value.provider.len() as u64).checked_add(status_clone_bytes(&value.status)?)
-        .ok_or_else(|| Error::Invalid("effect attestation clone overflows".into()))?;
-    clone_metadata(value, copied, attestation_owned_bytes, work)
+    value.clone_with_work(work)
 }
 
 fn clone_scope_with_work(
@@ -226,31 +220,33 @@ fn action_owned_bytes(action: &Action) -> Result<u64> {
 }
 
 #[cfg(feature = "filesystem")]
-fn clone_action_with_work(
-    action: &Action, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+enum TaskEffectAction<'a> {
+    Plan(&'a TaskEffectPlan),
+    Dispatch(crate::EffectAttemptId),
+}
+
+#[cfg(feature = "filesystem")]
+fn prepare_action_with_work(
+    effect_id: EffectId, action: &TaskEffectAction<'_>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Action> {
     Ok(match action {
-        Action::PlanEffect { effect_id, provider, guarantee, effect_kind, request, result_schema } => {
+        TaskEffectAction::Plan(plan) => {
             let provider = match work.as_deref_mut() {
-                Some(io) => io.clone_text(provider)?, None => provider.clone(),
+                Some(io) => io.clone_text(&plan.provider)?, None => plan.provider.clone(),
             };
             let effect_kind = match work.as_deref_mut() {
-                Some(io) => io.clone_text(effect_kind)?, None => effect_kind.clone(),
+                Some(io) => io.clone_text(&plan.effect_kind)?, None => plan.effect_kind.clone(),
             };
             Action::PlanEffect {
-                effect_id: *effect_id, provider, guarantee: *guarantee, effect_kind,
-                request: clone_file_with_work(request, work)?,
-                result_schema: clone_file_with_work(result_schema, work)?,
+                effect_id, provider, guarantee: plan.guarantee, effect_kind,
+                request: clone_file_with_work(&plan.request, work)?,
+                result_schema: clone_file_with_work(&plan.result_schema, work)?,
             }
         },
-        Action::MarkEffectDispatched { effect_id, attempt_id } => Action::MarkEffectDispatched {
-            effect_id: *effect_id, attempt_id: *attempt_id,
+        TaskEffectAction::Dispatch(attempt_id) => Action::MarkEffectDispatched {
+            effect_id, attempt_id: *attempt_id,
         },
-        Action::ResolveEffect { observation } => Action::ResolveEffect {
-            observation: clone_attestation_with_work(observation, work)?,
-        },
-        _ => return Err(effect_error(work, crate::wire::ErrorCode::Conflict,
-            "effect host action is not an effect action")),
     })
 }
 
@@ -467,14 +463,16 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
         command_id: OperationId, plan: TaskEffectPlan,
     ) -> Result<EffectStatus> {
-        self.run_task_effect_with_work(owner, command_id, plan, &mut None).await
+        self.run_task_effect_with_work(owner, command_id, &plan, &mut None).await
     }
 
     /// Runs that same lifecycle, retaining the actual returned status metadata.
+    /// The caller retains the immutable plan and its custody through this await.
+    /// The original command engine copies its fields only when preparing the command.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn run_task_effect_with_native_work(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
-        command_id: OperationId, plan: TaskEffectPlan,
+        command_id: OperationId, plan: &TaskEffectPlan,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         let mut io = crate::store::history::native_work_io(work)
@@ -490,18 +488,13 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     #[cfg(feature = "filesystem")]
     async fn run_task_effect_with_work(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
-        command_id: OperationId, plan: TaskEffectPlan,
+        command_id: OperationId, plan: &TaskEffectPlan,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectStatus> {
         use crate::{EffectAttemptId, core::ApplyResult};
-        validate_task_plan(owner, &plan, true, work)?;
+        validate_task_plan(owner, plan, true, work)?;
         let effect_id = task_effect_id_with_work(owner.task_binding().0, command_id, work)?;
-        let action = Action::PlanEffect {
-            effect_id, provider: plan.provider, guarantee: plan.guarantee,
-            effect_kind: plan.effect_kind, request: plan.request,
-            result_schema: plan.result_schema,
-        };
-        self.task_action(owner, effect_id, "plan", &action, work).await?;
+        self.task_action(owner, effect_id, "plan", TaskEffectAction::Plan(plan), work).await?;
         let stream = owner.stream();
         let aggregate = self.aggregate_on_with_work(&stream, work).await?;
         let effect = aggregate.effect_for_host(effect_id, work).await?;
@@ -513,9 +506,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         self.providers.resolve_with_work(&effect, work)?;
         let dispatched = if effect.status == EffectStatus::Planned {
             matches!(self.task_action(owner, effect_id, "dispatch",
-                &Action::MarkEffectDispatched {
-                    effect_id, attempt_id: EffectAttemptId::from_bytes(effect_id.into_bytes()),
-                }, work).await?, ApplyResult::Applied { .. })
+                TaskEffectAction::Dispatch(EffectAttemptId::from_bytes(effect_id.into_bytes())),
+                work).await?, ApplyResult::Applied { .. })
         } else { false };
         drop(effect);
         drop(aggregate);
@@ -600,7 +592,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     #[cfg(feature = "filesystem")]
     async fn task_action(
         &self, owner: &crate::durable_host::TaskJournalOwner<P>,
-        effect_id: EffectId, phase: &str, action: &Action,
+        effect_id: EffectId, phase: &str, action: TaskEffectAction<'_>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::core::ApplyResult> {
         let digest = crate::contract::canonical_json_digest_with_work(
@@ -618,7 +610,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
             let scope = clone_scope_with_work(&self.scope, custody.work())?;
             custody.adopt(scope.logical_owned_bytes()?)?;
-            let copied_action = clone_action_with_work(action, custody.work())?;
+            let copied_action = prepare_action_with_work(effect_id, &action, custody.work())?;
             custody.adopt(action_owned_bytes(&copied_action)?)?;
             let (key, key_bytes) = effect_key("task-effect:", effect_id, Some(phase), custody.work())?;
             custody.adopt(key_bytes)?;
