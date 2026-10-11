@@ -302,6 +302,7 @@ impl<P: StreamProvider> TaskMailboxOwner<P> {
 struct TaskJournalMailbox<P: StreamProvider> {
     host: Arc<CoordinatorTaskHost<P>>,
     owner: TaskMailboxOwner<P>,
+    original_received_copy_read_volume: VolumeRef,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -309,6 +310,10 @@ struct TaskJournalMailbox<P: StreamProvider> {
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
         self.owner.borrowed().require_mail_scope(scope)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn original_received_copy_read_volume(&self) -> Option<&VolumeRef> {
+        Some(&self.original_received_copy_read_volume)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.borrowed().task_binding()
@@ -1355,6 +1360,7 @@ where
             native_custody: None,
         }))
     }
+
     /// Issues the stock runtime's genuine current-owner native task context.
     /// Funding metadata does not grant capabilities or replace the caller's fence.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2013,8 +2019,11 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait context requires original observer",
             ))?;
-            let (context, custody) = self.harness.durable_context_with_native_work(
-                task, admission.operation_id, work,
+            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
+                .into_native_shared(work)?;
+            let mailbox = self.task_mailbox_with_native_work(owner, work)?;
+            let (context, custody) = self.harness.durable_context_for_read_with_native_work(
+                task, admission.operation_id, mailbox, work,
             ).await?;
             WorkerContext::Native(context.into_native_shared(custody, work)?)
         } else {
