@@ -220,7 +220,7 @@ impl<'a> PiBuiltinHost<'a> {
         native: std::sync::Arc<crate::pi_native_host::PiNativeCommandHost>,
         work: NativeMaterializationWork,
     ) -> Result<Self> {
-        runtime.verify_owner(&protected)?;
+        runtime.verify_owner_with_native_work(&protected, &work)?;
         Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native, work })
     }
 

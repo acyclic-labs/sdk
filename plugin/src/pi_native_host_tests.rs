@@ -3,7 +3,7 @@
 use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
 use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[tokio::test]
 async fn native_host_rejects_missing_original_pinned_bootstrap() {
@@ -18,7 +18,7 @@ async fn native_host_rejects_replacement_owner_before_opening_native_handles() {
     let replacement = PiOwnerConfig::new(fixture.owner.policy().clone()).unwrap();
     assert!(fixture.runtime.verify_owner(&replacement).is_err());
     assert!(PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), replacement).is_err());
+        fixture.stream.clone(), fixture.resources.clone(), Arc::new(replacement)).is_err());
 }
 
 fn required_path(name: &str) -> PathBuf {
@@ -62,7 +62,11 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert_eq!(host.live_workspace(task).unwrap().workspace().id(), expected_snapshot.workspace_id);
     assert!(host.live_view(task).is_none());
     assert_ne!(expected_binding.scratch.volume, expected_binding.results.unwrap().volume);
-    assert!(host.cancel_child(task).await.unwrap().is_none());
+    let cleanup = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        crate::pi_root_provider::allocation_budget(), &cleanup,
+    ).unwrap();
+    assert!(host.cancel_child_with_native_work(task, &work).await.unwrap().is_none());
     assert!(fixture.runtime.runtime.task_host().observe_task(task).await.unwrap().cancellation_requested);
     assert!(host.recover_child(task).await.unwrap().0.is_none());
     assert!(host.receipt(task).await.unwrap().is_none());
@@ -75,8 +79,6 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
 async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     use acyclic_harness::{distributed::Worker, filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
         scheduler::{LeaseFence, ResourceSnapshot}};
-    use crate::pi_native_host::PiNativeColdLocator;
-    use std::sync::Arc;
     let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
     let plan = fixture.plan().await;
     let original = fixture.coordinator().advance(&fixture.context, &fixture.journal, fixture.fence.clone(),
@@ -86,12 +88,15 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     let host = PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).unwrap();
     let root_key = original.binding.project_volumes.keys().next().unwrap().clone();
-    host.register_cold_locator(task, PiNativeColdLocator { parent: plan.commit.caller,
-        sdk_operation: plan.commit.sdk_operation.clone(), root_key: root_key.clone(),
-        selected_source: fixture.source.clone() }).await.unwrap();
-    assert!(host.register_cold_locator(task, PiNativeColdLocator { parent: plan.commit.caller,
-        sdk_operation: format!("{}-replacement", plan.commit.sdk_operation), root_key,
-        selected_source: fixture.source.clone() }).await.is_err());
+    let query_cancellation = CancellationToken::new();
+    let query_work = acyclic_fs::NativeMaterializationWork::new(
+        crate::pi_root_provider::allocation_budget(), &query_cancellation,
+    ).unwrap();
+    host.register_cold_locator_with_native_work(task, plan.commit.caller,
+        &plan.commit.sdk_operation, &root_key, fixture.source.clone(), &query_work).await.unwrap();
+    let replacement_operation = format!("{}-replacement", plan.commit.sdk_operation);
+    assert!(host.register_cold_locator_with_native_work(task, plan.commit.caller,
+        &replacement_operation, &root_key, fixture.source.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
         available: ResourceSnapshot::default(), labels: BTreeMap::new() };
     let attempt = fixture.runtime.runtime.run_operation(&worker, task,

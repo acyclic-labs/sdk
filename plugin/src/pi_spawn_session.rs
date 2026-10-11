@@ -82,20 +82,21 @@ impl PiSession {
         &mut self, caller: TaskId, arguments: &Value, owner: &pi_owner::PiOwnerConfig,
         original_native_work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, NativeAllocation)> {
-        self.runtime.verify_owner(owner)?;
+        self.runtime.verify_owner_with_native_work(owner, original_native_work)?;
+        let native = self.native_host_with_native_work(original_native_work)?;
         let work = if caller == owner.policy().root_task {
             original_native_work.clone()
         } else {
-            self.native_host()?.invocation_work(caller).await?
+            native.invocation_work(caller).await?
         };
         let (commit, commit_custody) = self.spawn_native_commit(caller, arguments, owner, &work)?;
-        let original = pi_fork::original_operation(owner.policy().root_task, caller, &commit.sdk_operation);
-        let operations = pi_fork::PiForkOperations::new(original);
+        let original = pi_fork::original_operation_with_native_work(owner.policy().root_task, caller, &commit.sdk_operation, &work)?;
+        let operations = pi_fork::PiForkOperations::new_with_native_work(original, &work)?;
         let task = commit.child.task_id;
         let cancellation = work.cancellation();
         let mut retained_custody = Some(commit_custody);
-        let coordinator = pi_fork::PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), self.resources.clone(), owner.clone())?.with_work(work.clone());
+        let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
+            self.stream.clone(), &self.resources, native.original_owner(), &work)?;
         let plan = coordinator.load_original_plan(original, work.remaining().map_err(native_error)?, &cancellation)
             .await?;
         if let Some(plan) = &plan {
@@ -109,7 +110,7 @@ impl PiSession {
             let plan = plan.as_ref().ok_or_else(|| acyclic_harness::Error::Invalid("Pi created route lost its original immutable fork plan".to_owned()))?;
             self.spawn_validate_admitted(plan, owner.policy().maximum_payload_bytes, &work).await?;
             let (launch, launch_custody): (pi_native::PiNativeLaunchIntent, NativeAllocation) = self.spawn_input(owner,
-                pi_fork::derived(original, "native-input"), "native-input", &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi created child lost its original immutable native intent".to_owned()))?;
+                pi_fork::derived_with_native_work(original, "native-input", &work)?, "native-input", &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi created child lost its original immutable native intent".to_owned()))?;
             if launch != commit.launch {
                 return Err(acyclic_harness::Error::Invalid("Pi duplicate changed its original sealed native intent".to_owned()));
             }
@@ -134,7 +135,6 @@ impl PiSession {
         if self.native_jobs.contains_key(&task) {
             return Err(acyclic_harness::Error::Invalid("Pi uncatalogued task already owns an original native worker".to_owned()));
         }
-        let native = self.native_host()?;
         let live = if caller == owner.policy().root_task {
             None
         } else {
@@ -154,7 +154,7 @@ impl PiSession {
             if let Some(plan) = &plan {
                 Some(plan.frozen)
             } else if let Some((observed, custody)) = self.spawn_input::<RetainedRootSource>(
-                owner, pi_fork::derived(original, "observe-root-source"), "root-source-observation",
+                owner, pi_fork::derived_with_native_work(original, "observe-root-source", &work)?, "root-source-observation",
                 &work,
             ).await? {
                 let observed = observed;
@@ -169,7 +169,7 @@ impl PiSession {
                 let input = pi_fork_host::PiObserveSourceCommand {
                     caller, sdk_operation: commit.sdk_operation.clone(), root_key: root_key.clone(),
                 };
-                let operation = pi_fork::derived(original, "observe-root-source");
+                let operation = pi_fork::derived_with_native_work(original, "observe-root-source", &work)?;
                 let (command, command_custody) = self.spawn_command(owner, operation, pi_fork_host::PI_OBSERVE_SOURCE_COMMAND_KIND,
                     &input, &work).await?;
                 let (acknowledgement, pending, _) = self.spawn_root_step(owner, native.clone(), command, false, None, &work).await?;
@@ -346,8 +346,8 @@ impl PiSession {
         {
             return Err(acyclic_harness::Error::Invalid("Pi child session is not its actual independent SDK UUID".to_owned()));
         }
-        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation);
-        let operations = pi_fork::PiForkOperations::new(original);
+        let original = pi_fork::original_operation_with_native_work(owner.policy().root_task, caller, &sdk_operation, work)?;
+        let operations = pi_fork::PiForkOperations::new_with_native_work(original, work)?;
         let task = acyclic_harness::runtime::task_id_for_admission(operations.child);
         for binding in std::iter::once(&self.state.task_binding)
             .chain(self.state.routes.values().map(|route| &route.task_binding))
@@ -455,11 +455,11 @@ impl PiSession {
         command: WorkflowCommand, wake_pending: bool, task: Option<TaskId>, work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native.clone()).with_work(work.clone());
-        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native)?.with_work(work.clone());
+            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone()).with_work(work.clone());
+        let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
         let workflow = pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), self.resources.clone(), &self.state).with_controls(&fork, &selected).with_work(work.clone());
+            self.stream.clone(), &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone());
         let reply = workflow.control_step_with_native_work(command, wake_pending).await?;
         let pending = fork.pending_to_save()?;
         let prepared = match task { Some(task) => fork.take_prepared(task)?, None => None };
@@ -472,7 +472,7 @@ impl PiSession {
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), owner.clone(), &self.state, &self.roots, native).with_work(work.clone());
+            &self.resources, native.original_owner(), &self.state, &self.roots, native).with_work(work.clone());
         let fence = context.owned_task_fence()?;
         let (payload, mut input_custody) = pi_root_provider::guarded_pi_value(
             input, owner.policy().maximum_payload_bytes, work)?;
