@@ -2701,7 +2701,13 @@ impl NativeMaterializationWork {
         // freezing its actual prefix cannot allocate or renew admission.
         let mut bytes = acyclic_stream::PreparedOwnedBytes::new(
             bytes, custody, self.runtime_meter_owner(),
-        ).map_err(|failure| E::from(self.runtime_error(failure.into_error())))?;
+        ).map_err(|failure| E::from(match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => self.runtime_error(error),
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                NativeTreeMaterializationError::InvalidLayout
+            }
+        }))?;
         let mut filled = 0;
         while filled < capacity {
             guard().await?;
