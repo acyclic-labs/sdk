@@ -9196,6 +9196,10 @@ where
     ) -> Result<(LazyDirectoryPage, crate::NativeAllocation),
         (LazyWorkspaceError, Option<crate::NativeAllocation>)>
     {
+        let path = clone_lazy_string_with_accounting(
+            path, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
+            cancellation,
+        ).map_err(|error| (error, None))?;
         let result = async {
             let source_required = cursor.as_ref().is_none_or(|cursor|
                 matches!(&cursor.phase, LazyDirectoryPhase::Source(_)));
@@ -9214,7 +9218,7 @@ where
             let cursor = cursor.map(|mut cursor| { cursor.mark_input_borrowed(); cursor });
             let projection = DirectoryProjectionWork::native(original, cancellation)?;
             let result = self.list_directory_with_projection(
-                &state, projection, path, cursor, maximum_entries, cancellation,
+                &state, projection, &path.0, cursor, maximum_entries, cancellation,
                 None, None, None, Some(snapshot.id), Some(&used), Some(&reader),
             ).await;
             if used.load(std::sync::atomic::Ordering::Acquire)
@@ -9245,7 +9249,7 @@ where
                     unreachable!("original frozen listing retains original allocation custody"),
             }
         }.await;
-        // Paid causes retain their intrinsic error guard. Scratch payloads have
+        drop(path);
         result.map_err(|error| (error, None))
     }
 
@@ -13090,10 +13094,13 @@ where
         }
     }
 
-    async fn selected_checkout_lookup_with_accounting(
-        checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
-        accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::PathLookup, LazyWorkspaceError> {
+    fn selected_checkout_lookup_with_accounting<'a, 'work>(
+        checkout: &'a mut crate::Checkout<A, O>, path: &'a NamespacePath,
+        accounting: &'a LazyTreapWork<'work>, cancellation: &'a CancellationToken,
+    ) -> impl std::future::Future<Output = Result<crate::kernel::PathLookup, LazyWorkspaceError>>
+        + crate::async_storage::StorageFuture + 'a
+    {
+        async move {
         match &accounting.meter {
             LazyTreapMeter::Standalone { .. } => accounting.accept(
                 checkout.lookup_no_follow(path, accounting.remaining()?, cancellation).await
@@ -13107,6 +13114,7 @@ where
                     path, original, cancellation,
                 ).await.map_err(native_filesystem_error)
             }
+        }
         }
     }
 
