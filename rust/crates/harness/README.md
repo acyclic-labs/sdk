@@ -357,6 +357,12 @@ standard-library allocator backing is not an RSS claim. Custody membership is
 not authority: the original scope MAC, parent agent, provider and history cut
 are still verified before filesystem work.
 
+`TaskAdmissionRecord`, `ResourcePreparationRequest`, `ForkRequest` and
+`ForkReport` provide borrowed `validate_with_native_work` entrypoints to their
+same canonical optional-observer validators. Caller-owned inputs keep their
+existing custody; validation does not clone a request, issue grants or replace
+the task owner's registration, original lease and protected creator checks.
+
 `recursive_fork_source_with_native_work`,
 `restore_recursive_fork_source_with_native_work`, and
 `fork_preparation_request_with_native_work` expose the same configured recursive

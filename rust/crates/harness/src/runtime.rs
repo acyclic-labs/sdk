@@ -2103,6 +2103,17 @@ impl TaskAdmissionRecord {
         self.validate_with_work(&mut None)
     }
 
+    /// Checks this borrowed admission on its caller's original native ledger.
+    /// The task owner still verifies registration, grants and creation proofs.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(&mut Some(&mut observer))
+    }
+
     pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {

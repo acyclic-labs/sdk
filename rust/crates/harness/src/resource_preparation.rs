@@ -273,6 +273,17 @@ impl ResourcePreparationRequest {
         self.validate_with_work(&mut None)
     }
 
+    /// Checks this borrowed request on the supplied original native ledger.
+    /// Validation does not issue grants or authenticate a creation receipt.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(&mut Some(&mut observer))
+    }
+
     /// Validates using the original caller's optional native observer.
     pub(crate) fn validate_with_work(
         &self,
