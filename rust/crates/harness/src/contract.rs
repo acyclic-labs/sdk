@@ -1340,6 +1340,18 @@ pub enum Error {
         /// Existing custody for SDK-owned decoder diagnostics.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An actual protobuf decode failure on the original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeProstDecode {
+        /// Invalid for request input; Storage for persisted records.
+        code: ErrorCode,
+        /// The original protobuf cause, without diagnostic conversion.
+        #[source]
+        source: prost::DecodeError,
+        /// Original preclaimed diagnostic custody, released after the cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual native encoder failure, preserving its source and classification.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1551,7 +1563,8 @@ impl Error {
             Self::NativeMcpIncomplete { .. } => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
-            | Self::NativeDecode { code, .. } | Self::NativeEncode { code, .. }
+            | Self::NativeDecode { code, .. } | Self::NativeProstDecode { code, .. }
+            | Self::NativeEncode { code, .. }
             | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
