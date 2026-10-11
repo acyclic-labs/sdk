@@ -4560,15 +4560,17 @@ mod windows_clone_tests {
         let moved_root = temporary.path().join("moved-root");
         std::fs::create_dir(&root_path)?;
         let root = HostRoot::open(&root_path)?;
-        let parent = root.create_dir_all_held(Path::new("parent"))?;
-        std::fs::write(root_path.join("parent/original"), b"original")?;
-        let nested = root.open_dir_held(Path::new("parent"))?;
         std::fs::rename(&root_path, &moved_root)?;
         std::fs::create_dir(&root_path)?;
         std::fs::write(root_path.join("foreign"), b"foreign")?;
+        // NTFS denies an ancestor move while child directories are open.
+        // Move each original directory before opening any of its descendants.
+        let parent = root.create_dir_all_held(Path::new("parent"))?;
+        std::fs::write(moved_root.join("parent/original"), b"original")?;
         std::fs::rename(moved_root.join("parent"), moved_root.join("moved-parent"))?;
         std::fs::create_dir(moved_root.join("parent"))?;
         std::fs::write(moved_root.join("parent/foreign"), b"foreign-parent")?;
+        let nested = parent.directory.try_clone()?;
         let names = HostRoot::scan_held_dir(&nested)?.map(|entry| entry.map(|entry| entry.name)).collect::<std::io::Result<Vec<_>>>()?;
         assert_eq!(names, [std::ffi::OsString::from("original")]);
         parent.rename_to(Path::new("original"), &parent, Path::new("renamed"))?;
