@@ -2082,7 +2082,7 @@ impl<'a, 'b> ForkValidationWork<'a, 'b> {
     }
 
     pub(super) fn file_capability(&mut self, file: &FileRef) -> Result<String> {
-        file.validate()?;
+        file.validate_with_work(self.work)?;
         self.capability("file:read:", file)
     }
 
@@ -2368,15 +2368,20 @@ impl ReferenceGrant {
     /// Validates the standalone owner-mediated reference envelope. Seed
     /// admission additionally checks the attached reader and published list.
     pub fn validate(&self) -> Result<()> {
-        self.file.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.file.validate_with_work(work)?;
         if let Some(manifest) = &self.attachment_manifest {
-            manifest.validate()?;
+            manifest.validate_with_work(work)?;
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
             {
-                return Err(Error::Invalid(
-                    "reference grant manifest has an invalid media type".into(),
-                ));
+                return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "reference grant manifest has an invalid media type"));
             }
         }
         Ok(())
@@ -2392,9 +2397,16 @@ impl ReferenceGrant {
 impl SharedGrant {
     /// Validates the grant envelope; the seed checks selection and child binding.
     pub fn validate(&self) -> Result<()> {
-        self.volume.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.volume.validate_with_work(work)?;
         if self.volume.class() != VolumeClass::SessionShared || self.operations.is_empty() {
-            return Err(Error::Invalid("invalid fork shared-volume grant".into()));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "invalid fork shared-volume grant"));
         }
         Ok(())
     }
@@ -2403,11 +2415,16 @@ impl SharedGrant {
 impl ForkOmission {
     /// Required captures and successful captures cannot become omissions.
     pub fn validate(&self) -> Result<()> {
-        self.selection.revision.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.selection.revision.validate_with_work(work)?;
         if self.selection.required || matches!(self.outcome, Capture::Captured(_)) {
-            return Err(Error::Invalid(
-                "fork omission must be an uncaptured optional selection".into(),
-            ));
+            return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork omission must be an uncaptured optional selection"));
         }
         Ok(())
     }
@@ -2416,8 +2433,14 @@ impl ForkOmission {
 impl CapturedResource {
     /// Only project capture may create a new revision and volume identity.
     pub fn validate(&self) -> Result<()> {
-        self.source.validate()?;
-        self.revision.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.source.validate_with_work(work)?;
+        self.revision.validate_with_work(work)?;
         match (&self.source, &self.revision) {
             (
                 ResourceRevision::Project { volume: source, .. },
@@ -2441,11 +2464,11 @@ impl CapturedResource {
                 Ok(())
             }
             (ResourceRevision::PrivateVolume { .. }, _)
-            | (_, ResourceRevision::PrivateVolume { .. }) => Err(Error::Invalid(
-                "scratch capture changed its selection".into(),
-            )),
+            | (_, ResourceRevision::PrivateVolume { .. }) => Err(fork_provider_boundary(
+                work, crate::wire::ErrorCode::Invalid, "scratch capture changed its selection")),
             (ResourceRevision::Project { .. }, _) | (_, ResourceRevision::Project { .. }) => Err(
-                Error::Invalid("project capture has an invalid child volume".into()),
+                fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                    "project capture has an invalid child volume"),
             ),
             (
                 ResourceRevision::Extension {
@@ -2468,9 +2491,8 @@ impl CapturedResource {
                 Ok(())
             }
             (source, revision) if source == revision => Ok(()),
-            _ => Err(Error::Invalid(
-                "capture changed an immutable selected revision".into(),
-            )),
+            _ => Err(fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+                "capture changed an immutable selected revision")),
         }
     }
 }
@@ -2531,9 +2553,7 @@ impl ForkReport {
         if self.summary.as_ref().map(|capture| &capture.selection)
             != self.request.preparation.summary.as_ref()
         {
-            return Err(Error::Invalid(
-                "fork report changed its summary selection".into(),
-            ));
+            return Err(work.invalid("fork report changed its summary selection"));
         }
         if let Some(summary) = &self.summary {
             summary.validate_with_work(&self.child_private_volume, work.work())?;
@@ -2543,16 +2563,14 @@ impl ForkReport {
             || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
             || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
-            return Err(Error::Invalid("fork report exceeds protocol limits".into()));
+            return Err(work.invalid("fork report exceeds protocol limits"));
         }
         if self.inherited_through_sequence != self.request.preparation.inherited_through_sequence
             || self.child_private_volume != self.request.preparation.child_private_volume
             || self.reference_grants.len()
                 > self.request.preparation.maximum_inherited_references as usize
         {
-            return Err(Error::Invalid(
-                "fork report changed the requested child allocation or prefix".into(),
-            ));
+            return Err(work.invalid("fork report changed the requested child allocation or prefix"));
         }
         let inherited_bytes = self
             .inherited_context
@@ -2562,73 +2580,63 @@ impl ForkReport {
                 total
                     .checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| {
-                        Error::Invalid("fork inherited context byte count overflow".into())
+                        work.invalid("fork inherited context byte count overflow")
                     })
             })?;
         if inherited_bytes > self.request.preparation.maximum_inherited_bytes {
-            return Err(Error::Invalid(
-                "fork inherited context exceeds requested byte limit".into(),
-            ));
+            return Err(work.invalid("fork inherited context exceeds requested byte limit"));
         }
         if self.captures.len() != self.request.selections.len() {
-            return Err(Error::Invalid(
-                "fork capture count does not match selections".into(),
-            ));
+            return Err(work.invalid("fork capture count does not match selections"));
         }
         for (selection, capture) in self.request.selections.iter().zip(&self.captures) {
             work.checkpoint()?;
             match capture {
                 Capture::Captured(resource) if resource.source == selection.revision => {
-                    resource.validate()?;
+                    resource.validate_with_work(work.work())?;
                     if let ResourceRevision::Project { volume, .. } = &resource.revision
                         && volume != &self.request.preparation.child_project_volume
                     {
-                        return Err(Error::Invalid(
-                            "fork report changed the requested project volume".into(),
-                        ));
+                        return Err(work.invalid("fork report changed the requested project volume"));
                     }
                 }
                 Capture::Captured(_) => {
-                    return Err(Error::Invalid(
-                        "fork capture source does not match selection".into(),
-                    ));
+                    return Err(work.invalid("fork capture source does not match selection"));
                 }
                 Capture::Unsupported(reason) if reason.is_empty() => {
-                    return Err(Error::Invalid("fork capture reason is invalid".into()));
+                    return Err(work.invalid("fork capture reason is invalid"));
                 }
                 _ => {}
             }
         }
-        self.child_private_volume.validate()?;
-        self.child_private_generation.validate()?;
+        self.child_private_volume.validate_with_work(work.work())?;
+        self.child_private_generation.as_resource().validate_with_work(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.request.child_agent)
             || self.child_private_generation.as_resource().provider()
                 != self.child_private_volume.provider()
         {
-            return Err(Error::Invalid(
-                "fork report private volume is not child owned".into(),
-            ));
+            return Err(work.invalid("fork report private volume is not child owned"));
         }
         if self.child_result_volume != self.request.preparation.child_result_volume {
             return Err(Error::Invalid("fork report changed result allocation".into()));
         }
         for file in &self.inherited_context {
             work.checkpoint()?;
-            file.validate()?;
+            file.validate_with_work(work.work())?;
         }
         for grant in &self.shared_grants {
             work.checkpoint()?;
-            grant.validate()?;
+            grant.validate_with_work(work.work())?;
         }
         for grant in &self.reference_grants {
             work.checkpoint()?;
-            grant.validate()?;
+            grant.validate_with_work(work.work())?;
         }
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
-            manifest.validate()?;
+            manifest.validate_with_work(work.work())?;
         }
         Ok(())
     }
@@ -2644,49 +2652,42 @@ impl ForkReport {
     ) -> Result<ForkSeed> {
         let mut owned = ForkValidationWork::new(work)?;
         self.validate_with_work(owned.work())?;
-        let mut resources = Vec::new();
-        let mut omissions = Vec::new();
-        if let Some(observer) = owned.work().as_deref_mut() {
+        let (mut resources, mut omissions) = if owned.work().is_some() {
             let resource_count = self.captures.iter()
                 .filter(|capture| matches!(capture, Capture::Captured(_))).count();
             let omission_count = self.captures.len() - resource_count;
-            let resource_bytes = resource_count as u64 * std::mem::size_of::<CapturedResource>() as u64;
-            let omission_bytes = omission_count as u64 * std::mem::size_of::<ForkOmission>() as u64;
-            observer.admit_owned(resource_bytes.checked_add(omission_bytes)
-                .ok_or_else(|| Error::Invalid("fork seed vector capacity overflows".into()))?)?;
-            if resource_count != 0 { observer.admit_allocation(resource_bytes)?; }
-            resources.try_reserve_exact(resource_count)
-                .map_err(|_| Error::Invalid("fork resource vector allocation failed".into()))?;
-            let resource_capacity = resources.capacity() as u64 * std::mem::size_of::<CapturedResource>() as u64;
-            observer.retain_owned(resource_capacity)?;
-            owned.retained = resource_capacity;
-            let observer = owned.work().as_deref_mut().ok_or_else(|| Error::Invalid("fork allocation observer disappeared".into()))?;
-            if omission_count != 0 { observer.admit_allocation(omission_bytes)?; }
-            omissions.try_reserve_exact(omission_count)
-                .map_err(|_| Error::Invalid("fork omission vector allocation failed".into()))?;
-            let omission_capacity = omissions.capacity() as u64 * std::mem::size_of::<ForkOmission>() as u64;
-            observer.retain_owned(omission_capacity)?;
-            owned.retained = owned.retained.checked_add(omission_capacity)
-                .ok_or_else(|| Error::Invalid("fork vector custody overflows".into()))?;
-        }
+            let (resources, omissions, retained) = {
+                let mut quota = crate::wire_codec::CodecQuota::new(owned.work(), 0)?;
+                let resources = crate::core::reserve_copy_vector::<CapturedResource>(
+                    resource_count, &mut quota)?;
+                let omissions = crate::core::reserve_copy_vector::<ForkOmission>(
+                    omission_count, &mut quota)?;
+                let retained = quota.retained();
+                quota.transfer();
+                (resources, omissions, retained)
+            };
+            // Both real Vec capacities were admitted before their allocator
+            // attempts. The conversion guard outlives the moved payloads.
+            owned.retained = retained;
+            (resources, omissions)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         for (selection, capture) in self.request.selections.into_iter().zip(self.captures) {
             owned.checkpoint()?;
             match capture {
                 Capture::Captured(resource) if resource.source == selection.revision => {
-                    resource.validate()?;
+                    resource.validate_with_work(owned.work())?;
                     resources.push(resource);
                 }
                 Capture::Captured(_) => {
-                    return Err(Error::Invalid(
-                        "fork capture source does not match selection".into(),
-                    ));
+                    return Err(owned.invalid("fork capture source does not match selection"));
                 }
                 Capture::Unsupported(_) | Capture::InFlight(_) | Capture::Indeterminate(_)
                     if selection.required =>
                 {
-                    return Err(Error::Conflict(
-                        "required fork capture is unavailable".into(),
-                    ));
+                    return Err(fork_provider_boundary(owned.work(), crate::wire::ErrorCode::Conflict,
+                        "required fork capture is unavailable"));
                 }
                 outcome => omissions.push(ForkOmission {
                     selection,
@@ -2803,36 +2804,32 @@ impl ForkSeed {
             || self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
             || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
-            return Err(Error::Invalid("fork seed exceeds protocol limits".into()));
+            return Err(work.invalid("fork seed exceeds protocol limits"));
         }
         if self.parent == self.child {
-            return Err(Error::Invalid("fork child cannot equal its parent".into()));
+            return Err(work.invalid("fork child cannot equal its parent"));
         }
         if self.parent.kind != crate::core::AggregateKind::Conversation
             || self.child.kind != crate::core::AggregateKind::Conversation
         {
-            return Err(Error::Invalid(
-                "fork must link parent and child conversations".into(),
-            ));
+            return Err(work.invalid("fork must link parent and child conversations"));
         }
         let parent_path = work.stream_path(&self.parent)?;
         let _child_path = work.stream_path(&self.child)?;
         work.slots::<AgentId>(self.attached_agents.len())?;
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
-            return Err(Error::Invalid("fork attached agents are not unique".into()));
+            return Err(work.invalid("fork attached agents are not unique"));
         }
-        self.child_private_volume.validate()?;
-        self.child_private_generation.validate()?;
+        self.child_private_volume.validate_with_work(work.work())?;
+        self.child_private_generation.as_resource().validate_with_work(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.child_agent)
             || self.child_private_generation.as_resource().provider()
                 != self.child_private_volume.provider()
         {
-            return Err(Error::Invalid(
-                "fork private volume is not child owned".into(),
-            ));
+            return Err(work.invalid("fork private volume is not child owned"));
         }
         validate_child_result_generation_with_work(
             self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
@@ -2864,10 +2861,10 @@ impl ForkSeed {
         let mut selected_shared = BTreeSet::new();
         for resource in &self.resources {
             work.checkpoint()?;
-            resource.validate()?;
+            resource.validate_with_work(work.work())?;
             let source = work.canonical(&resource.source)?;
             if !selected.insert(source) {
-                return Err(Error::Invalid("fork selection appears twice".into()));
+                return Err(work.invalid("fork selection appears twice"));
             }
             match &resource.revision {
                 ResourceRevision::History(reference) => {
@@ -2879,18 +2876,14 @@ impl ForkSeed {
                             .and_then(|version| version.parse::<u64>().ok())
                             != Some(self.parent_revision)
                     {
-                        return Err(Error::Invalid(
-                            "fork history is not the exact parent prefix".into(),
-                        ));
+                        return Err(work.invalid("fork history is not the exact parent prefix"));
                     }
                 }
                 ResourceRevision::Project { .. } => project += 1,
                 ResourceRevision::PrivateVolume { volume, .. } => {
                     private += 1;
                     if volume != &self.child_private_volume {
-                        return Err(Error::Invalid(
-                            "scratch capture names another child volume".into(),
-                        ));
+                        return Err(work.invalid("scratch capture names another child volume"));
                     }
                 }
                 ResourceRevision::Context(_) => context += 1,
@@ -2902,15 +2895,15 @@ impl ForkSeed {
             }
             let encoded = work.canonical(&resource.revision)?;
             if !unique.insert(encoded) {
-                return Err(Error::Invalid("fork resource appears twice".into()));
+                return Err(work.invalid("fork resource appears twice"));
             }
         }
         for omission in &self.omissions {
             work.checkpoint()?;
-            omission.validate()?;
+            omission.validate_with_work(work.work())?;
             let encoded = work.canonical(&omission.selection.revision)?;
             if !selected.insert(encoded) {
-                return Err(Error::Invalid("fork selection appears twice".into()));
+                return Err(work.invalid("fork selection appears twice"));
             }
         }
         self.validate_shared_grants(&selected_shared, &attached, &mut work)?;
@@ -2920,17 +2913,15 @@ impl ForkSeed {
         let mut manifest_bytes = 0_u64;
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
-            manifest.validate()?;
+            manifest.validate_with_work(work.work())?;
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
-                .ok_or_else(|| Error::Invalid("fork attachment manifest bytes overflow".into()))?;
+                .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
                 || !manifest_ids.insert(work.file_capability(manifest)?)
             {
-                return Err(Error::Invalid(
-                    "fork attachment manifest is invalid or duplicated".into(),
-                ));
+                return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
             }
         }
         work.slots::<(String, BTreeSet<AgentId>)>(self.reference_grants.len())?;
@@ -2945,9 +2936,7 @@ impl ForkSeed {
             if let Some(manifest) = &grant.attachment_manifest
                 && !manifest_ids.contains(&work.file_capability(manifest)?)
             {
-                return Err(Error::Invalid(
-                    "reference grant names an unselected attachment manifest".into(),
-                ));
+                return Err(work.invalid("reference grant names an unselected attachment manifest"));
             }
             let file_capability = work.file_capability(&grant.file)?;
             if let Some(manifest) = &grant.attachment_manifest {
@@ -2978,21 +2967,17 @@ impl ForkSeed {
                         && !direct_manifest_reads.get(&capability)
                             .is_some_and(|readers| readers.contains(reader))
                     {
-                        return Err(Error::Invalid(
-                            "fork omits a manifest file read grant".into(),
-                        ));
+                        return Err(work.invalid("fork omits a manifest file read grant"));
                     }
                 }
             }
         }
         if history != 1 || project != 1 || private != 1 || context > 1 || process > 1 {
-            return Err(Error::Invalid(
-                "fork needs one history, project, and scratch revision".into(),
-            ));
+            return Err(work.invalid("fork needs one history, project, and scratch revision"));
         }
         self.validate_inherited_context(&mut work)?;
         if let Some(boundary) = &self.boundary {
-            boundary.validate()?;
+            boundary.validate_with_work(work.work())?;
         }
         Ok(())
     }
@@ -3009,31 +2994,25 @@ impl ForkSeed {
         let mut granted_pairs = BTreeSet::new();
         for grant in &self.shared_grants {
             work.checkpoint()?;
-            grant.validate()?;
+            grant.validate_with_work(work.work())?;
             if grant.child_agent != self.child_agent && !attached.contains(&grant.child_agent) {
-                return Err(Error::Invalid(
-                    "shared grant belongs to an unattached agent".into(),
-                ));
+                return Err(work.invalid("shared grant belongs to an unattached agent"));
             }
             let volume = work.canonical(&grant.volume)?;
             let selected_volume = selected_shared.get(&volume)
-                .ok_or_else(|| Error::Invalid("shared grant was not selected".into()))?;
+                .ok_or_else(|| work.invalid("shared grant was not selected"))?;
             let capacity = volume.capacity() as u64;
             drop(volume);
             work.release(capacity)?;
             if !granted_pairs.insert((selected_volume, grant.child_agent)) {
-                return Err(Error::Invalid(
-                    "shared volume is granted twice to one agent".into(),
-                ));
+                return Err(work.invalid("shared volume is granted twice to one agent"));
             }
             if grant.child_agent == self.child_agent {
                 granted_shared.insert(selected_volume);
             }
         }
         if !selected_shared.iter().eq(granted_shared.iter().copied()) {
-            return Err(Error::Invalid(
-                "shared-volume selections need exact child grants".into(),
-            ));
+            return Err(work.invalid("shared-volume selections need exact child grants"));
         }
         Ok(())
     }
@@ -3047,18 +3026,14 @@ impl ForkSeed {
         let mut unique = BTreeSet::new();
         for grant in &self.reference_grants {
             work.checkpoint()?;
-            grant.validate()?;
+            grant.validate_with_work(work.work())?;
             if grant.reader != self.child_agent && !attached.contains(&grant.reader) {
-                return Err(Error::Invalid(
-                    "reference reader is not attached to fork".into(),
-                ));
+                return Err(work.invalid("reference reader is not attached to fork"));
             }
             if grant.file.volume().class() == VolumeClass::AgentPrivate
                 && grant.file.volume().owner() == &VolumeOwner::Agent(grant.reader)
             {
-                return Err(Error::Invalid(
-                    "owner needs no inherited reference grant".into(),
-                ));
+                return Err(work.invalid("owner needs no inherited reference grant"));
             }
             let identity = (
                 work.file_capability(&grant.file)?,
@@ -3070,7 +3045,7 @@ impl ForkSeed {
                     .transpose()?,
             );
             if !unique.insert(identity) {
-                return Err(Error::Invalid("reference grant appears twice".into()));
+                return Err(work.invalid("reference grant appears twice"));
             }
         }
         Ok(())
@@ -3080,9 +3055,7 @@ impl ForkSeed {
         if let Some(summary) = &self.summary {
             summary.validate_with_work(&self.child_private_volume, work.work())?;
             if self.inherited_through_sequence == 0 {
-                return Err(Error::Invalid(
-                    "summary fork has no inherited logical history".into(),
-                ));
+                return Err(work.invalid("summary fork has no inherited logical history"));
             }
         }
         let prefix = if self.inherited_through_sequence > 0 {
@@ -3095,7 +3068,7 @@ impl ForkSeed {
                             == "application/vnd.acyclic.harness.inherited-conversation+json"
                 })
                 .ok_or_else(|| {
-                    Error::Invalid("inherited context omitted its selected prefix".into())
+                    work.invalid("inherited context omitted its selected prefix")
                 })?)
         } else {
             None
@@ -3103,26 +3076,20 @@ impl ForkSeed {
         let expected = prefix.into_iter()
             .chain(self.summary.iter().flat_map(SummaryForkCapture::inherited_files));
         if !expected.eq(self.inherited_context.iter()) {
-            return Err(Error::Invalid(
-                "inherited context does not match its selected capture".into(),
-            ));
+            return Err(work.invalid("inherited context does not match its selected capture"));
         }
         work.slots::<&str>(self.inherited_context.len())?;
         let mut inherited_paths = BTreeSet::new();
         for file in &self.inherited_context {
             work.checkpoint()?;
-            file.validate()?;
+            file.validate_with_work(work.work())?;
             if file.volume() != &self.child_private_volume
                 || !file.path().starts_with(".system/inherited-conversation/")
             {
-                return Err(Error::Invalid(
-                    "inherited context is not child owned".into(),
-                ));
+                return Err(work.invalid("inherited context is not child owned"));
             }
             if !inherited_paths.insert(file.path()) {
-                return Err(Error::Invalid(
-                    "inherited context path appears twice".into(),
-                ));
+                return Err(work.invalid("inherited context path appears twice"));
             }
         }
         Ok(())
@@ -3746,6 +3713,32 @@ mod tests {
             items_examined: 100_000,
             ..acyclic_fs::WorkBudget::default()
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capture_validation_keeps_original_policy_without_allocating_a_diagnostic() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let seed: ForkSeed = serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancellation)
+            .expect("original validation ledger");
+        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let original = &seed.resources[0];
+        original.validate()?;
+        original.validate_with_work(&mut Some(&mut io))?;
+        let mut changed = original.clone();
+        changed.revision = seed.resources[1].revision.clone();
+        assert_eq!(changed.validate().expect_err("changed capture").code(), crate::wire::ErrorCode::Invalid);
+        let before = native.receipt();
+        let error = changed.validate_with_work(&mut Some(&mut io))
+            .expect_err("native changed capture");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+        assert!(matches!(error, Error::NativeBoundary { .. }));
+        assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(native.receipt().bytes_copied, before.bytes_copied);
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
