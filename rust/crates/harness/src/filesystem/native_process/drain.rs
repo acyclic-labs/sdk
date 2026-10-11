@@ -1,4 +1,5 @@
 use super::*;
+use super::receipt_observation::OriginalNativeRequest;
 use crate::filesystem::native_execution::NativeVolumeView;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, NativeAllocation, NativeMaterializationWork, WorkCounters};
 use std::any::Any;
@@ -8,27 +9,13 @@ use std::any::Any;
 /// an exhaustive-output claim, or authority to recreate a cold namespace.
 pub struct NativeProcessDrainProof {
     view: Arc<dyn Any + Send + Sync>,
-    request: DrainRequest,
+    request: OriginalNativeRequest,
     receipt: NativeProcessReceipt,
     plan: Arc<TaskEffectPlan>,
     // Derived by the canonical task/command binding before dispatch or recovery.
     effect_id: EffectId,
     _provider_custody: Arc<Mutex<NativeAllocation>>,
     _custody: NativeAllocation,
-}
-
-enum DrainRequest {
-    Cached(Arc<NativeProcessRequest>),
-    Pinned { request: NativeProcessRequest, _custody: NativeAllocation },
-}
-
-impl DrainRequest {
-    fn request(&self) -> &NativeProcessRequest {
-        match self {
-            Self::Cached(request) => request,
-            Self::Pinned { request, .. } => request,
-        }
-    }
 }
 
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
@@ -158,21 +145,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(native)?;
             cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native)?;
             self.authenticate_cleanup_owner(work).await?;
-            let request = match &self.admission {
-                NativeAdmission::Executable { request, .. } => DrainRequest::Cached(Arc::clone(request)),
-                NativeAdmission::ReceiptOnly => {
-                    self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
-                        crate::conversation::VolumeOperation::Read, work)?;
-                    let bytes = self.authority.content.read_with_native_work(
-                        &self.plan.request, self.owner.input_limits().file_bytes, work,
-                    )?.await?;
-                    let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
-                    let custody = custody;
-                    let request = request;
-                    drop(bytes);
-                    DrainRequest::Pinned { request, _custody: custody }
-                }
-            };
+            let request = self.original_request_with_native_work(work).await?;
             if !same_manifest(&request.request().view,
                 NativeProcessView::<P>::manifest(view.as_ref()), work)?
             {
@@ -186,13 +159,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 }
                 None => None,
             };
-            let digest = request.request().approval_digest_with_native_work(
-                self.owner.task_binding().0, self.command, work,
-            )?;
-            self.authority.approvals.verify_with_native_work(self.approval, self.command, digest, work)?.await?;
-            let receipt = self.receipt_original(attempt, Some(work), Some(digest)).await
-                .map_err(NativeReceiptError::into_root_error)?
-                .ok_or(Error::Indeterminate(self.command))?;
+            let receipt = self.approved_original_receipt_with_native_work(
+                attempt, request.request(), work,
+            ).await?;
             if (receipt.task, &receipt.original_fence) != self.owner.task_binding()
                 || receipt.command != self.command
             {

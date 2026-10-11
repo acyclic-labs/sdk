@@ -15,6 +15,7 @@ fn observed_record() -> Vec<u8> {
         },
         diagnostic: None, publication_failure: None,
         invocation_failure: Some("original physical failure".into()),
+        published: Vec::new(),
         work: WorkCounters { object_bytes_read: u64::MAX, backend_read_operations: u64::MAX,
             ..WorkCounters::default() },
     }));
@@ -36,6 +37,23 @@ fn decoded_historical_work_is_data_not_current_query_work() {
     drop(decoded);
     drop(custody);
     assert_eq!(work.remaining().unwrap().peak_allocation_bytes, baseline);
+}
+
+#[test]
+fn original_observation_without_final_snapshot_data_keeps_an_empty_proof() {
+    let mut wire: serde_json::Value = crate::contract::json_from_slice(&observed_record()).unwrap();
+    wire.as_object_mut().unwrap().remove("published");
+    let bytes = crate::contract::canonical_json_bytes(&wire).unwrap();
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let mut custody = Some(work.retain_owned(0).unwrap());
+    let decoded = decode(&bytes, Some(&work), &mut custody, OperationId::from_bytes([4; 16])).unwrap();
+    let Receipt::Observed(observed) = &decoded else { panic!("actual original observed record") };
+    assert!(observed.published.is_empty());
+    assert_eq!(work.receipt().backend_read_operations, 0);
+    assert_eq!(work.receipt().authority_records_appended, 0);
+    drop(decoded);
+    drop(custody);
 }
 
 #[test]
@@ -145,6 +163,7 @@ fn effect_extraction_keeps_original_custody_and_retires_other_receipt_data() {
         task: crate::TaskId::from_bytes([4; 16]), command: OperationId::from_bytes([5; 16]),
         original_fence: fence, effect, observed: true, diagnostic: None,
         publication_failure: None, invocation_failure: Some(invocation_failure),
+        published: Vec::new(),
         work: WorkCounters::default(), _custody: Some(work.retain_owned(retained).unwrap()),
     };
     let allocations = work.receipt().allocation_operations;

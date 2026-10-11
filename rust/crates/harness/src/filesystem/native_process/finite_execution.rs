@@ -33,10 +33,10 @@ fn native_io(error: std::io::Error, original: Option<&NativeMaterializationWork>
     native_error(cause)
 }
 
-struct NativePublicationSlot {
+pub(super) struct NativePublicationSlot {
     slot: Box<std::mem::MaybeUninit<NativeViewPublicationError>>,
     failure_custody: Option<NativeAllocation>,
-    custody: NativeAllocation,
+    custody: Option<NativeAllocation>,
 }
 
 impl NativePublicationSlot {
@@ -44,20 +44,31 @@ impl NativePublicationSlot {
         let custody = work.claim(std::mem::size_of::<NativeViewPublicationError>() as u64)
             .map_err(native_error)?;
         let failure_custody = Some(work.retain_owned(0).map_err(native_error)?);
-        Ok(Self { slot: Box::new_uninit(), failure_custody, custody })
+        Ok(Self { slot: Box::new_uninit(), failure_custody, custody: Some(custody) })
     }
 
-    fn original_failure(&mut self, cause: Error) -> NativeViewPublicationError {
+    fn ordinary() -> Self {
+        // The existing ordinary policy is unbounded. Preallocate the same
+        // recursive failure slot before invoking even a custom publish factory.
+        Self { slot: Box::new_uninit(), failure_custody: None, custody: None }
+    }
+
+    pub(super) fn retain_failure_work(&mut self, work: &NativeMaterializationWork) -> Result<()> {
+        self.failure_custody = Some(work.retain_owned(0).map_err(native_error)?);
+        Ok(())
+    }
+
+    pub(super) fn original_failure(&mut self, cause: Error, work: WorkCounters) -> NativeViewPublicationError {
         NativeViewPublicationError {
-            cause, destination: None, completed: Vec::new(), diagnostic: None,
+            cause, accounting_failure: None, work, destination: None, completed: Vec::new(), published: Vec::new(), diagnostic: None,
             rendering_failure: None,
-            custody: self.failure_custody.take().expect("preadmitted original failure alias"),
+            custody: self.failure_custody.take(),
         }
     }
 
     fn retain(self, failure: NativeViewPublicationError) -> Error {
         Error::NativePublication { failure: Box::write(self.slot, failure),
-            custody: Some(self.custody) }
+            custody: self.custody }
     }
 }
 
@@ -233,7 +244,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 message
             } else { message.into() };
             return Ok(NativeExecution { status: EffectStatus::Indeterminate, diagnostic: None,
-                publication_failure: None, invocation_failure: Some(invocation_failure),
+                publication_failure: None, invocation_failure: Some(invocation_failure), published: Vec::new(),
                 work: original.map_or(spent, NativeMaterializationWork::receipt) });
         };
         let publish = captured.stop.is_none();
@@ -290,6 +301,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native result publisher returned another owner volume" });
         }
+        let mut published = Vec::new();
         if publish {
             if let Some(work) = original {
                 let admitted = async {
@@ -299,7 +311,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 }.await;
                 let publication = match admitted {
                     Ok(future) => match future.await.unwrap_or_else(|cause| Err(
-                        publication_slot.as_mut().expect("preadmitted failure slot").original_failure(cause))) {
+                        publication_slot.as_mut().expect("preadmitted failure slot").original_failure(cause, work.receipt()))) {
                         Ok(receipt) => {
                             let checked = async {
                                 if view.manifest() != &request.view {
@@ -309,32 +321,56 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                                 verify(owner, original)?.await
                             }.await;
                             match checked {
-                                Ok(()) => { drop(receipt); Ok(()) },
+                                Ok(()) => {
+                                    let mut publication_custody = receipt.custody;
+                                    let completed = receipt.completed;
+                                    let actual = receipt.published;
+                                    drop(completed);
+                                    custody.as_mut().expect("original execution custody")
+                                        .absorb(&mut publication_custody)
+                                        .expect("same original prepaid publication ledger");
+                                    published = actual;
+                                    Ok(())
+                                },
                                 Err(cause) => Err(NativeViewPublicationError {
-                                    cause, destination: None, completed: receipt.completed,
-                                    diagnostic: None, rendering_failure: None, custody: receipt.custody,
+                                    cause, accounting_failure: None, work: receipt.work,
+                                    destination: None, completed: receipt.completed, published: receipt.published,
+                                    diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
                                 }),
                             }
                         }
                         Err(failure) => Err(failure),
                     },
-                    Err(cause) => Err(publication_slot.as_mut().expect("preadmitted failure slot").original_failure(cause)),
+                    Err(cause) => Err(publication_slot.as_mut().expect("preadmitted failure slot").original_failure(cause, work.receipt())),
                 };
                 if let Err(mut failure) = publication {
                     failure.diagnostic = Some(result);
                     let mut result_custody = custody.take().expect("original result custody");
-                    failure.custody.absorb(&mut result_custody)
-                        .expect("same original admitted ledger");
+                    failure.custody.as_mut().expect("admitted original publication failure custody")
+                        .absorb(&mut result_custody).expect("same original admitted ledger");
                     return Err(publication_slot.take().expect("preadmitted failure slot").retain(failure));
                 }
             } else {
-                match publish_view(owner, view, &request.view).await {
-                    Ok(work) => merge_execution_work(&mut spent, work, frame_bytes)?,
+                publication_slot = Some(NativePublicationSlot::ordinary());
+                let slot = publication_slot.as_mut().expect("preallocated ordinary publication slot");
+                match publish_view(owner, view, &request.view, slot).await {
+                    Ok(receipt) => {
+                        if let Err(cause) = merge_execution_work(&mut spent, receipt.work, frame_bytes) {
+                            let failure = NativeViewPublicationError {
+                                cause, accounting_failure: None, work: receipt.work,
+                                destination: None, completed: receipt.completed, published: receipt.published,
+                                diagnostic: Some(result), rendering_failure: None, custody: Some(receipt.custody),
+                            };
+                            return Err(publication_slot.take().expect("preallocated ordinary publication slot").retain(failure));
+                        }
+                        custody = Some(receipt.custody);
+                        let completed = receipt.completed;
+                        published = receipt.published;
+                        drop(completed);
+                    }
                     Err(mut failure) => {
-                        merge_execution_work(&mut spent, failure.work, frame_bytes)?;
-                        failure.work = spent;
-                        return Ok(NativeExecution { status: EffectStatus::Indeterminate, diagnostic: Some(result),
-                            work: spent, publication_failure: Some(failure), invocation_failure: None });
+                        failure.diagnostic = Some(result);
+                        return Err(publication_slot.take().expect("preallocated ordinary publication slot").retain(failure));
                     }
                 }
             }
@@ -342,15 +378,16 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
         let work = original.map_or(spent, NativeMaterializationWork::receipt);
         Ok(if cleanup_completed {
             NativeExecution { status: EffectStatus::Succeeded { result }, diagnostic: None,
-                publication_failure: None, invocation_failure: None, work }
+                publication_failure: None, invocation_failure: None, published, work }
         } else {
             NativeExecution { status: EffectStatus::Indeterminate, diagnostic: Some(result),
-                publication_failure: None, invocation_failure: None, work }
+                publication_failure: None, invocation_failure: None, published, work }
         })
     }.await;
     match result {
         Ok(execution) => Ok((execution, custody)),
         Err(Error::NativeWork { cause, custody: None }) if original.is_some() => Err(Error::NativeWork { cause, custody }),
+        Err(error @ Error::NativePublication { .. }) => Err(error),
         Err(error) if original.is_some() => Err(error),
         Err(error) => Ok((invocation_failure(error, spent), None)),
     }
@@ -664,6 +701,29 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_preallocated_slot_keeps_typed_admission_denial_and_prefix() {
+        let work = work_with_allocations(1, 0);
+        let mut slot = NativePublicationSlot::ordinary();
+        let before = work.receipt();
+        let cause = work.claim(1).expect_err("no allocation allowance remains");
+        let failure = slot.original_failure(native_error(cause), work.receipt());
+        let Error::NativePublication { failure, custody: None } = slot.retain(failure) else {
+            panic!("ordinary admission keeps the preallocated error without invented custody");
+        };
+        assert!(matches!(&failure.cause, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None,
+        }));
+        assert_eq!(failure.work, before);
+        assert!(failure.custody.is_none());
+        assert!(failure.accounting_failure.is_none());
+        assert!(failure.destination.is_none());
+        assert!(failure.completed.is_empty());
+        assert!(failure.published.is_empty());
+        assert!(failure.rendering_failure.is_none());
+        assert_eq!(work.receipt(), before);
+    }
+
+    #[test]
     fn preadmitted_publication_failure_retains_both_guards_after_cancellation() {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
@@ -676,13 +736,14 @@ mod tests {
         let before = work.receipt();
         cancellation.cancel();
         let mut failure = slot.original_failure(
-            native_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
+            native_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout), before);
         failure.rendering_failure = Some(native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled));
         let error = slot.retain(failure);
         let Error::NativePublication { failure, custody: Some(box_custody) } = error else {
             panic!("the original preallocated publication slot must be retained");
         };
-        assert!(failure.custody.shares_ledger(&box_custody));
+        assert!(failure.custody.as_ref().expect("original failure custody").shares_ledger(&box_custody));
+        assert_eq!(failure.work, before);
         assert_eq!(box_custody.bytes(), std::mem::size_of::<NativeViewPublicationError>() as u64);
         assert_eq!(work.receipt(), before);
         drop(failure);
