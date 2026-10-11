@@ -905,12 +905,7 @@ fn tool_error(io: Option<&crate::executor::PreparationIo>, code: crate::wire::Er
 fn validate_tool_identity(invocation: &ToolInvocation, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        ToolInvocation::validate_call_id_with_native_work(&invocation.call_id, work)?;
-        work.charge(acyclic_fs::WorkCounters { items_examined: invocation.name.len() as u64, ..Default::default() })?;
-        if !crate::contract::is_valid_component_label(&invocation.name) {
-            return Err(tool_error(io, crate::wire::ErrorCode::Invalid, "tool name is invalid"));
-        }
-        return Ok(());
+        return invocation.validate_with_native_work(work);
     }
     invocation.validate()
 }

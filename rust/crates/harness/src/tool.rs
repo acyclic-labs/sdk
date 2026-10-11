@@ -353,46 +353,66 @@ impl ToolInvocation {
 
     /// Validates an event identity before it can enter the durable model journal.
     pub fn validate_identity(call_id: &str, name: &str) -> Result<()> {
-        validate_tool_name(name)?;
-        if call_id.is_empty()
-            || call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
-            || call_id.chars().any(char::is_control)
-            || call_id.contains('/')
-            || call_id.contains('\\')
-            || call_id == "."
-            || call_id == ".."
-        {
-            return Err(Error::Invalid("tool call identity is invalid".into()));
-        }
-        Ok(())
+        Self::validate_identity_with_io(call_id, Some(name), None)
     }
 
-    /// Validates the original model-owned identity without creating a tool name
-    /// or an ordinary formatted diagnostic.
+    /// Validates the same complete identity on its original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        Self::validate_identity_with_io(&self.call_id, Some(&self.name), Some(&io))
+    }
+
+    /// Validates the original model-owned identity without inventing a name.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn validate_call_id_with_native_work(
         call_id: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: call_id.len() as u64,
-            ..Default::default()
-        })?;
-        if call_id.is_empty()
-            || call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
-            || call_id.chars().any(char::is_control)
-            || call_id.contains('/')
-            || call_id.contains('\\')
-            || call_id == "."
-            || call_id == ".."
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "tool call identity is invalid",
-            });
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        Self::validate_identity_with_io(call_id, None, Some(&io))
+    }
+
+    fn validate_identity_with_io(
+        call_id: &str,
+        name: Option<&str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            let items = (call_id.len() as u64).checked_add(name.map_or(0, |name| name.len() as u64))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool identity scan overflow" })?;
+            work.charge(acyclic_fs::WorkCounters { items_examined: items, ..Default::default() })?;
+            if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool name is invalid" });
+            }
+            if !valid_call_id(call_id) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool call identity is invalid" });
+            }
+            return Ok(());
+        }
+        if let Some(name) = name { validate_tool_name(name)?; }
+        if !valid_call_id(call_id) {
+            return Err(Error::Invalid("tool call identity is invalid".into()));
         }
         Ok(())
     }
+}
+
+fn valid_call_id(call_id: &str) -> bool {
+    !(call_id.is_empty()
+        || call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
+        || call_id.chars().any(char::is_control)
+        || call_id.contains('/')
+        || call_id.contains('\\')
+        || call_id == "."
+        || call_id == "..")
 }
 
 fn validate_tool_name(name: &str) -> Result<()> {
