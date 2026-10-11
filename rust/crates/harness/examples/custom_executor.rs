@@ -25,7 +25,6 @@ impl Executor for CustomExecutor {
         Box::pin(async move {
             let mut text = String::new();
             let mut metadata = None;
-            // Custom stopping policy, the same admitted step used by the stock loop.
             for event in self.0.model_step(journal, &input, 0, &[]).await? {
                 match event {
                     ModelEvent::Content { delta } => text.push_str(&delta),

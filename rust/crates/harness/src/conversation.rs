@@ -1,7 +1,4 @@
 //! Canonical, payload-free conversation and file references.
-//!
-//! A reference identifies an immutable version of a file. A volume head may be
-//! edited, but edits create a new version and never change a recorded message.
 
 use crate::{
     AgentId, Error, OperationId, Result,
@@ -31,8 +28,7 @@ pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 #[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]
 const MAX_EXACT_JS_FLOAT: f64 = MAX_EXACT_JS_INTEGER as f64;
 
-/// Whether a JavaScript Number round-trips this value exactly: finite, not
-/// negative zero, and not an integral value beyond the safe-integer range.
+/// Whether a JavaScript Number round-trips this value exactly: finite, not negative zero, and not an integral value beyond the safe-integer range.
 pub(crate) fn is_exact_js_number(value: f64) -> bool {
     value.is_finite()
         && !(value == 0.0 && value.is_sign_negative())
@@ -72,8 +68,7 @@ pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 /// Default conversation read batch, replaceable by the caller.
 pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
-/// Admission and rendering bounds. Each value may narrow the protocol ceiling;
-/// provider adapters may impose a still lower physical limit.
+/// Admission and rendering bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
@@ -99,8 +94,6 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: MAX_LIMIT_FILE_BYTES,
-            // Defaults must also fit the 32-bit WASM runtime. Native callers
-            // can explicitly select the wider platform-representable counts.
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
             render_bytes: MAX_LIMIT_RENDER_BYTES,
@@ -285,8 +278,7 @@ impl VolumeRef {
             .ok_or_else(|| Error::Invalid("volume identity ownership overflow".into()))
     }
 
-    /// Copies only this closed identity's audited String fields. Borrowed
-    /// source capacity is an admission ceiling, not bytes actually copied.
+    /// Copies only this closed identity's audited String fields.
     #[cfg(feature = "filesystem")]
     pub(crate) fn clone_with_io(
         &self, io: &crate::filesystem::PreparationIo,
@@ -335,9 +327,6 @@ impl VolumeRef {
     }
 
     /// Copies a volume identity under the original native work ledger.
-    ///
-    /// The returned custody covers owned identity text, not authority or grants.
-    /// Keep it alive until after the returned identity is physically dropped.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         provider: &ProviderRef,
@@ -549,7 +538,6 @@ impl VolumeRef {
     }
 
     /// Owner-issued read capability for a directory and its descendants.
-    /// Empty prefix names the whole volume. It never implies a write.
     pub fn directory_read_capability(&self, prefix: &str) -> Result<String> {
         if !prefix.is_empty() {
             validate_content_path(prefix)?;
@@ -566,8 +554,7 @@ impl VolumeRef {
         ))
     }
 
-    /// Produces the original directory read capability identity on the caller's
-    /// native ledger. The name is not an authenticated grant or write authority.
+    /// Produces the original directory read capability identity on the caller's native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn directory_read_capability_with_native_work(
         &self, prefix: &str, work: &acyclic_fs::NativeMaterializationWork,
@@ -585,9 +572,6 @@ impl VolumeRef {
     }
 
     /// Collision-resistant physical namespace key for Filesystem adapters.
-    ///
-    /// Including the owner prevents equal private paths and logical IDs from
-    /// resolving to another agent's workspace.
     pub fn storage_name(&self) -> Result<String> {
         Ok(format!(
             "harness-{}",
@@ -596,7 +580,6 @@ impl VolumeRef {
     }
 
     /// Produces the same physical namespace on the original native ledger.
-    /// The returned name grants no resource access.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn storage_name_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -625,8 +608,6 @@ impl VolumeOperation {
 }
 
 /// Verified, exact-volume authority for a single storage operation.
-///
-/// The private fields prevent callers from using an unverified scope as a grant.
 #[derive(Clone, Debug)]
 pub struct ContentGrant {
     volume: VolumeRef,
@@ -636,8 +617,7 @@ pub struct ContentGrant {
 }
 
 impl ContentGrant {
-    /// Consumes only the kernel's sealed operation proof, never serialized
-    /// project-source metadata or an opaque attestation used as a read scope.
+    /// Consumes only the kernel's sealed operation proof, never serialized project-source metadata or an opaque attestation used as a read scope.
     pub(crate) fn from_verified_project_source(
         proof: &crate::source_authorization::VerifiedProjectSourceRead<'_>,
     ) -> Self {
@@ -662,9 +642,7 @@ impl ContentGrant {
         })
     }
 
-    /// Resolves a pinned read from an authenticated whole-volume, exact-file,
-    /// or segment-bounded private-directory grant. A reference itself carries
-    /// no authority; the owning provider verifies this scope before reading.
+    /// Resolves a pinned read from an authenticated whole-volume, exact-file, or segment-bounded private-directory grant.
     pub fn verify_read(
         verifier: &AuthorityVerifier,
         scope: &Scope,
@@ -740,8 +718,6 @@ impl ContentGrant {
         let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
         let hash = blake3::Hash::from_bytes(digest).to_hex();
         let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
-        // The capability is a fixed-size ASCII label, not an unobserved format!
-        // allocation before the original observer gets to admit its ownership.
         let mut label = [0_u8; 77];
         let length = prefix.len() + hash.len();
         label[..prefix.len()].copy_from_slice(prefix.as_bytes());
@@ -768,8 +744,7 @@ impl ContentGrant {
         })
     }
 
-    /// The same whole-volume grant, with its sole owned identity copy funded
-    /// by the original preparation ledger before construction.
+    /// The same whole-volume grant, with its sole owned identity copy funded by the original preparation ledger before construction.
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify_with_io(
         verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
@@ -809,8 +784,7 @@ impl ContentGrant {
             .ok_or_else(|| Error::Invalid("grant prefix ownership overflow".into()))
     }
 
-    /// Checks the original signed whole-volume authority without cloning a
-    /// grant or minting any new proof. The caller retains its original scope.
+    /// Checks the original signed whole-volume authority without cloning a grant or minting any new proof.
     #[cfg(feature = "filesystem")]
     pub fn verify_original_volume_measured(
         verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
@@ -855,10 +829,7 @@ impl ContentGrant {
         Ok(())
     }
 
-
-    /// Verifies a signed private-directory or whole-volume read grant. A
-    /// whole-volume reader may discover subdirectories lazily; a delegated
-    /// directory reader remains segment-bounded. Neither grants writes.
+    /// Verifies a signed private-directory or whole-volume read grant.
     pub fn verify_directory_read(
         verifier: &AuthorityVerifier,
         scope: &Scope,
@@ -921,8 +892,7 @@ impl ContentGrant {
         Ok((grant, custody))
     }
 
-    /// Authorizes only one pinned file version, including across an owner
-    /// boundary. The owner must explicitly issue this exact capability.
+    /// Authorizes only one pinned file version, including across an owner boundary.
     pub fn verify_file_read(
         verifier: &AuthorityVerifier,
         scope: &Scope,
@@ -1208,7 +1178,6 @@ impl FileDescriptor {
         Ok(())
     }
 
-
     /// Checks metadata without fetching bytes.
     pub fn validate(&self) -> Result<()> {
         self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
@@ -1220,7 +1189,6 @@ impl FileDescriptor {
         self.validation_reason().map_or(Ok(()),
             |reason| Err(conversation_boundary(work, reason)))
     }
-
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
@@ -1324,7 +1292,6 @@ impl<'de> Deserialize<'de> for FileRef {
 impl FileRef {
 
     /// Copies the audited identity graph directly, without a serialization clone.
-    /// The returned metadata is deep-only; its enclosing DTO owns its root slot.
     #[cfg(feature = "filesystem")]
     pub(crate) fn clone_with_io(
         &self, io: &crate::filesystem::PreparationIo,
@@ -1333,7 +1300,6 @@ impl FileRef {
         let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         self.clone_with_work(&mut work)
     }
-
 
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
@@ -1368,8 +1334,7 @@ impl FileRef {
         Ok(file)
     }
 
-    /// Creates the same reference from borrowed metadata, using the canonical
-    /// guarded field-copy engine when a finite observer is present.
+    /// Creates the same reference from borrowed metadata, using the canonical guarded field-copy engine when a finite observer is present.
     #[cfg(feature = "filesystem")]
     pub(crate) fn new_with_io(
         volume: &VolumeRef, path: &str, version: &str, descriptor: &FileDescriptor,
@@ -1422,9 +1387,7 @@ impl FileRef {
         self.descriptor.validate_with_work(work)
     }
 
-
     /// Checks the same immutable metadata using the caller's original ledger.
-    /// Validation does not grant authority to read the referenced bytes.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -1482,8 +1445,7 @@ impl FileRef {
 /// Primary message content uses exactly the same file contract as attachments.
 pub type ContentRef = FileRef;
 
-/// Durable terminal task outcome. Successful bodies stay in owner-controlled
-/// files; transport and scheduler records carry only the pinned reference.
+/// Durable terminal task outcome.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
@@ -1524,9 +1486,6 @@ impl TaskOutcomeRecord {
 }
 
 /// Admission barrier for every version-pinned file in a conversation message.
-///
-/// Implementations must verify exact byte residency and access before Stream
-/// publishes references. The provider retains admitted versions independently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -1569,8 +1528,7 @@ pub struct PrivateDirectoryPage {
 pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
-    /// Rejects malformed, duplicate, or out-of-order names independently of
-    /// the concrete Filesystem page implementation.
+    /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
         self.generation.validate()?;
         if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
@@ -1597,8 +1555,6 @@ impl PrivateDirectoryPage {
 /// Provider boundary that authenticates and reads immutable content refs.
 pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     /// Reads an authenticated bounded prefix without fetching the remaining body.
-    /// The supplied generation pins subsequent ordinary path reads. Providers
-    /// must authenticate the range and return at most the supplied byte bound.
     fn read_private_prefix<'a>(
         &'a self,
         _volume: &'a VolumeRef,
@@ -1626,8 +1582,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Capability availability only, never an authorization decision. Allows
-    /// a multi-operation finite publisher to reject missing readers before IO.
+    /// Capability availability only, never an authorization decision.
     #[cfg(feature = "filesystem")]
     fn supports_measured_read(
         &self, _volume: &VolumeRef, _budget: acyclic_fs::WorkBudget,
@@ -1689,8 +1644,6 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Resolves the complete canonical pinned manifest on the original ledger.
-    /// Custom readers without that capability reject before constructing a
-    /// future or invoking their ordinary provider implementation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn load_manifest_with_native_work<'a>(
         &'a self, reference: &'a FileRef, item_count: u32,
@@ -1785,8 +1738,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Resolves the canonical list and verifies every member with the same
-    /// effective policy, using only genuine finite provider capabilities.
+    /// Resolves the canonical list and verifies every member with the same effective policy, using only genuine finite provider capabilities.
     #[cfg(feature = "filesystem")]
     fn verify_manifest_measured<'a>(
         &'a self, reference: &'a FileRef, item_count: u32, limits: &'a Limits,
@@ -1818,8 +1770,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Lazily discovers an owner-private directory under an authenticated
-    /// subtree boundary; the generation must remain stable across pages.
+    /// Lazily discovers an owner-private directory under an authenticated subtree boundary; the generation must remain stable across pages.
     fn list_private_directory<'a>(
         &'a self,
         _volume: &'a VolumeRef,
@@ -1852,7 +1803,6 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Resolves the same private namespace on the original native ledger.
-    /// Unsupported custom readers reject before creating a future or doing IO.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn read_private_path_with_native_work<'a>(
         &'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str, _path: &'a str,
@@ -1892,9 +1842,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Owner-bound publication. Implementations retain the staged immutable version
-/// before returning its ref and authenticate the original writer internally.
-/// The runtime checks the returned ref and digest again before using it.
+/// Owner-bound publication.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Exact writable volume represented by this bound provider handle.
     fn volume(&self) -> &VolumeRef;
@@ -1909,7 +1857,6 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         display_name: &'a str,
     ) -> BoxFuture<'a, Result<FileRef>>;
     /// Publishes one complete file contract per operation, including its path.
-    /// Unsupported publishers reject without invoking ordinary staging.
     fn stage_once<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -1925,8 +1872,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Observes only this writer's original once-publication. Knowing its
-    /// reference grants no read authority; failed lookups never mean absence.
+    /// Observes only this writer's original once-publication.
     fn observe_staged_once<'a>(
         &'a self, _operation_id: OperationId, _maximum_bytes: u64,
     ) -> BoxFuture<'a, Result<Option<FileRef>>> {
@@ -1945,8 +1891,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite once-publication is unavailable".into()))) })
     }
 
-    /// Rejects unavailable original-ledger publication before a caller starts
-    /// process capture or another external side effect. It grants no authority.
+    /// Rejects unavailable original-ledger publication before a caller starts process capture or another external side effect.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_stage(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
@@ -1986,7 +1931,6 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads only the original copy selected by an authenticated committed receive.
-    /// It grants no general read observation of arbitrary publication operations.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn observe_received_copy_with_native_work<'a>(
         &'a self, _proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
@@ -2007,7 +1951,6 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     }
 
     /// Publishes replacement bytes only at the immutable source generation.
-    /// Unsupported publishers must reject rather than fall back to `stage`.
     fn stage_at<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -2022,12 +1965,9 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Resolves an owner-mediated reader when a volume has not been explicitly
-/// bound. Implementations authenticate the caller's current read grant at
-/// resolution time; knowing a volume or file ref is not authorization.
+/// Resolves an owner-mediated reader when a volume has not been explicitly bound.
 pub trait ContentMountResolver: acyclic_stream::ProviderPlatform {
-    /// Lazily opens the owner for one exact ref and returns its independently
-    /// verified caller grant. Each call must reauthenticate the current scope.
+    /// Lazily opens the owner for one exact ref and returns its independently verified caller grant.
     fn mount<'a>(&'a self, reference: &'a FileRef) -> ContentFuture<'a, Result<ContentMount>>;
 
     /// Lazily opens an unseen owner's directory without requiring a `FileRef`.
@@ -2045,9 +1985,7 @@ pub trait ContentMountResolver: acyclic_stream::ProviderPlatform {
     }
 }
 
-/// Routes admission reads by exact owner volume, including several agents on
-/// one provider and members stored separately from their manifests. An
-/// optional mount resolves previously unseen volumes lazily under fresh grants.
+/// Routes admission reads by exact owner volume, including several agents on one provider and members stored separately from their manifests.
 pub struct CompositeContentVerifier {
     volumes: BTreeMap<String, Arc<dyn ContentResidencyVerifier>>,
     mount: Option<Arc<dyn ContentMountResolver>>,
@@ -2357,8 +2295,6 @@ impl Attachment {
 }
 
 /// Encodes a validated, ordered attachment list in its single durable wire form.
-/// Unlike generic canonical JSON, this preserves the typed serde field order
-/// required by manifest admission across Rust and WASM producers.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
     if items.len() as u64 > MAX_LIMIT_ATTACHMENTS as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
@@ -2369,8 +2305,7 @@ pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
     serde_json::to_vec(items).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-/// Decodes one complete canonical manifest; providers may only publish the
-/// ordered list after its pinned bytes and every member ref are validated.
+/// Decodes one complete canonical manifest; providers may only publish the ordered list after its pinned bytes and every member ref are validated.
 pub fn decode_attachment_manifest(
     reference: &FileRef,
     bytes: &[u8],
@@ -2385,8 +2320,7 @@ pub fn decode_attachment_manifest(
     Ok(items)
 }
 
-/// Parses a complete pinned manifest when the item count is supplied by the
-/// bytes themselves, as at a cross-provider fork admission boundary.
+/// Parses a complete pinned manifest when the item count is supplied by the bytes themselves, as at a cross-provider fork admission boundary.
 pub fn decode_complete_attachment_manifest(
     reference: &FileRef,
     bytes: &[u8],
@@ -2484,9 +2418,6 @@ pub(crate) fn decode_manifest_bounded(
                     let bytes = guard::<_, S::Error>(capacity.checked_mul(std::mem::size_of::<Attachment>())
                         .map(|bytes| bytes as u64)
                         .ok_or_else(|| self.io.invalid("manifest vector capacity overflow")), self.failure)?;
-                    // The audited pre-Serde reservation already covers these
-                    // known slots. Charge the actual SDK grow, not twice-owned
-                    // buffers or inferred opaque Serde allocator operations.
                     guard::<_, S::Error>(self.io.allocation_attempt(bytes), self.failure)?;
                     items.reserve_exact(capacity - items.len());
                 }
@@ -2504,8 +2435,6 @@ pub(crate) fn decode_manifest_bounded(
         Ok(decoded) => decoded,
         Err(transport) => {
             if let Some(primary) = failure.take() {
-                // Retire the foreign static Serde marker and its real paid
-                // diagnostic custody before returning the original gate cause.
                 drop(transport);
                 return Err(primary);
             }
@@ -2527,20 +2456,17 @@ pub(crate) fn decode_manifest_bounded(
     Ok(decoded.into_retained())
 }
 
-/// The core admission boundary checks actual owner-resolved bytes, rather
-/// than trusting a provider's metadata-only residency assertion.
+/// The core admission boundary checks actual owner-resolved bytes, rather than trusting a provider's metadata-only residency assertion.
 pub async fn verified_content_bytes(
     verifier: &dyn ContentResidencyVerifier,
     reference: &FileRef,
-) -> Result<Vec<u8>> {
+) -> Result<acyclic_stream::OwnedBytes> {
     let bytes = verifier.read(reference).await?;
     reference.descriptor().verify(&bytes)?;
     Ok(bytes)
 }
 
-/// Resolves one pinned manifest and all of its members through their owning
-/// providers. The manifest's canonical bytes, not a provider-supplied list,
-/// determine the attachment identities admitted to history.
+/// Resolves one pinned manifest and all of its members through their owning providers.
 pub async fn verified_attachment_manifest(
     verifier: &dyn ContentResidencyVerifier,
     reference: &FileRef,
@@ -2829,7 +2755,6 @@ impl NativeReferenceClone {
         self.file(&message.content)?;
         match &message.attachments {
             ReferencedAttachments::Inline { items } => {
-                // Vec<Attachment> clones its elements fieldwise, not by memcpy.
                 if !items.is_empty() { self.allocation()?; }
                 for attachment in items {
                     self.file(&attachment.file)?;
@@ -2839,7 +2764,6 @@ impl NativeReferenceClone {
             ReferencedAttachments::Manifest { manifest, .. } => self.file(manifest)?,
         }
         if let Some(call) = &message.tool_call_id { self.text(call)?; }
-        // Opaque BTree allocator metadata is not a claimed source observation.
         for (key, file) in &message.extensions {
             self.text(key)?;
             self.file(file)?;
@@ -2867,7 +2791,6 @@ pub(crate) fn clone_native_reference_text_into(
     work.admit(acyclic_fs::WorkCounters {
         bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
     }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    // The backing guard precedes the physical String on every failure path.
     let mut component = work.retain_owned(source.len() as u64)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let mut text = String::new();
@@ -3071,7 +2994,6 @@ impl ConversationMessage {
     }
 }
 
-
 /// Projection of one agent-owned conversation.
 #[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ConversationStateWire")]
@@ -3094,13 +3016,11 @@ pub struct ConversationState {
     model_positions: Vec<usize>,
     #[serde(skip)]
     history_digest: [u8; 32],
-    // LAST: resident buffers and source indexes physically drop before custody.
     #[serde(skip)]
     native_custody: NativeConversationCustody,
 }
 
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
-/// The checkpoint pin is a projection boundary, never replacement history.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ArchivedConversationPrefix {
@@ -3108,7 +3028,6 @@ struct ArchivedConversationPrefix {
     history_digest: [u8; 32],
     checkpoint: FileRef,
 }
-
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3131,7 +3050,6 @@ struct NativeConversationCustody {
     archive: Option<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     indexes: BTreeMap<(bool, Uuid), NativeConversationIndex>,
-    // A failed cold transfer retains every not-yet-assigned source claim here.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     cache_carrier: Option<acyclic_fs::NativeAllocation>,
 }
@@ -3173,8 +3091,6 @@ impl Eq for NativeConversationCustody {}
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl Drop for NativeConversationCustody {
     fn drop(&mut self) {
-        // Source containers have already dropped. Extract the bookkeeping
-        // entries before releasing the claims protecting their nodes.
         while let Some((_, index)) = self.indexes.pop_first() { drop(index); }
     }
 }
@@ -3271,7 +3187,6 @@ fn native_file_from_owned_value(
     value: serde_json::Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<FileRef> {
-    // The producer's incoming Value guard remains LAST over all moved Strings.
     let mut file = native_owned_wire_object(value,
         Some(&["volume", "path", "version", "descriptor", "display_name"]), work)?;
     let mut volume = native_owned_wire_object(native_owned_wire_field(&mut file, "volume", work)?,
@@ -3280,7 +3195,6 @@ fn native_file_from_owned_value(
         native_owned_wire_field(&mut volume, "provider", work)?, work)?;
     let id = native_owned_wire_text(native_owned_wire_field(&mut volume, "id", work)?, work)?;
     let class = native_owned_volume_class(native_owned_wire_field(&mut volume, "class", work)?, work)?;
-    // VolumeOwner's original adjacent-tag visitor ignores extra object fields.
     let mut owner = native_owned_wire_object(native_owned_wire_field(&mut volume, "owner", work)?,
         None, work)?;
     let kind = native_owned_wire_text(native_owned_wire_field(&mut owner, "kind", work)?, work)?;
@@ -3368,8 +3282,6 @@ fn reserve_native_conversation_buffer<T>(
     io.admit_allocation(bytes)?;
     io.retain_owned(bytes)?;
     let incoming = io.take_native_custody(bytes)?;
-    // Install the new owner before the allocator may replace the old backing.
-    // Each replacement is independently paid, even across query ledgers.
     let retired = owner.replace(incoming);
     if let Err(cause) = values.try_reserve_exact(target - values.len()) {
         let rejected = std::mem::replace(owner, retired);
@@ -3380,7 +3292,6 @@ fn reserve_native_conversation_buffer<T>(
     let result = owner.as_mut().expect("installed conversation buffer custody")
         .reconcile_capacity(actual)
         .map_err(|cause| Error::NativeWork { cause, custody: None });
-    // try_reserve_exact has already deallocated the old physical buffer.
     drop(retired);
     result
 }
@@ -3439,7 +3350,6 @@ impl NativeConversationCustody {
         Ok(())
     }
 
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn has_native(&self) -> bool {
         self.messages.is_some() || self.digests.is_some() || self.positions.is_some()
@@ -3453,8 +3363,6 @@ impl NativeConversationCustody {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
             if self.indexes.contains_key(&(outcome, id)) { return Ok(0); }
-            // The source witness is the logical (Uuid, usize) slot, not opaque
-            // BTree allocator nodes. The private guard index funds its own node.
             let metadata = NativeConversationIndex::metadata_bytes();
             let bytes = std::mem::size_of::<(Uuid, usize)>() as u64 + metadata;
             io.admit_allocation(bytes)?;
@@ -3510,8 +3418,6 @@ impl ConversationState {
             archived_prefix: wire.archived_prefix,
             ..Self::default()
         };
-        // The decoder's original payload guard already owns messages' backing;
-        // Snapshot transfers that shell separately without a second claim.
         let retained = state.native_custody.reserve(
             ConversationBuffer::Digests, &mut state.prefix_digests,
             state.messages.len(), cache.work())?;
@@ -3568,7 +3474,6 @@ pub struct ModelContextSelection {
     /// Ordered, unique message identities; omitted history is deliberate.
     pub message_ids: Vec<Uuid>,
     /// Immutable canonical checkpoint covering history before this selection's delta.
-    /// Its typed payload and publication must be resolved by the owning journal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<FileRef>,
 }
@@ -3678,8 +3583,6 @@ impl ConversationState {
         &mut self, allocation: acyclic_fs::NativeAllocation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        // Original data custody is installed LAST before any metadata denial.
-        // It is only split, never resized, rebound or absorbed by another ledger.
         if self.native_custody.cache_carrier.is_none() {
             self.native_custody.cache_carrier = Some(allocation);
         } else {
@@ -3821,7 +3724,6 @@ impl ConversationState {
     }
 
     /// Logical payload cloned from caches omitted by the wire projection.
-    /// Opaque BTreeMap allocator nodes are deliberately outside this witness.
     pub(crate) fn clone_cache_logical_bytes(&self) -> Result<u64> {
         let digests = self.prefix_digests.len().checked_mul(std::mem::size_of::<[u8; 32]>());
         let positions = self.model_positions.len().checked_mul(std::mem::size_of::<usize>());
@@ -3854,7 +3756,6 @@ impl ConversationState {
     }
 
     /// Logical history head, independent of the number of resident records.
-    /// A sparse read-only selection may end before its separately pinned source cut.
     #[must_use]
     pub fn logical_revision(&self) -> u64 {
         self.messages
@@ -3863,7 +3764,6 @@ impl ConversationState {
     }
 
     /// Canonical records through this cut are archived, not resident.
-    /// Use the authoritative history reader for requests beginning before it.
     #[must_use]
     pub fn resident_after_sequence(&self) -> u64 {
         self.archived_through()
@@ -3876,8 +3776,6 @@ impl ConversationState {
     }
 
     /// Fingerprints an exact loaded logical prefix without revisiting older records.
-    /// An archived cut is authenticated by the containing issuer snapshot; older
-    /// cuts require an explicit read from the canonical history reader.
     pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
         self.history_prefix_digest_with_work(through_sequence, &mut None)
     }
@@ -3918,8 +3816,7 @@ impl ConversationState {
         })
     }
 
-    /// Builds the snapshot suffix only after a committed checkpoint and closed
-    /// user/tool exchange. The canonical Stream and identity indexes are untouched.
+    /// Builds the snapshot suffix only after a committed checkpoint and closed user/tool exchange.
     pub(crate) fn checkpointed_suffix_with_work(
         &self, selection: &ModelContextSelection,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -4062,18 +3959,10 @@ impl ConversationState {
         Ok(previous)
     }
 
-    /// Rebuilds only a bounded, already attested selection for byte projection.
-    /// This unbound sparse view cannot authorize append or stand in for history.
-    pub(crate) fn selected_view(messages: Vec<ConversationMessage>) -> Result<Self> {
-        Self::selected_view_with_work(messages, &mut None).map(|(state, _)| state)
-    }
-
     pub(crate) fn selected_view_with_work(
         messages: Vec<ConversationMessage>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
-        // A query-scoped producer already owns the message payload and shell.
-        // This same sparse rebuild owns its native caches intrinsically.
         Self::from_wire_with_work(ConversationStateWire {
             agent: None, messages, archived_prefix: None,
         }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
@@ -4157,8 +4046,7 @@ impl ConversationState {
         &self.messages
     }
 
-    /// Reads a bounded archive page at a caller-pinned logical tail. Later appends
-    /// are excluded; continue with the last returned sequence, preserving `through`.
+    /// Reads a bounded archive page at a caller-pinned logical tail.
     pub fn page(&self, after: u64, through: u64, maximum: usize) -> Result<&[ConversationMessage]> {
         let tail = self.logical_revision();
         if maximum == 0 || after < self.archived_through() || after > through || through > tail {
@@ -4208,7 +4096,6 @@ impl ConversationState {
     }
 
     /// Returns one exact model-visible delta using the existing position index.
-    /// Oversized deltas reject before iteration; no older history is silently dropped.
     #[expect(
         clippy::indexing_slicing,
         reason = "the position index is maintained by append/decode; partition bounds its slice"
@@ -4281,8 +4168,6 @@ impl ConversationState {
                 Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "conversation source index count overflows" })?;
             if self.native_custody.indexes.len() != count {
-                // Ordinary input promotion inventories its live keys once.
-                // Native append checks counts only, never revisits old history.
                 let mut native: Option<&mut dyn crate::store::history::HistoryIo> = Some(io);
                 for id in self.by_id.keys() {
                     self.native_custody.retain_index(false, *id, &mut native)?;
@@ -4342,8 +4227,6 @@ impl ConversationState {
             }
             return Err(error);
         }
-        // Foreign-owned refs may be carried globally. Their bytes are gated by
-        // the provider's owner-mediated read grant at event admission/resolution.
         self.by_id.insert(message.id, self.messages.len());
         if message.kind == MessageKind::User {
             self.pending_user = Some(message.id);
@@ -4356,8 +4239,7 @@ impl ConversationState {
         Ok(())
     }
 
-    /// Admits the next append through rebuildable identity indexes without
-    /// copying or scanning the complete history.
+    /// Admits the next append through rebuildable identity indexes without copying or scanning the complete history.
     pub(crate) fn validate_append(&self, message: &ConversationMessage) -> Result<()> {
         self.validate_append_with_work(message, &mut None)
     }
@@ -4401,8 +4283,6 @@ impl ConversationState {
         {
             return Err(conversation_boundary(work, "tool result has no preceding call"));
         }
-        // Foreign-owned refs may be carried globally. Their bytes are gated by
-        // the provider's owner-mediated read grant at event admission/resolution.
 
         Ok(())
     }
@@ -4480,7 +4360,6 @@ fn validate_label_native(value: &str, limit: usize) -> Result<()> {
 }
 
 /// Checks a normalized volume-relative content path at every provider boundary.
-/// Backslashes, traversal segments, control characters, and oversized paths are rejected.
 pub fn validate_content_path(path: &str) -> Result<()> {
     if !content_path_is_valid(path) {
         return Err(Error::Invalid("volume-relative path is invalid".into()));
@@ -4725,7 +4604,6 @@ mod tests {
         let new = NativeMaterializationWork::new(allowance, &new_token)
             .expect("independent requested backing ledger");
         let mut io = crate::store::history::native_work_io(&new).expect("actual growth observer");
-        // Rust's real Vec capacity check rejects a backing larger than isize::MAX.
         let target = isize::MAX as usize / std::mem::size_of::<[u8; 32]>() + 1;
         assert!(matches!(reserve_native_conversation_buffer(&mut values, &mut owner, target, &mut io),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::AllocationFailed(_),
@@ -5126,8 +5004,6 @@ mod tests {
         assert_eq!(state.messages.len(), 4);
         assert_eq!(capacities, (state.messages.capacity(), state.prefix_digests.capacity(),
             state.model_positions.capacity()));
-        // Pay the exact original hash first; the next allocation is the original
-        // messages Vec growth, not a substitute encoder or synthetic charge.
         let probe = NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
         let mut probe_io = crate::store::history::native_work_io(&probe).expect("original hash observer");
         advance_history_digest_with_work(head, &native_message(&content, 5),
@@ -5400,13 +5276,13 @@ mod tests {
         let before = reopened.history_prefix_digest(10_001)?;
         assert!(reopened.append(next).is_err());
         assert_eq!(reopened.history_prefix_digest(10_001)?, before);
-        let sparse = ConversationState::selected_view(vec![
+        let sparse = ConversationState::selected_view_with_work(vec![
             reopened
                 .messages()
                 .last()
                 .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
                 .clone(),
-        ])?;
+        ], &mut None).map(|(state, _)| state)?;
         assert!(sparse.history_prefix_digest(1).is_err());
         assert!(state.history_prefix_digest(10_001).is_err());
         Ok(())
@@ -5454,7 +5330,6 @@ mod tests {
             let user = append(&mut state, &content, MessageKind::User, None, false)?;
             assert_eq!(state.unresolved_user(), Some(user));
             if let Some(previous) = previous {
-                // A delayed older response must not settle the current user.
                 append(
                     &mut state,
                     &content,
@@ -5983,7 +5858,6 @@ mod tests {
                 _reference: &'a FileRef,
                 _item_count: u32,
             ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-                // A provider's parsed list must not replace the pinned bytes.
                 Box::pin(async { Ok(Vec::new()) })
             }
         }

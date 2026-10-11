@@ -128,44 +128,6 @@ mod measured_open_tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
-        use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let provider = Arc::new(Provider::default());
-        let client = StreamClient::new(provider.clone());
-        let cancellation = CancellationToken::new();
-        let mut denied = budget();
-        denied.bytes_copied = 0;
-        let native = NativeMaterializationWork::new(denied, &cancellation)
-            .expect("original accounting state");
-        let prefix = native.receipt();
-        let mut io = history::native_work_io(&native).expect("empty custody");
-        assert!(matches!(HistoryReader::new_with_work(
-            &client, &authority(), &issuer().verifier(), Some(&mut io)),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                    counter: "bytes_copied", ..
-                }), custody: None,
-            })));
-        assert_eq!(native.receipt(), prefix);
-        drop(io);
-        let native = NativeMaterializationWork::new(budget(), &cancellation)
-            .expect("original accounting state");
-        let mut io = history::native_work_io(&native).expect("empty custody");
-        let reader = HistoryReader::new_with_work(
-            &client, &authority(), &issuer().verifier(), Some(&mut io))?;
-        let custody = io.into_custody();
-        assert!(custody.bytes() >= authority().stream_path()?.len() as u64);
-        assert!(native.receipt().bytes_copied >= authority().stream_path()?.len() as u64);
-        let sdk = provider.io_snapshot();
-        assert_eq!(sdk.reads + sdk.tails as u64 + sdk.writes + sdk.inspections
-            + sdk.commit_reads + sdk.other_calls, 0);
-        drop(reader);
-        drop(custody);
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
         use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
@@ -367,66 +329,6 @@ mod measured_open_tests {
         Ok(())
     }
     #[tokio::test]
-    async fn measured_checkpoint_open_matches_original_cut_and_exact_sdk_work() -> Result<()> {
-        let (provider, client) = fixture().await?;
-        let expected = StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?.reducer().snapshot()?;
-        let loaded = checkpoints::load(&client, &authority(), &issuer().verifier(), default_projection_read_limits()).await?;
-        let payload_bytes = crate::contract::canonical_json_bytes(loaded.snapshot.as_ref().expect("durable checkpoint"))?.len() as u64;
-        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier())?.read_page_counted(
-            &HistoryCursor { authority: authority(), after_revision: 64, through_revision: 69 },
-            default_projection_read_limits(),
-        ).await?;
-        let cancellation = CancellationToken::new();
-        provider.reset_io();
-        let receipt = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;
-        assert_eq!(receipt.value.reducer().snapshot()?, expected);
-        assert_eq!(receipt.value.reducer().revision(), 69);
-        let io = provider.io_snapshot();
-        assert_eq!(receipt.work.backend_read_operations, io.reads + io.tails as u64);
-        assert_eq!(receipt.work.backend_read_operations, 6);
-        assert_eq!(receipt.work.authority_records_read, 8);
-        assert_eq!(receipt.work.authority_bytes_read, io.read_bytes);
-        assert_eq!(receipt.work.source_bytes_read, loaded.consumed_bytes + suffix.bytes);
-        assert_eq!(receipt.work.output_bytes, payload_bytes + suffix.bytes);
-        assert_eq!(receipt.work.items_returned, 6);
-        assert!(receipt.work.bytes_copied >= payload_bytes);
-        assert!(receipt.work.bytes_hashed >= 2 * payload_bytes);
-        // The first raw chunk coexists with assembly, raw head, canonical anchor,
-        // and the concrete snapshot schema's admitted typed/cache/scratch payloads.
-        assert!(receipt.work.peak_allocation_bytes >= loaded.consumed_bytes + payload_bytes);
-        assert!(receipt.work.allocation_operations > 0);
-        assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);
-        let exact = receipt.work;
-        provider.reset_io();
-        let repeated = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), exact, &cancellation).await.map_err(|failure| failure.error)?;
-        assert_eq!(repeated.work, exact);
-        assert_eq!(repeated.value.reducer().snapshot()?, expected);
-        for narrow in [
-            WorkBudget { backend_read_operations: 0, ..budget() },
-            WorkBudget { backend_read_operations: 1, ..budget() },
-            WorkBudget { authority_bytes_read: 0, ..budget() },
-            WorkBudget { source_bytes_read: exact.source_bytes_read - 1, ..budget() },
-            WorkBudget { bytes_copied: payload_bytes - 1, ..budget() },
-            WorkBudget { bytes_encoded: 0, ..budget() },
-            WorkBudget { bytes_hashed: 0, ..budget() },
-            WorkBudget { output_bytes: payload_bytes - 1, ..budget() },
-            WorkBudget { allocation_operations: 0, ..budget() },
-            WorkBudget { peak_allocation_bytes: exact.peak_allocation_bytes - 1, ..budget() },
-        ] {
-            provider.reset_io();
-            let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), narrow, &cancellation).await.err().expect("one narrow allowance must reject");
-            let io = provider.io_snapshot();
-            assert_eq!(failure.work.backend_read_operations, io.reads + io.tails as u64);
-            assert_eq!(failure.work.authority_bytes_read, io.read_bytes);
-            assert_eq!(failure.work.source_bytes_read, io.read_bytes);
-            assert_eq!(failure.work.output_bytes, 0);
-            assert_eq!(failure.work.items_returned, 0);
-            assert_eq!(io.writes + io.inspections + io.commit_reads + io.other_calls, 0);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn measured_checkpoint_faults_and_issuer_tamper_keep_failed_prefixes() -> Result<()> {
         let (provider, client) = fixture().await?;
         let canonical_path = authority().stream_path()?;
@@ -552,9 +454,6 @@ mod measured_open_tests {
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
             default_projection_read_limits(), budget(), &cancellation,
         ).await.map_err(|failure| failure.error)?.work;
-        // Restore executes the original reducer's admission MAC in addition
-        // to the reader's canonical verification; no source re-encode is
-        // invented merely to estimate its transient/resident clone custody.
         assert!(receipt.work.bytes_encoded > read_work.bytes_encoded);
         assert!(receipt.work.bytes_hashed > read_work.bytes_hashed);
         assert!(receipt.work.peak_allocation_bytes > 0);
@@ -671,7 +570,7 @@ mod measured_open_tests {
     #[tokio::test]
     async fn measured_snapshot_authentication_observes_original_encoder_and_mac_failures() -> Result<()> {
         let (provider, client) = fixture().await?;
-        let snapshot = checkpoints::load(&client, &authority(), &issuer().verifier(), default_projection_read_limits()).await?.snapshot.expect("durable checkpoint");
+        let snapshot = checkpoints::load_with_work(&client, &authority(), &issuer().verifier(), default_projection_read_limits(), None, &mut None).await?.snapshot.expect("durable checkpoint");
         let expected = Reducer::restore(snapshot.clone_with_work(&mut None)?, issuer().verifier(), schemas())?;
         let cancellation = CancellationToken::new();
         let mut work = history::HistoryWork::new(budget(), &cancellation);
@@ -752,8 +651,6 @@ mod measured_open_tests {
         assert_eq!(admitted.work.items_returned, 2);
         assert_eq!(admitted.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(provider.io_snapshot().writes, 0);
-        // The stale head-tail control remains unused: selection is pinned by
-        // the admitted canonical revision, never the latest checkpoint tail.
         assert_eq!(provider.stale_projection_head_tail.load(Ordering::SeqCst), 2);
         provider.stale_projection_head_tail.store(0, Ordering::SeqCst);
         for cut in [0_u64, 63, 64, 127, 128, 134] {

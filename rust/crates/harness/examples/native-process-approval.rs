@@ -1,5 +1,4 @@
 //! Public-contract consumer for comparing native and WASM approval identities.
-//! Input is JSON text so filesystem u64 allowances never pass through JS numbers.
 
 use acyclic_harness::{OperationId, TaskId, filesystem::NativeProcessRequest};
 use serde::Deserialize;

@@ -3,7 +3,6 @@ use super::*;
 use crate::{conversation::{VolumeClass, VolumeRef}, resources::GenerationRef};
 
 /// Original immutable project/scratch snapshot proved by a retained allocation.
-/// This value grants no filesystem access and is not a mutable-head observation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -17,20 +16,15 @@ pub struct TaskVolumeSnapshot {
 }
 
 impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
-    /// Returns only selected source metadata from fully authenticated creation
-    /// receipts. No source content handles or grants are exposed to the reader.
+    /// Returns only selected source metadata from fully authenticated creation receipts.
     pub async fn observe_volume_snapshots(&self, task: TaskId) -> Result<Vec<TaskVolumeSnapshot>> {
-        let admission = self.read_retained_admission(OperationId::from_bytes(task.into_bytes())).await?;
-        let scope = self.authenticated_scope(&admission).await?;
-        // The existing sealed scope has already resolved the nearest actor
-        // origin. Never repeat that lineage choice over raw provider flags.
+        let admission = self.read_retained_admission_counted(OperationId::from_bytes(task.into_bytes()), &mut None).await.map(|(record, _)| record)?;
+        let scope = self.authenticated_scope_with_work(&admission, &mut None).await.map(|(scope, _)| scope)?;
         let Some(current_private) = scope.current_created_private_volume()? else { return Ok(Vec::new()); };
         let mut current_origin = None;
         let mut snapshots = Vec::new();
         for proof in &admission.resource_proofs {
-            // authenticated_scope() verifies the original provenance chain.
-            // Reverification obtains its exact immutable generation, not a head.
-            let preparation = self.read_retained_admission(OperationId::from_bytes(proof.preparation.into_bytes())).await?;
+            let preparation = self.read_retained_admission_counted(OperationId::from_bytes(proof.preparation.into_bytes()), &mut None).await.map(|(record, _)| record)?;
             let request: crate::resource_preparation::ResourcePreparationRequest =
                 serde_json::from_value(preparation.input).map_err(|error| Error::Invalid(error.to_string()))?;
             let provider = self.resource_creation.iter().find(|provider| provider.provider() == &proof.provider)
@@ -45,8 +39,6 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     | crate::resource_preparation::CreatedResourceOperation::WriteVolume(volume) => volume == &content.volume,
                     _ => false,
                 });
-                // Exact foreign-file readers do not describe another allocation
-                // and must never acquire this allocation's generation or agent.
                 if allocated && matches!(content.volume.class(), VolumeClass::Project | VolumeClass::AgentPrivate) {
                     let origin = receipt.origin.intended_child;
                     if content.default_writer && &content.volume == current_private {

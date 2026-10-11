@@ -499,8 +499,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     })
 }
 
-/// An admitted stock composition. Its paid configuration outlives physical data.
-/// Ordinary `StockExecutor::clone` cannot duplicate this native custody.
+/// An admitted stock composition.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(super) stock: StockExecutor,
@@ -513,7 +512,6 @@ pub struct NativeStockExecutor {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl StockExecutor {
     /// Copies only the known stock configuration after original-work admission.
-    /// Provider implementation state remains behind its original shared handle.
     pub fn new_with_native_work(
         model: &Model, provider: Arc<dyn ModelProvider>, pipeline: &ContextPipeline,
         tools: &ToolRegistry, work: &acyclic_fs::NativeMaterializationWork,
@@ -553,14 +551,12 @@ impl NativeStockExecutor {
     }
 
     /// Copies configuration through its existing admitted typed producer.
-    /// The consumer must bind the original issued context before execution.
     pub(crate) fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         self.require_original_work(work)?;
         self.stock.clone_with_native_work(work)
     }
 
     /// Applies the ordinary sampling configuration without a second executor engine.
-    /// The conservative original config reservation remains held until this capsule drops.
     pub(crate) fn without_tools_with_native_work(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         self.require_original_work(work)?;
         let old = std::mem::replace(&mut self.stock.tools, ToolRegistry::new());
@@ -578,7 +574,6 @@ impl NativeStockExecutor {
         self.interactions = Some(interactions);
         Ok(self)
     }
-
 
     /// Binds the same issued context, durable owner and fence without scope cloning.
     pub fn with_task_context_with_native_work(
@@ -913,15 +908,7 @@ impl StockExecutor {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         StockExecution::ordinary(self).verify_task_context_binding(operation)
     }
-    #[cfg(test)]
-    async fn ensure_started(&self, journal: &dyn ExecutionJournal, input: &TurnInput) -> Result<()> {
-        StockExecution::ordinary(self).ensure_started(journal, input).await
-    }
-    #[cfg(test)]
-    async fn prepared_response(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
-        step: u32, prior: &[ModelMessage]) -> Result<crate::model::PreparedModelRequest> {
-        StockExecution::ordinary(self).prepared_response(journal, input, step, prior).await
-    }
+
 }
 
 pub(super) fn stock_is_native(io: Option<&PreparationIo>) -> bool {

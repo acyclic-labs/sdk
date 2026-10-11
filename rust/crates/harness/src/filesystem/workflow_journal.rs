@@ -1,8 +1,4 @@
 //! Ref-only Stream journal for pinned resumable workflow transitions.
-//!
-//! Passive finite observation borrows the original task owner and cumulative
-//! preparation/native ledger. Receipts cover accepted protocol-bounded Stream
-//! records and SDK data work, not opaque provider transfers/allocations or RSS.
 
 use super::{FilesystemHost, InternalContentClass, PreparationIo};
 use super::interaction_host::interaction_boundary as observation_boundary;
@@ -85,8 +81,6 @@ impl VerifiedSummary {
     }
 }
 
-// Only concrete identity slots and copied retry bytes are admitted here.
-// BTree allocator nodes are deliberately outside this logical DTO witness.
 struct FiniteWorkflowIdentities<'a> {
     io: &'a PreparationIo,
     owned: u64,
@@ -153,8 +147,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-/// A private original-owner observation, usable only with an atomic workflow
-/// tail comparison. An admission or caller-supplied status cannot create it.
+/// A private original-owner observation, usable only with an atomic workflow tail comparison.
 pub(crate) struct WorkflowReleaseWitness<'a, P> {
     owner: &'a TaskJournalOwner<P>,
     path: &'a str,
@@ -190,8 +183,7 @@ where
         Ok(())
     }
 
-    /// Binds one task workflow to its exact worker lease. Publications atomically
-    /// compare the coordinator tail and workflow tail on the same Stream provider.
+    /// Binds one task workflow to its exact worker lease.
     pub fn for_task(
         owner: TaskJournalOwner<P>,
         host: Arc<FilesystemHost<A, O>>,
@@ -228,7 +220,6 @@ where
         owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
         let original_stream = owner.stream_with_native_work(work)?;
         let io = PreparationIo::from_native_work(work)?;
-        // StreamClient's private Clone body only increments its provider Arc.
         let stream = original_stream.clone();
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
@@ -248,8 +239,6 @@ where
     }
 
     /// Shares an already funded journal, admitting the actual SDK Arc attempt.
-    /// The intrinsic guard covers owned metadata and the logical Self slot,
-    /// not std's opaque allocation header or retained weak-reference backing.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(
         self, work: &acyclic_fs::NativeMaterializationWork,
@@ -493,8 +482,7 @@ where
         Ok(records)
     }
 
-    /// Reads one committed transition for passive observation. Command bodies
-    /// are verified individually by the task reader before readiness checks.
+    /// Reads one committed transition for passive observation.
     pub(crate) async fn observe_transition(&self, revision: u64) -> Result<WorkflowRecord> {
         self.observe_transition_with_io(revision, None).await
     }
@@ -512,8 +500,6 @@ where
     }
 
     /// Reads the exact historical transition using the original native ledger.
-    /// The returned guard owns its audited logical decode allowance until the
-    /// record's last use; it is not an opaque allocator-footprint measurement.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn observe_transition_with_native_work(
         &self, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
@@ -525,8 +511,7 @@ where
         Ok((record, custody))
     }
 
-    /// Reads original admission through the canonical authenticated engine,
-    /// retaining its audited logical decode allowance with the returned DTO.
+    /// Reads original admission through the canonical authenticated engine, retaining its audited logical decode allowance with the returned DTO.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn admission_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -548,8 +533,6 @@ where
     }
 
     /// Observes the original authenticated outbox without a machine callback.
-    /// Returned custody retains the canonical decoder's logical high-water
-    /// allowance, not an opaque allocator measurement, through payload last use.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn observe_latest_outbox_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -753,7 +736,6 @@ where
         admission: &WorkflowAdmission,
         operation_id: crate::OperationId,
     ) -> Result<(u64, Option<WorkflowRecord>)> {
-        // Retain identities and one checkpoint, never historic state or command bodies.
         let mut summary = VerifiedSummary {
             admission: admission.clone(),
             revision: 0,
@@ -793,17 +775,6 @@ where
         Ok((revision, matched))
     }
 
-    pub(crate) async fn verified_history_with_io(
-        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
-        io: Option<&PreparationIo>,
-    ) -> Result<(u64, Option<WorkflowRecord>)> {
-        match io {
-            None => self.verified_history(admission, operation_id).await,
-            Some(io) => self.finite_verified_history(admission, operation_id, None, false, io)
-                .await.map(|(revision, matched, _)| (revision, matched)),
-        }
-    }
-
     async fn finite_verified_history(
         &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
         candidate: Option<&WorkflowRecord>, require_next: bool, io: &PreparationIo,
@@ -812,8 +783,6 @@ where
         let mut identities = FiniteWorkflowIdentities {
             io, owned: 0, reserved: BTreeSet::new(), keys: BTreeSet::new(),
         };
-        // Borrow the admission and original replay DTOs: no checkpoint or
-        // admission clone, and no request-owned summary enters the cache.
         let mut previous_page_owned = 0;
         let mut matched_page_owned = 0;
         let mut previous: Option<WorkflowRecord> = None;
@@ -826,8 +795,6 @@ where
             let page = self.replay_records_with_io(
                 revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, Some(io),
             ).await?;
-            // Recover the actual charged page allowance, not a guessed heap
-            // size. Replay's returned DTO/vector custody belongs to this IO.
             let page_owned = io.owned_bytes()?.checked_sub(before_page)
                 .ok_or_else(|| Error::Invalid("workflow replay ownership decreased".into()))?;
             identities.owned = identities.owned.checked_add(page_owned)
@@ -888,8 +855,6 @@ where
             }
             matched = Some(prior);
         }
-        // Keep the matched page's conservative concrete DTO allowance in the
-        // same caller IO. Every other page drops physically before scope quota.
         identities.owned = identities.owned.checked_sub(matched_page_owned)
             .ok_or_else(|| Error::Invalid("workflow matched custody underflow".into()))?;
         Ok((revision, matched, ready))
@@ -903,19 +868,6 @@ where
         crate::workflow::validate_workflow_next_with_io(
             checkpoint, terminal, &identities.reserved, &identities.keys, record, Some(io),
         )
-    }
-
-    pub(crate) async fn cached_preflight_with_io(
-        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        let Some(io) = io else { return self.cached_preflight(admission, record); };
-        // A native local summary cannot be trusted through the permanent cache.
-        // Re-run the authoritative full chain and prove the required next step.
-        let (_, _, ready) = self.finite_verified_history(
-            admission, record.operation_id, Some(record), true, io,
-        ).await?;
-        Ok(ready)
     }
 
     pub(crate) fn advance_cached_with_io(
@@ -1161,7 +1113,6 @@ where
     pub(crate) async fn stage_with_io(
         &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        // Recovery can expose commands immediately; authenticate every payload first.
         self.verify_command_payloads_with_io(record, io).await?;
         let _bytes;
         let bytes = match io {
@@ -1206,7 +1157,6 @@ where
                 Err(Error::Conflict("workflow operation identity reused".into()))
             };
         }
-        // Validate collisions with committed command identities as well.
         let cached = self
             .verified
             .lock()
@@ -1234,8 +1184,6 @@ where
             &admission, record.operation_id, Some(record), false, io,
         ).await?;
         let Some(existing) = existing else { return Ok(None); };
-        // Compare the exact original operation, never just a mutable-head
-        // existence predicate. Both complete DTO traversals are admitted.
         let _expected_hold;
         let expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
         _expected_hold = io.guard_bytes(&expected)?;
@@ -1256,7 +1204,6 @@ where
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowCommitOutcome> {
-        // Capability denial precedes owner verification and every backend call.
         self.require_machine_io(true, io)?;
         if let Some(io) = io { io.check_cancellation()?; }
         if let Some(owner) = &self.owner {
@@ -1354,8 +1301,6 @@ where
             }
             blake3::hash(hash_input.as_bytes())
         };
-        // Fund the actual digest vector before freezing its original byte
-        // custody into the key, including all append-envelope aliases.
         let _key;
         let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
         let (key_bytes, retained) = freeze_retained_bytes(key_bytes, io)?;

@@ -61,9 +61,6 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
     let Some(io) = io else { return ready(value); };
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = io.original_native_work() {
-        // A second custody owner, not a second ledger: both borrow the caller's
-        // original work. The actual output Value is admitted before its serde
-        // strings/vectors and then moved together with that same original guard.
         let output = PreparationIo::from_native_work(native)?;
         let encoded_hold;
         let encoded = output.encode_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
@@ -82,8 +79,6 @@ pub(super) fn reconciled(io: Option<&PreparationIo>) -> Result<TaskCommandProgre
     require_native_observer(io)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        // Null has no owned payload. Split its exact zero-byte share from the
-        // existing observer; do not allocate, encode, or claim a new marker.
         let custody = io.take_native_custody(0)?;
         return Ok(TaskCommandProgress::ReadyWithNativeCustody { value: Value::Null, custody });
     }
@@ -117,8 +112,6 @@ where
             }
             let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
             let Some(item) = items.into_iter().next() else { return Ok(TaskCommandProgress::Pending); };
-            // The first immutable item is stable across a crash before checkpoint
-            // publication. Native observation neither acknowledges nor advances it.
             mail_ready(Outcome::Succeeded(item), io)
         }
     }
@@ -133,8 +126,6 @@ where
             let message = message_identity(task, command.operation_id, io)?;
             self.runtime.task_host().reconcile_sent_mail_with_io(task, fence, input.recipient, message, input.payload, io).await?;
         }
-        // Receive is a passive observation. Reconciliation never publishes mail,
-        // acknowledges the recipient, advances its cursor, or opens another queue.
         reconciled(io)
     }
 

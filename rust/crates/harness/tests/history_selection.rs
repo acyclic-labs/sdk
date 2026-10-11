@@ -95,8 +95,6 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         vec![call, result, selected.user_id]
     );
     assert!(selected.append_user);
-    // Explicit suffix selection still rejects an orphan result independently
-    // of the default planner's earlier whole-history overflow rejection.
     let mut candidate = reopened.clone();
     candidate.append(selected.user_message.clone().ok_or_else(|| {
         acyclic_harness::Error::Invalid("new turn omitted its user message".into())
