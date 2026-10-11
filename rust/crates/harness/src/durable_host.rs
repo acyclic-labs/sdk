@@ -2180,17 +2180,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        match crate::distributed::commit_prepared_with_work_and_phase(
+        let (outcome, retained) = crate::distributed::commit_prepared_with_work_and_phase(
             &self.stream, request, publication.operation_id, phase,
-        ).await? {
+        ).await?;
+        let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
+        let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
-                publication
-                    .verify(&envelope)
-                    .map_err(|_| Error::Indeterminate(publication.operation_id))?;
-                Ok(true)
+                publication.verify_with_work(envelope, received.work())
+                    .map(|()| true)
+                    .map_err(|error| {
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        if error.is_native_failure() { return error; }
+                        Error::Indeterminate(publication.operation_id)
+                    })
             }
-        }
+        };
+        drop(outcome);
+        drop(received);
+        result
     }
 
     pub(crate) async fn append_execution(
@@ -2436,31 +2444,40 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let request = self
             .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let outcome = crate::distributed::commit_prepared_with_work(
+        let (outcome, retained) = crate::distributed::commit_prepared_with_work(
             &self.stream, request, self.operation_id(),
         ).await?;
-        match outcome {
+        let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
+        let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {
-                let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
-                    return Err(Error::Storage("invalid owned journal envelope".into()));
+                let invalid = match envelope.mutations.as_slice() {
+                    [CommittedMutation::Append(append)] => {
+                        let valid = append.path == path
+                            && append.start == expected_tail
+                            && append.end == expected_tail + 1
+                            && append.tail == append.end
+                            && append.records.len() == 1
+                            && append.records.first().is_some_and(|record| {
+                                record.sequence == expected_tail
+                                    && record.value == bytes
+                                    && record.commit_id == envelope.commit_id
+                            });
+                        (!valid).then_some("invalid owned journal append")
+                    }
+                    _ => Some("invalid owned journal envelope"),
                 };
-                if append.path != path
-                    || append.start != expected_tail
-                    || append.end != expected_tail + 1
-                    || append.tail != append.end
-                    || append.records.len() != 1
-                    || append.records.first().is_none_or(|record| {
-                        record.sequence != expected_tail
-                            || record.value != bytes
-                            || record.commit_id != envelope.commit_id
-                    })
-                {
-                    return Err(Error::Storage("invalid owned journal append".into()));
+                match invalid {
+                    None => Ok(true),
+                    Some(reason) => Err(CoordinatorTaskHost::<P>::admission_boundary(
+                        received.work(), crate::wire::ErrorCode::Storage, reason,
+                    )),
                 }
-                Ok(true)
             }
-        }
+        };
+        drop(outcome);
+        drop(received);
+        result
     }
 }
 
@@ -2741,6 +2758,54 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "task outcome custody overflows" },
         )?)?;
         Ok((outcome, custody))
+    }
+
+    /// Reads only the protected task's actual succeeded result. Returned bytes
+    /// are the original descriptor-verified canonical payload, not a Value
+    /// reserialization or a grant to read an arbitrary caller-supplied file.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn succeeded_result_with_native_work(
+        &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<(FileRef, Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let metadata = std::mem::size_of::<
+            Option<(FileRef, Vec<u8>, acyclic_fs::NativeAllocation)>
+        >() as u64;
+        io.retain_owned(metadata)?;
+        let reference = {
+            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh_with_work(&mut observer).await?;
+            let operation = coordinator.observe_operation_ref_with_work(
+                &self.owner, &self.owner_scope, &self.verifier,
+                OperationId::from_bytes(task.into_bytes()), &mut observer,
+            )?;
+            match operation.outcome.as_ref() {
+                Some(Outcome::Succeeded(file)) => {
+                    let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                    let copied = crate::core::copy_file(file, &mut quota)?;
+                    Some((copied, quota.transfer()))
+                }
+                _ => None,
+            }
+        };
+        let Some((reference, reference_owned)) = reference else {
+            io.release_owned(metadata)?;
+            return Ok(None);
+        };
+        let (value, bytes, value_owned) = self.read_json_payload_with_work(
+            &reference, &mut Some(&mut io),
+        ).await?;
+        drop(value);
+        io.release_owned(value_owned)?;
+        let owned = metadata.checked_add(reference_owned)
+            .and_then(|owned| owned.checked_add(bytes.capacity() as u64))
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "succeeded result custody overflows" })?;
+        let custody = io.take_native_custody(owned)?;
+        Ok(Some((reference, bytes, custody)))
     }
 
     async fn outcome_with_work(
@@ -5004,6 +5069,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, reference: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Value,u64)> {
+        let (value, bytes, retained) = self.read_json_payload_with_work(reference, work).await?;
+        let byte_capacity = bytes.capacity() as u64;
+        drop(bytes);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(byte_capacity)?; }
+        Ok((value, retained))
+    }
+
+    // One original read/descriptor/decoder/canonicality engine. Consumers may
+    // retain its actual lexical bytes; no second fetch or serializer creates
+    // an alleged original payload.
+    async fn read_json_payload_with_work(
+        &self, reference: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Value, Vec<u8>, u64)> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
@@ -5044,19 +5123,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         let differs = canonical != bytes;
         let canonical_capacity = canonical.capacity() as u64;
-        let byte_capacity = bytes.capacity() as u64;
         drop(canonical);
-        drop(bytes);
         if let Some(io) = work.as_deref_mut() {
             io.release_owned(canonical_capacity)?;
-            io.release_owned(byte_capacity)?;
         }
         if differs {
             return Err(Self::admission_boundary(
                 work, crate::wire::ErrorCode::Invalid, "durable task payload is not canonical JSON",
             ));
         }
-        Ok((value,retained))
+        Ok((value, bytes, retained))
     }
 
     async fn retained_declaration(
@@ -9346,7 +9422,7 @@ pub(crate) mod tests {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
                 crate::distributed::commit_prepared_with_work(&stream, approval_pending, operation_id).await?,
-                acyclic_stream::CommitOutcome::Conflict(_)
+                (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(
                 approval_journal
@@ -9426,7 +9502,7 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     crate::distributed::commit_prepared_with_work(&stream, original_pending, operation_id).await?,
-                    acyclic_stream::CommitOutcome::Conflict(_)
+                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
             );
@@ -9486,7 +9562,7 @@ pub(crate) mod tests {
                 assert!(
                     matches!(
                         crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
-                        acyclic_stream::CommitOutcome::Conflict(_)
+                        (acyclic_stream::CommitOutcome::Conflict(_), 0)
                     ),
                     "lease replacement must atomically fence execution publication"
                 );
@@ -9540,7 +9616,7 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     crate::distributed::commit_prepared_with_work(&stream, execution_pending, operation_id).await?,
-                    acyclic_stream::CommitOutcome::Conflict(_)
+                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation must atomically fence execution publication"
             );
@@ -9749,7 +9825,7 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     crate::distributed::commit_prepared_with_work(&stream, pending, operation_id).await?,
-                    acyclic_stream::CommitOutcome::Conflict(_)
+                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation after preflight must atomically prevent publication"
             );
@@ -9785,7 +9861,7 @@ pub(crate) mod tests {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
                 crate::distributed::commit_prepared_with_work(&stream, cancellation_approval_pending, operation_id).await?,
-                acyclic_stream::CommitOutcome::Conflict(_)
+                (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(
                 replacement_approval

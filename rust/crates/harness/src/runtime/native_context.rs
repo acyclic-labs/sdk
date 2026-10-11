@@ -446,15 +446,15 @@ impl ToolContext {
         ))?;
         NativeFutureBundle::new(work, || async move {
             context.verify_original_execution_owner_with_native_work(work)?.await?;
-            let (admission, custody) = host.observe_admission_with_native_work(task, work)?.await?;
-            if admission.operation_id != context.task_id {
-                drop(admission);
-                drop(custody);
+            // Keep the packet intact across a failing post-read fence check:
+            // its data retires before its original metadata allocation.
+            let observed = host.observe_admission_with_native_work(task, work)?.await?;
+            if observed.0.operation_id != context.task_id {
                 return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                     "observed input differs from the original issued task"));
             }
             context.verify_original_execution_owner_with_native_work(work)?.await?;
-            Ok((admission, custody))
+            Ok(observed)
         })
     }
 
