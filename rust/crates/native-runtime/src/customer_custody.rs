@@ -259,3 +259,7 @@ impl RestoredCustomerLeaf {
 #[cfg(test)]
 #[path = "customer_custody/smoke.rs"]
 mod smoke;
+
+#[cfg(test)]
+#[path = "customer_custody/conformance.rs"]
+mod conformance;
