@@ -577,7 +577,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.require_interaction_grant_with_work(&mut None)
     }
 
-    fn require_interaction_grant_with_work(
+    pub(crate) fn require_interaction_grant_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -1004,7 +1004,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> bool {
         self._native_shared_custody.as_ref().is_some_and(|custody|
-            std::ptr::eq(custody.work().runtime_meter(), work.runtime_meter()))
+            custody.work().shares_ledger(work))
     }
 
     /// Authorizes exact retained volume custody on that same native-work ledger.
@@ -1299,19 +1299,41 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn validate_input_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        // These closed metadata types were validated by their constructors and
-        // the original authenticated admission. No descriptor is read here.
-        if file.path().len() > self.input_limits.path_bytes
-            || file.descriptor().byte_length() > self.input_limits.file_bytes {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Invalid,
-                reason:"execution input file exceeds original task limits"});
-        }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if !crate::runtime::read_granted_measured(&self.input_grants,file,&io)? {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
-                reason:"original task cannot read the execution input file"});
+        self.validate_input_file_with_io(file, &io)
+    }
+
+    pub(crate) fn validate_input_file_with_io(
+        &self, file: &FileRef, io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_work = io.original_native_work();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = native_work.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = native_work {
+            work.charge(acyclic_fs::WorkCounters::default())
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }
+        if native {
+            if file.path().len() > self.input_limits.path_bytes
+                || file.descriptor().byte_length() > self.input_limits.file_bytes {
+                return Err(Self::root_binding_denial(true, crate::wire::ErrorCode::Invalid,
+                    "execution input file exceeds original task limits"));
+            }
+        } else {
+            self.input_limits.validate_file(file)?;
+        }
+        let allowed = crate::runtime::read_granted_measured(&self.input_grants, file, io)?
+            || match self.input_created.as_ref() {
+                Some(access) => crate::runtime::read_granted_measured(&access.grants, file, io)?,
+                None => false,
+            };
+        if !allowed {
+            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+                "original task cannot read the execution input file"));
         }
         Ok(())
     }
@@ -1362,9 +1384,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn check_root_binding(
         &self, audience: &Authority, operation: OperationId, intent: [u8;32],
     ) -> Result<()> {
+        self.check_root_binding_with_work(audience, operation, intent, &mut None)
+    }
+
+    pub(crate) fn check_root_binding_with_work(
+        &self, audience: &Authority, operation: OperationId, intent: [u8; 32],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(proof) = self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| &retained.proof) {
             if proof.audience() != audience || proof.bind_operation() != operation || proof.intent_digest() != intent {
-                return Err(Error::Conflict("root binding audience, operation or intent changed".into()));
+                return Err(CoordinatorTaskHost::<P>::admission_boundary(
+                    work, crate::wire::ErrorCode::Conflict,
+                    "root binding audience, operation or intent changed",
+                ));
             }
         }
         Ok(())
@@ -1376,11 +1409,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn pin_root_binding_choice(
         &self, operation: OperationId, intent: [u8;32], audience_digest: [u8;32],
     ) -> Result<()> {
+        self.pin_root_binding_choice_with_work(operation, intent, audience_digest, &mut None)
+    }
+
+    pub(crate) fn pin_root_binding_choice_with_work(
+        &self, operation: OperationId, intent: [u8; 32], audience_digest: [u8; 32],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         let Some(state) = &self.root_binding else { return Ok(()); };
         let choice = (operation,intent,audience_digest);
         if let Err(choice) = state.pending.set(choice) {
             if state.pending.get() != Some(&choice) {
-                return Err(Error::Conflict("root binding publication choice changed".into()));
+                return Err(CoordinatorTaskHost::<P>::admission_boundary(
+                    work, crate::wire::ErrorCode::Conflict,
+                    "root binding publication choice changed",
+                ));
             }
         }
         Ok(())
@@ -1406,24 +1450,53 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     fn retain_root_binding_owned(&self, retained: RetainedRootBinding) -> Result<bool> {
         let proof = &retained.proof;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_work = retained._custody.as_ref().map(|custody| custody.work());
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = native_work.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let agent = match native_work {
+            Some(work) => self.authenticated_binding_agent_with_native_work(work)?,
+            None => self.authenticated_binding_agent()?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let agent = self.authenticated_binding_agent()?;
         if !self.input_is_root || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
             || proof.fence() != &self.fence
-            || self.authenticated_binding_agent()? != Some(proof.agent())
+            || agent != Some(proof.agent())
         {
-            return Err(Error::Unauthorized("root binding proof belongs to another owner or lease".into()));
+            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+                "root binding proof belongs to another owner or lease"));
         }
-        let state = self.root_binding.as_ref().ok_or_else(|| Error::Unauthorized("owner has no root binding cache".into()))?;
+        let state = self.root_binding.as_ref().ok_or_else(|| Self::root_binding_denial(
+            native, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
+        ))?;
         if let Err(incoming) = state.proof.set(retained) {
             let proof = &incoming.proof;
-            let retained = &state.proof.get().ok_or_else(|| Error::Conflict("root binding cache is unavailable".into()))?.proof;
+            let retained = &state.proof.get().ok_or_else(|| Self::root_binding_denial(
+                native, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
+            ))?.proof;
             if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation()
                 || retained.intent_digest() != proof.intent_digest() {
-                return Err(Error::Conflict("root binding audience, operation or intent changed".into()));
+                return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Conflict,
+                    "root binding audience, operation or intent changed"));
             }
             return Ok(false);
         }
         Ok(true)
+    }
+
+    fn root_binding_denial(native: bool, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+        #[cfg(not(target_arch = "wasm32"))]
+        if native { return Error::NativeBoundary { code, reason }; }
+        let _ = native;
+        match code {
+            crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+            _ => Error::Unauthorized(reason.into()),
+        }
     }
 
     pub(crate) fn authenticate_fork_parent(&self, parent: &Authority) -> Result<()> {

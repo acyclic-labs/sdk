@@ -308,6 +308,17 @@ impl AuthorityIssuer {
         Ok((verifier, io.into_custody()))
     }
 
+    /// Copies this configured issuer's existing identity, key and audience.
+    /// No new issuer identity, grant, signature or key is created.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let (verifier, custody) = self.verifier_with_native_work(work)?;
+        let AuthorityVerifier { id, key, audience } = verifier;
+        Ok((Self { id, key, audience }, custody))
+    }
+
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
@@ -622,6 +633,17 @@ impl AuthorityVerifier {
         let verifier = self.clone_with_work(&mut Some(&mut io))?;
         let custody = io.into_custody();
         Ok((verifier, custody))
+    }
+
+    /// Verifies the existing scope MAC on the caller's original native ledger.
+    /// No scope, audience, issuer or capability is copied or granted.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn verify_with_native_work(
+        &self, scope: &Scope, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.verify_with_work(scope, &mut Some(&mut io))
     }
 
     /// Returns the one aggregate this verifier is allowed to authenticate.
