@@ -404,6 +404,12 @@ owner/fence, source task, volume, immutable generation, native snapshot and
 authentic signed purpose. The native copy constructs actual owned fields and
 snapshot values on the original observer; it neither signs a replacement scope
 nor obtains a new source or transcript grant.
+`TaskJournalOwner::authorize_project_source_with_native_work` invokes the actual
+configured native Root policy before sealing an operation-specific selection.
+`restore_project_source_authorization_with_native_work` authenticates the
+retained original selection and task owner without reading a newer head or
+issuing replacement authority. Both return a funded future before allocation
+and keep the opaque read handle's produced metadata under its original ledger.
 Internal mailbox task bindings now borrow the original owner fence. Native
 validation does not copy a retry key or reconstruct a lease merely to inspect it;
 the public `owned_task_fence` still explicitly returns a copy of that exact fence.

@@ -4,6 +4,8 @@ use crate::source_authorization::{
     ProjectSourceAuthorization, ProjectSourceReadHandle, ProjectSourceSnapshot,
     RootProjectSourceContext, RootProjectSourceProvider,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::history::HistoryIo;
 
 struct SourceBudget { work: u64, bytes: u64 }
 impl SourceBudget {
@@ -12,6 +14,22 @@ impl SourceBudget {
             .ok_or_else(|| Error::Invalid("project source verification exceeds work bound".into()))?;
         self.bytes = self.bytes.checked_sub(bytes)
             .ok_or_else(|| Error::Invalid("project source verification exceeds byte bound".into()))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn charge_with_native_work(
+        &mut self, units: u64, bytes: u64, original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        original.remaining()?;
+        self.work = self.work.checked_sub(units).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "project source verification exceeds its original work bound",
+        })?;
+        self.bytes = self.bytes.checked_sub(bytes).ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "project source verification exceeds its original byte bound",
+        })?;
         Ok(())
     }
 }
@@ -140,6 +158,162 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized("project source intent restoration invocation is cancelled".into()));
         }
         Ok(handle)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn authorize_project_source_with_native_work<'a>(
+        self: &'a Arc<Self>, context: &'a crate::runtime::TaskContext,
+        issuer: &'a AuthorityIssuer, provider: &'a dyn RootProjectSourceProvider,
+        source_task: TaskId, operation_id: OperationId, snapshot: &'a ProjectSourceSnapshot,
+        maximum_work: u64, maximum_bytes: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ProjectSourceReadHandle, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let binding = context.owned_task_binding_with_native_work(work)?;
+            self.require_mail_scope_with_native_work(context.scope(), work)?;
+            if binding != (self.task_id, &self.fence)
+                || issuer.audience() != self.host.verifier.audience()
+                || maximum_work == 0 || maximum_work == u64::MAX
+                || maximum_bytes == 0 || maximum_bytes == u64::MAX
+                || operation_id == self.operation_id()
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source issuer, bounds or original owner differs" });
+            }
+            let cancellation = self.invocation_cancellation.as_ref().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source requires original invocation cancellation",
+            })?;
+            cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+            self.verify_with_native_work(false, work).await?;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let verifier = issuer.verifier_with_work(&mut observer)?;
+            if verifier != self.host.verifier {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source signer differs from installed owner" });
+            }
+            let verifier_bytes = verifier.logical_owned_bytes()?;
+            drop(verifier);
+            observer.as_deref_mut().expect("original source observer").release_owned(verifier_bytes)?;
+            snapshot.project.validate_with_work(&mut observer)?;
+            snapshot.generation.validate_with_work(&mut observer)?;
+            if snapshot.project.class() != crate::conversation::VolumeClass::Project
+                || snapshot.project.provider() != snapshot.generation.as_resource().provider()
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source selection has another namespace or provider" });
+            }
+            let snapshot_bytes = crate::contract::count_trusted_json_bytes_with_work(
+                snapshot, maximum_bytes, &mut observer,
+            )?;
+            let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
+            budget.charge_with_native_work(1, snapshot_bytes, work)?;
+            let caller = self.host.source_admission_with_native_work(self.task_id, &mut budget, work).await?;
+            if crate::contract::canonical_json_digest_with_work(
+                &caller.0, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
+            )? != self.original_admission_digest {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source original caller admission changed" });
+            }
+            let source = self.host.source_admission_with_native_work(source_task, &mut budget, work).await?;
+            let graph_root = self.host.source_graph_root_with_native_work(self.task_id, &mut budget, work).await?;
+            if self.host.source_graph_root_with_native_work(source_task, &mut budget, work).await? != graph_root {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source belongs to another original graph" });
+            }
+            let created_project_authenticated = self.host.source_created_project_with_native_work(
+                &source.0, &snapshot.project, &mut budget, work,
+            ).await?;
+            if (!created_project_authenticated && source_task != graph_root)
+                || budget.work == 0 || budget.bytes == 0 {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source has no bounded authenticated creator" });
+            }
+            provider.verify_with_native_work(RootProjectSourceContext {
+                owner: &self.host.owner, caller: &caller.0, source: &source.0, graph_root,
+                operation_id, maximum_work: budget.work, maximum_bytes: budget.bytes,
+                created_project_authenticated, cancellation,
+            }, snapshot, work)?.await?;
+            self.verify_with_native_work(false, work).await?;
+            cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+            drop(observer);
+            drop(history);
+            let selected = crate::executor::clone_preparation(snapshot, Some(&io))?;
+            let owner = {
+                let mut history = io.history_io();
+                history.clone_authority(&self.host.owner)?
+            };
+            let caller_fence = crate::executor::clone_preparation(&self.fence, Some(&io))?;
+            let mut authorization = ProjectSourceAuthorization {
+                owner, caller_task: self.task_id, caller_admission_digest: self.original_admission_digest,
+                caller_fence, operation_id, source_task, project: selected.project,
+                generation: selected.generation, native_snapshot: selected.native_snapshot,
+                graph_root, maximum_work, maximum_bytes,
+                policy_scope: Scope::from_wire(String::new(), Capabilities::default(), String::new(), None, None, [0; 32]),
+            };
+            let mut history = io.history_io();
+            let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+            let label = authorization.scope_label_with_work(&mut observer)?;
+            observer.as_deref_mut().expect("original source observer")
+                .admit_owned(std::mem::size_of::<String>() as u64)?;
+            let capability = observer.as_deref_mut().expect("original source observer").clone_text(&label)?;
+            let capabilities = Capabilities::new([capability]);
+            observer.as_deref_mut().expect("original source observer")
+                .retain_owned(std::mem::size_of::<String>() as u64)?;
+            authorization.policy_scope = issuer.root_with_work(&label, &capabilities, &mut observer)?;
+            let capabilities_bytes = capabilities.logical_owned_bytes()?;
+            drop(capabilities);
+            observer.as_deref_mut().expect("original source observer").release_owned(capabilities_bytes)?;
+            let label_bytes = label.capacity() as u64;
+            drop(label);
+            observer.as_deref_mut().expect("original source observer").release_owned(label_bytes)?;
+            let handle = ProjectSourceReadHandle::seal_with_work(authorization, &self.host.verifier, &mut observer)?;
+            drop(observer);
+            drop(history);
+            let retained = io.owned_bytes()?;
+            Ok((handle, io.into_native_custody(retained)?))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn restore_project_source_authorization_with_native_work<'a>(
+        self: &'a Arc<Self>, context: &'a crate::runtime::TaskContext,
+        authorization: &'a ProjectSourceAuthorization,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ProjectSourceReadHandle, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let binding = context.owned_task_binding_with_native_work(work)?;
+            self.require_mail_scope_with_native_work(context.scope(), work)?;
+            if binding != (self.task_id, &self.fence)
+                || authorization.caller_admission_digest != self.original_admission_digest {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source restoration lacks its original owner" });
+            }
+            let cancellation = self.invocation_cancellation.as_ref().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source restoration requires original cancellation",
+            })?;
+            cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+            self.verify_with_native_work(false, work).await?;
+            self.host.verify_project_source_authorization_with_native_work(authorization, self.task_id, work).await?;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let copied = {
+                let mut history = io.history_io();
+                let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                authorization.clone_with_work_and_custody(&mut observer)?.0
+            };
+            let handle = {
+                let mut history = io.history_io();
+                let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                ProjectSourceReadHandle::seal_with_work(copied, &self.host.verifier, &mut observer)?
+            };
+            self.verify_with_native_work(false, work).await?;
+            cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
+            let retained = io.owned_bytes()?;
+            Ok((handle, io.into_native_custody(retained)?))
+        })
     }
 
     pub(crate) async fn verify_project_source_handle(
@@ -297,6 +471,158 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(access.as_ref().is_some_and(|access| access.content.iter().any(|binding| &binding.volume == project)))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn source_admission_with_native_work(
+        &self, task: TaskId, budget: &mut SourceBudget,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        budget.charge_with_native_work(1, 0, original)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let spec = self.retained_declaration_with_work(operation, &mut observer).await?
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
+                reason: "project source admission is missing" })?;
+        budget.charge_with_native_work(0, spec.state.descriptor().byte_length(), original)?;
+        let spec_bytes = spec.logical_owned_bytes()?;
+        let admitted = self.read_declared_admission_counted(&spec, &mut observer).await;
+        drop(spec);
+        let released = observer.as_deref_mut().expect("original source observer").release_owned(spec_bytes);
+        let (record, retained) = admitted?;
+        released?;
+        drop(observer);
+        drop(history);
+        Ok((record, io.into_native_custody(retained)?))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn source_graph_root_with_native_work(
+        &self, task: TaskId, budget: &mut SourceBudget,
+        original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<TaskId> {
+        let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh_with_work(&mut observer).await?;
+        let mut operation = OperationId::from_bytes(task.into_bytes());
+        let mut visited = Vec::new();
+        loop {
+            budget.charge_with_native_work(1, 0, original)?;
+            if Self::proof_contains(&visited, &operation, &mut observer)? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source graph is cyclic" });
+            }
+            Self::reserve_proof_slots(&mut visited, &mut observer)?;
+            visited.push(operation);
+            let state = coordinator.observe_operation_ref_with_work(
+                &self.owner, &self.owner_scope, &self.verifier, operation, &mut observer,
+            )?;
+            if state.cancellation_requested {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source graph is cancelled" });
+            }
+            match &state.spec.parent {
+                Some(parent) => operation = parent.operation_id,
+                None => {
+                    coordinator.scheduler().session_limits_with_work(operation, &mut observer)?
+                        .validate_with_work(&mut observer)?;
+                    return Ok(TaskId::from_bytes(operation.into_bytes()));
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn source_created_project_with_native_work(
+        &self, source: &TaskAdmissionRecord, project: &crate::conversation::VolumeRef,
+        budget: &mut SourceBudget, original: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        use std::borrow::Cow;
+        let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+        let mut pending = Vec::new();
+        let mut current = Some((Cow::Borrowed(source), Vec::new(), None));
+        while let Some(mut item) = current.take().or_else(|| pending.pop()) {
+            // Keep each admission and its guard in payload-first tuple order.
+            let admission = &item.0;
+            let path = &mut item.1;
+            budget.charge_with_native_work(1, 0, original)?;
+            if admission.resource_proofs.is_empty() { continue; }
+            {
+                let mut history = io.history_io();
+                let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                if Self::proof_contains(path, &admission.operation_id, &mut observer)? {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "project creator proof is cyclic" });
+                }
+                Self::reserve_proof_slots(path, &mut observer)?;
+                path.push(admission.operation_id);
+            }
+            let parent = admission.parent.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project creator has no original parent",
+            })?;
+            self.source_admission_with_native_work(parent, budget, original).await?;
+            for proof in &admission.resource_proofs {
+                budget.charge_with_native_work(1, 0, original)?;
+                let preparation = self.source_admission_with_native_work(
+                    proof.preparation, budget, original,
+                ).await?;
+                {
+                    let mut history = io.history_io();
+                    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                    let mut request_custody = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                    let (request, retained) =
+                        crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+                            &preparation.0.input, request_custody.work(),
+                        )?;
+                    request_custody.adopt(retained)?;
+                    request.validate_with_work(request_custody.work())?;
+                    if request.maximum_work > budget.work || request.maximum_bytes > budget.bytes {
+                        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                            reason: "creator verification exceeds original source bounds" });
+                    }
+                    budget.charge_with_native_work(request.maximum_work, request.maximum_bytes, original)?;
+                    let original_parent = preparation.0.parent.ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "project preparation has no original parent",
+                    })?;
+                    self.source_admission_with_native_work(original_parent, budget, original).await?;
+                    if request.child != **admission {
+                        self.source_admission_with_native_work(
+                            TaskId::from_bytes(request.child.operation_id.into_bytes()), budget, original,
+                        ).await?;
+                        self.source_graph_root_with_native_work(parent, budget, original).await?;
+                    }
+                }
+                let mut next_path = Vec::new();
+                {
+                    let mut history = io.history_io();
+                    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+                    for operation in path.iter() {
+                        Self::reserve_proof_slots(&mut next_path, &mut observer)?;
+                        observer.as_deref_mut().expect("original source observer").admit_copy(16)?;
+                        next_path.push(*operation);
+                        observer.as_deref_mut().expect("original source observer").copy_bytes(16)?;
+                    }
+                    Self::reserve_proof_slots(&mut pending, &mut observer)?;
+                }
+                pending.push((Cow::Owned(preparation.0), next_path, Some(preparation.1)));
+            }
+        }
+        let mut visited = Vec::new();
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        let access = self.verify_created_access_with_work(source, &mut visited, &mut observer).await?;
+        let selected = access.as_ref().is_some_and(|access|
+            access.content.iter().any(|binding| &binding.volume == project));
+        drop(access);
+        drop(visited);
+        drop(pending);
+        Ok(selected)
+    }
+
     pub(super) async fn seal_prepared_project_source(
         &self, request: &crate::resource_preparation::ResourcePreparationRequest, parent: TaskId,
     ) -> Result<Option<ProjectSourceReadHandle>> {
@@ -350,6 +676,43 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         // For bootstrap roots, the original issuer MAC attests the mandatory
         // provider's protected allocation verification. No raw root scope does.
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_project_source_authorization_with_native_work(
+        &self, record: &ProjectSourceAuthorization, parent: TaskId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut history = io.history_io();
+        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
+        record.verify_scope_with_work(&self.verifier, &mut observer)?;
+        if record.owner != self.owner || record.caller_task != parent {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source differs from original coordinator or caller" });
+        }
+        let mut budget = SourceBudget { work: record.maximum_work, bytes: record.maximum_bytes };
+        let caller = self.source_admission_with_native_work(parent, &mut budget, work).await?;
+        if crate::contract::canonical_json_digest_with_work(
+            &caller.0, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
+        )? != record.caller_admission_digest
+            || caller.0.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline)
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source original caller changed or expired" });
+        }
+        if self.source_graph_root_with_native_work(parent, &mut budget, work).await? != record.graph_root
+            || self.source_graph_root_with_native_work(record.source_task, &mut budget, work).await? != record.graph_root {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source retained graph changed" });
+        }
+        let source = self.source_admission_with_native_work(record.source_task, &mut budget, work).await?;
+        if !self.source_created_project_with_native_work(&source.0, &record.project, &mut budget, work).await?
+            && record.source_task != record.graph_root {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "project source original creator evidence changed" });
+        }
         Ok(())
     }
 }
