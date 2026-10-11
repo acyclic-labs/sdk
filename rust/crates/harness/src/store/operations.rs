@@ -25,6 +25,7 @@ pub(crate) fn decode_preclaimed_json_with_mode<T, F>(
     maximum_owned_bytes: u64,
     code: crate::wire::ErrorCode,
     native: bool,
+    value_schema: crate::contract::JsonValueSchema,
     charge: &mut F,
 ) -> Result<T>
 where
@@ -34,9 +35,9 @@ where
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if native {
         return crate::contract::json_from_slice_bounded_native_trusted(
-            bytes, bounds, maximum_owned_bytes, code, charge);
+            bytes, bounds, maximum_owned_bytes, code, value_schema, charge);
     }
-    let _ = (native, code);
+    let _ = (native, code, value_schema);
     crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
 }
 
@@ -87,9 +88,10 @@ pub(super) fn validate_canonical_json_with_work(
                 maximum_items: maximum_bytes,
                 maximum_depth: 256,
             },
-            bytes.len() as u64,
+            0, // The sealed Value witness owns its strings; codec scratch is additional.
             crate::wire::ErrorCode::Storage,
             native,
+            crate::contract::JsonValueSchema::Root,
             &mut |charge| {
                 let charged = match charge {
                 crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
@@ -97,14 +99,11 @@ pub(super) fn validate_canonical_json_with_work(
                         .ok_or_else(|| Error::Invalid("index JSON item count overflows".into()))?;
                     observer.codec_charge(charge)
                 }
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
-                    // Value owns string payloads and logical sequence/map slots.
-                    // The lexical count admits minimum-eight/geometric vectors;
-                    // opaque map allocator overhead is outside this contract.
-                    let slot = std::mem::size_of::<serde_json::Value>()
-                        .max(std::mem::size_of::<(String, serde_json::Value)>()) as u64;
-                    let planned = items.checked_mul(10).and_then(|count| count.checked_mul(slot))
-                        .and_then(|slots| slots.checked_add(maximum_owned_bytes))
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                    // The original lexical pass supplies the sealed Value/RawValue
+                    // witness; do not replace it with an input-byte ratio.
+                    let planned = crate::contract::json_value_decode_owned_bytes(value_shape)?
+                        .checked_add(maximum_owned_bytes)
                         .and_then(|owned| owned.checked_add(diagnostic_bytes))
                         .ok_or_else(|| Error::Invalid("index JSON reservation overflows".into()))?;
                     observer.retain_owned(planned)?;
@@ -196,8 +195,9 @@ pub(super) fn decode_location_with_work(
         bytes.len() as u64,
         crate::wire::ErrorCode::Storage,
         native,
+        crate::contract::JsonValueSchema::None,
         &mut |charge| {
-            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } = charge {
                 let planned = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("operation locator reservation overflows".into()))?;
                 observer.retain_owned(planned)?;
@@ -275,8 +275,9 @@ pub(super) fn decode_message_location_with_work(
         bytes.len() as u64,
         crate::wire::ErrorCode::Storage,
         native,
+        crate::contract::JsonValueSchema::None,
         &mut |charge| {
-            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } = charge {
                 let planned = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("message locator reservation overflows".into()))?;
                 observer.retain_owned(planned)?;

@@ -67,8 +67,9 @@ fn decode_certificate_with_work(
         bytes.len() as u64,
         crate::wire::ErrorCode::Storage,
         native,
+        crate::contract::JsonValueSchema::None,
         &mut |charge| {
-            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } = charge {
                 reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("effect certificate reservation overflows".into()))?;
                 observer.retain_owned(reservation)
@@ -145,6 +146,7 @@ fn decode_node_with_work(
         bytes.len() as u64,
         crate::wire::ErrorCode::Storage,
         native,
+        crate::contract::JsonValueSchema::None,
         &mut |charge| {
             let charged = match charge {
                 crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
@@ -152,7 +154,7 @@ fn decode_node_with_work(
                         .ok_or_else(|| Error::Invalid("effect node item count overflows".into()))?;
                     observer.codec_charge(charge)
                 }
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
                     // One internally tagged enum buffers actual serde Content.
                     // Minimum Vec slots and geometric growth are admitted from
                     // the lexical item count, never guessed input/heap ratios.

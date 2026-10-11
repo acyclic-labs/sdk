@@ -45,8 +45,9 @@ fn decode_location_with_work(
         bytes.len() as u64,
         crate::wire::ErrorCode::Storage,
         native,
+        crate::contract::JsonValueSchema::None,
         &mut |charge| {
-            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
+            let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } = charge {
                 let planned = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("effect location reservation overflows".into()))?;
                 observer.retain_owned(planned)?;

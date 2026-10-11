@@ -138,9 +138,10 @@ impl InteractionTicket {
                             custody.work(), crate::wire::ErrorCode::Invalid,
                             "interaction JSON item count overflows"))?;
                     }
-                    crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                    crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                        let value_owned = crate::contract::json_value_decode_owned_bytes(value_shape)?;
                         let planned = interaction_decode_owned_bytes(
-                            bytes.len() as u64, items, maximum_owned_bytes, diagnostic,
+                            items, maximum_owned_bytes, value_owned, diagnostic,
                         ).ok_or_else(|| interaction_denial(custody.work(),
                             crate::wire::ErrorCode::Invalid,
                             "interaction JSON custody overflows"))?;
@@ -157,7 +158,8 @@ impl InteractionTicket {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let decoded = if native {
                 crate::contract::json_from_slice_bounded_native_trusted::<Interaction, _>(
-                    bytes, bounds, bytes.len() as u64, crate::wire::ErrorCode::Invalid, &mut charge,
+                    bytes, bounds, bytes.len() as u64, crate::wire::ErrorCode::Invalid,
+                    crate::contract::JsonValueSchema::Interaction, &mut charge,
                 )
             } else {
                 crate::contract::json_from_slice_bounded_trusted::<Interaction, _>(
@@ -901,40 +903,28 @@ fn interaction_decode_diagnostic_bytes(input_bytes: u64) -> Result<u64> {
 }
 
 fn interaction_decode_owned_bytes(
-    input_bytes: u64,
     items: u64,
     codec_owned_bytes: u64,
+    value_owned_bytes: u64,
     diagnostic_bytes: u64,
 ) -> Option<u64> {
-    // ONE Content layer overlaps the consuming Value/ChoiceOption collections.
-    // Ten slots/item covers minimum-eight/geometric collection capacities.
-    // With raw_value enabled, Value's first-key magic map consumes its string
-    // through the ORIGINAL nested parser. Its hidden nodes are bounded by input
-    // bytes, not exterior lexical items; no additional scanner/parser is run.
-    // Each nesting quotes the entire preceding JSON string, so even one inner
-    // quote requires at least 2^depth escape bytes in this original slice.
-    // usize::BITS bounds the active raw-box/parser chain. Per layer, scratch
-    // is <=2*max(input,8), boxed raw text <=input, and the fourth payload covers
-    // destination strings/into_boxed_str shrink overlap. Exterior codec scratch
-    // remains separately held. These are logical pairs/payloads, not opaque
-    // BTree nodes, allocator overhead, RSS, CPU or stack admission. The 256
-    // bound is EXTERIOR lexical depth; each original inner parser retains its
-    // own pinned 128-depth rule, which is not a 256 semantic-tree guarantee.
+    // ONE actual internally-tagged Content layer overlaps the consuming typed
+    // ChoiceOption/Value collections. Ten slots/item covers Content and choice
+    // minimum-eight/geometric capacities. Value ownership comes ONLY from the
+    // sealed witness issued by the original lexer, including real selected Raw
+    // expansion; no second scanner, parser or independent Value policy exists.
+    // codec_owned_bytes protects exterior Content strings/parser scratch;
+    // value_owned_bytes protects the destination Value/Raw stage. Logical map
+    // payloads exclude opaque allocator/BTree node/RSS overhead.
     let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
         .max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
             serde::__private229::de::Content<'static>,
         )>()) as u64;
-    let value_slot = std::mem::size_of::<Value>()
-        .max(std::mem::size_of::<(String, Value)>()) as u64;
     let content_and_options = content_slot
         .checked_add(std::mem::size_of::<ChoiceOption>() as u64)?;
-    let wire_value_slots = input_bytes.checked_mul(10)?.checked_mul(value_slot)?;
-    let raw_payload_and_scratch = input_bytes.max(8)
-        .checked_mul(4 * (u64::from(usize::BITS) + 2))?;
     items.checked_mul(10)?.checked_mul(content_and_options)?
-        .checked_add(wire_value_slots)?
-        .checked_add(raw_payload_and_scratch)?
+        .checked_add(value_owned_bytes)?
         .checked_add(codec_owned_bytes)?
         .checked_add(diagnostic_bytes)
 }

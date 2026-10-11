@@ -201,6 +201,39 @@ pub(crate) fn validate_effect_json_byte_bound_with_work(
     validate_trusted_json_byte_bound_with_work(value, maximum, work)
 }
 
+/// Known owned payload/slot capacity of an already bounded SDK Value.
+/// Private allocator/map-node overhead is not a physical-memory assertion.
+pub(crate) fn json_value_logical_owned_bytes(value: &serde_json::Value) -> Result<u64> {
+    let overflow = || {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "JSON value capacity inventory overflows" } }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        { Error::Invalid("JSON value capacity inventory overflows".into()) }
+    };
+    match value {
+        serde_json::Value::String(text) => Ok(text.capacity() as u64),
+        serde_json::Value::Array(values) => {
+            let slots = values.capacity().checked_mul(std::mem::size_of::<serde_json::Value>())
+                .ok_or_else(overflow)? as u64;
+            values.iter().try_fold(slots, |bytes, value| {
+                bytes.checked_add(json_value_logical_owned_bytes(value)?).ok_or_else(overflow)
+            })
+        }
+        serde_json::Value::Object(values) => {
+            let slots = values.len().checked_mul(std::mem::size_of::<(String, serde_json::Value)>())
+                .ok_or_else(overflow)? as u64;
+            values.iter().try_fold(slots, |bytes, (key, value)| {
+                let value_bytes = json_value_logical_owned_bytes(value)?;
+                bytes.checked_add(key.capacity() as u64)
+                    .and_then(|bytes| bytes.checked_add(value_bytes))
+                    .ok_or_else(overflow)
+            })
+        }
+        _ => Ok(0),
+    }
+}
+
 /// Counts compact JSON input using a bounded writer, without allocating its bytes.
 pub(crate) fn json_byte_length<T: Serialize + ?Sized>(value: &T, maximum: u64) -> Result<u64> {
     struct Budget(u64);

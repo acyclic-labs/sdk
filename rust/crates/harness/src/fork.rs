@@ -982,7 +982,8 @@ fn decode_fork_manifest_with_work(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut decoded = if native {
         crate::contract::json_from_slice_bounded_native_trusted::<Vec<crate::conversation::Attachment>, _>(
-            bytes, bounds, schema_bytes, crate::wire::ErrorCode::Invalid, &mut charge,
+            bytes, bounds, schema_bytes, crate::wire::ErrorCode::Invalid,
+            crate::contract::JsonValueSchema::None, &mut charge,
         )
     } else {
         crate::contract::json_from_slice_bounded_trusted(bytes, bounds, schema_bytes, &mut charge)
