@@ -1243,6 +1243,32 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn failed_native_custody_transfer_keeps_existing_guard_until_value_drops() -> Result<()> {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            finite_content_budget(), &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let bytes = io.encode_json(&serde_json::Value::Null, 1024, true)?;
+        let held = io.owned_bytes()?;
+        let error = match io.into_native_custody(held + 1) {
+            Err(error) => error,
+            Ok(_) => panic!("unadmitted extra custody must fail"),
+        };
+        // This tuple also drops the owned bytes before the error's existing
+        // guard during unwinding; no replacement guard is acquired.
+        let failure = (bytes, error);
+        assert!(matches!(&failure.1, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: Some(_),
+        }));
+        assert_eq!(work.live_allocation_bytes(), baseline + held);
+        drop(failure);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     fn synthetic_token_count(

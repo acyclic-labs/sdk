@@ -125,6 +125,9 @@ lease. Quota, cancellation and provider errors retain their original cause.
 Native quota and cancellation failures use the canonical
 `Error::NativeWork { cause, custody }` directly. Allocation-free work/cancel
 causes need no guard; owned diagnostics transfer already admitted custody.
+A failed final custody transfer moves its existing data guard into that error,
+so already-owned output drops before its quota is released; failure never
+acquires a replacement guard.
 There is no secondary native error wrapper, marker trap, formatting allocation,
 or new retention attempt after a denied operation.
 Encoding first admits the necessary one-byte/one-token minimum without

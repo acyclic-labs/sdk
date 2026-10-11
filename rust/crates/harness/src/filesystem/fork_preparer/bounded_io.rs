@@ -176,7 +176,9 @@ impl PreparationIo {
         match self.ledger {
             PreparationLedger::Native { custody, .. } => {
                 let mut guard = custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-                guard.substitute(retained).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                if let Err(cause) = guard.substitute(retained) {
+                    return Err(Error::NativeWork { cause, custody: Some(guard) });
+                }
                 Ok(guard)
             }
             PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody requires the original native ledger".into())),
