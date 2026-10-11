@@ -386,7 +386,9 @@ mod source_cursor_codec_tests {
                     let (decoded, mut allocation) = result?;
                     decoder.finish()?;
                     assert_eq!(decoded, cursor);
-                    accounting.release_owned(&mut allocation, decoded.retained_bytes())?;
+                    let retained = decoded.retained_bytes();
+                    drop(decoded);
+                    accounting.release_owned(&mut allocation, retained)?;
                 } else {
                     assert!(matches!(result, Err(DemandError::StaleCursor)));
                 }
@@ -2163,36 +2165,17 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct DemandResourceScope<'a> {
+struct DemandScope<'a, T> {
     work: &'a mut DemandWork,
-    previous: Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
+    previous: Option<T>,
+    field: fn(&mut DemandWork) -> &mut T,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Drop for DemandResourceScope<'_> {
-    fn drop(&mut self) { self.work.native_resource = self.previous.take(); }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct DemandNativeCaptureScope<'a> {
-    work: &'a mut DemandWork,
-    previous: Option<CaptureCustodyBinding>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for DemandNativeCaptureScope<'_> {
-    fn drop(&mut self) { self.work.capture_custody = self.previous.take(); }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct DemandInvocationScope<'a> {
-    work: &'a mut DemandWork,
-    previous: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for DemandInvocationScope<'_> {
-    fn drop(&mut self) { self.work.native_invocation = self.previous.take(); }
+impl<T> Drop for DemandScope<'_, T> {
+    fn drop(&mut self) {
+        *(self.field)(self.work) = self.previous.take().expect("scope owns its prior context");
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2204,6 +2187,15 @@ pub(crate) struct NativeMaterializationLeafContext {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl DemandWork {
+    fn scope<T, R>(
+        &mut self, field: fn(&mut Self) -> &mut T, next: T,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = std::mem::replace(field(self), next);
+        let scope = DemandScope { work: self, previous: Some(previous), field };
+        operation(&mut *scope.work)
+    }
+
     pub(crate) fn enter_materialization_leaf(
         &mut self, invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
     ) -> NativeMaterializationLeafContext {
@@ -2226,9 +2218,7 @@ impl DemandWork {
         resource: Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = std::mem::replace(&mut self.native_resource, resource);
-        let scope = DemandResourceScope { work: self, previous };
-        operation(&mut *scope.work)
+        self.scope(|work| &mut work.native_resource, resource, operation)
     }
 
     /// Binds the already-validated claim-time capture view to fixed leaves.
@@ -2236,18 +2226,14 @@ impl DemandWork {
         &mut self, capture: Option<std::sync::Weak<CaptureTransientCustody>>,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = std::mem::replace(&mut self.capture_custody, capture.map(CaptureCustodyBinding::Native));
-        let scope = DemandNativeCaptureScope { work: self, previous };
-        operation(&mut *scope.work)
+        self.scope(|work| &mut work.capture_custody, capture.map(CaptureCustodyBinding::Native), operation)
     }
 
     pub(crate) fn with_invocation_scope<T>(
         &mut self, invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let previous = std::mem::replace(&mut self.native_invocation, invocation);
-        let scope = DemandInvocationScope { work: self, previous };
-        operation(&mut *scope.work)
+        self.scope(|work| &mut work.native_invocation, invocation, operation)
     }
 
     fn resource_scope(&self) -> Option<Arc<crate::materializer::NativeResourceAllowance>> {
@@ -3886,15 +3872,11 @@ impl<D> FilteredDemandSource<D> {
     /// Wraps canonical exclusions during explicitly unbounded startup.
     #[must_use]
     pub fn new(inner: D, excluded: Vec<NamespacePath>) -> Self {
-        Self::from_excluded(inner, FilteredExcludedPaths {
+        Self { inner, excluded: std::sync::Arc::new(FilteredExcludedPaths {
             roots: excluded,
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
-        })
-    }
-
-    fn from_excluded(inner: D, excluded: FilteredExcludedPaths) -> Self {
-        Self { inner, excluded: std::sync::Arc::new(excluded) }
+        }) }
     }
 
     /// Transfers already admitted exclusion data into an original native view.
@@ -3929,7 +3911,7 @@ impl<D> FilteredDemandSource<D> {
         }
         let mut shared_owner = work.claim(std::mem::size_of::<FilteredExcludedPaths>() as u64)?;
         custody.absorb(&mut shared_owner)?;
-        Ok(Self::from_excluded(inner, excluded))
+        Ok(Self { inner, excluded: std::sync::Arc::new(excluded) })
     }
 
     /// Retains an enclosing SDK owner allocation on this same shared payload.
@@ -6095,9 +6077,13 @@ pub mod native {
             }
         }
 
-        fn node(metadata: &HostStat) -> SourceNode {
+        fn node<W: SourceDemandReadWork>(metadata: &HostStat, work: &mut W) -> Result<SourceNode, DemandError> {
+            work.charge(WorkCounters {
+                bytes_hashed: version_hash_bytes() + identity_hash_bytes(metadata),
+                items_examined: 1, ..WorkCounters::default()
+            })?;
             let kind = node_kind(metadata.file_type());
-            SourceNode {
+            Ok(SourceNode {
                 kind,
                 file_identity: file_identity(metadata),
                 link_count: link_count(metadata),
@@ -6107,16 +6093,7 @@ pub mod native {
                     .then_some(metadata.len()),
                 version: version(metadata),
                 metadata: source_metadata(metadata),
-            }
-        }
-
-        fn node_measured<W: SourceDemandReadWork>(metadata: &HostStat, work: &mut W) -> Result<SourceNode, DemandError> {
-            work.charge(WorkCounters {
-                bytes_hashed: version_hash_bytes() + identity_hash_bytes(metadata),
-                items_examined: 1,
-                ..WorkCounters::default()
-            })?;
-            Ok(Self::node(metadata))
+            })
         }
 
         pub(super) fn cursor_lease<W: SourceDemandReadWork>(
@@ -6294,12 +6271,12 @@ pub mod native {
             )
             .map_err(|_| DemandError::InvalidRequest)?;
             let node = match &entry.stat {
-                Some(stat) => Self::node_measured(stat, work)?,
+                Some(stat) => Self::node(stat, work)?,
                 None => {
                     let result = self.inner.root.open_dir_held_with_work(directory, work)
                         .and_then(|parent| crate::native_host::stat_leaf_with_work(&parent, file_name, work));
                     match result {
-                        Ok(stat) => Self::node_measured(&stat, work)?,
+                        Ok(stat) => Self::node(&stat, work)?,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                             let bytes = name.as_bytes().len() as u64;
                             drop(name);
@@ -6331,12 +6308,12 @@ pub mod native {
             let name = crate::kernel::LogicalName::new(encoding, bytes, self.inner.limits.maximum_component_bytes)
                 .map_err(|_| DemandError::InvalidRequest)?;
             let node = match &entry.stat {
-                Some(stat) => Self::node_measured(stat, work)?,
+                Some(stat) => Self::node(stat, work)?,
                 None => {
                     let result = self.inner.root.open_dir_held_wide_with_work(directory, work)
                         .and_then(|parent| crate::native_host::stat_windows_leaf_with_work(&parent, &entry.name, work));
                     match result {
-                        Ok(stat) => Self::node_measured(&stat, work)?,
+                        Ok(stat) => Self::node(&stat, work)?,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                             let bytes = name.as_bytes().len() as u64;
                             drop(name);
@@ -6436,12 +6413,12 @@ pub mod native {
             self.check(source, work)?;
             self.observe_parent(path, work)?;
             let mut node = self.metadata(path, work)?.as_ref()
-                .map(|metadata| Self::node_measured(metadata, work)).transpose()?;
+                .map(|metadata| Self::node(metadata, work)).transpose()?;
             if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                 && self.admit_to_watches(path, work)?
             {
                 node = self.metadata(path, work)?.as_ref()
-                    .map(|metadata| Self::node_measured(metadata, work)).transpose()?;
+                    .map(|metadata| Self::node(metadata, work)).transpose()?;
             }
             self.check(source, work)?;
             Ok(node)

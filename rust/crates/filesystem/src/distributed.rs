@@ -155,22 +155,15 @@ impl<'a> ForkWork<'a> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_result<T>(
+    fn result<T>(
         &mut self, result: acyclic_stream::NativeStreamResult<T>,
     ) -> Result<acyclic_stream::NativeStreamOutput<T>, ForkFailure> {
-        self.native_sdk_result(result)
-            .map_err(|error| ForkFailure::new(error, self.spent()))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_sdk_result<T>(
-        &mut self, result: acyclic_stream::NativeStreamResult<T>,
-    ) -> Result<acyclic_stream::NativeStreamOutput<T>, AuthorityStoreError> {
         let original = self.original.expect("native SDK relay requires original funding");
-        let result = result.map_err(|error| AuthorityStoreError::NativeOriginal(original.runtime_error(error)))?
-            .map_err(AuthorityStoreError::from);
+        let result = result.map_err(|error| ForkFailure::new(
+            AuthorityStoreError::NativeOriginal(original.runtime_error(error)), original.receipt(),
+        ))?.map_err(AuthorityStoreError::from);
         self.work = original.receipt();
-        result
+        result.map_err(|error| ForkFailure::new(error, original.receipt()))
     }
 
     pub(crate) fn check(&self) -> Result<(), ForkFailure> {
@@ -1094,7 +1087,7 @@ where E: Send, F: FnMut() -> Fut + Send, Fut: Future<Output = Result<(), E>> + S
             Some(deadline) => store.provider.native_commit_before(request, deadline, meter.native_meter()).await,
             None => store.provider.native_commit(request, meter.native_meter()).await,
         };
-        meter.native_result(result).map(AuthorityProviderOutput::Native).map_err(Into::into)
+        meter.result(result).map(AuthorityProviderOutput::Native).map_err(Into::into)
     }
 }
 
@@ -1121,9 +1114,9 @@ where E: Send + 'static, F: FnMut() -> Fut + Clone + Send + 'static,
             request, deadline, meter.native_meter(), before,
         ).await;
         match result {
-            Err(error) => meter.native_result(Err(error)).map(AuthorityProviderOutput::Native).map_err(Into::into),
+            Err(error) => meter.result(Err(error)).map(AuthorityProviderOutput::Native).map_err(Into::into),
             Ok(Err(FsNativeCommitFailure::Provider(error))) =>
-                meter.native_result(Ok(Err(error))).map(AuthorityProviderOutput::Native).map_err(Into::into),
+                meter.result(Ok(Err(error))).map(AuthorityProviderOutput::Native).map_err(Into::into),
             Ok(Err(FsNativeCommitFailure::Owner(error))) => Err(AppendFailure::Owner(error)),
             Ok(Ok(outcome)) => Ok(AuthorityProviderOutput::Native(outcome)),
         }
@@ -1229,7 +1222,7 @@ impl AuthorityRead {
                 .transpose()?,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(stream) => stream.value_mut().next().await
-                .map(|record| meter.native_result(record).map(AuthorityProviderOutput::Native))
+                .map(|record| meter.result(record).map(AuthorityProviderOutput::Native))
                 .transpose()?,
         };
         meter.check()?;
@@ -1254,7 +1247,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if meter.is_native() {
             let result = self.provider.native_read(request, meter.native_meter()).await;
-            return meter.native_result(result).map(AuthorityRead::Native);
+            return meter.result(result).map(AuthorityRead::Native);
         }
         meter.admit(WorkCounters {
             authority_records_read: u64::from(request.limit),
@@ -1276,7 +1269,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if meter.is_native() {
             let result = self.provider.native_inspect_idempotency(key, meter.native_meter()).await;
-            let observation = meter.native_result(result)?;
+            let observation = meter.result(result)?;
             meter.check()?;
             return Ok(AuthorityProviderOutput::Native(observation));
         }
@@ -1687,11 +1680,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 let result = self.provider.native_read(acyclic_stream::ReadRequest {
                     path, from, limit: 1,
                 }, meter.native_meter()).await;
-                let mut stream = meter.native_result(result)?;
+                let mut stream = meter.result(result)?;
                 meter.check()?;
                 let next = stream.value_mut().next().await;
                 let record = match next {
-                    Some(result) => meter.native_result(result)?,
+                    Some(result) => meter.result(result)?,
                     None => return Err(ForkFailure::new(AuthorityStoreError::CorruptStatic("Stream authority path is missing its record"), meter.spent())),
                 };
                 let semantic = WorkCounters {
@@ -1718,7 +1711,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             if meter.is_native() {
                 meter.check()?;
                 let result = self.provider.native_tail(path, meter.native_meter()).await;
-                let tail = meter.native_result(result)?;
+                let tail = meter.result(result)?;
                 return Ok(*tail.value());
             }
             self.measured_tail(path, &mut meter.work, meter.budget, meter.cancellation).await
@@ -3342,7 +3335,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if meter.is_native() {
             let result = self.provider.native_commit(request, meter.native_meter()).await;
             meter.release_request()?;
-            let result = meter.native_result(result)?;
+            let result = meter.result(result)?;
             if matches!(result.value(), acyclic_stream::CommitOutcome::Committed(_)) {
                 meter.charge(writes)?;
             }
@@ -3411,7 +3404,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             #[cfg(not(target_arch = "wasm32"))]
             if meter.is_native() {
                 let result = self.provider.native_inspect_idempotency(key, meter.native_meter()).await;
-                meter.native_result(result).map(AuthorityProviderOutput::Native)
+                meter.result(result).map(AuthorityProviderOutput::Native)
             } else {
                 self.provider.inspect_idempotency(key).await.map(AuthorityProviderOutput::Plain)
                     .map_err(|error| ForkFailure::new(map_stream_error(error), meter.spent()))
