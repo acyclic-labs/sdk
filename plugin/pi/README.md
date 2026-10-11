@@ -512,11 +512,18 @@ receipts are `pi-doctor-review-negative-control.*` and
 ## Native recursive runner contract
 
 `pi_native.rs` consumes the existing `NativeProcessProvider`, task-owned effect
-plan/approval, and canonical created-child content binding. Its mixed view
-uses the existing lazy project mount adapter and original scratch
-`NativeVolumeView`. The authenticated factory performs bounded owned-directory
-creation, original preparation-journal recovery and actual SDK `mount_measured`;
-it adds no project materializer, physical-root watcher, journal or process runner.
+plan/approval, and canonical created-child content binding. Its native view is
+the SDK's actual `NativeVolumeView`: one immutable mixed declaration contains
+the existing lazy Project mount and materialized Scratch before the original
+preparation is Applied. The authenticated factory first retains a bounded,
+creator-witnessed root seed, mounts the existing lazy workspace under that root,
+then captures the SDK's sealed existing-lazy reference and prepares the whole
+mixed view once. It adds no generic view mixer, project materializer,
+physical-root watcher, journal or process runner. The root seed remains with its
+owner on every fallible mixed-preparation path; pre-journal cleanup independently
+requires its exact creator witness, fresh Created-child Write authority, and
+actual source-owner drain before bounded deletion. A missing journal is never
+evidence that a physical namespace is absent.
 Per-volume lazy snapshots remain explicit in approval. Native processes are
 trusted effects, not confinement. Native children have a separately created,
 unmounted private result volume; results are never stored inside a native view.
