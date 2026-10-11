@@ -74,7 +74,11 @@ cannot fabricate copied bytes.
 
 Trusted closed-record decoding acquires a scoped logical quota reservation in
 the same meter before Serde runs, then substitutes actual retained string/key
-capacities on success and releases the reservation on failure or cancellation.
+capacities on success. Native Serde failures move that already owned guard with
+the original decoder source in `NativeDecode`; source drops before custody.
+Cancellation and admission failures preserve their original cause without a
+replacement reservation. Persisted records use Storage; request decoding can
+select Invalid explicitly through `decode_preparation_with_code`.
 The peak counter includes that **actual logical reservation**, not measured
 heap/RSS or opaque allocator calls. Borrowed caller authority and shared,
 immutable schema configuration are not newly owned request memory; registry
@@ -113,6 +117,10 @@ Task admission must keep the returned metadata guard through declaration.
 Call `supports_native_stage(work)` before process capture or any other external
 effect that requires publication: unavailable custom publishers reject before
 I/O, while stock publishers validate their original sealed write binding.
+Native content futures return an outer `Result<NativeFutureBundle<T>>`; admit
+the actual concrete future box before constructing it, then call `?.await`.
+The bundle drops its boxed future before releasing its frame guard. Missing
+custom native capabilities return a fixed rejection before allocating a box.
 
 `release_if_quiescent_with_native_work(work, workflow)` borrows the already
 configured original workflow journal. It authenticates the same task, lease,
@@ -172,6 +180,13 @@ Their returned guards retain the actual audited logical decode reservation,
 not an opaque allocator-footprint estimate, through the last use of the DTO.
 The runtime still authenticates original admission and rechecks the suspension
 slot; it acquires no lease and executes no machine callback.
+Full native workflow replay and commit use those same journal engines, original
+operation/key, pinned machine, scoped content and coordinator/workflow tail CAS.
+Registered machines need a genuine native callback before any journal I/O;
+ordinary callbacks never execute under a native budget. Replay rechecks the
+original owner around observation, and returned DTOs carry their original
+logical reservation through last use. Native attempts do not populate a
+permanent request-owned history cache.
 
 `FilesystemSchedulerPayloadStore` stages join, quorum, and reducer JSON results in an explicitly granted agent-private volume. The coordinator verifies each exact staged result and its declared schema before publishing its `FileRef`, and repeats that verification on replay.
 

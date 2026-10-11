@@ -466,8 +466,8 @@ where
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = self.read_verified_with_io(reference, maximum_bytes, &io).await;
             let bytes = result?;
@@ -480,8 +480,8 @@ where
     fn verify_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = async {
                 self.require_read_measured(reference, &io)?;
@@ -3420,14 +3420,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let bytes = io.receive(pinned.read_measured(&path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
                 io.retain_owned(bytes.len() as u64)?;
                 fork_preparer_io::retain(self, &pinned, io).await?;
-                let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-                io.preflight(hash)?;
-                io.charge(hash)?;
                 bytes
             }
             None => self.read(&workspace, Some(&generation), &path, maximum_bytes).await?,
         };
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify_with_io(&bytes, io)?;
         Ok(bytes)
     }
 

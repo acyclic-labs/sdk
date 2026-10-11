@@ -747,14 +747,51 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(self)
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_native_workflow_validation(&self) -> Result<()> {
+        self.host.machines.require_native_work(&self.workflow.initial.machine)
+    }
+
     pub(crate) fn validate_workflow_record(
         &self,
         record: &crate::workflow::WorkflowRecord,
+    ) -> Result<()> {
+        self.validate_workflow_record_with_io(record, None)
+    }
+
+    pub(crate) fn validate_workflow_record_with_io(
+        &self, record: &crate::workflow::WorkflowRecord,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         if record.prior.machine != self.workflow.initial.machine {
             return Err(Error::Conflict(
                 "workflow implementation differs from task admission".into(),
             ));
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io {
+            if let Some(work) = io.original_native_work() {
+                self.host.machines.require_native_work(&record.prior.machine)?;
+                let before = io.owned_bytes()?;
+                let input_hold;
+                let input = crate::executor::clone_preparation(&record.input, Some(io))?;
+                input_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| Error::Invalid("workflow validation input custody underflow".into()))?)?;
+                let proof = self.host.machines.step_with_native_work(&record.prior, input, work)?;
+                if proof.0 != record.next || proof.1 != record.transition {
+                    return Err(Error::Conflict("workflow transition differs from pinned machine".into()));
+                }
+                if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
+                    crate::contract::validate_json_schema_value_with_io(
+                        &self.output_schema, value, "task output", Some(io))?;
+                }
+                drop(proof);
+                drop(input_hold);
+                return Ok(());
+            }
+        }
+        if io.is_some() {
+            return Err(Error::Unsupported("workflow machine lacks original native-work validation".into()));
         }
         let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
         if next != record.next || transition != record.transition {
@@ -4985,6 +5022,27 @@ pub(crate) mod tests {
                 status: MachineStatus::Suspended,
             })
         }
+
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        fn supports_native_work(&self) -> bool { true }
+
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        fn transition_with_native_work(
+            &self, state: &Value, _input: Value,
+            work: &acyclic_fs::NativeMaterializationWork,
+        ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+            // This fixture's integer state, empty vector and suspended tag
+            // have no owned heap buffers. Never clone an arbitrary Value.
+            let number = state.as_i64().map(serde_json::Number::from)
+                .or_else(|| state.as_u64().map(serde_json::Number::from))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native fixture requires a fixed-width integer state" })?;
+            let custody = work.retain_owned(0)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            Ok((MachineTransition {
+                state: Value::Number(number), commands: Vec::new(), status: MachineStatus::Suspended,
+            }, custody))
+        }
     }
 
     #[cfg(feature = "filesystem")]
@@ -5537,10 +5595,14 @@ pub(crate) mod tests {
         let mut workflow_host = crate::workflow::DurableWorkflowHost::open(
             host.machines.clone(), owner.workflow_admission().initial.clone(), workflow.clone(),
         ).await?;
-        workflow_host.step(
+        let transition = workflow_host.step_checked_with_native_work(
             OperationId::from_bytes([57; 16]), IdempotencyKey::new("native-suspended-step")?,
-            serde_json::json!(0),
+            serde_json::json!(0), &work, |_| Ok(()),
         ).await?;
+        assert!(matches!(transition.0.status, MachineStatus::Suspended));
+        assert!(work.receipt().backend_read_operations > 0);
+        assert!(work.receipt().backend_write_operations > 0);
+        drop(transition);
         // Cold selected-state reads keep the actual audited decode allowance
         // on the original operation ledger until the returned DTO drops.
         {
@@ -5558,11 +5620,30 @@ pub(crate) mod tests {
             assert_eq!(work.live_allocation_bytes(), baseline + admitted.1.bytes());
             drop(admitted);
             assert_eq!(work.live_allocation_bytes(), baseline);
+            let replay = workflow.replay_with_native_work(0, 1, &work)?.await?;
+            assert_eq!(replay.0.len(), 1);
+            assert_eq!(replay.0[0].next.revision, 1);
+            assert_eq!(work.live_allocation_bytes(), baseline + replay.1.bytes());
+            let retry = workflow.commit_with_native_work(
+                0, replay.0[0].idempotency_key.clone(), replay.0[0].clone(), &work,
+            )?.await?;
+            assert!(matches!(&retry.0, crate::workflow::WorkflowCommitOutcome::Replayed(record)
+                if record == &replay.0[0]));
+            drop(retry);
+            assert!(workflow.commit_with_native_work(
+                1, replay.0[0].idempotency_key.clone(), replay.0[0].clone(), &work,
+            )?.await.is_err(), "stale supplied revision cannot alter the original receipt");
+            drop(replay);
+            assert_eq!(work.live_allocation_bytes(), baseline);
             let denied_work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
             ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let denied_live = denied_work.live_allocation_bytes();
             assert!(matches!(workflow.observe_transition_with_native_work(1, &denied_work).await,
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
+            assert_eq!(denied_work.receipt().backend_read_operations, 0);
+            assert_eq!(denied_work.live_allocation_bytes(), denied_live);
+            assert!(matches!(workflow.replay_with_native_work(0, 1, &denied_work)?.await,
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
             assert_eq!(denied_work.receipt().backend_read_operations, 0);
             assert_eq!(denied_work.live_allocation_bytes(), denied_live);
@@ -5572,6 +5653,9 @@ pub(crate) mod tests {
             let prefix = cancelled_work.receipt();
             cancelled.cancel();
             assert!(matches!(workflow.admission_with_native_work(&cancelled_work).await,
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+            assert_eq!(cancelled_work.receipt(), prefix);
+            assert!(matches!(workflow.replay_with_native_work(0, 1, &cancelled_work),
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
             assert_eq!(cancelled_work.receipt(), prefix);
         }

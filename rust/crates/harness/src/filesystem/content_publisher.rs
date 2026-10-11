@@ -120,8 +120,8 @@ where
     fn stage_once_with_native_work<'a>(
         &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxProviderFuture<'a, crate::Result<(FileRef, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, &io).await;
             let file = result?;

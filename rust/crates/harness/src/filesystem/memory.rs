@@ -418,8 +418,8 @@ impl ContentPublisher for MemoryContentPublisher {
     fn stage_once_with_native_work<'a>(
         &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a, Result<(FileRef, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
             let result = async {
                 let persisted = self.files.stage_once_with_io(
@@ -1026,6 +1026,7 @@ mod tests {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
             finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let constructor_allocations = work.receipt().allocation_operations;
         let baseline = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
         storage.publisher.supports_native_stage(&work)?;
         assert_eq!(work.receipt().backend_write_operations, 0);
@@ -1049,18 +1050,35 @@ mod tests {
         let ordinary = OrdinaryOnlyPublisher {
             volume: storage.volume.clone(), effects: Arc::new(AtomicUsize::new(0)),
         };
-        assert!(matches!(ordinary.supports_native_stage(&work), Err(Error::Unsupported(_))));
+        assert!(matches!(ordinary.supports_native_stage(&work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
         assert_eq!(ordinary.effects.load(Ordering::SeqCst), 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
+        assert!(matches!(ordinary.stage_once_with_native_work(
+            OperationId::new(), "unsupported", b"never", "text/plain", "never", &work,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
+        assert_eq!(ordinary.effects.load(Ordering::SeqCst), 0);
+        let mut frame_budget = finite_content_budget();
+        frame_budget.allocation_operations = constructor_allocations;
+        let frame_work = acyclic_fs::NativeMaterializationWork::new(
+            frame_budget, &acyclic_fs::CancellationToken::new(),
+        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        assert!(matches!(storage.publisher.stage_once_with_native_work(
+            OperationId::new(), "frame-denied", b"never", "text/plain", "never", &frame_work,
+        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
+        assert_eq!(frame_work.receipt().allocation_operations, constructor_allocations);
+        assert_eq!(frame_work.receipt().bytes_copied, 0);
+        assert_eq!(frame_work.receipt().backend_read_operations, 0);
+        assert_eq!(frame_work.receipt().backend_write_operations, 0);
         let operation = OperationId::new();
         let (file, file_hold) = storage.publisher.stage_once_with_native_work(
             operation, "native.json", b"original", "application/json", "original.json", &work,
-        ).await?;
+        )?.await?;
         assert_eq!(file_hold.bytes(), file.logical_owned_bytes()?);
         assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline - file_hold.bytes());
         assert!(work.receipt().backend_write_operations > 0);
         let staged_allowance = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
-        let (bytes, bytes_hold) = storage.content_verifier.read_with_native_work(&file, 1024, &work).await?;
+        let (bytes, bytes_hold) = storage.content_verifier.read_with_native_work(&file, 1024, &work)?.await?;
         assert_eq!(bytes, b"original");
         assert_eq!(bytes_hold.bytes(), bytes.capacity() as u64);
         assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
@@ -1070,7 +1088,7 @@ mod tests {
         assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance);
         assert!(storage.publisher.stage_once_with_native_work(
             operation, "native.json", b"original", "text/plain", "changed", &work,
-        ).await.is_err());
+        )?.await.is_err());
         drop(file);
         drop(file_hold);
         assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline);
@@ -1078,7 +1096,7 @@ mod tests {
         cancellation.cancel();
         assert!(matches!(storage.publisher.stage_once_with_native_work(
             OperationId::new(), "cancelled", b"never", "text/plain", "never", &work,
-        ).await, Err(Error::NativeWork {
+        ), Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })));
         let mut denied = finite_content_budget();
         denied.backend_write_operations = 0;
@@ -1086,7 +1104,7 @@ mod tests {
             denied, &acyclic_fs::CancellationToken::new()).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         assert!(matches!(storage.publisher.stage_once_with_native_work(
             OperationId::new(), "denied", b"never", "text/plain", "never", &denied_work,
-        ).await, Err(Error::NativeWork {
+        )?.await, Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().backend_write_operations, 0);
         Ok(())
@@ -1155,7 +1173,7 @@ mod tests {
         ).await?.ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
         assert_eq!(recovered.0, staged.0);
         assert_eq!(recovered.1.bytes(), recovered.0.logical_owned_bytes()?);
-        let content = storage.content_verifier.read_with_native_work(&recovered.0, 1024, &work).await?;
+        let content = storage.content_verifier.read_with_native_work(&recovered.0, 1024, &work)?.await?;
         assert_eq!(content.0, b"original");
         drop(content);
         let writes = work.receipt().backend_write_operations;
@@ -1297,6 +1315,275 @@ mod tests {
         drop(failure);
         assert_eq!(producing.live_allocation_bytes(), producer_baseline);
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    const NATIVE_DECODE_FIELD: &str = concat!(
+        "audited_owned_payload_",
+        "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_",
+        "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_",
+        "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_",
+        "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz",
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct NativeDecodeAudit {
+        work: acyclic_fs::NativeMaterializationWork,
+        baseline: u64,
+        calls: usize,
+        reserved: u64,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    thread_local! {
+        static NATIVE_DECODE_AUDIT: std::cell::RefCell<Option<NativeDecodeAudit>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct NativeDecodeAuditScope;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl NativeDecodeAuditScope {
+        fn new(work: &acyclic_fs::NativeMaterializationWork) -> Self {
+            NATIVE_DECODE_AUDIT.with(|audit| {
+                let mut audit = audit.borrow_mut();
+                assert!(audit.is_none());
+                *audit = Some(NativeDecodeAudit {
+                    work: work.clone(), baseline: work.live_allocation_bytes(),
+                    calls: 0, reserved: 0,
+                });
+            });
+            Self
+        }
+
+        fn observed(&self) -> (usize, u64) {
+            NATIVE_DECODE_AUDIT.with(|audit| {
+                let audit = audit.borrow();
+                let audit = audit.as_ref().expect("live decode audit");
+                (audit.calls, audit.reserved)
+            })
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Drop for NativeDecodeAuditScope {
+        fn drop(&mut self) {
+            NATIVE_DECODE_AUDIT.with(|audit| { audit.borrow_mut().take(); });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn audited_native_decode_text<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<String, D::Error> {
+        NATIVE_DECODE_AUDIT.with(|audit| {
+            if let Some(audit) = audit.borrow_mut().as_mut() {
+                let live = audit.work.live_allocation_bytes();
+                assert!(live > audit.baseline, "reserve before serde owns its payload");
+                audit.calls += 1;
+                audit.reserved = live - audit.baseline;
+                assert_eq!(audit.work.receipt().peak_allocation_bytes, live);
+            }
+        });
+        // Only observe admission; use the actual serde String implementation.
+        <String as serde::Deserialize>::deserialize(decoder)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AuditedNativeDecodeRecord {
+        #[serde(
+            rename = "audited_owned_payload_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz",
+            deserialize_with = "audited_native_decode_text"
+        )]
+        text: String,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl super::super::PreparationRecord for AuditedNativeDecodeRecord {
+        fn maximum_slot_bytes() -> u64 {
+            // Closed single-String DTO: no flatten, ignored field, or Value tree.
+            std::mem::size_of::<Self>() as u64
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn assert_native_malformed_decode_custody(
+        input: &[u8], diagnostic: &str, explicit_code: Option<crate::wire::ErrorCode>,
+    ) -> Result<()> {
+        // The oracle is the real serde implementation, outside native accounting.
+        let expected = serde_json::from_slice::<AuditedNativeDecodeRecord>(input).unwrap_err();
+        let mut budget = finite_content_budget();
+        budget.allocation_operations = 1; // Only the original SDK meter allocation.
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let before = work.receipt();
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        assert_eq!(io.owned_bytes()?, 0);
+        assert_eq!(work.live_allocation_bytes(), baseline); // Caller input is borrowed.
+        let audit = NativeDecodeAuditScope::new(&work);
+        let error = match explicit_code {
+            Some(code) => match io.decode_preparation_with_code::<AuditedNativeDecodeRecord>(input, code) {
+                Err(error) => error,
+                Ok(_) => panic!("malformed closed record must fail"),
+            },
+            None => match io.decode_preparation::<AuditedNativeDecodeRecord>(input) {
+                Err(error) => error,
+                Ok(_) => panic!("malformed closed record must fail"),
+            },
+        };
+        let (calls, reserved) = audit.observed();
+        assert_eq!(calls, 1);
+        assert!(reserved > 0);
+        assert_eq!(io.owned_bytes()?, 0);
+        let code = explicit_code.unwrap_or(crate::wire::ErrorCode::Storage);
+        assert_eq!(error.code(), code);
+        assert!(matches!(&error, Error::NativeDecode { custody: Some(_), .. }));
+        drop(io); // The error must keep the original ledger's guard by itself.
+        assert_eq!(work.live_allocation_bytes(), baseline + reserved);
+        let receipt = work.receipt();
+        assert_eq!(receipt.peak_allocation_bytes, baseline + reserved);
+        assert_eq!(receipt.allocation_operations, before.allocation_operations);
+        assert_eq!(receipt.bytes_copied, before.bytes_copied);
+        assert_eq!(receipt.backend_read_operations, 0);
+        assert_eq!(receipt.backend_write_operations, 0);
+        assert_eq!(receipt.source_bytes_read - before.source_bytes_read, input.len() as u64);
+
+        // Preserve source-before-guard drop order during this custody transfer.
+        struct DecodeFailure {
+            source: serde_json::Error,
+            custody: acyclic_fs::NativeAllocation,
+        }
+        let failure = match error {
+            Error::NativeDecode { code: actual, source, custody: Some(custody) } => {
+                assert_eq!(actual, code);
+                DecodeFailure { source, custody }
+            }
+            _ => panic!("preserve the actual serde error with its original guard"),
+        };
+        assert_eq!(failure.custody.bytes(), reserved);
+        assert_eq!(work.live_allocation_bytes(), baseline + reserved);
+        assert_eq!(work.receipt(), receipt); // Moving custody never reserves again.
+        assert_eq!(failure.source.classify(), serde_json::error::Category::Data);
+        assert_eq!(failure.source.line(), expected.line());
+        assert_eq!(failure.source.column(), expected.column());
+        // Test-only formatting is not claimed as SDK-owned payload or operations.
+        assert_eq!(failure.source.to_string(), expected.to_string());
+        assert!(failure.source.to_string().contains(diagnostic));
+        drop(failure); // Source's final use precedes release of its existing guard.
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.receipt().peak_allocation_bytes, receipt.peak_allocation_bytes);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_unknown_field_keeps_long_serde_source_and_original_custody() -> Result<()> {
+        let unknown = "unexpected_owned_field_".repeat(128);
+        let input = format!(r#"{{"{NATIVE_DECODE_FIELD}":"owned","{unknown}":1}}"#);
+        assert_native_malformed_decode_custody(
+            input.as_bytes(), &format!("unknown field `{unknown}`"), None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_duplicate_field_keeps_long_serde_source_and_original_custody() -> Result<()> {
+        let input = format!(r#"{{"{NATIVE_DECODE_FIELD}":"owned","{NATIVE_DECODE_FIELD}":"duplicate"}}"#);
+        assert_native_malformed_decode_custody(
+            input.as_bytes(), &format!("duplicate field `{NATIVE_DECODE_FIELD}`"), None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_malformed_request_preserves_explicit_invalid_code() -> Result<()> {
+        let unknown = "unexpected_request_field_".repeat(128);
+        let input = format!(r#"{{"{NATIVE_DECODE_FIELD}":"owned","{unknown}":1}}"#);
+        assert_native_malformed_decode_custody(input.as_bytes(),
+            &format!("unknown field `{unknown}`"), Some(crate::wire::ErrorCode::Invalid))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_quota_denial_precedes_serde_and_keeps_typed_original_cause() -> Result<()> {
+        let input = format!(r#"{{"{NATIVE_DECODE_FIELD}":"never-owned"}}"#);
+        let mut budget = finite_content_budget();
+        budget.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let before = work.receipt();
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let audit = NativeDecodeAuditScope::new(&work);
+        assert!(matches!(io.decode_preparation::<AuditedNativeDecodeRecord>(input.as_bytes()),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }),
+                custody: None,
+            })));
+        assert_eq!(audit.observed(), (0, 0));
+        assert_eq!(io.owned_bytes()?, 0);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        let receipt = work.receipt();
+        assert_eq!(receipt.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(receipt.allocation_operations, before.allocation_operations);
+        assert_eq!(receipt.bytes_copied, before.bytes_copied);
+        assert_eq!(receipt.backend_read_operations, 0);
+        assert_eq!(receipt.backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_cancellation_precedes_serde_and_preserves_original_receipt() -> Result<()> {
+        let input = format!(r#"{{"{NATIVE_DECODE_FIELD}":"never-owned"}}"#);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let audit = NativeDecodeAuditScope::new(&work);
+        let before = work.receipt();
+        cancellation.cancel();
+        assert!(matches!(io.decode_preparation::<AuditedNativeDecodeRecord>(input.as_bytes()),
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+            })));
+        assert_eq!(audit.observed(), (0, 0));
+        assert_eq!(io.owned_bytes()?, 0);
+        assert_eq!(work.receipt(), before);
+        drop(io);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_preparation_constructor_allocation_denial_keeps_actual_inline_counters() {
+        let mut budget = finite_content_budget();
+        budget.allocation_operations = 0;
+        let result = acyclic_fs::NativeMaterializationWork::new(
+            budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work });
+        match result {
+            Err(Error::NativeConstruction {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
+                work,
+            }) => {
+                assert_eq!(work.allocation_operations, 0);
+                assert_eq!(work.peak_allocation_bytes, 0);
+                assert_eq!(work.bytes_copied, 0);
+                assert_eq!(work.backend_read_operations, 0);
+                assert_eq!(work.backend_write_operations, 0);
+            }
+            _ => panic!("deny the real original-meter allocation before serde can run"),
+        }
     }
 
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);

@@ -13,7 +13,7 @@ use crate::{
     durable_host::TaskJournalOwner,
     workflow::{
         MachineCheckpoint, MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
-        WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord, validate_workflow_commit,
+        WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
         validate_workflow_next, validate_workflow_page,
     },
 };
@@ -58,6 +58,58 @@ impl VerifiedSummary {
         self.revision = record.next.revision;
         self.checkpoint = record.next.clone();
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
+    }
+}
+
+// Only concrete identity slots and copied retry bytes are admitted here.
+// BTree allocator nodes are deliberately outside this logical DTO witness.
+struct FiniteWorkflowIdentities<'a> {
+    io: &'a PreparationIo,
+    owned: u64,
+    reserved: BTreeSet<crate::OperationId>,
+    keys: BTreeSet<IdempotencyKey>,
+}
+
+impl FiniteWorkflowIdentities<'_> {
+    fn advance(&mut self, record: &WorkflowRecord) -> Result<()> {
+        for identity in record.operation_ids() {
+            let bytes = std::mem::size_of::<crate::OperationId>() as u64;
+            let owned = self.owned.checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("workflow identity ownership overflow".into()))?;
+            let work = acyclic_fs::WorkCounters {
+                bytes_copied: bytes, items_examined: 1, ..Default::default()
+            };
+            self.io.check_cancellation()?;
+            self.io.preflight(work)?;
+            self.io.retain_owned(bytes)?;
+            self.owned = owned;
+            self.io.allocation_attempt(bytes)?;
+            self.io.charge(work)?;
+            self.reserved.insert(identity);
+        }
+        let copied = record.idempotency_key.0.len() as u64;
+        let bytes = copied.checked_add(std::mem::size_of::<IdempotencyKey>() as u64)
+            .ok_or_else(|| Error::Invalid("workflow identity ownership overflow".into()))?;
+        let work = acyclic_fs::WorkCounters {
+            bytes_copied: copied, items_examined: copied + 1, ..Default::default()
+        };
+        let owned = self.owned.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("workflow identity ownership overflow".into()))?;
+        self.io.preflight(work)?;
+        self.io.retain_owned(bytes)?;
+        self.owned = owned;
+        self.io.allocation_attempt(bytes)?;
+        self.io.charge(work)?;
+        self.keys.insert(record.idempotency_key.clone());
+        Ok(())
+    }
+}
+
+impl Drop for FiniteWorkflowIdentities<'_> {
+    fn drop(&mut self) {
+        self.reserved.clear();
+        self.keys.clear();
+        self.io.release(self.owned).expect("finite workflow identities retain their original ledger");
     }
 }
 
@@ -227,9 +279,7 @@ where
         &self, reference: &FileRef, verify_payloads: bool, verify_machine: bool,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
-        if io.is_some() && verify_machine {
-            return Err(Error::Unsupported("finite workflow replay cannot execute an unmeasured machine callback".into()));
-        }
+        self.require_machine_io(verify_machine, io)?;
         let _prefix;
         let prefix = crate::contract::preparation_format(
             format_args!(".system/workflows/{}/", self.workflow_id), io,
@@ -254,7 +304,7 @@ where
         record.validate_with_io(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
-                owner.validate_workflow_record(&record)?;
+                owner.validate_workflow_record_with_io(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
                 || record.next.machine != owner.workflow_admission().initial.machine
             {
@@ -277,13 +327,22 @@ where
         self.replay_records_with_io(after, maximum, verify_payloads, verify_machine, None).await
     }
 
+    fn require_machine_io(&self, verify_machine: bool, io: Option<&PreparationIo>) -> Result<()> {
+        if verify_machine && io.is_some() {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.and_then(PreparationIo::original_native_work).is_some() {
+                return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
+            }
+            return Err(Error::Unsupported("finite workflow replay requires a native machine callback".into()));
+        }
+        Ok(())
+    }
+
     async fn replay_records_with_io(
         &self, after: u64, maximum: u32, verify_payloads: bool,
         verify_machine: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<WorkflowRecord>> {
-        if io.is_some() && verify_machine {
-            return Err(Error::Unsupported("finite workflow replay cannot execute an unmeasured machine callback".into()));
-        }
+        self.require_machine_io(verify_machine, io)?;
         validate_workflow_page(after, maximum)?;
         let _path;
         let (stream, held) = self.observation_stream(&self.path, io)?;
@@ -581,6 +640,156 @@ where
         Ok((revision, matched))
     }
 
+    pub(crate) async fn verified_history_with_io(
+        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<(u64, Option<WorkflowRecord>)> {
+        match io {
+            None => self.verified_history(admission, operation_id).await,
+            Some(io) => self.finite_verified_history(admission, operation_id, None, false, io)
+                .await.map(|(revision, matched, _)| (revision, matched)),
+        }
+    }
+
+    async fn finite_verified_history(
+        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
+        candidate: Option<&WorkflowRecord>, require_next: bool, io: &PreparationIo,
+    ) -> Result<(u64, Option<WorkflowRecord>, bool)> {
+        admission.validate_with_io(Some(io))?;
+        let mut identities = FiniteWorkflowIdentities {
+            io, owned: 0, reserved: BTreeSet::new(), keys: BTreeSet::new(),
+        };
+        // Borrow the admission and original replay DTOs: no checkpoint or
+        // admission clone, and no request-owned summary enters the cache.
+        let mut previous_page_owned = 0;
+        let mut matched_page_owned = 0;
+        let mut previous: Option<WorkflowRecord> = None;
+        let mut matched = None;
+        let mut revision = 0;
+        let mut terminal = false;
+        let mut ready = false;
+        loop {
+            let before_page = io.owned_bytes()?;
+            let page = self.replay_records_with_io(
+                revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, Some(io),
+            ).await?;
+            // Recover the actual charged page allowance, not a guessed heap
+            // size. Replay's returned DTO/vector custody belongs to this IO.
+            let page_owned = io.owned_bytes()?.checked_sub(before_page)
+                .ok_or_else(|| Error::Invalid("workflow replay ownership decreased".into()))?;
+            identities.owned = identities.owned.checked_add(page_owned)
+                .ok_or_else(|| Error::Invalid("workflow replay ownership overflow".into()))?;
+            let mut page_has_match = false;
+            if page.is_empty() { break; }
+            for record in page {
+                let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+                self.finite_require_next(checkpoint, terminal, &identities, &record, io)
+                    .map_err(|error| match error {
+                        Error::NativeWork { .. } => error,
+                        _ => Error::Storage("workflow history diverges from admission or reuses an identity".into()),
+                    })?;
+                identities.advance(&record)?;
+                revision = record.next.revision;
+                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
+                if let Some(prior) = previous.take() {
+                    if prior.operation_id == operation_id {
+                        matched = Some(prior);
+                        if previous_page_owned != 0 {
+                            matched_page_owned = previous_page_owned;
+                        } else {
+                            page_has_match = true;
+                            matched_page_owned = page_owned;
+                        }
+                    } else {
+                        drop(prior);
+                        if previous_page_owned != 0 {
+                            io.release(previous_page_owned)?;
+                            identities.owned -= previous_page_owned;
+                        }
+                    }
+                    previous_page_owned = 0;
+                }
+                previous = Some(record);
+            }
+            previous_page_owned = if page_has_match { 0 } else { page_owned };
+        }
+        if let Some(record) = candidate {
+            io.check_cancellation()?;
+            for identity in record.operation_ids() {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                if identities.reserved.contains(&identity) && matched.is_none()
+                    && previous.as_ref().is_none_or(|prior| prior.operation_id != operation_id) {
+                    return Err(Error::Conflict("workflow command identity is already bound".into()));
+                }
+            }
+            if require_next && revision == record.prior.revision {
+                let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+                self.finite_require_next(checkpoint, terminal, &identities, record, io)?;
+                ready = true;
+            }
+        }
+        if let Some(prior) = previous
+            && prior.operation_id == operation_id {
+            if previous_page_owned != 0 {
+                matched_page_owned = previous_page_owned;
+            }
+            matched = Some(prior);
+        }
+        // Keep the matched page's conservative concrete DTO allowance in the
+        // same caller IO. Every other page drops physically before scope quota.
+        identities.owned = identities.owned.checked_sub(matched_page_owned)
+            .ok_or_else(|| Error::Invalid("workflow matched custody underflow".into()))?;
+        Ok((revision, matched, ready))
+    }
+
+    fn finite_require_next(
+        &self, checkpoint: &MachineCheckpoint, terminal: bool,
+        identities: &FiniteWorkflowIdentities<'_>, record: &WorkflowRecord,
+        io: &PreparationIo,
+    ) -> Result<()> {
+        crate::workflow::validate_workflow_next_with_io(
+            checkpoint, terminal, &identities.reserved, &identities.keys, record, Some(io),
+        )
+    }
+
+    pub(crate) async fn cached_preflight_with_io(
+        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let Some(io) = io else { return self.cached_preflight(admission, record); };
+        // A native local summary cannot be trusted through the permanent cache.
+        // Re-run the authoritative full chain and prove the required next step.
+        let (_, _, ready) = self.finite_verified_history(
+            admission, record.operation_id, Some(record), true, io,
+        ).await?;
+        Ok(ready)
+    }
+
+    pub(crate) fn advance_cached_with_io(
+        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) {
+        if io.is_none() { self.advance_cached(admission, record); }
+    }
+
+    pub(crate) async fn verified_preflight_with_io(
+        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<(u64, Option<WorkflowRecord>, bool)> {
+        if let Some(io) = io {
+            return self.finite_verified_history(
+                admission, record.operation_id, Some(record), true, io,
+            ).await;
+        }
+        if self.cached_preflight(admission, record)? {
+            return Ok((record.prior.revision, None, true));
+        }
+        let (revision, matched) = self.verified_history(admission, record.operation_id).await?;
+        let ready = matched.is_none() && revision == record.prior.revision
+            && self.cached_preflight(admission, record)?;
+        Ok((revision, matched, ready))
+    }
+
     fn cached_preflight(
         &self,
         admission: &WorkflowAdmission,
@@ -615,15 +824,31 @@ where
     }
 
     async fn has_transition(&self) -> Result<bool> {
-        let stream = self.stream.stream(&self.path)?;
-        let entries = match stream.read(0, 1).await {
+        self.has_transition_with_io(None).await
+    }
+
+    pub(crate) async fn has_transition_with_io(&self, io: Option<&PreparationIo>) -> Result<bool> {
+        let _path;
+        let (stream, held) = self.observation_stream(&self.path, io)?;
+        _path = held;
+        self.begin_observation_call(io)?;
+        let mut entries = match stream.read(0, 1).await {
             Ok(entries) => entries,
-            Err(StreamError::NotFound) => return Ok(false),
+            Err(StreamError::NotFound) => {
+                self.check_observation_cancellation(io)?;
+                return Ok(false);
+            }
             Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        let _entry;
+        let Some((entry, held)) = Self::next_observation_record(&mut entries, io).await? else {
+            return Ok(false);
+        };
+        _entry = held;
+        if entry.sequence != 0 || Self::next_observation_record(&mut entries, io).await?.is_some() {
+            return Err(Error::Storage("workflow transition stream is invalid".into()));
         }
-        .try_collect::<Vec<_>>()
-        .await?;
-        Ok(!entries.is_empty())
+        Ok(true)
     }
 
     async fn read_admission(&self) -> Result<Option<WorkflowAdmission>> {
@@ -709,32 +934,54 @@ where
     }
 
     async fn stage_admission(&self, admission: &WorkflowAdmission) -> Result<FileRef> {
-        let bytes =
-            serde_json::to_vec(admission).map_err(|error| Error::Invalid(error.to_string()))?;
+        self.stage_admission_with_io(admission, None).await
+    }
+
+    pub(crate) async fn stage_admission_with_io(
+        &self, admission: &WorkflowAdmission, io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        let _bytes;
+        let bytes = match io {
+            Some(io) => io.encode_json(admission, self.maximum_payload_bytes, false)?,
+            None => serde_json::to_vec(admission).map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
         if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(Error::Invalid(
-                "workflow admission exceeds private-file limit".into(),
-            ));
+            return Err(Error::Invalid("workflow admission exceeds private-file limit".into()));
         }
-        let write = ContentGrant::verify(
-            &self.verifier,
-            &self.scope,
-            &self.volume,
-            VolumeOperation::Write,
+        let _path;
+        let path = crate::contract::preparation_format(
+            format_args!(".system/workflows/{}/admission.json", self.workflow_id), io,
         )?;
-        self.host
-            .put_internal_content(
-                &self.volume,
-                &write,
-                &format!(".system/workflows/{}/admission.json", self.workflow_id),
-                &bytes,
-                "application/json",
-                "admission.json",
-                self.maximum_payload_bytes,
-                &IdempotencyKey::new(format!("workflow:{}:admission", self.workflow_id))?,
-                InternalContentClass::Workflow,
-            )
-            .await
+        _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
+        let _key;
+        let key = crate::contract::preparation_format(
+            format_args!("workflow:{}:admission", self.workflow_id), io,
+        )?;
+        _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+        let key = IdempotencyKey::new(key)?;
+        let _grant;
+        let grant = self.stage_write_grant(io)?;
+        _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+        self.host.put_content_impl(
+            &self.volume, &grant, &path, &bytes, "application/json", "admission.json",
+            self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io,
+        ).await
+    }
+
+    fn stage_write_grant(&self, io: Option<&PreparationIo>) -> Result<ContentGrant> {
+        match io {
+            Some(io) => {
+                let mut borrowed = io.history_io();
+                ContentGrant::verify_with_work(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
+                    io.remaining()?.bytes_encoded, &mut Some(&mut borrowed),
+                )
+            }
+            None => ContentGrant::verify(
+                &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
+            ),
+        }
     }
 
     async fn verify_command_payloads(&self, record: &WorkflowRecord) -> Result<()> {
@@ -771,41 +1018,42 @@ where
     }
 
     async fn stage(&self, record: &WorkflowRecord) -> Result<FileRef> {
-        // A committed transition may expose its commands immediately on
-        // recovery. Admit their immutable argument versions first.
-        self.verify_command_payloads(record).await?;
-        let bytes =
-            serde_json::to_vec(record).map_err(|error| Error::Invalid(error.to_string()))?;
+        self.stage_with_io(record, None).await
+    }
+
+    pub(crate) async fn stage_with_io(
+        &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        // Recovery can expose commands immediately; authenticate every payload first.
+        self.verify_command_payloads_with_io(record, io).await?;
+        let _bytes;
+        let bytes = match io {
+            Some(io) => io.encode_json(record, self.maximum_payload_bytes, false)?,
+            None => serde_json::to_vec(record).map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
         if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(Error::Invalid(
-                "workflow transition exceeds private-file limit".into(),
-            ));
+            return Err(Error::Invalid("workflow transition exceeds private-file limit".into()));
         }
-        let grant = ContentGrant::verify(
-            &self.verifier,
-            &self.scope,
-            &self.volume,
-            VolumeOperation::Write,
+        let _path;
+        let path = crate::contract::preparation_format(
+            format_args!(".system/workflows/{}/{:020}-{}.json",
+                self.workflow_id, record.prior.revision, record.operation_id), io,
         )?;
-        self.host
-            .put_internal_content(
-                &self.volume,
-                &grant,
-                &format!(
-                    ".system/workflows/{}/{:020}-{}.json",
-                    self.workflow_id, record.prior.revision, record.operation_id
-                ),
-                &bytes,
-                "application/json",
-                "transition.json",
-                self.maximum_payload_bytes,
-                &IdempotencyKey::new(format!(
-                    "workflow:{}:{}",
-                    self.workflow_id, record.operation_id
-                ))?,
-                InternalContentClass::Workflow,
-            )
-            .await
+        _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
+        let _key;
+        let key = crate::contract::preparation_format(
+            format_args!("workflow:{}:{}", self.workflow_id, record.operation_id), io,
+        )?;
+        _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+        let key = IdempotencyKey::new(key)?;
+        let _grant;
+        let grant = self.stage_write_grant(io)?;
+        _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+        self.host.put_content_impl(
+            &self.volume, &grant, &path, &bytes, "application/json", "transition.json",
+            self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io,
+        ).await
     }
 
     async fn reconcile(&self, record: &WorkflowRecord) -> Result<Option<WorkflowCommitOutcome>> {
@@ -839,6 +1087,225 @@ where
         }
         Ok(None)
     }
+
+    pub(crate) async fn reconcile_with_io(
+        &self, record: &WorkflowRecord, io: Option<&PreparationIo>,
+    ) -> Result<Option<WorkflowCommitOutcome>> {
+        let Some(io) = io else { return self.reconcile(record).await; };
+        let admission = self.read_admission_with_io(Some(io)).await?.ok_or_else(|| {
+            Error::Conflict("workflow transition has no retained admission".into())
+        })?;
+        let (_, existing, _) = self.finite_verified_history(
+            &admission, record.operation_id, Some(record), false, io,
+        ).await?;
+        let Some(existing) = existing else { return Ok(None); };
+        // Compare the exact original operation, never just a mutable-head
+        // existence predicate. Both complete DTO traversals are admitted.
+        let _expected_hold;
+        let expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
+        _expected_hold = io.guard_owned(expected.len() as u64)?;
+        let _actual_hold;
+        let actual = io.encode_json(&existing, self.maximum_payload_bytes, false)?;
+        _actual_hold = io.guard_owned(actual.len() as u64)?;
+        if existing != *record {
+            return Err(Error::Conflict("workflow operation identity reused".into()));
+        }
+        self.verify_command_payloads_with_io(&existing, Some(io)).await?;
+        Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
+    }
+
+    pub(crate) async fn commit_with_io(
+        &self,
+        expected_revision: u64,
+        idempotency_key: IdempotencyKey,
+        record: WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<WorkflowCommitOutcome> {
+        // Capability denial precedes owner verification and every backend call.
+        self.require_machine_io(true, io)?;
+        if let Some(io) = io { io.check_cancellation()?; }
+        if let Some(owner) = &self.owner {
+            let mut borrowed = io.map(PreparationIo::history_io);
+            let mut work = borrowed.as_mut()
+                .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+            owner.verify_with_work(false, &mut work).await?;
+        }
+        let _admission;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let admission = self.read_admission_with_io(io).await?.ok_or_else(|| {
+            Error::Conflict("workflow transition has no retained admission".into())
+        })?;
+        _admission = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| Error::Invalid("workflow admission custody underflow".into()))?))
+            .transpose()?;
+        crate::workflow::validate_workflow_commit_with_io(
+            expected_revision, &idempotency_key, &record, io,
+        )?;
+        if let Some(owner) = &self.owner {
+            owner.validate_workflow_record_with_io(&record, io)?;
+        }
+        {
+            let history_hold;
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (revision, existing, ready) =
+                self.verified_preflight_with_io(&admission, &record, io).await?;
+            history_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| Error::Invalid("workflow preflight custody underflow".into()))?))
+                .transpose()?;
+            if let Some(existing) = existing {
+                if existing != record {
+                    return Err(Error::Conflict(
+                        "workflow operation identity is already bound".into(),
+                    ));
+                }
+                self.verify_command_payloads_with_io(&existing, io).await?;
+                if let Some(held) = history_hold { held.into_retained(); }
+                return Ok(WorkflowCommitOutcome::Replayed(existing));
+            }
+            if revision != expected_revision {
+                return Err(Error::Conflict(
+                    "workflow checkpoint revision is stale".into(),
+                ));
+            }
+            if !ready {
+                return Err(Error::Conflict(
+                    "workflow transition does not follow its retained checkpoint".into(),
+                ));
+            }
+        }
+        let _reference;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let reference = self.stage_with_io(&record, io).await?;
+        _reference = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| Error::Invalid("workflow staging custody underflow".into()))?))
+            .transpose()?;
+        {
+            let _staged;
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let staged = self.read_record_with_io(&reference, true, true, io).await?;
+            _staged = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| Error::Invalid("workflow staged-record custody underflow".into()))?))
+                .transpose()?;
+            if staged != record {
+                return Err(Error::Conflict(
+                    "staged workflow record disagrees with its transition".into(),
+                ));
+            }
+        }
+        let _bytes;
+        let bytes = match io {
+            Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            None => serde_json::to_vec(&reference)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid(
+                "workflow reference exceeds Stream limit".into(),
+            ));
+        }
+        let digest = {
+            let _hash_input;
+            let hash_input = crate::contract::preparation_format(
+                format_args!("{}:{}", self.path, idempotency_key.as_str()), io,
+            )?;
+            _hash_input = io.map(|io| io.guard_owned(hash_input.capacity() as u64)).transpose()?;
+            if let Some(io) = io {
+                let hashing = acyclic_fs::WorkCounters {
+                    bytes_hashed: hash_input.len() as u64, ..Default::default()
+                };
+                io.preflight(hashing)?;
+                io.charge(hashing)?;
+            }
+            blake3::hash(hash_input.as_bytes())
+        };
+        // The key copy owns exactly the digest payload; the append engine admits
+        // its concrete Bytes-vector slots before allocating its envelope.
+        let _key = io.map(|io| io.reserve_decode(digest.as_bytes().len() as u64)).transpose()?;
+        if let Some(io) = io {
+            let copying = acyclic_fs::WorkCounters {
+                bytes_copied: digest.as_bytes().len() as u64, ..Default::default()
+            };
+            io.preflight(copying)?;
+            io.allocation_attempt(digest.as_bytes().len() as u64)?;
+            io.charge(copying)?;
+        }
+        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.is_some() {
+                return Error::NativeStream { source: error, custody: None };
+            }
+            Error::Invalid(error.to_string())
+        })?;
+        let body = Bytes::from(bytes);
+        if let Some(owner) = &self.owner {
+            let mut borrowed = io.map(PreparationIo::history_io);
+            let mut work = borrowed.as_mut()
+                .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+            if owner.append_workflow_with_work(
+                false, expected_revision, &key, body, &mut work,
+            ).await? {
+                self.advance_cached_with_io(&admission, &record, io);
+                return Ok(WorkflowCommitOutcome::Applied(record));
+            }
+            return match self.reconcile_with_io(&record, io).await? {
+                Some(previous) => Ok(previous),
+                None => Err(Error::Conflict(
+                    "workflow checkpoint or ownership changed".into(),
+                )),
+            };
+        }
+        let _path;
+        let (stream, held) = self.observation_stream(&self.path, io)?;
+        _path = held;
+        let appended = match io {
+            Some(io) => {
+                let mut borrowed = io.history_io();
+                crate::distributed::append_keyed_with_work(
+                    (&stream, &self.stream), body, Some(expected_revision), key,
+                    record.operation_id, "workflow retry identity", &mut Some(&mut borrowed),
+                ).await
+            }
+            None => stream.append_batch(vec![body], Some(expected_revision), Some(key))
+                .await.map_err(|error| match error {
+                    StreamError::Unavailable => Error::Indeterminate(record.operation_id),
+                    StreamError::IdempotencyMismatch =>
+                        Error::Conflict("workflow retry identity reused".into()),
+                    error => Error::Storage(error.to_string()),
+                }),
+        };
+        match appended {
+            Ok(AppendOutcome::Committed(receipt))
+                if receipt.start == expected_revision
+                    && Some(receipt.end) == expected_revision.checked_add(1) =>
+            {
+                self.advance_cached_with_io(&admission, &record, io);
+                Ok(WorkflowCommitOutcome::Applied(record))
+            }
+            Ok(AppendOutcome::Committed(_)) => {
+                Err(Error::Storage("workflow append receipt is invalid".into()))
+            }
+            Ok(AppendOutcome::TailConflict { .. }) => {
+                match self.reconcile_with_io(&record, io).await? {
+                    Some(previous) => Ok(previous),
+                    None => Err(Error::Conflict(
+                        "workflow checkpoint revision is stale".into(),
+                    )),
+                }
+            }
+            Err(Error::Indeterminate(_)) => match self.reconcile_with_io(&record, io).await {
+                Ok(Some(previous)) => Ok(previous),
+                Ok(None) | Err(Error::Storage(_)) => {
+                    Err(Error::Indeterminate(record.operation_id))
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                Err(Error::NativeStream { source: StreamError::Unavailable, .. }) =>
+                    Err(Error::Indeterminate(record.operation_id)),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl<P, A, O> WorkflowJournal for FilesystemWorkflowJournal<P, A, O>
@@ -849,6 +1316,41 @@ where
 {
     fn task_binding(&self) -> Option<(crate::TaskId, &crate::scheduler::LeaseFence)> {
         self.owner.as_ref().map(TaskJournalOwner::task_binding)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_work(&self) -> bool { true }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replay_with_native_work<'a>(
+        &'a self, after: u64, maximum: u32,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>> {
+        if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+            let records = self.replay_records_with_io(after, maximum, true, true, Some(&io)).await?;
+            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((records, custody))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn commit_with_native_work<'a>(
+        &'a self, expected_revision: u64, idempotency_key: IdempotencyKey,
+        record: WorkflowRecord, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowCommitOutcome, acyclic_fs::NativeAllocation)>> {
+        if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let outcome = self.commit_with_io(expected_revision, idempotency_key, record, Some(&io)).await?;
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((outcome, custody))
+        })
     }
 
     fn admit<'a>(
@@ -959,106 +1461,6 @@ where
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
         let span = obs_span!("acyclic.harness.workflow.commit", rev = expected_revision);
-        traced(span, async move {
-            if let Some(owner) = &self.owner {
-                owner.verify(false).await?;
-            }
-            let admission = self.read_admission().await?.ok_or_else(|| {
-                Error::Conflict("workflow transition has no retained admission".into())
-            })?;
-            validate_workflow_commit(expected_revision, &idempotency_key, &record)?;
-            if let Some(owner) = &self.owner {
-                owner.validate_workflow_record(&record)?;
-            }
-            if !self.cached_preflight(&admission, &record)? {
-                // Reopening or reconciling an old retry scans the authoritative
-                // chain once. The normal next step uses its verified summary;
-                // Stream's tail CAS fences concurrent writers after preflight.
-                let (revision, existing) = self
-                    .verified_history(&admission, record.operation_id)
-                    .await?;
-                if let Some(existing) = existing {
-                    return if existing == record {
-                        self.verify_command_payloads(&existing).await?;
-                        Ok(WorkflowCommitOutcome::Replayed(existing))
-                    } else {
-                        Err(Error::Conflict(
-                            "workflow operation identity is already bound".into(),
-                        ))
-                    };
-                }
-                if revision != expected_revision {
-                    return Err(Error::Conflict(
-                        "workflow checkpoint revision is stale".into(),
-                    ));
-                }
-                self.cached_preflight(&admission, &record)?;
-            }
-            let reference = self.stage(&record).await?;
-            if self.read_record(&reference, true, true).await? != record {
-                return Err(Error::Conflict(
-                    "staged workflow record disagrees with its transition".into(),
-                ));
-            }
-            let bytes = serde_json::to_vec(&reference)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "workflow reference exceeds Stream limit".into(),
-                ));
-            }
-            let digest =
-                blake3::hash(format!("{}:{}", self.path, idempotency_key.as_str()).as_bytes());
-            let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if let Some(owner) = &self.owner {
-                if owner
-                    .append_workflow(false, expected_revision, &key, Bytes::from(bytes))
-                    .await?
-                {
-                    self.advance_cached(&admission, &record);
-                    return Ok(WorkflowCommitOutcome::Applied(record));
-                }
-                return match self.reconcile(&record).await? {
-                    Some(previous) => Ok(previous),
-                    None => Err(Error::Conflict(
-                        "workflow checkpoint or ownership changed".into(),
-                    )),
-                };
-            }
-            let stream = self.stream.stream(&self.path)?;
-            match stream
-                .append_batch(vec![Bytes::from(bytes)], Some(expected_revision), Some(key))
-                .await
-            {
-                Ok(AppendOutcome::Committed(receipt))
-                    if receipt.start == expected_revision
-                        && Some(receipt.end) == expected_revision.checked_add(1) =>
-                {
-                    self.advance_cached(&admission, &record);
-                    Ok(WorkflowCommitOutcome::Applied(record))
-                }
-                Ok(AppendOutcome::Committed(_)) => {
-                    Err(Error::Storage("workflow append receipt is invalid".into()))
-                }
-                Ok(AppendOutcome::TailConflict { .. }) => match self.reconcile(&record).await? {
-                    Some(previous) => Ok(previous),
-                    None => Err(Error::Conflict(
-                        "workflow checkpoint revision is stale".into(),
-                    )),
-                },
-                Err(StreamError::Unavailable) => match self.reconcile(&record).await {
-                    Ok(Some(previous)) => Ok(previous),
-                    Ok(None) | Err(Error::Storage(_)) => {
-                        Err(Error::Indeterminate(record.operation_id))
-                    }
-                    Err(error) => Err(error),
-                },
-                Err(StreamError::IdempotencyMismatch) => {
-                    Err(Error::Conflict("workflow retry identity reused".into()))
-                }
-                Err(error) => Err(Error::Storage(error.to_string())),
-            }
-        })
+        traced(span, self.commit_with_io(expected_revision, idempotency_key, record, None))
     }
 }

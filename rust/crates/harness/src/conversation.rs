@@ -757,11 +757,65 @@ impl FileDescriptor {
 
     /// Verifies both digest and exact length, including empty files.
     pub fn verify(&self, bytes: &[u8]) -> Result<()> {
-        if bytes.len() as u64 != self.byte_length || Sha256::digest(bytes).as_slice() != self.sha256
-        {
-            return Err(Error::Invalid(
-                "file content does not match its descriptor".into(),
-            ));
+        self.verify_inner(bytes, &mut || Ok(()), false)
+    }
+
+    #[cfg(feature = "filesystem")]
+    /// Verifies through the existing borrowed cumulative history observer.
+    pub(crate) fn verify_with_work(
+        &self, bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work.as_deref().and_then(|observer| observer.original_native_work()).is_some();
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        self.verify_inner(bytes, &mut || {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
+            Ok(())
+        }, native)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn verify_with_io(
+        &self, bytes: &[u8], io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let mut observer = io.map(crate::executor::PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        self.verify_with_work(bytes, &mut work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    /// Verifies the same descriptor with the original native ledger.
+    pub fn verify_with_native_work(
+        &self, bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.admit(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.verify_inner(bytes, &mut || {
+            let next = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
+            work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            work.charge(next).map_err(|cause| Error::NativeWork { cause, custody: None })
+        }, true)
+    }
+
+    fn verify_inner(
+        &self, bytes: &[u8], before_hash: &mut impl FnMut() -> Result<()>, native: bool,
+    ) -> Result<()> {
+        let matches = if bytes.len() as u64 != self.byte_length {
+            false
+        } else {
+            before_hash()?;
+            Sha256::digest(bytes).as_slice() == self.sha256
+        };
+        if !matches {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "file content does not match its descriptor" });
+            }
+            let _ = native;
+            return Err(Error::Invalid("file content does not match its descriptor".into()));
         }
         Ok(())
     }
@@ -1110,14 +1164,16 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn read_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, crate::Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger content resolution is unavailable".into())) })
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger content resolution is unavailable" })
     }
 
     /// Availability only; it conveys no read authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
-        Err(Error::Unsupported("original native-ledger content reader is unavailable".into()))
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger content reader is unavailable" })
     }
 
     /// Verifies through the actual native engine without creating a new meter.
@@ -1125,8 +1181,9 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn verify_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger content verification is unavailable".into())) })
+    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger content verification is unavailable" })
     }
 
     /// Verifies bytes through the provider's actual finite read capability.
@@ -1145,10 +1202,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
                 let bytes = io.receive_content(self.read_measured(reference, maximum_bytes,
                     io.remaining()?, cancellation).await)?;
                 io.retain_owned(bytes.capacity() as u64)?;
-                let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-                io.preflight(hash)?;
-                io.charge(hash)?;
-                reference.descriptor().verify(&bytes)
+                reference.descriptor().verify_with_io(&bytes, Some(&io))
             }.await;
             match result {
                 Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
@@ -1346,7 +1400,8 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// process capture or another external side effect. It grants no authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_stage(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        Err(Error::Unsupported("original native-ledger publication is unavailable".into()))
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger publication is unavailable" })
     }
 
     /// Publishes once on the original native ledger; the caller retains custody.
@@ -1356,8 +1411,9 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
         _media_type: &'a str, _display_name: &'a str,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, crate::Result<(FileRef, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async { Err(Error::Unsupported("original native-ledger once-publication is unavailable".into())) })
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+            reason: "original native-ledger once-publication is unavailable" })
     }
 
     /// Resolves the original operation, metadata and generation without head.
@@ -1537,12 +1593,10 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, crate::Result<(Vec<u8>, acyclic_fs::NativeAllocation)>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let reader = self.finite_bound_reader(reference.volume(), &io)?;
-            reader.read_with_native_work(reference, maximum_bytes, work).await
-        })
+    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = self.finite_bound_reader(reference.volume(), &io)?;
+        reader.read_with_native_work(reference, maximum_bytes, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1556,12 +1610,10 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn verify_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> ContentFuture<'a, crate::Result<()>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let reader = self.finite_bound_reader(reference.volume(), &io)?;
-            reader.verify_with_native_work(reference, maximum_bytes, work).await
-        })
+    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = self.finite_bound_reader(reference.volume(), &io)?;
+        reader.verify_with_native_work(reference, maximum_bytes, work)
     }
 
     fn read_private_prefix<'a>(
@@ -1748,10 +1800,7 @@ pub(crate) fn decode_manifest_bounded(
         || maximum_members > MAX_LIMIT_ATTACHMENTS {
         return Err(Error::Invalid("attachment manifest metadata or allowance is invalid".into()));
     }
-    let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-    io.preflight(hash)?;
-    io.charge(hash)?;
-    reference.descriptor().verify(bytes)?;
+    reference.descriptor().verify_with_io(bytes, Some(io))?;
     let bounds = crate::contract::JsonBounds {
         maximum_bytes: bytes.len() as u64,
         maximum_items: io.remaining()?.items_examined,
@@ -3266,6 +3315,40 @@ mod tests {
         let decoded: FileDescriptor =
             serde_json::from_value(encoded).map_err(|e| Error::Invalid(e.to_string()))?;
         assert_eq!(decoded, descriptor);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_descriptor_verification_preserves_actual_hash_work_and_static_denials() -> Result<()> {
+        let descriptor = FileDescriptor::from_bytes(b"exact", "text/plain")?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED, &cancellation,
+        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        descriptor.verify_with_native_work(b"exact", &work)?;
+        assert_eq!(work.receipt().bytes_hashed, 5);
+        assert!(matches!(descriptor.verify_with_native_work(b"longer", &work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert_eq!(work.receipt().bytes_hashed, 5, "length mismatch executes no digest");
+        assert!(matches!(descriptor.verify_with_native_work(b"wrong", &work),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert_eq!(work.receipt().bytes_hashed, 10);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        cancellation.cancel();
+        assert!(matches!(descriptor.verify_with_native_work(b"exact", &work),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })));
+        assert_eq!(work.receipt().bytes_hashed, 10);
+        let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        budget.bytes_hashed = 0;
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            budget, &acyclic_fs::CancellationToken::new(),
+        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        assert!(matches!(descriptor.verify_with_native_work(b"exact", &denied),
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
+        assert_eq!(denied.receipt().bytes_hashed, 0);
+        assert_eq!(denied.receipt().backend_read_operations, 0);
         Ok(())
     }
 

@@ -48,6 +48,55 @@ impl Drop for DecodeReservation<'_> {
     }
 }
 
+/// The actual admitted typed-decode allowance. Native decoding owns its guard
+/// directly until Serde succeeds, so a decoder error can move that same guard
+/// without a fallible post-error transfer or another retention attempt.
+struct TrustedDecodeReservation<'a> {
+    io: &'a PreparationIo,
+    scoped: Option<DecodeReservation<'a>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl<'a> TrustedDecodeReservation<'a> {
+    fn new(io: &'a PreparationIo) -> Self {
+        Self { io, scoped: None, #[cfg(not(target_arch = "wasm32"))] native: None }
+    }
+
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = self.io.original_native_work() {
+            self.native = Some(work.retain_owned(bytes)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
+            return Ok(());
+        }
+        self.scoped = Some(self.io.reserve_decode(bytes)?);
+        Ok(())
+    }
+
+    fn finish<T>(mut self, result: Result<T>) -> Result<ReservedDecoded<'a, T>> {
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Error::NativeDecode { code, source, custody: None } = error {
+                    return Err(Error::NativeDecode { code, source, custody: self.native.take() });
+                }
+                return Err(error);
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(guard) = self.native.take() {
+            let bytes = guard.bytes();
+            self.io.absorb_native_custody(guard)?;
+            self.scoped = Some(DecodeReservation { io: self.io, bytes });
+        }
+        let _reservation = self.scoped.take()
+            .ok_or_else(|| Error::Invalid("trusted decode omitted admission".into()))?;
+        Ok(ReservedDecoded { value, _reservation })
+    }
+}
+
 /// Audited closed Harness DTOs only, including their Value/string/vector
 /// containers. This is not an arbitrary DeserializeOwned heap sandbox.
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
@@ -471,6 +520,24 @@ impl PreparationIo {
         Ok(granted)
     }
 
+    /// Admit the actual ordinary History box before constructing it. Shared
+    /// History observers release only this frame after the box physically drops;
+    /// any returned DTO custody remains in the same IO ledger.
+    fn history_future<'a, T, F, B>(
+        &'a self, build: B,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, T>>
+    where
+        F: Future<Output = Result<T>> + Send + 'a,
+        B: FnOnce() -> F,
+    {
+        let bytes = std::mem::size_of::<F>() as u64;
+        self.claim(bytes)?;
+        if bytes != 0 { self.allocation_attempt(bytes)?; }
+        Ok(crate::store::history::HistoryContentFuture::Ordinary {
+            future: Box::pin(build()), frame_bytes: bytes,
+        })
+    }
+
     // Audited closed serde derives only: upload records and approval-only wires.
     // Their strings/key vectors occupy at most twice encoded input bytes plus
     // the concrete root body; opaque allocator nodes and RSS are excluded.
@@ -482,22 +549,40 @@ impl PreparationIo {
         let bounds = crate::contract::JsonBounds {
             maximum_bytes: bytes.len() as u64, maximum_items: remaining.items_examined, maximum_depth: 256,
         };
-        let mut reservation = None;
-        let value: T = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, owned,
-            &mut |next| match next {
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => {
-                    reservation = Some(self.reserve_decode(maximum_owned_bytes)?);
-                    Ok(())
-                }
+        let mut reservation = TrustedDecodeReservation::new(self);
+        let result: Result<T> = self.decode_trusted(bytes, bounds, owned,
+            crate::wire::ErrorCode::Storage, &mut |next| match next {
+                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } =>
+                    reservation.reserve(maximum_owned_bytes),
                 next => self.codec_charge(next, false),
-            })?;
-        reservation.as_mut().ok_or_else(|| Error::Invalid("trusted decode omitted admission".into()))?
-            .substitute(value.logical_owned_bytes()?)?;
-        Ok(value)
+            });
+        let mut decoded = reservation.finish(result)?;
+        decoded._reservation.substitute(decoded.value.logical_owned_bytes()?)?;
+        Ok(decoded.into_inner())
+    }
+
+    fn decode_trusted<T: serde::de::DeserializeOwned, F: FnMut(crate::contract::JsonCodecCharge) -> Result<()>>(
+        &self, bytes: &[u8], bounds: crate::contract::JsonBounds, maximum_owned_bytes: u64,
+        code: crate::wire::ErrorCode, charge: &mut F,
+    ) -> Result<T> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original_native_work().is_some() {
+            return crate::contract::json_from_slice_bounded_native_trusted(
+                bytes, bounds, maximum_owned_bytes, code, charge,
+            );
+        }
+        let _ = code;
+        crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
     }
 
     pub(crate) fn decode_preparation<T: PreparationRecord>(
         &self, bytes: &[u8],
+    ) -> Result<ReservedDecoded<'_, T>> {
+        self.decode_preparation_with_code(bytes, crate::wire::ErrorCode::Storage)
+    }
+
+    pub(crate) fn decode_preparation_with_code<T: PreparationRecord>(
+        &self, bytes: &[u8], code: crate::wire::ErrorCode,
     ) -> Result<ReservedDecoded<'_, T>> {
         let bounds = crate::contract::JsonBounds {
             maximum_bytes: bytes.len() as u64,
@@ -505,8 +590,8 @@ impl PreparationIo {
             maximum_depth: 128,
         };
         let mut items = 0_u64;
-        let mut reservation = None;
-        let value = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, 0, &mut |next| {
+        let mut reservation = TrustedDecodeReservation::new(self);
+        let result = self.decode_trusted(bytes, bounds, 0, code, &mut |next| {
             match next {
                 crate::contract::JsonCodecCharge::Work { items: count, .. } => {
                     items = items.checked_add(count)
@@ -524,15 +609,13 @@ impl PreparationIo {
                         .and_then(|owned| owned.checked_add(maximum_owned_bytes))
                         .and_then(|owned| owned.checked_add(std::mem::size_of::<T>() as u64))
                         .ok_or_else(|| Error::Invalid("preparation DTO ownership overflow".into()))?;
-                    reservation = Some(self.reserve_decode(owned)?);
+                    reservation.reserve(owned)?;
                     Ok(())
                 }
                 next => self.codec_charge(next, false),
             }
-        })?;
-        let _reservation = reservation
-            .ok_or_else(|| Error::Invalid("preparation DTO decode omitted reservation".into()))?;
-        Ok(ReservedDecoded { value, _reservation })
+        });
+        reservation.finish(result)
     }
 
     pub(crate) fn codec_charge(&self, next: crate::contract::JsonCodecCharge, encode: bool) -> Result<()> {
@@ -991,6 +1074,11 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         Ok(())
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> { self.io.release(bytes) }
+    fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
+        let decoded = self.io.decode_preparation::<serde_json::Value>(bytes)?;
+        let held = decoded._reservation.bytes;
+        Ok((decoded.into_retained(), held))
+    }
     fn clone_authority(&mut self, authority: &crate::core::Authority) -> Result<crate::core::Authority> {
         Ok(crate::core::Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
     }
@@ -1069,30 +1157,36 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         self.io.spent(work)
     }
     fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<()>> {
-        Box::pin(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self.io.original_native_work() {
-                return verifier.verify_with_native_work(reference,
-                    reference.descriptor().byte_length(), work).await;
-            }
-            self.io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
-                self.io.remaining()?, &self.io.cancellation).await)
+        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        let io = self.io;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            return crate::NativeFutureBundle::new(work, || async move {
+                verifier.verify_with_native_work(reference,
+                    reference.descriptor().byte_length(), work)?.await
+            }).map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(|| async move {
+            io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
+                io.remaining()?, &io.cancellation).await)
         })
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a FileRef) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self.io.original_native_work() {
-                let (bytes, custody) = self.io.native_call(verifier.read_with_native_work(reference,
-                    reference.descriptor().byte_length(), work).await)?;
-                self.io.absorb_native_custody(custody)?;
-                return Ok(bytes);
-            }
-            let bytes = self.io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
-                self.io.remaining()?, &self.io.cancellation).await)?;
-            self.io.retain_owned(bytes.capacity() as u64)?;
+        reference: &'a FileRef) -> Result<crate::store::history::HistoryContentFuture<'a, Vec<u8>>> {
+        let io = self.io;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            return crate::NativeFutureBundle::new(work, || async move {
+                let (bytes, custody) = verifier.read_with_native_work(reference,
+                    reference.descriptor().byte_length(), work)?.await?;
+                io.absorb_native_custody(custody)?;
+                Ok(bytes)
+            }).map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(|| async move {
+            let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
+                io.remaining()?, &io.cancellation).await)?;
+            io.retain_owned(bytes.capacity() as u64)?;
             Ok(bytes)
         })
     }
