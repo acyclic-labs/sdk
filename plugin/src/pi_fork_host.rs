@@ -77,6 +77,14 @@ const FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_fork::FORK_PLAN_DIAGN
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiForkCommand", "commit", "root_source"]);
 const OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES: u64 = OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&["PiObserveSourceCommand"]);
+const PENDING_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
+    + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+        "PendingSpawn", "task_binding", "agent_id", "parent_agent_id", "tool_use_id", "active_root_id",
+        "expires_at_millis", "workspace_name", "fork_key", "roots", "mount_path", "lifecycle",
+        "PluginTaskBinding", "kind", "binding", "Pi", "pi", "HostManaged", "host_managed",
+        "PiTaskBinding", "native_session_id", "task_id", "agent_id", "project_volumes", "scratch", "results",
+        "PendingSpawnLifecycle", "preparing", "mounting", "prepared", "discarding",
+    ]);
 
 pub(crate) struct PiForkHost<'a> {
     runtime: Arc<PiNativeRuntime>,
@@ -87,7 +95,7 @@ pub(crate) struct PiForkHost<'a> {
     retained: &'a AdapterState,
     roots: &'a BTreeMap<String, PiRootHandle>,
     native: Arc<PiNativeCommandHost>,
-    pending: Mutex<Vec<PendingSpawn>>,
+    pending: Mutex<Option<(Vec<PendingSpawn>, acyclic_fs::NativeAllocation)>>,
     prepared: Mutex<BTreeMap<TaskId, PreparedPiFork>>,
 }
 
@@ -97,13 +105,13 @@ impl<'a> PiForkHost<'a> {
         stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>, native: Arc<PiNativeCommandHost>) -> Self {
         Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
-            pending: Mutex::new(Vec::new()), prepared: Mutex::new(BTreeMap::new()) }
+            pending: Mutex::new(None), prepared: Mutex::new(BTreeMap::new()) }
     }
 
 
     /// The actor durably saves these existing Preparing records before another pass.
-    pub(crate) fn pending_to_save(&self) -> Result<Vec<PendingSpawn>> {
-        Ok(std::mem::take(&mut *self.pending.lock().map_err(|_| invalid("Pi pending control lock poisoned"))?))
+    pub(crate) fn pending_to_save(&self) -> Result<Option<(Vec<PendingSpawn>, acyclic_fs::NativeAllocation)>> {
+        Ok(self.pending.lock().map_err(|_| invalid("Pi pending control lock poisoned"))?.take())
     }
 
     /// The actor saves the Created route before handing this to the native host.
@@ -180,7 +188,7 @@ impl<'a> PiForkHost<'a> {
         }
         let source = if command.commit.source_task == self.protected.policy().root_task {
             let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi original selected root has no actual lazy handle"))?;
-            Arc::new(actual.workspace.clone())
+            actual.workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
         } else {
             self.native.live_workspace(command.commit.source_task)
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?
@@ -229,10 +237,10 @@ impl<'a> PiForkHost<'a> {
         Ok((source, frozen, source_custody))
     }
 
-    fn parent_alias(&self, task: TaskId) -> Result<String> {
-        if task == self.protected.policy().root_task { return Ok(self.retained.root_session_id.clone()); }
+    fn parent_alias(&self, task: TaskId) -> Result<&str> {
+        if task == self.protected.policy().root_task { return Ok(&self.retained.root_session_id); }
         self.retained.routes.values().find_map(|route| match &route.task_binding {
-            PluginTaskBinding::Pi(binding) if binding.task_id == task => Some(route.agent_id.clone()),
+            PluginTaskBinding::Pi(binding) if binding.task_id == task => Some(route.agent_id.as_str()),
             _ => None,
         }).ok_or_else(|| unauthorized("Pi original caller has no actual persisted route alias"))
     }
@@ -246,11 +254,81 @@ impl<'a> PiForkHost<'a> {
         }
         Ok(PendingSpawn { task_binding: PluginTaskBinding::Pi(Box::new(plan.commit.child.clone())),
             agent_id: Some(plan.commit.alias.clone()),
-            parent_agent_id: self.parent_alias(plan.commit.caller)?, tool_use_id: plan.commit.sdk_operation.clone(),
+            parent_agent_id: self.parent_alias(plan.commit.caller)?.to_owned(), tool_use_id: plan.commit.sdk_operation.clone(),
             active_root_id: Some(root), expires_at_millis: crate::now_millis().saturating_add(2 * 60 * 1_000),
             workspace_name: plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi project missing"))?.storage_name()?,
             fork_key: PiForkOperations::new(plan.original).fork.into_bytes(), roots: BTreeMap::new(),
             mount_path: paths.view_root, lifecycle: PendingSpawnLifecycle::Preparing })
+    }
+
+    pub(crate) fn reservation_with_native_work(&self, plan: &PiForkPlan, work: &NativeMaterializationWork)
+        -> Result<(PendingSpawn, acyclic_fs::NativeAllocation)> {
+        let root_key = plan.commit.child.project_volumes.keys().next().ok_or_else(|| invalid("Pi project missing"))?;
+        let mut root = [0; 16];
+        hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
+        let paths = crate::pi_native::planned_native_paths_with_native_work(self.resources,
+            &self.retained.root_session_id, plan.commit.child.task_id, Some(root_key), work)?;
+        if paths.0.cwd != plan.commit.launch.invocation.cwd || paths.0.session_file != plan.commit.launch.invocation.session_file {
+            return Err(unauthorized("Pi SDK retained native paths differ from its original planned namespace"));
+        }
+        let project = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi project missing"))?;
+        let workspace = project.storage_name_with_native_work(work)?;
+        #[derive(Serialize)]
+        #[serde(tag = "kind", content = "binding", rename_all = "snake_case")]
+        enum Binding<'b> { Pi(&'b crate::PiTaskBinding) }
+        #[derive(Serialize)]
+        struct Pending<'b> {
+            task_binding: Binding<'b>, agent_id: Option<&'b str>, parent_agent_id: &'b str,
+            tool_use_id: &'b str, active_root_id: Option<[u8; 16]>, expires_at_millis: u64,
+            workspace_name: &'b str, fork_key: [u8; 16], roots: BTreeMap<String, crate::RouteRoot>,
+            mount_path: &'b std::path::Path, lifecycle: PendingSpawnLifecycle,
+        }
+        let pending = Pending { task_binding: Binding::Pi(&plan.commit.child),
+            agent_id: Some(&plan.commit.alias), parent_agent_id: self.parent_alias(plan.commit.caller)?,
+            tool_use_id: &plan.commit.sdk_operation, active_root_id: Some(root),
+            expires_at_millis: crate::now_millis().saturating_add(2 * 60 * 1_000),
+            workspace_name: &workspace.0,
+            fork_key: PiForkOperations::new_with_native_work(plan.original, work)?.fork.into_bytes(),
+            roots: BTreeMap::new(), mount_path: &paths.0.view_root, lifecycle: PendingSpawnLifecycle::Preparing };
+        let NativeOwned { value, custody } = self.decode(&pending, PENDING_DIAGNOSTIC_LABEL_BYTES, work)?;
+        Ok((value, custody))
+    }
+
+    fn push_pending(&self, record: (PendingSpawn, acyclic_fs::NativeAllocation), work: &NativeMaterializationWork) -> Result<()> {
+        let mut record = NativeOwned { value: record.0, custody: record.1 };
+        let mut pending = self.pending.lock().map_err(|_| invalid("Pi pending control lock poisoned"))?;
+        if let Some((records, custody)) = pending.as_mut() {
+            if records.len() == records.capacity() {
+                let slots = records.len().checked_add(1).ok_or_else(|| invalid("Pi pending capacity overflow"))?;
+                let bytes = slots.checked_mul(std::mem::size_of::<PendingSpawn>())
+                    .ok_or_else(|| invalid("Pi pending allocation overflow"))?;
+                let mut replacement = work.claim(bytes as u64).map_err(native_error)?;
+                work.admit(acyclic_fs::WorkCounters { bytes_copied: (records.len() * std::mem::size_of::<PendingSpawn>()) as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED }).map_err(native_error)?;
+                if let Err(cause) = records.try_reserve_exact(1) {
+                    return Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),
+                        custody: Some(replacement) });
+                }
+                if let Err(cause) = custody.release((records.len() * std::mem::size_of::<PendingSpawn>()) as u64) {
+                    return Err(Error::NativeWork { cause, custody: Some(replacement) });
+                }
+                custody.absorb(&mut replacement).map_err(native_error)?;
+                work.spent(acyclic_fs::WorkCounters { bytes_copied: (records.len() * std::mem::size_of::<PendingSpawn>()) as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED }).map_err(native_error)?;
+            }
+            custody.absorb(&mut record.custody).map_err(native_error)?;
+            records.push(record.value);
+        } else {
+            let mut custody = work.claim(std::mem::size_of::<PendingSpawn>() as u64).map_err(native_error)?;
+            let mut records = Vec::new();
+            records.try_reserve_exact(1).map_err(|cause| Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None })?;
+            custody.resize_retained((records.capacity() * std::mem::size_of::<PendingSpawn>()) as u64).map_err(native_error)?;
+            custody.absorb(&mut record.custody).map_err(native_error)?;
+            records.push(record.value);
+            *pending = Some((records, custody));
+        }
+        Ok(())
     }
 
     async fn fork(&self, shared: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
@@ -293,20 +371,23 @@ impl<'a> PiForkHost<'a> {
         parent_custody.absorb(&mut authority.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         parent_custody.absorb(&mut verifier.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let parent = parent.0.with_limits(context.scope().limits())?;
-        let plan = coordinator.begin(&context, &owner, fence.clone(), parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
+        let plan = coordinator.begin(shared, owner, fence.clone(), parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
             bytes: self.protected.policy().maximum_payload_bytes }, remaining(&work)?, cancel.clone()).await?;
         let saved = self.retained.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());
         if let Some(saved) = saved {
             let PluginTaskBinding::Pi(binding) = &saved.task_binding else { return Err(unauthorized("Pi pending substituted host-managed admission")); };
             let root_key = plan.commit.child.project_volumes.keys().next().ok_or_else(|| invalid("Pi child project missing"))?;
-            let root: [u8; 16] = crate::decode_fixed(root_key).map_err(Error::Invalid)?;
-            let paths = planned_native_paths(&self.resources, &self.retained.root_session_id,
-                plan.commit.child.task_id, Some(root_key))?;
+            let mut root = [0; 16];
+            hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
+            let paths = crate::pi_native::planned_native_paths_with_native_work(self.resources, &self.retained.root_session_id,
+                plan.commit.child.task_id, Some(root_key), work)?;
+            let workspace = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?
+                .storage_name_with_native_work(work)?;
             if !same_identity(binding, &plan.commit.child) || saved.tool_use_id != plan.commit.sdk_operation
                 || saved.agent_id.as_deref() != Some(plan.commit.alias.as_str())
                 || saved.parent_agent_id != self.parent_alias(plan.commit.caller)?
-                || saved.workspace_name != plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?.storage_name()?
-                || saved.active_root_id != root || saved.mount_path != paths.view_root
+                || saved.workspace_name != workspace.0
+                || saved.active_root_id != Some(root) || saved.mount_path != paths.0.view_root
                 || !saved.roots.is_empty() || !matches!(&saved.lifecycle, PendingSpawnLifecycle::Preparing)
                 || saved.expires_at_millis <= crate::now_millis() {
                 return Err(unauthorized("Pi pending changed or expired its original preparation identity"));
@@ -322,9 +403,9 @@ impl<'a> PiForkHost<'a> {
         } else {
             // This ordinary admit is durable. The caller MUST save the catalog
             // record before executing this command again; no creator runs here.
-            let reservation = self.reservation(&plan)?;
+            let reservation = self.reservation_with_native_work(&plan, work)?;
             coordinator.admit_preparation(&context, &owner, fence, &plan).await?;
-            self.pending.lock().map_err(|_| invalid("Pi pending control lock poisoned"))?.push(reservation);
+            self.push_pending(reservation, work)?;
             return Ok(TaskCommandProgress::Pending);
         }
         let Some(prepared) = coordinator.advance(&context, &owner, fence, &plan, source, remaining(&work)?, cancel).await? else {
@@ -459,6 +540,10 @@ fn ready<T: Serialize>(response: &T, work: &NativeMaterializationWork) -> Result
     let (value, custody) = crate::pi_root_provider::guarded_pi_value(response,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8, work)?;
     Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
+}
+
+fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
+    Error::NativeWork { cause, custody: None }
 }
 
 fn remaining(work: &NativeMaterializationWork) -> Result<WorkBudget> {

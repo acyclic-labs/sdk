@@ -69,6 +69,57 @@ pub(crate) fn planned_native_paths(
         view_root, operation_root: task_directory.join("preparation") })
 }
 
+pub(crate) fn planned_native_paths_with_native_work(
+    resources: &super::ServiceResources, root_session: &str, task: acyclic_harness::TaskId,
+    root_key: Option<&str>, work: &NativeMaterializationWork,
+) -> Result<(PiNativePaths, acyclic_fs::NativeAllocation)> {
+    work.remaining().map_err(native_error)?;
+    let route = root_key.map(|key| native_root_route_with_work(key, work)).transpose()?;
+    let task = native_task_directory_with_work(resources, root_session, task, work)?;
+    let mut view = native_join(&task.path, Path::new("view"), work)?;
+    let mut session = native_join(&view.path, Path::new("scratch"), work)?;
+    let mut cwd = match &route {
+        Some(route) => native_join(&view.path, Path::new(&route.0), work)?,
+        None => {
+            let (path, custody) = work.copy_path(&session.path).map_err(native_error)?;
+            PiNativeOwnedPath { path, custody }
+        }
+    };
+    let mut session_file = native_join(&session.path, Path::new("session.jsonl"), work)?;
+    let mut operation = native_join(&task.path, Path::new("preparation"), work)?;
+    let custody = work.retain_owned(std::mem::size_of::<PiNativePaths>() as u64).map_err(native_error)?;
+    let mut planned = (PiNativePaths { cwd: cwd.path, session_file: session_file.path,
+        session_directory: session.path, view_root: view.path, operation_root: operation.path }, custody);
+    for incoming in [&mut cwd.custody, &mut session_file.custody, &mut session.custody,
+        &mut view.custody, &mut operation.custody]
+    {
+        planned.1.absorb(incoming).map_err(native_error)?;
+    }
+    Ok(planned)
+}
+
+fn native_root_route_with_work(
+    key: &str, work: &NativeMaterializationWork,
+) -> Result<(String, acyclic_fs::NativeAllocation)> {
+    use base64::Engine as _;
+    work.remaining().map_err(native_error)?;
+    work.charge(WorkCounters { items_examined: key.len() as u64, ..WorkCounters::default() }).map_err(native_error)?;
+    let reject = || Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason: "Pi native active root has no canonical identity" };
+    let mut identity = [0; 16];
+    hex::decode_to_slice(key, &mut identity).map_err(|_| reject())?;
+    let mut canonical = [0; 32];
+    hex::encode_to_slice(identity, &mut canonical).expect("exact root identity hexadecimal extent");
+    if key.as_bytes() != canonical { return Err(reject()); }
+    // Same existing route_name/compact_id encoding, without their intermediate
+    // heap Strings. This reference is not resource or creator authority.
+    let mut route = [0_u8; 23];
+    route[0] = b'r';
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_slice(identity, &mut route[1..])
+        .expect("exact root identity route extent");
+    pi_native_string(std::str::from_utf8(&route).expect("root route uses ASCII encoding"), work)
+}
+
 struct PiNativeOwnedPath { path: PathBuf, custody: acyclic_fs::NativeAllocation }
 
 fn native_join(base: &Path, child: &Path, work: &NativeMaterializationWork) -> Result<PiNativeOwnedPath> {
@@ -80,7 +131,8 @@ fn native_task_directory_with_work(
     resources: &super::ServiceResources, root_session: &str, task: acyclic_harness::TaskId, work: &NativeMaterializationWork,
 ) -> Result<PiNativeOwnedPath> {
     if root_session.is_empty() || !resources.data.is_absolute() {
-        return Err(invalid("Pi native path references require their original absolute service root"));
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi native path references require their original absolute service root" });
     }
     work.charge(WorkCounters { bytes_hashed: root_session.len() as u64 + 16, ..WorkCounters::default() }).map_err(native_error)?;
     // The existing service session_directory and planned_native_paths layout:
@@ -1308,8 +1360,8 @@ impl<A, O> PiPreparedScratch<A, O> {
                 ContentGrant::verify(&verifier, &scope, volume, operation)?;
                 owner.require_volume_grant_with_native_work(volume, operation, meter)?;
             }
-            let route = native_root_route(root_key)?;
-            let mut path = native_join(&self.allocation.root, Path::new(&route), meter)?;
+            let route = native_root_route_with_work(root_key, meter)?;
+            let mut path = native_join(&self.allocation.root, Path::new(&route.0), meter)?;
             if meter.root_identity(&self.allocation.root).map_err(native_error)? != self.allocation.expected_identity {
                 return Err(Error::Conflict("Pi original native allocation was replaced".into()));
             }
@@ -1319,7 +1371,7 @@ impl<A, O> PiPreparedScratch<A, O> {
                 if startup_owner.is_some() || retained_allocation.is_some() {
                     return Err(Error::Indeterminate(OperationId::from_bytes(self.task.into_bytes())));
                 }
-                meter.create_owned_directory(&self.allocation.root, self.allocation.expected_identity, Path::new(&route), true)
+                meter.create_owned_directory(&self.allocation.root, self.allocation.expected_identity, Path::new(&route.0), true)
                     .map_err(native_error)?;
                 let options = if writable { acyclic_fs::MountOptions::read_write() } else { acyclic_fs::MountOptions::read_only() }
                     .publication(acyclic_fs::MountPublication::Manual);

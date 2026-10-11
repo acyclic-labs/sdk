@@ -259,23 +259,14 @@ impl PiNativeCommandHost {
         runtime.verify_owner_with_native_work(&protected, work)?;
         protected.native_runtime_with_native_work(work)?.validate_with_native_work(work)?;
         let protected = protected.into_native_shared(work)?;
-        let mut data = work.copy_path(&resources.data).map_err(native_error)?;
-        let mut binary_identity = work.display(&resources.binary_identity).map_err(native_error)?;
-        let mut instance_id = work.display(&resources.instance_id).map_err(native_error)?;
+        let mut resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
         // Arc allocator/header internals are opaque. This is the real known
         // payload allocation, claimed before constructing the escaping Arc.
         let custody = work.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
-        let resources = ServiceResources {
-            data: data.0, fs: resources.fs.clone(), store: resources.store.clone(),
-            shared_roots: resources.shared_roots.clone(),
-            binary_identity: binary_identity.0, instance_id: instance_id.0,
-        };
-        let mut host = (Self { runtime, filesystem, stream, resources, protected,
+        let mut host = (Self { runtime, filesystem, stream, resources: resources.0, protected,
             entries: RwLock::new(BTreeMap::new()), _factory_custody: None }, custody);
         // Keep the physical values before their merged guard on every failure.
-        host.1.absorb(&mut data.1).map_err(native_error)?;
-        host.1.absorb(&mut binary_identity.1).map_err(native_error)?;
-        host.1.absorb(&mut instance_id.1).map_err(native_error)?;
+        host.1.absorb(&mut resources.1).map_err(native_error)?;
         host.0._factory_custody = Some(host.1);
         Ok(Arc::new(host.0))
     }

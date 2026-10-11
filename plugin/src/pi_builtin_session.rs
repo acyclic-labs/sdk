@@ -12,7 +12,6 @@ impl PiSession {
         let native = self.native_host_with_native_work(query_work)?;
         let work = if caller == owner.policy().root_task { query_work.clone() }
             else { native.invocation_work(caller).await? };
-        let cancellation = work.cancellation().clone();
         let request_bytes = bounded_input_size(arguments)?;
         // Input transport custody is still alive; reserve the DTO copy before
         // allocating it, and keep that charge through its final use.
@@ -25,12 +24,16 @@ impl PiSession {
             request.require_root_source_read(owner.policy().root_task)?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
-            let reference = crate::pi_builtin::accept(&work, pi_root_provider::stage_pi_input(owner, &self.filesystem,
-                request.operation(owner.policy().root_task), "command", &payload,
-                work.remaining().map_err(native_error)?, &cancellation).await)?;
+            let staged = pi_root_provider::stage_pi_input_with_native_work(owner, &self.filesystem,
+                request.operation(owner.policy().root_task), "command", &payload, &work).await?;
+            let _reference_custody = staged.1;
+            let reference = staged.0;
+            let command_kind = work.display(PI_BUILTIN_COMMAND_KIND).map_err(native_error)?;
+            let _kind_custody = command_kind.1;
+            let kind = command_kind.0;
             let command = acyclic_harness::workflow::WorkflowCommand {
                 operation_id: request.operation(owner.policy().root_task),
-                kind: PI_BUILTIN_COMMAND_KIND.into(), payload: reference,
+                kind, payload: reference,
             };
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                 self.stream.clone(), &self.resources, &self.state).with_builtin_controls(&host)
