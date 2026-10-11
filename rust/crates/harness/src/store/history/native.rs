@@ -147,6 +147,17 @@ impl HistoryIo for NativeHistoryIo<'_> {
             JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
         }
     }
+    fn decode_json_value(&mut self, bytes: &[u8]) -> Result<serde_json::Value> {
+        let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
+        let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
+        let retained = io.owned_bytes()?;
+        let value = decoded.into_retained();
+        let incoming = io.into_native_custody(retained)?;
+        // Both guards originate from this exact finite native ledger; merging
+        // transfers already admitted custody, without another claim or copy.
+        self.custody.absorb(incoming).map_err(|cause| self.native_error(cause))?;
+        Ok(value)
+    }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> { self.charge(WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() }) }
     fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()> {
         self.work.admit(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..WorkCounters::default() })
@@ -213,6 +224,57 @@ mod tests {
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             ..WorkBudget::default()
         }
+    }
+
+    #[test]
+    fn guarded_native_value_decode_keeps_original_source_counters_and_custody() {
+        let cancellation = CancellationToken::new();
+        let mut budget = control_budget();
+        budget.peak_allocation_bytes += 1024 * 1024;
+        budget.source_bytes_read = 1024;
+        budget.items_examined = 128;
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original meter control allocation");
+        let mut io = native_work_io(&work).expect("original decoder custody");
+        let source = br#"{"scope":"historical","limit":8}"#;
+        let value = io.decode_json_value(source).expect("audited original Value decoder");
+        assert_eq!(value["scope"].as_str(), Some("historical"));
+        assert_eq!(value["limit"].as_u64(), Some(8));
+        assert!(io.custody.bytes() > 0, "decoded allowance stays with original history custody");
+        assert_eq!(work.receipt().source_bytes_read, source.len() as u64);
+        assert_eq!(work.receipt().authority_bytes_read, 0);
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        drop(value);
+        drop(io);
+    }
+
+    #[test]
+    fn guarded_native_value_decode_denies_before_opaque_serde_allocation() {
+        let cancellation = CancellationToken::new();
+        let mut budget = control_budget();
+        budget.source_bytes_read = 1024;
+        budget.items_examined = 128;
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original meter control allocation");
+        let mut io = native_work_io(&work).expect("original decoder custody");
+        let prefix = work.receipt();
+        assert!(matches!(io.decode_json_value(br#"{"scope":"historical","limit":8}"#),
+            Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes", ..
+                }), custody: None,
+            })));
+        assert_eq!(io.custody.bytes(), 0);
+        assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert!(work.receipt().source_bytes_read > 0);
+        cancellation.cancel();
+        let cancelled = work.receipt();
+        assert!(matches!(io.decode_json_value(b"null"), Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Cancelled, custody: None,
+        })));
+        assert_eq!(work.receipt(), cancelled);
     }
 
     #[test]

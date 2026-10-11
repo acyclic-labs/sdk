@@ -47,6 +47,9 @@ pub(crate) trait HistoryIo: Send {
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
     fn admit_encoding(&self, bytes: u64) -> Result<()>;
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()>;
+    fn decode_json_value(&mut self, _bytes: &[u8]) -> Result<serde_json::Value> {
+        Err(Error::Unsupported("this history observer has no guarded JSON value decoder".into()))
+    }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()>;
     fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()>;
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()>;
