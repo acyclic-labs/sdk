@@ -80,6 +80,36 @@ and platform qualification are not established by these controls.
 modified settings are preserved. The API target is Pi 1.1.0; see
 [Pi qualification](pi/README.md).
 
+Selected Pi filesystem inspect/diff pages retain the exact source volume,
+immutable generation or native epoch, and selected directory cursor under the
+caller's read authority. Select nested directories explicitly; native callbacks
+borrow the original scratch-bound caller context and invocation ledger. Selection
+never adopts source grants or starts its process. Private logical imports require the
+sealed source READ proof, destination WRITE grant and original task-owned
+publisher, with guarded native mount synchronization when mounted. Canonical
+selected plans preserve source metadata and proven absence; an unresolved native
+read is not absence. An optional confirmation flag grants no authority.
+Original-root writeback uses the original frozen
+selected baseline, retained native root identity, an ordinary operator ticket for
+the exact prepared-plan digest, and the production materializer's concurrent-
+update checks. Operator file evidence reads bounded ranges of the immutable
+imported Root generation, never a disposed child mount. A content import is not
+root writeback or evidence of native qualification.
+
+Pi send and steering use the admitted caller's original fenced stock mailbox
+command, with immutable bounded payloads under the protected root's `pi-inputs`;
+recipients receive directory-read authority only. Receive selects one exact
+sequence after the acknowledged cursor and decodes at most 64 KiB under the
+recipient's actual file grants. Passive receive/wait polls acquire no process
+lease and advance no task steps. Wait observes the exact requested admitted
+task and at most one own-mailbox item; it never blocks on process completion.
+The native SDK records its accepted sequence only after actual Pi delivery;
+there is no service acknowledgement ledger or additional dispatch retry.
+Native mailbox publication, reads, typed decoding and returned SDK responses
+share the original invocation's finite work ledger. Producer custody is acquired
+before buffer/DTO growth and retained through final delivery; empty polls do not
+create replacement ledgers or retrospectively charge an ordinary read.
+
 `acyclic doctor` reports the packaged binary identity, plugin/cache version,
 marketplace and hook assets, service and durable recovery state, native mount
 backend, CLI availability, and an exact-binary-bound live
