@@ -853,7 +853,7 @@ impl Cancelled<'_> {
                 // Admit the complete first-poll allocation/registration,
                 // including its eventual O(1) unregister, before any allocation.
                 let adopted = if grows && meter.admission.registry.is_none() { old_bytes } else { 0 };
-                let peak = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(waiter_bytes)
+                let peak = meter.allocations.live_bytes().checked_add(waiter_bytes)
                     .and_then(|bytes| bytes.checked_add(adopted))
                     .and_then(|bytes| bytes.checked_add(new_bytes));
                 let Some(peak) = peak else { return Poll::Ready(Err(crate::WorkError::Overflow.into())); };
