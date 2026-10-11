@@ -1,7 +1,10 @@
 //! Canonical mutation facts prepared against one authority's pre-commit observations.
 //!
-//! These helpers do not authorize, publish, retain retry identities or reserve capacity.
-//! Providers must obtain the observations and publish the result at one atomic authority.
+//! These helpers do not authorize, publish, retain retry identities or reserve the
+//! provider's resident record quotas. Providers must hold one atomic authority's
+//! stable pre-commit observations for every tail lookup, including count passes.
+//! Ordinary and optional native-observer calls share these fact builders; the
+//! observer funds actual output vector capacities before allocation.
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
@@ -11,6 +14,7 @@ use crate::{
     CommitMutation, CommitOutcome, CommitRequest, CommittedAppend, CommittedEnvelope,
     CommittedFork, CommittedMutation, ForkReceipt, ForkRequest, Record, StreamError, StreamPath,
 };
+use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult, provider_result};
 
 /// Pre-commit existence and exclusive tails. Every condition, source and destination must
 /// have an entry; `None` explicitly means absent. Missing observations are invalid.
@@ -167,38 +171,71 @@ pub(crate) fn conditions(
     conditions: &[CommitCondition],
     tail: impl Fn(&StreamPath) -> Option<u64>,
 ) -> Vec<CommitConflict> {
-    conditions
-        .iter()
-        .filter_map(|condition| match condition {
+    provider_result(conditions_with_observer(conditions, tail, &MemoryObserver::default()))
+        .expect("ordinary condition inspection has no fallible observer").value
+}
+
+pub(crate) fn conditions_with_observer(
+    conditions: &[CommitCondition],
+    tail: impl Fn(&StreamPath) -> Option<u64>,
+    observer: &MemoryObserver,
+) -> MemoryResult<MemoryOutput<Vec<CommitConflict>>> {
+    let mut count = 0;
+    for condition in conditions {
+        observer.admit_item()?;
+        count += usize::from(match condition {
+            CommitCondition::Tail { path, expected } => tail(path) != Some(*expected),
+            CommitCondition::Absent { path } => tail(path).is_some(),
+        });
+        observer.record_item()?;
+    }
+    let mut output = observer.vec(count)?;
+    for condition in conditions {
+        observer.admit_item()?;
+        let conflict = match condition {
             CommitCondition::Tail { path, expected } => {
                 let actual = tail(path);
-                (actual != Some(*expected)).then(|| CommitConflict::Tail {
-                    path: path.clone(),
-                    expected: *expected,
-                    actual,
-                })
+                if actual != Some(*expected) {
+                    Some(CommitConflict::Tail {
+                        path: observer.retain_path(path)?, expected: *expected, actual,
+                    })
+                } else { None }
             }
             CommitCondition::Absent { path } => {
-                tail(path).map(|_| CommitConflict::Exists { path: path.clone() })
+                if tail(path).is_some() {
+                    Some(CommitConflict::Exists { path: observer.retain_path(path)? })
+                } else { None }
             }
-        })
-        .collect()
+        };
+        if let Some(conflict) = conflict { output.value.push(conflict); }
+        observer.record_item()?;
+    }
+    Ok(output)
 }
 
 pub(crate) fn authority(
     request: &CommitRequest,
     tail: impl Fn(&StreamPath) -> Option<u64>,
 ) -> Result<(), StreamError> {
+    provider_result(authority_with_observer(request, tail, &MemoryObserver::default()))
+}
+
+pub(crate) fn authority_with_observer(
+    request: &CommitRequest,
+    tail: impl Fn(&StreamPath) -> Option<u64>,
+    observer: &MemoryObserver,
+) -> MemoryResult<()> {
     for mutation in &request.mutations {
-        if let CommitMutation::Fork {
-            source, at_tail, ..
-        } = mutation
-        {
-            let source_tail = tail(source).ok_or(StreamError::NotFound)?;
-            if *at_tail > source_tail {
-                return Err(StreamError::PrefixNotRetained);
+        observer.admit_item()?;
+        let error = if let CommitMutation::Fork { source, at_tail, .. } = mutation {
+            match tail(source) {
+                None => Some(StreamError::NotFound),
+                Some(tail) if *at_tail > tail => Some(StreamError::PrefixNotRetained),
+                Some(_) => None,
             }
-        }
+        } else { None };
+        observer.record_item()?;
+        if let Some(error) = error { return Err(error.into()); }
     }
     Ok(())
 }
@@ -209,47 +246,54 @@ pub(crate) fn mutations(
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<Vec<CommittedMutation>, StreamError> {
-    mutations
-        .iter()
-        .map(|mutation| match mutation {
-            CommitMutation::Append {
-                path,
-                records: bodies,
-            } => {
+    provider_result(mutations_with_observer(
+        mutations, tail, commit_id, committed_at_micros, &MemoryObserver::default(),
+    )).map(|output| output.value)
+}
+
+/// One physical mutation-fact builder; an observer never changes its authority
+/// algebra or creates a second work root. Stock providers retain the returned
+/// capacity claim with their actual output or resident owner.
+pub(crate) fn mutations_with_observer(
+    mutations: &[CommitMutation],
+    tail: impl Fn(&StreamPath) -> Option<u64>,
+    commit_id: CommitId,
+    committed_at_micros: u64,
+    observer: &MemoryObserver,
+) -> MemoryResult<MemoryOutput<Vec<CommittedMutation>>> {
+    let mut output = observer.vec(mutations.len())?;
+    for mutation in mutations {
+        observer.admit_item()?;
+        let committed = match mutation {
+            CommitMutation::Append { path, records: bodies } => {
                 let start = tail(path).unwrap_or(0);
-                Ok(CommittedMutation::Append(append_fact(
-                    path.clone(),
-                    start,
-                    bodies.clone(),
-                    commit_id,
-                    committed_at_micros,
-                )?))
+                let records = records_with_observer(
+                    start, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
+                )?;
+                let end = start + records.value.len() as u64;
+                output.allocation.absorb(records.allocation)?;
+                CommittedMutation::Append(CommittedAppend {
+                    path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
+                })
             }
-            CommitMutation::Fork {
-                source,
-                destination,
-                at_tail,
-                records: bodies,
-            } => {
+            CommitMutation::Fork { source, destination, at_tail, records: bodies } => {
                 let source_tail = tail(source).ok_or(StreamError::NotFound)?;
-                if *at_tail > source_tail {
-                    return Err(StreamError::PrefixNotRetained);
-                }
-                let tail = at_tail
-                    .checked_add(
-                        u64::try_from(bodies.len()).map_err(|_| StreamError::LimitExceeded)?,
-                    )
-                    .ok_or(StreamError::LimitExceeded)?;
-                Ok(CommittedMutation::Fork(CommittedFork {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    forked_at: *at_tail,
-                    tail,
-                    records: records(*at_tail, bodies.clone(), commit_id, committed_at_micros)?,
-                }))
+                if *at_tail > source_tail { return Err(StreamError::PrefixNotRetained.into()); }
+                let records = records_with_observer(
+                    *at_tail, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
+                )?;
+                let tail = at_tail + records.value.len() as u64;
+                output.allocation.absorb(records.allocation)?;
+                CommittedMutation::Fork(CommittedFork {
+                    source: observer.retain_path(source)?, destination: observer.retain_path(destination)?,
+                    forked_at: *at_tail, tail, records: records.value,
+                })
             }
-        })
-        .collect()
+        };
+        output.value.push(committed);
+        observer.record_item()?;
+    }
+    Ok(output)
 }
 
 pub(crate) fn records(
@@ -258,25 +302,42 @@ pub(crate) fn records(
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<Vec<Record>, StreamError> {
-    // Reserve the exclusive tail too: a record at u64::MAX cannot be represented.
-    start
-        .checked_add(u64::try_from(bodies.len()).map_err(|_| StreamError::LimitExceeded)?)
+    provider_result(records_with_observer(
+        start, bodies, commit_id, committed_at_micros, &MemoryObserver::default(),
+    )).map(|output| output.value)
+}
+
+pub(crate) fn records_with_observer<I>(
+    start: u64,
+    bodies: I,
+    commit_id: CommitId,
+    committed_at_micros: u64,
+    observer: &MemoryObserver,
+) -> MemoryResult<MemoryOutput<Vec<Record>>>
+where
+    I: IntoIterator<Item = Bytes>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let mut bodies = bodies.into_iter();
+    let count = bodies.len();
+    // Reserve the exclusive tail too: a record at u64::MAX is unrepresentable.
+    start.checked_add(u64::try_from(count).map_err(|_| StreamError::LimitExceeded)?)
         .ok_or(StreamError::LimitExceeded)?;
-    bodies
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            let sequence = start
-                .checked_add(u64::try_from(index).map_err(|_| StreamError::LimitExceeded)?)
-                .ok_or(StreamError::LimitExceeded)?;
-            Ok(Record {
-                sequence,
-                value,
-                commit_id,
-                committed_at_micros,
-            })
-        })
-        .collect()
+    let mut output = observer.vec(count)?;
+    for index in 0..count {
+        // A borrowed iterator clones its immutable alias only after admission;
+        // an owned Vec iterator simply transfers it, without an avoidable clone.
+        observer.admit_item()?;
+        let value = bodies.next().ok_or(StreamError::Unavailable)?;
+        output.value.push(Record {
+            sequence: start + index as u64,
+            value,
+            commit_id,
+            committed_at_micros,
+        });
+        observer.record_item()?;
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
