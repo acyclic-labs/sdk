@@ -1,3 +1,4 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::foundation::Digest;
 use crate::storage::FenceOutcome;
@@ -16,7 +17,7 @@ fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error:
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([2; 16]),
         fingerprint: Digest::from_bytes([3; 32]),
-        payload: Bytes::from_static(b"payload"),
+        payload: bytes::Bytes::from_static(b"payload"),
     };
     assert!(matches!(
         store
@@ -200,7 +201,7 @@ fn authority_payload_and_replay_bounds_preserve_forward_progress()
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([12; 16]),
         fingerprint: Digest::from_bytes([13; 32]),
-        payload: Bytes::from_static(b"ab"),
+        payload: bytes::Bytes::from_static(b"ab"),
     };
     assert!(matches!(
         store
@@ -235,7 +236,7 @@ fn authority_payload_and_replay_bounds_preserve_forward_progress()
     let oversized = ProposedCommit {
         operation_id: OperationId::from_bytes([14; 16]),
         fingerprint: Digest::from_bytes([15; 32]),
-        payload: Bytes::from_static(b"abc"),
+        payload: bytes::Bytes::from_static(b"abc"),
     };
     assert!(matches!(
         store.compare_and_append(
@@ -266,8 +267,8 @@ fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         return Err("authority unexpectedly existed".into());
     };
     for (operation, fingerprint, payload) in [
-        ([17; 16], [18; 32], Bytes::from_static(b"aa")),
-        ([19; 16], [20; 32], Bytes::from_static(b"bb")),
+        ([17; 16], [18; 32], bytes::Bytes::from_static(b"aa")),
+        ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
     ] {
         let appended = store.compare_and_append(
             authority_id,
@@ -339,7 +340,7 @@ fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint,
-        payload: Bytes::from_static(b"durable"),
+        payload: bytes::Bytes::from_static(b"durable"),
     };
     let committed = store.compare_and_append(
         authority_id,
@@ -404,7 +405,7 @@ fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         ProposedCommit {
             operation_id: OperationId::from_bytes([26; 16]),
             fingerprint: Digest::from_bytes([27; 32]),
-            payload: Bytes::from_static(b"stale"),
+            payload: bytes::Bytes::from_static(b"stale"),
         },
         WorkBudget::UNBOUNDED,
     )?;
@@ -431,7 +432,7 @@ fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         ProposedCommit {
             operation_id: OperationId::from_bytes([28; 16]),
             fingerprint: Digest::from_bytes([29; 32]),
-            payload: Bytes::from_static(b"fenced"),
+            payload: bytes::Bytes::from_static(b"fenced"),
         },
         WorkBudget::UNBOUNDED,
     )?;
@@ -588,7 +589,7 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint: Digest::from_bytes([42; 32]),
-        payload: Bytes::from_static(b"payload"),
+        payload: bytes::Bytes::from_static(b"payload"),
     };
 
     let corrupt_index = MemoryAuthorityStore::default();
@@ -679,7 +680,7 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
         fingerprint: Digest::from_bytes([44; 32]),
         previous_digest: Digest::ZERO,
         digest: Digest::from_bytes([45; 32]),
-        payload: Bytes::from_static(b"prior"),
+        payload: bytes::Bytes::from_static(b"prior"),
     };
     exhausted_sequence
         .authorities
@@ -753,7 +754,7 @@ fn poisoned_memory_locks_reject_every_surface_with_exact_work()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint: Digest::from_bytes([48; 32]),
-        payload: Bytes::from_static(b"payload"),
+        payload: bytes::Bytes::from_static(b"payload"),
     };
     let authority_failures = [
         authority
@@ -890,7 +891,7 @@ fn native_authority_fixture()
         ProposedCommit {
             operation_id: OperationId::from_bytes([0xe2; 16]),
             fingerprint: Digest::from_bytes([0xe3; 32]),
-            payload: Bytes::from(vec![0x5a; 8_192]),
+            payload: bytes::Bytes::from(vec![0x5a; 8_192]),
         }, budget,
     )?.value else { return Err("native fixture did not append".into()); };
     Ok((store, id, commit))
@@ -1415,7 +1416,7 @@ fn native_mutation_request(authority: AuthorityId, expected: Head) -> crate::sto
         commit: ProposedCommit {
             operation_id: OperationId::from_bytes([0x91; 16]),
             fingerprint: Digest::from_bytes([0x92; 32]),
-            payload: Bytes::from_static(b"canonical configuration bytes"),
+            payload: bytes::Bytes::from_static(b"canonical configuration bytes"),
         },
         permit: crate::storage::PublicationPermit::Unrestricted,
     }
@@ -1459,7 +1460,7 @@ fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     assert_eq!(work.receipt().backend_write_operations, created.backend_write_operations);
     assert_eq!(work.receipt().allocation_operations, created.allocation_operations);
     for changed in [
-        ProposedCommit { payload: Bytes::from_static(b"different configuration bytes"), ..proposed.clone() },
+        ProposedCommit { payload: bytes::Bytes::from_static(b"different configuration bytes"), ..proposed.clone() },
         ProposedCommit { operation_id: OperationId::from_bytes([0x93; 16]), ..proposed.clone() },
         ProposedCommit { fingerprint: Digest::from_bytes([0x94; 32]), ..proposed },
     ] {
@@ -1636,7 +1637,7 @@ fn original_owner_revalidates_head_permit_and_cancellation_at_publication()
     let actual = AuthorityStore::head(store.as_ref(), id, WorkBudget::UNBOUNDED)?.value;
     let mut request = native_mutation_request(id, actual);
     request.permit = crate::storage::PublicationPermit::Reservation {
-        operation_id: *request.commit.operation_id.as_bytes(), gate_tail: 7, expected: actual,
+        operation_id: request.commit.operation_id.into_bytes(), gate_tail: 7, expected: actual,
     };
     let prefix = work.receipt();
     let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

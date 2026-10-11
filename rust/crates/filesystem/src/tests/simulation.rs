@@ -1,10 +1,11 @@
+use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::WorkError;
 use crate::foundation::Digest;
 use crate::storage::{FenceOutcome, ObjectKind};
 
-fn object(bytes: &[u8]) -> (ObjectId, Bytes) {
-    let bytes = Bytes::copy_from_slice(bytes);
+fn object(bytes: &[u8]) -> (ObjectId, OwnedBytes) {
+    let bytes = OwnedBytes::copy_from_slice(bytes);
     (
         ObjectId {
             kind: ObjectKind::BlobChunk,
@@ -18,7 +19,7 @@ fn proposal(operation: u8, fingerprint: u8) -> ProposedCommit {
     ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
-        payload: Bytes::from(vec![operation, fingerprint]),
+        payload: bytes::Bytes::from(vec![operation, fingerprint]),
     }
 }
 
@@ -748,7 +749,7 @@ fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let (first_id, first_bytes) = object(b"four");
     let digest_failure = crate::async_storage::poll_ready(objects.put(
         first_id,
-        Bytes::from_static(b"bad!"),
+        OwnedBytes::from_static(b"bad!"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -922,7 +923,7 @@ fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
             .map_err(|_| "simulation state unexpectedly poisoned")?;
         state
             .pending_objects
-            .insert(object_id, Bytes::from_static(b"forged"));
+            .insert(object_id, OwnedBytes::from_static(b"forged"));
         state.pending_object_bytes = 6;
     }
     let failure = crate::async_storage::poll_ready(
@@ -1043,7 +1044,7 @@ async fn exercise_original_authority<A: AsyncAuthorityStore>(
     authority.create_authority(id, Epoch::GENESIS, budget, &cancellation).await?;
     let initial = authority.head(id, budget, &cancellation).await?.value;
     let proposed = ProposedCommit {
-        payload: Bytes::from(vec![0x5a; 8_192]),
+        payload: bytes::Bytes::from(vec![0x5a; 8_192]),
         ..proposal(0xd2, 0xd3)
     };
     let AppendOutcome::Committed(commit) = authority.compare_and_append(
@@ -1268,10 +1269,19 @@ fn original_proposal(
     bytes.try_reserve_exact(2)?;
     original.charge(WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
     bytes.extend_from_slice(&[operation, fingerprint]);
-    let object = crate::HashedObject::from_native_vec(
-        ObjectKind::BlobChunk, &mut bytes, &mut allocation, original, cancellation,
-    )?;
-    let (_, payload) = object.into_parts();
+    cancellation.check()?;
+    allocation.reconcile_capacity(bytes.capacity() as u64)?;
+    let hash = WorkCounters {
+        bytes_hashed: bytes.len() as u64 + crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES,
+        ..WorkCounters::UNCHARGED
+    };
+    original.admit(hash)?;
+    let _digest = crate::storage::object_digest(ObjectKind::BlobChunk, &bytes);
+    original.record_admitted(hash)?;
+    let control = original.claim(crate::kernel::allocation::bytes_owner_control_bytes::<crate::kernel::NativePublicationPayload>()?)?;
+    let payload = bytes::Bytes::from_owner(crate::kernel::NativePublicationPayload {
+        bytes, _original_evidence: None, _allocation: allocation, _control: control,
+    });
     Ok(ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),
@@ -1303,7 +1313,7 @@ impl From<AuthorityStoreError> for SimulationOwnerFailure {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore>(
+async fn exercise_original_simulation_mutations<A: AsyncAuthorityStore + 'static>(
     backend: A,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::NativeMaterializationWork;
@@ -1551,7 +1561,7 @@ async fn original_simulation_trace_denial_and_original_cancellation_precede_muta
     let proposed = ProposedCommit {
         operation_id: OperationId::from_bytes([0xcb; 16]),
         fingerprint: Digest::from_bytes([0xcc; 32]),
-        payload: Bytes::from_static(b"root-borrowed"),
+        payload: bytes::Bytes::from_static(b"root-borrowed"),
     };
     simulation.schedule_next(SimulationOperation::AuthorityCreate, SimulationFault::AmbiguousAuthorityAppend)?;
     let before = original.receipt();

@@ -2960,7 +2960,7 @@ mod admission_tests {
         ));
         assert!(retired.upgrade().is_none());
         assert_eq!(Arc::strong_count(&original), 1);
-        let state = original.lock();
+        let mut state = original.lock();
         assert_eq!(state.work.backend_read_operations, 3);
         assert_eq!(state.work.backend_write_operations, 3);
         assert_eq!(state.work.source_bytes_read, 0);
@@ -3142,7 +3142,7 @@ mod admission_tests {
         let wait = CancellationToken::new();
         // Holding only the test's accounting leaf delays recording a genuine
         // wake/retirement, without inventing a mock native completion.
-        let state = original.lock();
+        let mut state = original.lock();
         let prefix = state.receipt();
         let stopping = Arc::clone(&watch);
         let caller_wait = wait.clone();
@@ -3249,7 +3249,7 @@ mod admission_tests {
         assert!(watch.shared.physically_cleared());
         assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
         assert!(!watch.delivery().is_exact());
-        let state = original.lock();
+        let mut state = original.lock();
         assert_eq!(state.receipt().items_returned, 1, "the panicked sink is never re-entered");
         assert_eq!(state.live_allocation_bytes(), retained_control);
         assert!(state.receipt().backend_read_operations > prefix.backend_read_operations);

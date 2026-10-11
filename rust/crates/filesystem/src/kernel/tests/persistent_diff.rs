@@ -916,16 +916,10 @@ fn standalone_common_diff_exposes_exact_retained_release_bytes()
         &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
     ))?;
     let bytes = diff.retained_allocation_bytes;
-    accounting.with_allocations(|ledger, _, _, _| {
-        assert_eq!(ledger.live_bytes(), bytes);
-        Ok(())
-    })?;
+    assert_eq!(accounting.standalone_parts().expect("standalone ledger").0.live_bytes(), bytes);
     assert_eq!(diff.changes.first().map(|change| change.key.as_bytes()), Some(b"alpha".as_slice()));
     drop(diff);
     retire_allocation(allocation, bytes, &mut accounting)?;
-    accounting.with_allocations(|ledger, _, _, _| {
-        assert_eq!(ledger.live_bytes(), 0);
-        Ok(())
-    })?;
+    assert_eq!(accounting.standalone_parts().expect("standalone ledger").0.live_bytes(), 0);
     Ok(())
 }

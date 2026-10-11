@@ -423,9 +423,8 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         let Err(failure) = validate_request(request, limits) else {
             return Err("invalid clone request unexpectedly succeeded".into());
         };
-        assert_eq!(*failure.work, WorkCounters::default());
         assert_eq!(
-            std::mem::discriminant(&failure.error),
+            std::mem::discriminant(&failure),
             std::mem::discriminant(&expected)
         );
     }

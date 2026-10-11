@@ -430,7 +430,7 @@ mod tests {
         let durable = DurableCommit {
             epoch: Epoch::GENESIS, sequence: Sequence::new(1),
             operation_id: original.operation_id, fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload,
+            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload, settled_at_micros: None,
         };
         let called = std::cell::Cell::new(false);
         let result = StreamsDurableRecord::encode_with(&durable, 1, |_, _| {
@@ -447,7 +447,7 @@ mod tests {
         let durable = DurableCommit {
             epoch: Epoch::GENESIS, sequence: Sequence::new(1),
             operation_id: original.operation_id, fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload,
+            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload, settled_at_micros: None,
         };
         let encoded = StreamsDurableRecord::encode(&durable, 4096).expect("canonical bounded record");
         let mut copied = 0;

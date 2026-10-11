@@ -154,11 +154,11 @@ impl<'a> PublicationAccounting<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NativePublicationPayload {
-    bytes: Vec<u8>,
-    _original_evidence: Option<acyclic_stream::OwnedBytes>,
-    _allocation: crate::NativeAllocation,
-    _control: crate::NativeAllocation,
+pub(crate) struct NativePublicationPayload {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) _original_evidence: Option<acyclic_stream::OwnedBytes>,
+    pub(crate) _allocation: crate::NativeAllocation,
+    pub(crate) _control: crate::NativeAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -598,7 +598,7 @@ where
             future.await.map_err(NativePublicationOwnerFailure::Owner)
         }
     };
-    let mut dispatch = |request: GuardedAppend, _: Option<WorkBudget>| {
+    let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
             let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(

@@ -5,7 +5,7 @@ use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
@@ -21,7 +21,7 @@ fn put_page(
     ObjectStore::put(
         store,
         id,
-        Bytes::from(encode_extent_page(page, 16)?),
+        OwnedBytes::from(encode_extent_page(page, 16)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

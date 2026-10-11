@@ -62,12 +62,12 @@ impl<T: Default> MountSyncBuffer<T> {
             Some(custody) => custody.clone(),
             None => {
                 let custody = work.with_work(super::NativeMountAllocationCustody::new)
-                    .map_err(super::adapter::native_custody_error)?;
+                    .map_err(mount_demand_error)?;
                 self.custody = Some(custody.clone());
                 custody
             }
         };
-        work.with_work(|meter| custody.claim(bytes, meter)).map_err(super::adapter::native_custody_error)?;
+        work.with_work(|meter| custody.claim(bytes, meter)).map_err(mount_demand_error)?;
         self.bytes = total;
         Ok(())
     }
@@ -181,7 +181,7 @@ impl<'w> MountSyncWork<'w> {
         }
         let custody = self.scratch_custody.as_ref().expect("mounted scratch custody").clone();
         self.with_work(|work| custody.retain_admitted(bytes, work))
-            .map_err(super::adapter::native_custody_error)?;
+            .map_err(mount_demand_error)?;
         Ok(custody)
     }
 
@@ -223,11 +223,11 @@ impl<'w> MountSyncWork<'w> {
 
     fn namespace_buffer(
         &mut self, path: &str, config: crate::VolumeConfig,
-    ) -> Result<MountSyncBuffer<Option<crate::NamespacePath>>, MountSourceError> {
+    ) -> Result<MountSyncBuffer<Option<crate::kernel::NamespacePath>>, MountSourceError> {
         if let Some(original) = self.meter.original_native_work() {
             let cancellation = self.cancellation();
             let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
-            let owned = crate::NamespacePath::parse_in_profile_with_accounting(
+            let owned = crate::kernel::NamespacePath::parse_in_profile_with_accounting(
                 path, config.profile, config.limits, &mut accounting, &cancellation,
             ).map_err(MountSourceError::Filesystem)?;
             let allocation = match owned.1 {
@@ -1031,7 +1031,7 @@ where
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
     let mut installed = ViewEffect::default();
     installed.nodes = scratch.vec::<FileId>(node_slots)?;
-    installed.listings = scratch.vec::<crate::NamespacePath>(levels)?;
+    installed.listings = scratch.vec::<crate::kernel::NamespacePath>(levels)?;
     let mut prefix = mount_components_with_carrier(mounted.components(), None, scratch.carrier)?;
     scratch.track(prefix.legacy_owned_bytes())?;
     let mut text = path;
@@ -1976,7 +1976,7 @@ struct SelectedImportProof {
     checkpoint: crate::LazySnapshotRef,
     source: crate::LazySnapshotRef,
     source_config: crate::model::VolumeConfig,
-    input: crate::kernel::Digest,
+    input: crate::Digest,
 }
 
 
@@ -2078,7 +2078,7 @@ fn retain_pending_detached_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore
         Err(error) => {
             drop(file);
             work.release(bytes).map_err(mount_demand_error)?;
-            Err(super::adapter::native_custody_error(error))
+            Err(mount_demand_error(error))
         }
     }
 }
@@ -2261,10 +2261,10 @@ fn recorder_namespace(
     names: &[crate::kernel::LogicalName], limits: crate::VolumeLimits,
     work: &crate::NativeMaterializationWork, custody: &mut crate::NativeAllocation,
     source: Option<crate::demand::NativeSourceWork<'_>>,
-) -> Result<crate::NamespacePath, DemandError> {
+) -> Result<crate::kernel::NamespacePath, DemandError> {
     use crate::kernel::codec::ReadAllocationStep;
     use crate::kernel::NamespacePathStep;
-    crate::NamespacePath::names_with_steps(names, limits, work.cancellation(), &mut |step| {
+    crate::kernel::NamespacePath::names_with_steps(names, limits, work.cancellation(), &mut |step| {
         match step {
             NamespacePathStep::Admit(delta) => {
                 recorder_check(work, source)?;
@@ -2292,6 +2292,30 @@ fn recorder_namespace(
             }
             NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) =>
                 Err(DemandError::Allocation(error)),
+            NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) => {
+                recorder_check(work, source)?;
+                work.admit(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error)
+            }
+            NamespacePathStep::Allocation(ReadAllocationStep::Copied(bytes)) =>
+                work.record_admitted(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error),
+            NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
+                recorder_check(work, source)?;
+                work.admit(crate::WorkCounters { bytes_hashed: bytes, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error)
+            }
+            NamespacePathStep::Allocation(ReadAllocationStep::Hashed(bytes)) =>
+                work.record_admitted(crate::WorkCounters { bytes_hashed: bytes, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error),
+            NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) => {
+                recorder_check(work, source)?;
+                work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error)
+            }
+            NamespacePathStep::Allocation(ReadAllocationStep::Item) =>
+                work.record_admitted(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                    .map_err(recorder_native_error),
         }
     })
 }
@@ -2600,7 +2624,7 @@ impl NativeMountSourceWatchOwner {
     fn stop_on_native_work(
         &self, mut work: crate::demand::NativeSourceWork<'_>,
     ) -> Result<bool, MountSourceError> {
-        crate::demand::SourceDemandReadWork::check(&mut work).map_err(mount_demand_error)?;
+        crate::native_host::NativeHostWork::check(&mut work).map_err(mount_demand_error)?;
         if self.stopped.load(Ordering::Acquire) { return Ok(false); }
         let result = if let Some(failure) = &self.startup_failure {
             let result = failure.stop_with_work(&mut work);
@@ -2625,7 +2649,7 @@ impl NativeMountSourceWatchOwner {
     pub fn stop_with_work(
         &mut self, work: &mut super::NativeMountWork<'_>,
     ) -> Result<bool, super::NativeMountError> {
-        self.stop_with_carrier(&mut super::adapter::NativeDemandCarrier::Borrowed(work.work))
+        self.stop_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(&work.work.native_mount_work()))
             .map_err(Into::into)
     }
 
@@ -2854,7 +2878,7 @@ where
                             super::NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(error))))?;
                     } else if native_watch {
                         carrier.with_work(|work| work.charge(crate::WorkCounters {
-                            allocation_operations: 1, ..crate::WorkCounters::UNCHARGED,
+                            allocation_operations: 1, ..crate::WorkCounters::UNCHARGED
                         })).map_err(super::NativeMountError::Demand)?;
                     } else {
                         let bytes = std::mem::size_of_val(&value) as u64;
@@ -2926,7 +2950,7 @@ where
                         owner.stopped.store(owner.watch.as_ref().is_none_or(|watch| watch.is_stopped()),
                             Ordering::Release);
                         let checked = if let Some(original) = original {
-                            crate::demand::SourceDemandReadWork::check(
+                            crate::native_host::NativeHostWork::check(
                                 &mut crate::demand::NativeSourceWork::from_native_materialization_work(original))
                         } else {
                             carrier.with_work(|work| work.check())
@@ -3052,6 +3076,25 @@ where
             .unwrap_or_else(PoisonError::into_inner)
             .values
             .binary_search(&file_id).is_ok()
+    }
+
+    fn reported_with_meter(&self, file_id: FileId, work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        let mut work = work.meter().lock();
+        work.check().map_err(mount_demand_error)?;
+        self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
+        let linked = self.linked.lock().map_err(|_| MountSourceError::Stale)?;
+        let mut low = 0;
+        let mut high = linked.values.len();
+        while low < high {
+            mount_items(&mut work, 1)?;
+            let middle = low + (high - low) / 2;
+            match linked.values[middle].cmp(&file_id) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Ok(false),
+            }
+        }
+        Ok(true)
     }
 
     /// Whether the source still reports every change made to it.
@@ -3193,7 +3236,7 @@ where
         let caller = carrier.cancellation();
         let (record, metadata, _) = file.snapshot_with_carrier(carrier, &caller).await?;
         let mut current = mount_lookup(LazyLookup::Shadow {
-            record, metadata, source_link_count: named.node.link_count,
+            record, metadata: WorkspaceMetadata::from_engine(metadata), source_link_count: named.node.link_count,
         }, named.node.file_id);
         current.node.link_count = named.node.link_count;
         Ok(Some(current))
@@ -3237,8 +3280,8 @@ where
             ..crate::WorkCounters::default()
         };
         work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
-        let custody = super::NativeMountAllocationCustody::new(work).map_err(MountSourceError::from)?;
-        custody.claim(bytes, work).map_err(MountSourceError::from)?;
+        let custody = super::NativeMountAllocationCustody::new(work).map_err(mount_demand_error)?;
+        custody.claim(bytes, work).map_err(mount_demand_error)?;
         let mut values = Vec::new();
         if let Err(error) = values.try_reserve_exact(capacity) {
             drop(values);
@@ -3344,7 +3387,7 @@ where
     fn finish_detached_publication(
         &self,
         operation: crate::OperationId,
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
     ) -> Result<(), MountSourceError> {
         let count = self.detached.lock().map_err(|_| MountSourceError::Stale)?.len();
         for position in 0..count {
@@ -3388,7 +3431,7 @@ where
     fn prune_detached_operation(
         &self,
         operation: Option<crate::OperationId>,
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
     ) -> Result<(), MountSourceError> {
         let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
         let mut open = self.open_sources.lock().map_err(|_| MountSourceError::Stale)?;
@@ -3443,7 +3486,7 @@ where
         &self,
         records: &[(FileRecord, FileMetadata)],
         dirty: &[DirtyDetachedRecord],
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(), MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
@@ -3452,7 +3495,7 @@ where
             let position = self.reserve_detached_slot_with_carrier(record.file_id, &mut work.meter)?;
             if let Some(position) = position {
                 let file = self.authored.detached_file_from_record_with_carrier(
-                    *record, *metadata, ViewGate::callback_owner(), &mut work.meter,
+                    *record, *metadata, SourceViewGate::callback_owner(), &mut work.meter,
                 ).await?;
                 let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
                 work.charge(crate::WorkCounters {
@@ -3472,7 +3515,7 @@ where
                 if *id == record.file_id { dirty_position += 1; Some(*epoch) } else { None }
             } else { None };
             let frozen = self.authored.detached_identity_from_record_with_carrier(
-                *record, ViewGate::callback_owner(), &mut work.meter, cancellation,
+                *record, SourceViewGate::callback_owner(), &mut work.meter, cancellation,
             ).await?;
             let mut pending = work.with_work(|meter| retain_pending_detached_with_work(
                 frozen, *metadata, dirty_epoch.unwrap_or(0), None, meter,
@@ -3505,7 +3548,7 @@ where
     async fn recover_pending_mount_change_measured<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
         cancellation: &crate::CancellationToken,
         before_publication: &mut F,
     ) -> Result<(), E>
@@ -3632,7 +3675,7 @@ where
     fn frozen_mount_inputs(
         &self,
         operation: crate::OperationId,
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
     ) -> Result<(MountSyncBuffer<Vec<String>>, MountSyncBuffer<Vec<(FileRecord, FileMetadata)>>), MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         let paths = {
@@ -4282,7 +4325,7 @@ where
     pub(super) async fn sync_selected_staged_measured<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
         cancellation: &crate::CancellationToken,
         before_publication: &mut F,
         selected: Option<SelectedMountInput<'_>>,
@@ -4663,7 +4706,7 @@ where
         paths: &[String],
         removed_ids: &[FileId],
         dirty: &[DirtyDetachedRecord],
-        work: &mut MountSyncWork,
+        work: &mut MountSyncWork<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp, MountSyncBuffer<Vec<(FileRecord, FileMetadata)>>), MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
@@ -4938,8 +4981,8 @@ where
         }
     }
 
-    fn removal_children_with_scratch<S: super::adapter::CaptureInputScratch>(
-        paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, directory: &str, scratch: &mut S,
+    fn removal_children_with_scratch<C: super::adapter::CaptureInputScratch>(
+        paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, directory: &str, scratch: &mut C,
     ) -> Result<Vec<String>, MountSourceError> {
         let prefix: std::borrow::Cow<'_, str> = if directory == "/" {
             std::borrow::Cow::Borrowed("/")
@@ -5053,7 +5096,7 @@ where
         if entries.len() < entries.capacity() { return Ok(Some(position)); }
         let mut scratch = DirectoryScratch::new(work);
         let custody = super::NativeMountAllocationCustody::new(scratch.work)
-            .map_err(super::adapter::native_custody_error)?;
+            .map_err(mount_demand_error)?;
         let count = entries.len().checked_add(1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let copied = crate::WorkCounters {
             items_examined: entries.len() as u64,
@@ -5064,7 +5107,7 @@ where
         let replacement = mount_vec(count, scratch.work)?;
         let new_bytes = (replacement.capacity() * std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>()) as u64;
         scratch.track(new_bytes)?;
-        custody.retain_admitted(new_bytes, scratch.work).map_err(super::adapter::native_custody_error)?;
+        custody.retain_admitted(new_bytes, scratch.work).map_err(mount_demand_error)?;
         let mut replacement = DetachedTable { entries: replacement, custody: Some(custody), bytes: new_bytes, native_allocation: None };
         scratch.keep(new_bytes)?;
         replacement.entries.append(&mut entries.entries);
@@ -5978,7 +6021,7 @@ where
         let mut work = crate::demand::DemandWork::new(
             crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
         );
-        self.project_unauthored_with_carrier(path, lookup, source,
+        self.project_unauthored_with_carrier(path, lookup, source, None,
             &mut super::adapter::NativeDemandCarrier::Borrowed(&mut work)).await
     }
 
@@ -6129,6 +6172,7 @@ where
                 return Err(MountSourceError::Stale);
             }
             Ok(MountDirectoryPage {
+                ownership: Default::default(),
                 entries,
                 next_cursor: page
                     .next
@@ -6206,14 +6250,17 @@ where
             ).await.map_err(directory_lazy_error)?;
             (page, state)
         };
-        let mut entries = scratch.carrier.with_work(|work| mount_vec::<MountDirectoryEntry>(page.entries.len(), work))?;
-        let output_storage = (entries.capacity() * std::mem::size_of::<MountDirectoryEntry>()) as u64;
-        scratch.track(output_storage)?;
+        let mut entries = scratch.vec::<MountDirectoryEntry>(page.entries.len())?;
+        let output_storage = if scratch.native_backing.is_some() { 0 } else {
+            (entries.capacity() * std::mem::size_of::<MountDirectoryEntry>()) as u64
+        };
         let mut output_names = 0_u64;
         for entry in &page.entries {
             scratch.carrier.with_work(|work| mount_items(work, 1))?;
-            let name = scratch.carrier.with_work(|work| super::adapter::native_mount_name_with_work(&entry.name, work))?;
-            scratch.track(name.capacity() as u64)?;
+            let name = mount_name_with_carrier(&entry.name, scratch.carrier)?;
+            let (name, mut allocation, name_bytes) = name.into_parts();
+            if let Some(allocation) = &mut allocation { scratch.absorb_native(allocation)?; }
+            scratch.track(name_bytes)?;
             let (mounted_child, mounted_bytes) = scratch.carrier.with_work(|work| directory_child_with_work(path, &name, work))?;
             scratch.track(mounted_bytes)?;
             let child = mount_path_text_with_carrier(&self.root, &mounted_child, scratch.carrier)?;
@@ -6230,9 +6277,10 @@ where
             ).await? {
                 let removed = self.removed_identity_with_carrier(&child, authored.node.file_id, scratch.carrier)?;
                 if removed {
-                    let name_bytes = name.capacity() as u64;
+                    let name_capacity = name.capacity() as u64;
                     let child_bytes = child.legacy_owned_bytes();
                     drop(name); drop(child); drop(mounted_child);
+                    if scratch.native_backing.is_some() { scratch.release_backing(name_capacity)?; }
                     scratch.release(name_bytes + child_bytes + mounted_bytes)?;
                     continue;
                 }
@@ -6248,7 +6296,7 @@ where
             let child_bytes = child.legacy_owned_bytes();
             drop(child); drop(mounted_child);
             scratch.release(child_bytes + mounted_bytes)?;
-            output_names = output_names.checked_add(name.capacity() as u64)
+            output_names = output_names.checked_add(name_bytes)
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
             entries.push(MountDirectoryEntry { name, node: lookup.node, metadata: lookup.metadata, pin });
         }
@@ -6260,13 +6308,20 @@ where
         drop(latest);
         scratch.release(latest_bytes)?;
         if !unchanged || !same_epoch { return Err(MountSourceError::Stale); }
+        let mut cursor_bytes = 0;
         let next_cursor = if let Some(cursor) = page.next.take() {
             let token = self.cursors.remember_with_carrier(generation, (stamp, cursor), scratch.carrier)?;
-            scratch.track(token.capacity() as u64)?;
+            let (token, mut allocation, bytes) = token.into_parts();
+            if let Some(allocation) = &mut allocation { scratch.absorb_native(allocation)?; }
+            cursor_bytes = bytes;
+            scratch.track(bytes)?;
             Some(token)
         } else { None };
-        scratch.keep(output_storage + output_names + next_cursor.as_ref().map_or(0, |token| token.capacity() as u64))?;
-        Ok(MountDirectoryPage { entries, next_cursor })
+        scratch.keep(output_storage + output_names + cursor_bytes)?;
+        Ok(match scratch.native_backing.take() {
+            Some(allocation) => MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation),
+            None => MountDirectoryPage::new(entries, next_cursor),
+        })
     }
 
     fn read_directory_with_carrier(
@@ -6325,7 +6380,7 @@ where
     {
         for _ in 0..2 {
             let resolution = self.resolve(path, text, owner, proof).await?;
-            let Resolution::Unauthored(LazyLookup::Source(node), Some(source), _allocation) = resolution else {
+            let Resolution::Unauthored(LazyLookup::Source(node), Some(source), ref _allocation) = resolution else {
                 return Ok((resolution, None));
             };
             if node.kind != SourceNodeKind::RegularFile {
@@ -6457,6 +6512,88 @@ where
         })
     }
 
+    fn native_attributes<T>(
+        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        operation: impl FnOnce(Option<Arc<CheckoutDetachedFile<A, O>>>, bool) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        let owner = SourceViewGate::callback_owner();
+        let (lease, detached, projected) = self.with_native_read_carrier(&mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || async {
+                let lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
+                let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
+                let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await?;
+                let detached = self.content_detached_with_carrier(&resolution, &text, carrier).await?;
+                let projected = match resolution {
+                    Resolution::Absent => return Err(MountSourceError::NotFound),
+                    Resolution::Authored(_) => false,
+                    Resolution::Unauthored(LazyLookup::Source(_), _, _) => true,
+                    Resolution::Unauthored(_, _, _) if detached.is_some() => false,
+                    Resolution::Unauthored(_, _, _) => return Err(MountSourceError::Unsupported(
+                        "named attributes of an unpromoted shadow are not projected".to_owned())),
+                };
+                Ok((lease, detached, projected))
+            })
+        })?;
+        let result = operation(detached, projected);
+        drop(lease);
+        result
+    }
+
+    fn native_mutation<T>(
+        &self, path: &MountPath, source: Option<&MountPath>, promote: bool, rebound: bool,
+        work: &super::NativeMountMeterWork,
+        operation: impl FnOnce(Option<Arc<CheckoutDetachedFile<A, O>>>) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        let owner = SourceViewGate::callback_owner();
+        let (lease, text, detached) = self.with_native_read_carrier(&mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || async {
+                let lease = self.source_mutation_lease_with_carrier(None, carrier).await?;
+                let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
+                let detached = if promote {
+                    let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await?;
+                    self.content_detached_with_carrier(&resolution, &text, carrier).await?
+                } else { None };
+                if let Some(source) = source { self.promote_with_carrier(source, owner, carrier).await?; }
+                if promote {
+                    if detached.is_none() { self.promote_with_carrier(path, owner, carrier).await?; }
+                } else { self.promote_parents_with_carrier(path, owner, carrier).await?; }
+                Ok((lease, text, detached))
+            })
+        })?;
+        let original = work.native_materialization_work();
+        let delta = if rebound {
+            carrier.with_work(|work| {
+                mount_items(work, 1)?;
+                let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
+                let record = if let Some(removed) = removals.paths.get(text.as_str()) {
+                    mount_items(work, 1)?;
+                    removals.records.contains_key(&removed.file_id)
+                } else { false };
+                Ok::<_, MountSourceError>(crate::WorkCounters {
+                    items_examined: 1 + u64::from(record), ..crate::WorkCounters::UNCHARGED
+                })
+            })?
+        } else { crate::WorkCounters::UNCHARGED };
+        let mut completion = original.reserve_work(delta).map_err(MountSourceError::NativeWork)?;
+        if rebound { self.cursors.clear_with_carrier(&mut carrier)?; }
+        let result = operation(detached);
+        let result = match result {
+            Ok(value) if rebound => {
+                let restored = self.record_rebound(&text);
+                let recorded = completion.record_completed(delta).map_err(MountSourceError::NativeWork);
+                restored.and(recorded).map(|()| value)
+            }
+            result => result,
+        };
+        let bytes = text.legacy_owned_bytes();
+        drop(text);
+        drop(lease);
+        let released = carrier.with_work(|work| work.release(bytes)).map_err(mount_demand_error);
+        match result { Ok(value) => released.map(|()| value), Err(error) => Err(error) }
+    }
+
     fn wait<T: Send, F>(&self, create: impl FnOnce() -> F + Send) -> Result<T, MountSourceError>
     where
         F: std::future::Future<Output = Result<T, MountSourceError>>,
@@ -6523,6 +6660,7 @@ struct LazyOpenFile<A, O, D, S> {
     open_sources: OpenIdentityHandles,
     promoted: Mutex<Option<Arc<dyn MountOpenFile>>>,
     unstaged: UnstagedIdentities,
+    _input_allocation: Option<crate::NativeAllocation>,
 }
 
 struct ViewBoundOpenFile<A, O> {
@@ -6725,7 +6863,7 @@ where
     }
 
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &super::NativeMountMeterWork) -> Result<MountAttributePage, MountSourceError> {
+        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, |file| file.list_attributes_with_meter(cursor, maximum_entries, work))
     }
 
@@ -7110,10 +7248,11 @@ where
     }
 
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &super::NativeMountMeterWork) -> Result<MountAttributePage, MountSourceError> {
+        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, _| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
-            None => Ok(MountAttributePage { names: Vec::new(), next_cursor: None }),
+            None => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
+                work.native_materialization_work().retain_owned(0).map_err(MountSourceError::NativeWork)?)),
         })
     }
 
@@ -7373,14 +7512,14 @@ where
         self.ledger_stamp().filter(|_| self.source_observed())
     }
 
-    fn observe_view(&self, observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError> {
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
         self.authored.observe_view(observer)
     }
 
     fn observe_view_with_work(
         &self, observer: Weak<dyn ViewObserver>, work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.authored.observe_view_with_work(observer, work)
+        work.run_with_meter(|original| self.observe_view_with_meter(observer, original))
     }
 
     fn observe_view_with_meter(
@@ -7433,6 +7572,53 @@ where
         self.source_view.is_stable()
             && file_id.is_none_or(|file_id| self.reported(file_id))
             && self.authored.unchanged_since(path, file_id, stamp)
+    }
+
+    fn view_is_stable_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        carrier.with_work(|work| mount_items(work, 1))?;
+        Ok(self.source_view.is_stable() && self.authored.view_is_stable_with_meter(work)?)
+    }
+
+    fn view_stamp_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<Option<ViewStamp>, MountSourceError> {
+        if !self.view_is_stable_with_meter(work)? || !self.source_observed() { return Ok(None); }
+        self.authored.view_stamp_with_meter(work)
+    }
+
+    fn binding_epoch_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<Option<u64>, MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        carrier.with_work(|work| mount_items(work, 1))?;
+        Ok(Some(self.source_view.generation()))
+    }
+
+    fn folded_path_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+        -> Result<Option<(MountPath, u64)>, MountSourceError> {
+        self.authored.folded_path_with_meter(path, work)
+    }
+
+    fn unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        if !self.view_is_stable_with_meter(work)? { return Ok(false); }
+        if let Some(file_id) = file_id { if !self.reported_with_meter(file_id, work)? { return Ok(false); } }
+        self.authored.unchanged_since_with_meter(path, file_id, stamp, work)
+    }
+
+    fn reported_unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
+        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        if !self.view_is_stable_with_meter(work)? { return Ok(false); }
+        if let Some(file_id) = file_id { if !self.reported_with_meter(file_id, work)? { return Ok(false); } }
+        self.authored.reported_unchanged_since_with_meter(path, file_id, stamp, work)
+    }
+
+    fn node_unchanged_since_with_meter(&self, file_id: FileId, stamp: ViewStamp,
+        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        Ok(self.view_is_stable_with_meter(work)? && self.reported_with_meter(file_id, work)?
+            && self.authored.node_unchanged_since_with_meter(file_id, stamp, work)?)
+    }
+
+    fn listing_unchanged_since_with_meter(&self, path: &MountPath, stamp: ViewStamp,
+        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        Ok(self.view_is_stable_with_meter(work)? && self.authored.listing_unchanged_since_with_meter(path, stamp, work)?)
     }
 
     fn reports_changes_to(&self, file_id: FileId) -> bool {
@@ -7550,27 +7736,44 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        self.open_proven(path).map(|(file, _)| file)
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
+            .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
+        self.open_file_with_meter(path, &work.native_mount_work()).map(|(file, _)| file)
     }
 
-    fn open_file_with_lookup(
-        &self,
-        path: &MountPath,
-    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
-        let (file, proven) = self.open_proven(path)?;
-        let lookup = match proven {
-            Some(lookup) => lookup,
-            None => file.lookup()?,
-        };
+    fn open_file_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        self.open_proven(path, work).map(|(file, _)| file)
+    }
+
+    fn open_file_with_lookup(&self, path: &MountPath) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
+            .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
+        self.open_file_with_lookup_with_meter(path, &work.native_mount_work()).map(|((file, _), lookup)| (file, lookup))
+    }
+
+    fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+        -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
+        let (file, proven) = self.open_proven(path, work)?;
+        let lookup = match proven { Some(lookup) => lookup, None => file.0.lookup_with_meter(work)? };
         Ok((file, lookup))
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let lease = self.mutation_lease(None)?;
-        self.promote_locked(path)?;
-        self.authored
-            .detach_file(path)
-            .and_then(|file| self.bind_open_file(file, None, lease.generation))
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
+            .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
+        self.detach_file_with_meter(path, &work.native_mount_work()).map(|(file, _)| file)
+    }
+
+    fn detach_file_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        self.native_mutation(path, None, true, false, work, |detached| {
+            let file = match detached {
+                Some(file) => (file as Arc<dyn MountOpenFile>, 0),
+                None => self.authored.detach_file_with_meter(path, work)?,
+            };
+            self.bind_open_file(file, None, self.source_view.generation(), work)
+        })
     }
 
     fn read_link(&self, path: &MountPath) -> Result<OwnedBytes, MountSourceError> {
@@ -7665,8 +7868,7 @@ where
         sink: &mut super::NativeMountContentSink<'_>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original|
-            self.read_pinned_with_meter(path, pin, offset, length, piece, sink, original))
+        work.run_with_meter(|original| self.read_pinned_with_meter(path, pin, offset, length, piece, sink, original))
     }
 
     fn read_pinned_with_meter(
@@ -7746,8 +7948,7 @@ where
         maximum_entries: u32,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        work.run_with_meter(|original|
-            self.read_directory_with_meter(path, cursor, maximum_entries, original))
+        work.run_with_meter(|original| self.read_directory_with_meter(path, cursor, maximum_entries, original))
     }
 
     fn read_directory_with_meter(
@@ -7761,6 +7962,79 @@ where
             path, cursor, maximum_entries, &work.native_materialization_work(),
             &mut super::adapter::NativeDemandCarrier::Native(work),
         )
+    }
+
+    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::NativeMountMeterWork)
+        -> Result<MountLookup, MountSourceError> {
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_file_with_meter(path, metadata, work))
+    }
+
+    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
+        work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        self.native_mutation(path, None, false, true, work, |_|
+            self.authored.create_absent_file_with_meter(path, metadata, absent_since, work))
+    }
+
+    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::NativeMountMeterWork)
+        -> Result<MountLookup, MountSourceError> {
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_directory_with_meter(path, metadata, work))
+    }
+
+    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+        metadata: FileMetadata, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_symbolic_link_with_meter(path, target, metadata, work))
+    }
+
+    fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
+        metadata: FileMetadata, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_special_with_meter(path, kind, device, metadata, work))
+    }
+
+    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &super::NativeMountMeterWork)
+        -> Result<(), MountSourceError> {
+        self.native_mutation(destination, Some(source), false, true, work, |_| self.authored.hard_link_with_meter(source, destination, work))
+    }
+
+    fn clone_range_by_id_with_meter(&self, source_file_id: FileId, source_offset: u64,
+        destination_file_id: FileId, destination_offset: u64, length: u64, work: &super::NativeMountMeterWork)
+        -> Result<(), MountSourceError> {
+        work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
+        self.clone_range_by_id(source_file_id, source_offset, destination_file_id, destination_offset, length)
+    }
+
+    fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::NativeMountMeterWork)
+        -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        self.native_attributes(path, work, |file, projected| match file {
+            Some(file) => file.read_attribute_with_meter(name, work),
+            None if projected => Ok(None),
+            None => self.authored.read_attribute_with_meter(path, name, work),
+        })
+    }
+
+    fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
+        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        self.native_attributes(path, work, |file, projected| match file {
+            Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
+            None if projected => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
+                work.native_materialization_work().retain_owned(0).map_err(MountSourceError::NativeWork)?)),
+            None => self.authored.list_attributes_with_meter(path, cursor, maximum_entries, work),
+        })
+    }
+
+    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+        mode: MountAttributeWriteMode, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        self.native_mutation(path, None, true, false, work, |file| match file {
+            Some(file) => file.write_attribute_with_meter(name, value, mode, work),
+            None => self.authored.write_attribute_with_meter(path, name, value, mode, work),
+        })
+    }
+
+    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::NativeMountMeterWork)
+        -> Result<(), MountSourceError> {
+        self.native_mutation(path, None, true, false, work, |file| match file {
+            Some(file) => file.remove_attribute_with_meter(name, work),
+            None => self.authored.remove_attribute_with_meter(path, name, work),
+        })
     }
 
     fn create_file(
@@ -7790,14 +8064,21 @@ where
         Ok(created)
     }
 
-    fn open_created(
-        &self,
-        path: &MountPath,
-        created: &MountLookup,
-    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let lease = self.view_lease(None)?;
-        let file = self.authored.open_created(path, created)?;
-        self.bind_open_file(file, Some(created.node.file_id), lease.generation)
+    fn open_created(&self, path: &MountPath, created: &MountLookup) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
+            .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
+        self.open_created_with_meter(path, created, &work.native_mount_work()).map(|(file, _)| file)
+    }
+
+    fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &super::NativeMountMeterWork)
+        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        let owner = SourceViewGate::callback_owner();
+        let lease = self.with_native_read_carrier(&mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || self.source_read_lease_with_carrier(owner, None, carrier))
+        })?;
+        let file = self.authored.open_created_with_meter(path, created, work)?;
+        self.bind_open_file(file, Some(created.node.file_id), lease.generation, work)
     }
 
     fn create_directory(
@@ -7860,10 +8141,7 @@ where
         logical_bytes: Option<u64>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.set_attributes_with_carrier(
-            path, metadata, logical_bytes,
-            &mut super::adapter::NativeDemandCarrier::Borrowed(work.work),
-        )
+        work.run_with_meter(|original| self.set_attributes_with_meter(path, metadata, logical_bytes, original))
     }
 
     fn set_attributes_with_meter(
@@ -8030,7 +8308,7 @@ where
         expected: Option<FileId>,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.remove_with_carrier(path, expected, &mut super::adapter::NativeDemandCarrier::Borrowed(work.work))
+        work.run_with_meter(|original| self.remove_with_meter(path, expected, original))
     }
 
     fn remove_with_meter(
@@ -8106,7 +8384,7 @@ where
         replace: bool,
         work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        self.rename_with_carrier(source, destination, replace, &mut super::adapter::NativeDemandCarrier::Borrowed(work.work))
+        work.run_with_meter(|original| self.rename_with_meter(source, destination, replace, original))
     }
 
     fn rename_with_meter(
@@ -8239,10 +8517,7 @@ where
         &self, source_root: &Path, paths: &[MountPath],
         expected_root_identity: NativeRootIdentity, work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.capture_host_with_native_work(
-            source_root, paths, expected_root_identity, super::adapter::HostCaptureScope::ExactPaths,
-            original,
-        ))
+        work.run_with_meter(|original| self.capture_host_paths_with_meter(source_root, paths, expected_root_identity, original))
     }
 
     fn capture_host_paths_with_meter(
@@ -8259,10 +8534,7 @@ where
         &self, source_root: &Path, path: &MountPath,
         expected_root_identity: NativeRootIdentity, work: &mut super::NativeMountWork<'_>,
     ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.capture_host_with_native_work(
-            source_root, std::slice::from_ref(path), expected_root_identity,
-            super::adapter::HostCaptureScope::Subtree, original,
-        ))
+        work.run_with_meter(|original| self.capture_host_subtree_with_meter(source_root, path, expected_root_identity, original))
     }
 
     fn capture_host_subtree_with_meter(
@@ -8352,140 +8624,99 @@ where
         )
     }
 
-    /// Opens `path`, with the facts the open proved when it opened a source
-    /// file directly.
     fn open_proven(
-        &self,
-        path: &MountPath,
-    ) -> Result<(Arc<dyn MountOpenFile>, Option<MountLookup>), MountSourceError> {
-        let path_text = self.path(path)?;
+        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+    ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
+        let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
+        let path_text = mount_path_text_with_carrier(&self.root, path, &mut carrier)?;
         let owner = SourceViewGate::callback_owner();
-        // A create returns an open handle before the operation barrier publishes the authored
-        // generation. Consult the authored checkout first so that the just-created file can be
-        // written through that handle instead of falling through to the still-unaware lazy view.
-        let (lease, resolution, source_file) = self.wait(|| async {
-            let lease = self.source_view.read_for_callback(owner, None).await?;
-            let (resolution, source_file) = self
-                .resolve_opened(path, &path_text, owner, SourceProof::Open)
-                .await?;
-            Ok((lease, resolution, source_file))
+        let (lease, resolution, source_file) = self.with_native_read_carrier(&mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || async {
+                let lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
+                let (resolution, source_file) = self.resolve_opened_with_carrier(
+                    path, &path_text, owner, SourceProof::Open, carrier,
+                ).await?;
+                Ok((lease, resolution, source_file))
+            })
         })?;
-        let (lookup, source, allocation) = match resolution {
+        let generation = lease.generation;
+        let lookup = match resolution {
             Resolution::Absent => return Err(MountSourceError::NotFound),
-            Resolution::Authored(authored) => {
-                if let Some(file) = self.detached_by_id(authored.node.file_id)? {
-                    return self
-                        .bind_open_file(file, Some(authored.node.file_id), lease.generation)
-                        .map(|file| (file, None));
-                }
-                return self
-                    .authored
-                    .open_file(path)
-                    .and_then(|file| {
-                        self.bind_open_file(file, Some(authored.node.file_id), lease.generation)
-                    })
+            Resolution::Authored(lookup) => {
+                let detached = carrier.with_work(|work| self.detached_by_id_with_work(lookup.node.file_id, work))?;
+                let file = match detached {
+                    Some(file) => (file as Arc<dyn MountOpenFile>, 0),
+                    None => self.authored.open_file_with_meter(path, work)?,
+                };
+                return self.bind_open_file(file, Some(lookup.node.file_id), generation, work)
                     .map(|file| (file, None));
             }
-            Resolution::Unauthored(lookup, source, allocation) => (lookup, source, allocation),
-        };
-        let source_generation = lease.generation;
-        let lookup = ScopedLazyLookup { lookup, allocation };
-        match &lookup.lookup {
-            LazyLookup::Authored {
-                path: authored_path,
-                stat,
-            } if authored_path.as_str() == path_text.as_str() => self
-                .authored
-                .open_file(path)
-                .and_then(|file| self.bind_open_file(file, Some(stat.file_id), source_generation))
-                .map(|file| (file, None)),
-            LazyLookup::Shadow { record, .. } => {
-                if let Some(file) = self.detached_by_id(record.file_id)? {
-                    return self
-                        .bind_open_file(file, Some(record.file_id), source_generation)
-                        .map(|file| (file, None));
+            Resolution::Unauthored(lookup, source, allocation) => {
+                let lookup = ScopedLazyLookup { lookup, allocation };
+                match &lookup.lookup {
+                    LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
+                        let source_file = source.and(source_file).ok_or(MountSourceError::Stale)?;
+                        let expected_source = self.lazy.source_file_id(node);
+                        let (mount_path, mut mount_allocation, _) = mount_components_with_carrier(
+                            path.components(), None, &mut carrier,
+                        )?.into_parts();
+                        let (path, mut input_allocation, _) = path_text.into_parts();
+                        if let (Some(input), Some(mount)) = (&mut input_allocation, &mut mount_allocation) {
+                            input.absorb(mount).map_err(MountSourceError::NativeWork)?;
+                        }
+                        let bytes = std::mem::size_of::<LazyOpenFile<A, O, D, S>>() as u64;
+                        carrier.with_work(|work| work.allocate(bytes)).map_err(mount_demand_error)?;
+                        let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
+                            lazy: Arc::clone(&self.lazy), authored: Arc::clone(&self.authored), runtime: Arc::clone(&self.runtime),
+                            path, mount_path, expected_source, source_file, source_node: *node, source_generation: generation,
+                            source_view: Arc::clone(&self.source_view), detached: Arc::clone(&self.detached),
+                            open_sources: Arc::clone(&self.open_sources), promoted: Mutex::new(None), unstaged: Arc::clone(&self.unstaged),
+                            _input_allocation: input_allocation,
+                        });
+                        self.open_sources.lock().map_err(|_| MountSourceError::Stale)?
+                            .entry(expected_source).or_default().push(Arc::downgrade(&file));
+                        return Ok(((file, bytes), Some(mount_lookup(LazyLookup::Source(*node), expected_source))));
+                    }
+                    LazyLookup::Source(_) => return Err(MountSourceError::Invalid("open requires a regular file".to_owned())),
+                    LazyLookup::Authored { stat, .. } => stat.file_id,
+                    LazyLookup::Shadow { record, .. } => record.file_id,
                 }
-                drop(lease);
-                let _mutation = self.mutation_lease(Some(source_generation))?;
-                self.promote_locked(path)?;
-                self.authored
-                    .open_file(path)
-                    .and_then(|file| {
-                        self.bind_open_file(file, Some(record.file_id), source_generation)
-                    })
-                    .map(|file| (file, None))
             }
-            LazyLookup::Authored { stat, .. } => {
-                drop(lease);
-                let _mutation = self.mutation_lease(Some(source_generation))?;
-                self.promote_locked(path)?;
-                self.authored
-                    .open_file(path)
-                    .and_then(|file| {
-                        self.bind_open_file(file, Some(stat.file_id), source_generation)
-                    })
-                    .map(|file| (file, None))
-            }
-            LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
-                let source_file = source.and(source_file).ok_or(MountSourceError::Stale)?;
-                let expected_source = self.lazy.source_file_id(&node);
-                let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
-                    lazy: Arc::clone(&self.lazy),
-                    authored: Arc::clone(&self.authored),
-                    runtime: Arc::clone(&self.runtime),
-                    path: path_text,
-                    mount_path: path.clone(),
-                    expected_source,
-                    source_file,
-                    source_node: *node,
-                    source_generation,
-                    source_view: Arc::clone(&self.source_view),
-                    detached: Arc::clone(&self.detached),
-                    open_sources: Arc::clone(&self.open_sources),
-                    promoted: Mutex::new(None),
-                    unstaged: Arc::clone(&self.unstaged),
-                });
-                self.open_sources
-                    .lock()
-                    .map_err(|_| MountSourceError::Stale)?
-                    .entry(expected_source)
-                    .or_default()
-                    .push(Arc::downgrade(&file));
-                // The open proved the source file is this node, version and all.
-                let proven = mount_lookup(LazyLookup::Source(node), expected_source);
-                Ok((file, Some(proven)))
-            }
-            LazyLookup::Source(_) => Err(MountSourceError::Invalid(
-                "open requires a regular file".to_owned(),
-            )),
+        };
+        let detached = carrier.with_work(|work| self.detached_by_id_with_work(lookup, work))?;
+        if let Some(file) = detached {
+            return self.bind_open_file((file, 0), Some(lookup), generation, work).map(|file| (file, None));
         }
+        drop(lease);
+        let mutation = self.with_native_read_carrier(&mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || async {
+                let lease = self.source_mutation_lease_with_carrier(Some(generation), carrier).await?;
+                self.promote_with_carrier(path, owner, carrier).await?;
+                Ok(lease)
+            })
+        })?;
+        let file = self.authored.open_file_with_meter(path, work)?;
+        let result = self.bind_open_file(file, Some(lookup), generation, work).map(|file| (file, None));
+        drop(mutation);
+        result
     }
 
     fn bind_open_file(
-        &self,
-        file: Arc<dyn MountOpenFile>,
-        file_id: Option<FileId>,
-        generation: u64,
-    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        &self, file: (Arc<dyn MountOpenFile>, u64), file_id: Option<FileId>, generation: u64,
+        work: &super::NativeMountMeterWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
+        work.meter().lock().allocate(bytes).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
-            inner: file,
-            runtime: Arc::clone(&self.runtime),
-            source_view: Arc::clone(&self.source_view),
-            source_lifetime: self.authored.cancellation().clone(),
-            detached: Arc::clone(&self.detached),
-            open_sources: Arc::clone(&self.open_sources),
-            file_id,
-            generation,
+            inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
+            source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
+            open_sources: Arc::clone(&self.open_sources), file_id, generation,
         });
         if let Some(file_id) = file_id {
-            self.open_sources
-                .lock()
-                .map_err(|_| MountSourceError::Stale)?
-                .entry(file_id)
-                .or_default()
-                .push(Arc::downgrade(&bound));
+            self.open_sources.lock().map_err(|_| MountSourceError::Stale)?
+                .entry(file_id).or_default().push(Arc::downgrade(&bound));
         }
-        Ok(bound)
+        Ok((bound, bytes.checked_add(file.1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?))
     }
 
     fn mutation_lease(
@@ -9356,7 +9587,7 @@ mod tests {
         let view = LazyMountSource::new(lazy, authored, "/".to_owned())?;
         let recorded = Arc::new(Recorded::default());
         let observer: Weak<Recorded> = Arc::downgrade(&recorded);
-        view.observe_view(observer)?;
+        view.observe_view(observer);
         Ok((demand, view, recorded))
     }
 

@@ -8,7 +8,7 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
@@ -82,7 +82,7 @@ fn put_metadata(
     ObjectStore::put(
         store,
         object,
-        Bytes::from(encode_file_metadata(metadata)?),
+        OwnedBytes::from(encode_file_metadata(metadata)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -105,7 +105,7 @@ fn put_tree(
     ObjectStore::put(
         store,
         object,
-        Bytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -120,7 +120,7 @@ fn put_table(
     ObjectStore::put(
         store,
         object,
-        Bytes::from(super::super::encode_file_table_page(&page, 8)?),
+        OwnedBytes::from(super::super::encode_file_table_page(&page, 8)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -135,7 +135,7 @@ fn put_generation(
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    ObjectStore::put(store, object, Bytes::from(encoded), WorkBudget::UNBOUNDED)?;
+    ObjectStore::put(store, object, OwnedBytes::from(encoded), WorkBudget::UNBOUNDED)?;
     Ok(object)
 }
 
@@ -1005,7 +1005,7 @@ fn sibling_additions_merge_entries_and_reconcile_directory_times()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut state = MergeState::new(8, &mut accounting)?;
     let record = poll_ready(merge_directory_record_with_resolutions_async(
-        &store, directory_id, base, ours, theirs, &resolutions, 8,
+        &store, directory_id, base, ours, theirs, ResolutionView::Map(&resolutions), 8,
         DecodeLimits::default(), &mut state, &mut accounting, &cancellation,
     )).ok_or("resolved directory merge suspended")??.ok_or("resolved directory merge produced no record")?;
     state.records.retire(&mut accounting)?;
@@ -1217,7 +1217,7 @@ fn native_merge_combines_nonoverlapping_extent_edits()
         let page = super::super::ExtentPage::Leaf(values);
         let bytes = super::super::encode_extent_page(&page, 8)?;
         let object = ObjectId { kind: ObjectKind::ExtentPage, digest: crate::storage::object_digest(ObjectKind::ExtentPage, &bytes) };
-        ObjectStore::put(&store, object, Bytes::from(bytes), WorkBudget::UNBOUNDED)?;
+        ObjectStore::put(&store, object, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
         Ok(object)
     };
     let base_extents = put_extents(vec![extent(0, 8, ExtentKind::AllocatedZero)])?;

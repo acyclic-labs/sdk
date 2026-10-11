@@ -1039,12 +1039,10 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut budget = WorkBudget::UNBOUNDED;
         budget.allocation_operations = 0;
-        budget.bytes_allocated = 0;
-        budget.peak_live_bytes = 0;
+        budget.peak_allocation_bytes = 0;
         let mut work = DemandWork::new(budget, &cancellation);
         let reader = measured_read(&gate, CallbackOwner(1), &mut work).expect("reuse borrowed original slots");
         assert_eq!(work.work.allocation_operations, 0);
-        assert_eq!(work.work.bytes_allocated, 0);
         assert_eq!(work.live_allocation_bytes(), 0);
         drop(reader);
         work.record(WorkCounters::UNCHARGED).expect("only actual lease cleanup");
