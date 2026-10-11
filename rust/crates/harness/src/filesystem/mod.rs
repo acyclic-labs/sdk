@@ -55,7 +55,7 @@ use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::OriginalForkAllocationClaim;
 pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, PreparationIo, UploadRecord, PreparationRecord, ReservedDecoded, DecodeReservation};
 mod summary_fork;
-pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
+pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
@@ -68,7 +68,7 @@ pub use memory::{LocalHarness, MemoryHarnessStorage};
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
 mod root_source;
-pub use root_source::FsRootProjectSourceProvider;
+pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -117,6 +117,7 @@ pub use recursive::{
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
+    NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
     NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
@@ -124,7 +125,7 @@ pub use native_execution::{
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
-    copy_native_mapping_with_work, copy_native_volume_with_work, copy_native_generation_with_work,
+    copy_native_mapping_with_work,
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
 pub use task_commands::{

@@ -413,13 +413,9 @@ impl InteractionRouter for TaskJournalInteractions {
         request_custody: acyclic_fs::NativeAllocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        struct PaidRequest {
-            value: Interaction,
-            custody: acyclic_fs::NativeAllocation,
-        }
-        let paid = PaidRequest { value: interaction, custody: request_custody };
+        let paid = (interaction, request_custody);
         self.supports_native_interactions(work)?;
-        if !paid.custody.matches_work(work) {
+        if !paid.1.matches_work(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "interaction request differs from original work",
@@ -430,7 +426,7 @@ impl InteractionRouter for TaskJournalInteractions {
             let id = crate::durable_host::task_interaction_id_with_native_work(
                 self.task, operation_id, work,
             )?;
-            self.journal.open_interaction_with_native_work(id, &paid.value, work)?.await?;
+            self.journal.open_interaction_with_native_work(id, &paid.0, work)?.await?;
             let (outcome, custody) = self.journal.interaction_outcome_with_native_work(id, work)?.await?;
             Ok((outcome.unwrap_or(InteractionOutcome::Indeterminate { operation_id }), custody))
         })
