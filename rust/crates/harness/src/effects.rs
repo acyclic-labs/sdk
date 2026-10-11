@@ -379,12 +379,17 @@ impl EffectRegistry {
                 custody: Some(custody),
             });
         }
+        let provider_bytes = incoming.observation.provider.capacity() as u64;
         let NativeEffectObservation { observation, custody } = incoming;
         let result = self.attest_provider_observation_with_work(
             issuer, effect_id, effect, observation, work).await;
         match result {
             Ok(attestation) => {
-                work.as_deref_mut().expect("original observer").absorb_native_custody(custody)?;
+                let io = work.as_deref_mut().expect("original observer");
+                io.absorb_native_custody(custody)?;
+                // Signing moved the status, but dropped the original echoed
+                // provider label. Only its new attestation label remains live.
+                io.release_owned(provider_bytes)?;
                 Ok(attestation)
             },
             Err(error) => {
@@ -393,7 +398,6 @@ impl EffectRegistry {
             },
         }
     }
-
 
     fn validate_dispatch_with_work(
         &self, effect_id: EffectId, effect: &EffectState, dispatch: &EffectDispatch,

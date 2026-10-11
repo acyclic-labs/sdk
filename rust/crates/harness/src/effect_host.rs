@@ -683,10 +683,24 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let result = match owner {
                 Some(owner) => aggregate.execute_task_command_with_work(
                     command, owner, command_custody.work()).await,
-                None => aggregate.execute_with_work(command, command_custody.work()).await,
+                None => {
+                    if command_custody.work().is_some() {
+                        return Err(effect_error(command_custody.work(),
+                            crate::wire::ErrorCode::Unsupported,
+                            "observed effect settlement requires its task owner"));
+                    }
+                    aggregate.execute(command).await
+                },
             };
             #[cfg(not(feature = "filesystem"))]
-            let result = aggregate.execute_with_work(command, command_custody.work()).await;
+            let result = {
+                if command_custody.work().is_some() {
+                    return Err(effect_error(command_custody.work(),
+                        crate::wire::ErrorCode::Unsupported,
+                        "native effect settlement requires filesystem task ownership"));
+                }
+                aggregate.execute(command).await
+            };
             drop(command_custody);
             match result {
                 Ok(_) => return clone_status_with_work(&attestation.status, retained.work()),
