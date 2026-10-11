@@ -55,9 +55,12 @@ sorted-key canonical receipt bytes. Its allowance covers logical owned
 strings, keys, container slots, encoded buffers and decoder scratch before
 growth; audited upload record decoders admit their concrete schema first.
 It excludes allocator-node overhead, global RSS and borrowed caller authority.
-Allocation-operation receipts include actual measured backend work and explicit
-upload/read byte-buffer allocation attempts, not fabricated per-JSON-node
-allocator counts. Codec bytes/items and logical retained-byte admission bound
+Allocation-operation receipts include actual measured backend work, explicit
+upload/read buffers and SDK-observed codec String/Vec reserve attempts, never
+fabricated per-JSON-node or opaque Serde/BTree allocator counts. Retain callbacks
+acquire logical quota without allocator-operation charges; a distinct callback
+charges one genuine allocation immediately before its boundary. Its requested
+capacity is not a live-byte delta. Codec bytes/items and logical admission bound
 the other trusted serde/reference construction work. Conservative ownership
 reservations may remain live until this attempt ends; they are not an exact
 measurement of opaque allocator capacity.

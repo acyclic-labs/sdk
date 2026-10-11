@@ -522,6 +522,8 @@ impl PreparationIo {
                 self.retain_owned(bytes)
             }
             crate::contract::JsonCodecCharge::Release { bytes } => self.release(bytes),
+            crate::contract::JsonCodecCharge::AllocationOperation { bytes } =>
+                self.allocation_attempt(bytes),
             crate::contract::JsonCodecCharge::Admission { .. } => Err(Error::Invalid(
                 "trusted decode admission requires a scoped reservation".into())),
             crate::contract::JsonCodecCharge::Copy { bytes } => {

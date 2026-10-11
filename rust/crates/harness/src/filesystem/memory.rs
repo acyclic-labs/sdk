@@ -1168,6 +1168,23 @@ mod tests {
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
             assert_eq!(work.receipt(), before);
         }
+        // The original meter's own allocation is allowed; no genuine codec
+        // buffer allocation is. Logical Retain callbacks must not consume an
+        // allocator-operation allowance or bypass this next observed boundary.
+        let mut budget = finite_content_budget();
+        budget.allocation_operations = 1;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+        let baseline = work.live_allocation_bytes();
+        {
+            let io = super::super::PreparationIo::from_native_work(&work)?;
+            assert!(matches!(io.encode_json(&serde_json::Value::Null, 1024, true),
+                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
+        }
+        assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 
