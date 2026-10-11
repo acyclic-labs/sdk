@@ -259,6 +259,7 @@ pub use materializer::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
+    NativeWorkReservation,
     NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX,
     validate_native_preparation_location,
 };

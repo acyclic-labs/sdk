@@ -121,10 +121,16 @@ pub use contract::{
     canonical_json_bytes_bounded, json_bytes_bounded_trusted,
     json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
+    json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
+    preparation_serde_diagnostic_label_bytes,
     is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use contract::{json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted};
+pub use contract::{
+    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
+    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted,
+    json_from_value_owned_bounded_native_trusted, json_value_bounded_native_trusted,
+};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 pub use extension::{
