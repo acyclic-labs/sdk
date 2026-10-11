@@ -9,7 +9,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     executor::ExecutionJournal,
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemTaskRuntime,
-        NativePublicationCleanup, NativePublicationReservation, NativeReservationError},
+        NativePublicationReservation},
     interaction::{Interaction, InteractionResponse},
     resources::ProviderRef,
     runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
@@ -27,9 +27,26 @@ type View = NativeVolumeView<acyclic_fs::LocalAuthorityBackend, acyclic_fs::Loca
 type Journal = FilesystemExecutionJournal<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 
 type Reservation = NativePublicationReservation<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
-type ReservationCleanup = NativePublicationCleanup<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+struct FixtureRoot {
+    directory: Option<tempfile::TempDir>,
+    publication_pending: bool,
+}
+impl FixtureRoot {
+    fn path(&self) -> &Path { self.directory.as_ref().expect("fixture owns its physical root").path() }
+}
+impl Drop for FixtureRoot {
+    fn drop(&mut self) {
+        if self.publication_pending {
+            if let Some(directory) = self.directory.take() {
+                let preserved = directory.keep();
+                eprintln!("native qualification retained uncertain publication root: {}", preserved.display());
+            }
+        }
+    }
+}
+
 struct Fixture {
-    _directory: tempfile::TempDir,
+    _directory: FixtureRoot,
     files: Arc<Files>,
     stream: StreamClient<LocalStream>,
     issuer: AuthorityIssuer,
@@ -51,7 +68,6 @@ struct Fixture {
     plan: TaskEffectPlan,
     results_volume: VolumeRef,
     reservation: Option<Reservation>,
-    reservation_cleanup: Option<ReservationCleanup>,
 }
 
 struct Machine { identity: MachineIdentity, schema: Value }
@@ -88,7 +104,12 @@ fn required_path(name: &str) -> Result<PathBuf> {
 
 impl Fixture {
     async fn new(delay_ms: u32) -> Result<Self> {
-        let directory = tempfile::tempdir().map_err(io_error)?;
+        // Actual shared services precede the finite original operation span.
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|cause| native_error(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
+        acyclic_fs::initialize_native_mount_services()
+            .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
+        let mut directory = FixtureRoot { directory: Some(tempfile::tempdir().map_err(io_error)?), publication_pending: false };
         let node = required_path("ACYCLIC_PI_TEST_NODE")?;
         let cli = required_path("ACYCLIC_PI_TEST_CLI")?;
         let package = cli.parent().and_then(Path::parent).and_then(Path::parent)
@@ -164,9 +185,9 @@ impl Fixture {
             .map_err(|failure| invalid(&failure.to_string()))?.value;
         let generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(selected.generation.as_resource().key().try_into()
             .map_err(|_| invalid("actual selected filesystem generation is not a digest"))?));
-        let reservation = owner.native_view_owner().reserve_publication(workspace, &scratch, generation,
-            acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await
-            .map_err(|failure| reservation_error(failure.error))?.value;
+        directory.publication_pending = true;
+        let reservation = owner.native_view_owner().reserve_publication(&workspace, &scratch, generation,
+            acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await?;
         let namespace = NativeVolumeNamespace::MaterializedDirectory;
         let scratch_verifier = issuer.verifier_with_native_work(&work)?;
         let callback_guard = context.mount_callback_guard_with_native_work(
@@ -212,7 +233,7 @@ impl Fixture {
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, grants, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan, results_volume,
-            reservation: Some(reservation), reservation_cleanup: None })
+            reservation: Some(reservation) })
     }
 
     fn authority(&self, work: &NativeMaterializationWork) -> Result<NativeProcessAuthority> {
@@ -256,24 +277,28 @@ impl Fixture {
 
     async fn release_publication(&mut self) -> Result<()> {
         let cancellation = CancellationToken::new();
-        let meter = pi_meter(super::super::native_root_source::budget(), &cancellation)?;
-        pi_accept(self.owner.verify_settlement_measured(meter.remaining().map_err(native_error)?, &cancellation).await, &meter)?;
-        let cleanup = self.reservation_cleanup.take()
-            .or_else(|| self.reservation.take().map(NativePublicationReservation::into_cleanup));
-        if let Some(cleanup) = cleanup {
-            if let Err(failure) = cleanup.release(&meter, &cancellation).await {
-                self.reservation_cleanup = failure.cleanup;
-                return Err(reservation_error(failure.error));
-            }
+        let meter = self.work.clone();
+        self.owner.verify_with_native_work(true, &meter).await?;
+        if let Some(reservation) = self.reservation.take() {
+            // A failure returns the whole canonical owner and leaves the
+            // physical root pending, including failures before Fixture exists.
+            reservation.into_cleanup().release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
+            self._directory.publication_pending = false;
+        }
+        if self._directory.publication_pending {
+            return Err(Error::Indeterminate(self.command));
         }
         Ok(())
     }
 }
-impl Drop for Fixture { fn drop(&mut self) { let _ = std::fs::remove_file(&self.invocation.extension); } }
-fn io_error(error: std::io::Error) -> Error { Error::Storage(error.to_string()) }
-fn reservation_error(error: NativeReservationError) -> Error {
-    match error { NativeReservationError::Owner(error) => error, error => Error::Storage(error.to_string()) }
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if !self._directory.publication_pending {
+            let _ = std::fs::remove_file(&self.invocation.extension);
+        }
+    }
 }
+fn io_error(error: std::io::Error) -> Error { Error::Storage(error.to_string()) }
 
 fn receipt_error(error: NativeReceiptError) -> Error {
     match error {

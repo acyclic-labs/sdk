@@ -382,6 +382,50 @@ impl PiNativeHostRuntime {
         Ok(())
     }
 
+    /// Copy the immutable protected runtime directly, paying known metadata and
+    /// actual owned buffers before construction on the original ledger.
+    pub(crate) fn clone_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        work.remaining().map_err(native_error)?;
+        self.validate()?;
+        let mut version = pi_native_string(&self.version, work)?;
+        let mut executable = work.copy_path(&self.executable).map_err(native_error)?;
+        let mut extension = work.copy_path(&self.extension).map_err(native_error)?;
+        let mut provider_extension = match &self.provider_extension {
+            Some(path) => {
+                let copied = work.copy_path(path).map_err(native_error)?;
+                (Some(copied.0), copied.1)
+            }
+            None => (None, work.retain_owned(0).map_err(native_error)?),
+        };
+        let mut prefix = pi_native_vec::<String>(self.executable_prefix.len(), work)?;
+        for argument in &self.executable_prefix {
+            let mut copied = pi_native_string(argument, work)?;
+            prefix.0.push(copied.0);
+            prefix.1.absorb(&mut copied.1).map_err(native_error)?;
+        }
+        let mut environment = (BTreeMap::new(), work.retain_owned(0).map_err(native_error)?);
+        for (key, value) in &self.environment {
+            let mut slot = work.retain_owned(std::mem::size_of::<(String, String)>() as u64).map_err(native_error)?;
+            let mut key = pi_native_string(key, work)?;
+            let mut value = pi_native_string(value, work)?;
+            environment.0.insert(key.0, value.0);
+            environment.1.absorb(&mut slot).map_err(native_error)?;
+            environment.1.absorb(&mut key.1).map_err(native_error)?;
+            environment.1.absorb(&mut value.1).map_err(native_error)?;
+        }
+        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let mut copied = (Self { version: version.0, executable: executable.0, executable_prefix: prefix.0,
+            extension: extension.0, provider_extension: provider_extension.0, environment: environment.0 }, custody);
+        for incoming in [&mut version.1, &mut executable.1, &mut extension.1,
+            &mut provider_extension.1, &mut prefix.1, &mut environment.1]
+        {
+            copied.1.absorb(incoming).map_err(native_error)?;
+        }
+        Ok(copied)
+    }
+
 
 
     #[allow(clippy::too_many_arguments, reason = "original immutable host and separately captured SDK model remain borrowed")]
