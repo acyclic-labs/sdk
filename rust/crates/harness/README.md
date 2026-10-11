@@ -151,9 +151,11 @@ empty, unmounted private volume with READ/WRITE custody; it is never inferred
 from private-volume order and never replaces the unique ordinary `Scratch`
 writer. `stage_artifact` selects this result binding when present.
 `child_scratch_creation_proof` instead retains only the original scratch identity,
-sharing the existing provider handle without copying a lease. Its measured
-settlement authorization checks that original task, agent and allocation plus
-current-fenced WRITE; a native physical leaf receipt remains separately required.
+sharing the existing provider handle without copying a lease. Measured and
+original-ledger native settlement share the same task, agent, exact allocation,
+retained writer and current-fenced WRITE checks. Recheck before every namespace
+mutation; a READ-only historical owner cannot authorize cleanup, and a native
+physical leaf receipt remains separately required.
 
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry

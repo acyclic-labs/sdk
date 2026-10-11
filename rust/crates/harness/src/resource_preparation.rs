@@ -361,6 +361,18 @@ impl ChildScratchCreationProof {
     ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
         owner.authorize_created_scratch_settlement_measured(self,budget,cancellation).await
     }
+
+    /// Authorizes only cleanup of this original allocation under its authentic
+    /// current owner, original WRITE custody and the caller's existing ledger.
+    /// Recheck before every namespace mutation; this is not a deletion receipt.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn authorize_settlement_with_native_work<P: acyclic_stream::StreamProvider + 'static>(
+        &self,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        owner.authorize_created_scratch_settlement_with_native_work(self, work).await
+    }
 }
 
 /// One immutable inherited file and its authenticated exact-file reader.

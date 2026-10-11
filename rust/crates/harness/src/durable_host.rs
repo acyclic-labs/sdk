@@ -508,7 +508,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: crate::conversation::VolumeOperation,
         io: &mut dyn crate::store::history::HistoryIo,
     ) -> Result<()> {
-            volume.validate()?;
+            io.check_cancellation()?;
+            volume.validate_with_work(&mut Some(&mut *io))?;
             let encoded = crate::store::history::canonical_bytes_with_work(
                 volume, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut *io),
             )?;
@@ -542,18 +543,29 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Obtains only the original currently selected scratch allocation. This is
     /// not a result-volume proof, root allocation fallback or native leaf receipt.
     pub fn child_scratch_creation_proof(&self) -> Result<crate::resource_preparation::ChildScratchCreationProof> {
-        let binding = self.input_created.as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no created scratch allocation".into()))?
-            .current_content()?
-            .ok_or_else(|| Error::Unauthorized("task has no current scratch allocation".into()))?;
+        Ok(self.child_scratch_binding_with_work(&mut None)?.0.clone())
+    }
+
+    fn child_scratch_binding_with_work<'a>(
+        &'a self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(
+        &'a crate::resource_preparation::ChildScratchCreationProof,
+        &'a crate::resource_preparation::CreatedContentBinding,
+    )> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        let access = self.input_created.as_ref()
+            .ok_or_else(|| Self::grant_denied(work, "task has no created scratch allocation"))?;
+        let binding = access.current_content_with_work(work)?
+            .ok_or_else(|| Self::grant_denied(work, "task has no current scratch allocation"))?;
         let proof = binding.scratch_creation.as_ref()
-            .ok_or_else(|| Error::Unauthorized("current scratch is not a verified filesystem allocation".into()))?;
+            .ok_or_else(|| Self::grant_denied(work, "current scratch is not a verified filesystem allocation"))?;
         if proof.original_task() != self.task_id || Some(proof.agent()) != self.input_agent
             || proof.volume() != &binding.volume
         {
-            return Err(Error::Unauthorized("scratch allocation belongs to another original task".into()));
+            return Err(Self::grant_denied(work, "scratch allocation belongs to another original task"));
         }
-        Ok(proof.clone())
+        Ok((proof, binding))
     }
 
     pub(crate) async fn authorize_created_scratch_settlement_measured(
@@ -563,14 +575,43 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut work = crate::store::history::HistoryWork::new(budget,cancellation);
         let result = async {
             work.preflight()?;
-            if !self.child_scratch_creation_proof()?.same_identity(proof) {
-                return Err(Error::Unauthorized("scratch settlement substituted allocation evidence".into()));
-            }
-            self.require_volume_grant_with_work(proof.volume(), crate::conversation::VolumeOperation::Write, &mut work)?;
-            self.condition_with_work(crate::distributed::JournalWrite::Settlement, &mut Some(&mut work)).await?;
-            Ok(())
+            self.authorize_created_scratch_settlement_with_work(proof, &mut work).await
         }.await;
         work.finish(result)
+    }
+
+    async fn authorize_created_scratch_settlement_with_work(
+        &self,
+        proof: &crate::resource_preparation::ChildScratchCreationProof,
+        work: &mut dyn crate::store::history::HistoryIo,
+    ) -> Result<()> {
+        work.check_cancellation()?;
+        if self.verify_original_read_witness()? {
+            return Err(Self::grant_denied(&Some(&mut *work), "READ-only task owner cannot settle scratch namespace writes"));
+        }
+        let (original, binding) = self.child_scratch_binding_with_work(&mut Some(&mut *work))?;
+        if !original.same_identity(proof) {
+            return Err(Self::grant_denied(&Some(&mut *work), "scratch settlement substituted allocation evidence"));
+        }
+        if binding.binding.writer.is_none() {
+            return Err(Self::grant_denied(&Some(&mut *work), "scratch settlement lacks original WRITE custody"));
+        }
+        self.require_volume_grant_with_work(
+            proof.volume(), crate::conversation::VolumeOperation::Write, work,
+        )?;
+        self.condition_with_work(crate::distributed::JournalWrite::Settlement, &mut Some(work)).await?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn authorize_created_scratch_settlement_with_native_work(
+        &self,
+        proof: &crate::resource_preparation::ChildScratchCreationProof,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.authorize_created_scratch_settlement_with_work(proof, &mut io).await
     }
 
     pub(crate) fn require_interaction_grant(&self) -> Result<()> {
@@ -948,13 +989,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork {cause,custody:None})?;
         let result: Result<()> = async {
-            if !allow_settlement && let Some(binding) = self.input_created.as_ref()
-                .map(|access| access.current_content()).transpose()?.flatten()
-            {
-                if binding.binding.writer.is_none() {
-                    return Err(Error::Unauthorized("current created scratch has no WRITE custody".into()));
+            if !allow_settlement && let Some(access) = self.input_created.as_ref() {
+                if let Some(binding) = access.current_content_with_work(&mut Some(&mut io))? {
+                    if binding.binding.writer.is_none() {
+                        return Err(Self::grant_denied(&Some(&mut io), "current created scratch has no WRITE custody"));
+                    }
+                    self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
                 }
-                self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
             }
             self.verify_with_work(allow_settlement, &mut Some(&mut io)).await
         }.await;
@@ -1468,6 +1509,42 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         custody: acyclic_fs::NativeAllocation,
     ) -> Result<bool> {
         self.retain_root_binding_owned(RetainedRootBinding {proof,_custody:Some(custody)})
+    }
+
+    /// Borrows the canonical root-bind proof without exposing a scope or minting
+    /// volume permission. Native creation receipts must separately verify WRITE.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn authenticated_root_binding_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&crate::store::VerifiedRootBinding> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.input_is_root || self.verify_original_read_witness()? {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root creation requires its original live root owner",
+            });
+        }
+        let proof = self.root_binding.as_ref()
+            .and_then(|state| state.proof.get())
+            .map(|retained| &retained.proof)
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root creation lacks its canonical committed binding",
+            })?;
+        if proof.original_task() != self.task_id
+            || proof.admission_digest() != self.admission_digest
+            || proof.fence() != &self.fence
+            || Some(proof.agent()) != self.input_agent
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root creation binding differs from its original owner",
+            });
+        }
+        self.verify_with_native_work(false, work).await?;
+        Ok(proof)
     }
 
     fn retain_root_binding_owned(&self, retained: RetainedRootBinding) -> Result<bool> {

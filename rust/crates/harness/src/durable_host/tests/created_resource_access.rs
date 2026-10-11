@@ -1061,6 +1061,39 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let denied = proof.authorize_settlement_measured(&owner,acyclic_fs::WorkBudget::default(),&cancellation).await;
     assert!(denied.result.is_err());
     assert_eq!(denied.counters.backend_read_operations,0);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let native_cancellation = acyclic_fs::CancellationToken::new();
+        let native_work = acyclic_fs::NativeMaterializationWork::new(
+            creation_control_budget(), &native_cancellation,
+        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        proof.authorize_settlement_with_native_work(&owner, &native_work).await?;
+        assert!(native_work.receipt().backend_read_operations > 0);
+        let before = native_work.receipt().backend_read_operations;
+        assert!(matches!(
+            proof.authorize_settlement_with_native_work(&root_owner, &native_work).await,
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
+        ));
+        assert_eq!(native_work.receipt().backend_read_operations, before);
+        native_cancellation.cancel();
+        assert!(matches!(
+            proof.authorize_settlement_with_native_work(&owner, &native_work).await,
+            Err(Error::NativeWork { .. })
+        ));
+        assert_eq!(native_work.receipt().backend_read_operations, before);
+
+        let fresh_cancellation = acyclic_fs::CancellationToken::new();
+        let mut minimal = creation_control_budget();
+        minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+        let denied_work = acyclic_fs::NativeMaterializationWork::new(
+            minimal, &fresh_cancellation,
+        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        assert!(matches!(
+            proof.authorize_settlement_with_native_work(&owner, &denied_work).await,
+            Err(Error::NativeWork { .. })
+        ));
+        assert_eq!(denied_work.receipt().backend_read_operations, 0);
+    }
     cancellation.cancel();
     let cancelled = proof.authorize_settlement_measured(&owner,creation_control_budget(),&cancellation).await;
     assert!(cancelled.result.is_err());
