@@ -1552,6 +1552,30 @@ mod tests {
         assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_capabilities_zero_remaining_allocation_denies_the_first_string() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork,
+            NativeTreeMaterializationError, WorkBudget, WorkError};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 1,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024,
+            bytes_copied: 4,
+            items_examined: 1,
+            ..WorkBudget::default()
+        }, &cancellation).expect("only the original ledger control allocation");
+        assert!(matches!(Capabilities::new_with_native_work(["read"], &work),
+            Err(Error::NativeWork {
+                cause: NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter: "allocation_operations", .. }),
+                ..
+            })));
+        assert_eq!(work.receipt().allocation_operations, 1);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.receipt().items_examined, 1);
+    }
+
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
         let value = serde_json::json!({

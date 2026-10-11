@@ -2041,16 +2041,7 @@ impl RuntimeScope {
     /// Attenuates every grant and numeric bound.
     pub fn narrow(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         limits.validate()?;
-        if !grants.is_subset_of(&self.grants)
-            || limits.file_bytes > self.limits.file_bytes
-            || limits.path_bytes > self.limits.path_bytes
-            || limits.attachments > self.limits.attachments
-            || limits.render_bytes > self.limits.render_bytes
-            || limits.model_steps > self.limits.model_steps
-            || limits.model_events_per_step > self.limits.model_events_per_step
-            || limits.tool_calls_per_step > self.limits.tool_calls_per_step
-            || limits.context_messages > self.limits.context_messages
-        {
+        if !self.allows_authority(&grants, &limits) {
             return Err(Error::Unauthorized(
                 "runtime scope cannot widen ancestor authority".into(),
             ));
@@ -2068,6 +2059,35 @@ impl RuntimeScope {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_grants_custody: None,
         })
+    }
+
+    fn allows_authority(&self, grants: &Capabilities, limits: &Limits) -> bool {
+        grants.is_subset_of(&self.grants)
+            && limits.file_bytes <= self.limits.file_bytes
+            && limits.path_bytes <= self.limits.path_bytes
+            && limits.attachments <= self.limits.attachments
+            && limits.render_bytes <= self.limits.render_bytes
+            && limits.model_steps <= self.limits.model_steps
+            && limits.model_events_per_step <= self.limits.model_events_per_step
+            && limits.tool_calls_per_step <= self.limits.tool_calls_per_step
+            && limits.context_messages <= self.limits.context_messages
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_narrowing_with_native_work(
+        &self,
+        grants: &Capabilities,
+        limits: &Limits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        Self::validate_limits_with_native_work(limits, work)?;
+        if !self.allows_authority(grants, limits) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "runtime scope cannot widen ancestor authority",
+            });
+        }
+        Ok(())
     }
 
     /// Further bounds task concurrency, steps, and deadline for descendants.
