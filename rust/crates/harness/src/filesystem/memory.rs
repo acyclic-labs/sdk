@@ -357,7 +357,7 @@ impl LocalListFilesTool {
         result: &ToolResult,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeListFilesResult> {
-        let (value, custody) = crate::tool::value_with_native_work(&result.value, work)?;
+        let (value, custody) = crate::tool::clone_value_with_native_work(&result.value, work)?;
         Ok(NativeListFilesResult { result: ToolResult { value }, custody })
     }
 
