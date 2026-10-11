@@ -182,6 +182,7 @@ pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
     FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async,
 };
+pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::generation_root_parent_count;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
@@ -195,7 +196,6 @@ pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
     apply_generation_mutations, apply_generation_mutations_async,
 };
-pub(crate) use list::list_tree_entries_at_or_after_async;
 pub use list::{
     DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries,
     list_tree_entries_async,
@@ -314,6 +314,7 @@ pub use tree_mutation::{
     TreeMutation, TreeMutationError, TreeMutationFailure, TreeMutationReceipt,
     apply_tree_mutations, apply_tree_mutations_async,
 };
+pub(crate) use tree_mutation::apply_tree_mutations_with_accounting;
 pub use types::{
     Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, FileKind, LogicalName,
     NameEncoding, TreeChild, TreeEntry, TreePage, TreePageError,
