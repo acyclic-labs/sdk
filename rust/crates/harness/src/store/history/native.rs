@@ -210,16 +210,17 @@ impl HistoryIo for NativeHistoryIo<'_> {
             JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
         }
     }
-    fn decode_json_value(&mut self, bytes: &[u8]) -> Result<serde_json::Value> {
+    fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
         let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
         let retained = io.owned_bytes()?;
         let value = decoded.into_retained();
         let incoming = io.into_native_custody(retained)?;
+        let held = incoming.bytes();
         // Both guards originate from this exact finite native ledger; merging
         // transfers already admitted custody, without another claim or copy.
         self.absorb_native_custody(incoming)?;
-        Ok(value)
+        Ok((value, held))
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> { self.charge(WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() }) }
     fn admit_acknowledgment(&self, bytes: u64, count: u64) -> Result<()> {
@@ -256,29 +257,38 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.observe(work)
     }
     fn verify_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a crate::conversation::FileRef) -> crate::conversation::ContentFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if !verifier.supports_native_read(reference.volume(), self.work)?
-            {
-                return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
+        reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, ()>> {
+        let work = self.work;
+        let future = crate::NativeFutureBundle::new(work, || async move {
+            if !verifier.supports_native_read(reference.volume(), work)? {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "content verifier does not expose the original native work boundary",
+                });
             }
-            verifier.verify_with_native_work(reference, reference.descriptor().byte_length(), self.work)
-                .await
-        })
+            verifier.verify_with_native_work(
+                reference, reference.descriptor().byte_length(), work,
+            )?.await
+        })?;
+        Ok(super::HistoryContentFuture::Native(future))
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
-        reference: &'a crate::conversation::FileRef) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move {
-            if !verifier.supports_native_read(reference.volume(), self.work)?
-            {
-                return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
+        reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, Vec<u8>>> {
+        let work = self.work;
+        let future = crate::NativeFutureBundle::new(work, || async move {
+            if !verifier.supports_native_read(reference.volume(), work)? {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "content verifier does not expose the original native work boundary",
+                });
             }
             let (bytes, guard) = verifier.read_with_native_work(
-                reference, reference.descriptor().byte_length(), self.work,
-            ).await?;
+                reference, reference.descriptor().byte_length(), work,
+            )?.await?;
             self.absorb_native_custody(guard)?;
             Ok(bytes)
-        })
+        })?;
+        Ok(super::HistoryContentFuture::Native(future))
     }
 }
 
@@ -335,10 +345,11 @@ mod tests {
             .expect("original meter control allocation");
         let mut io = native_work_io(&work).expect("original decoder custody");
         let source = br#"{"scope":"historical","limit":8}"#;
-        let value = io.decode_json_value(source).expect("audited original Value decoder");
+        let (value, held) = io.decode_json_value(source).expect("audited original Value decoder");
         assert_eq!(value["scope"].as_str(), Some("historical"));
         assert_eq!(value["limit"].as_u64(), Some(8));
         assert!(io.custody.bytes() > 0, "decoded allowance stays with original history custody");
+        assert_eq!(held, io.custody.bytes(), "returned metadata is the original transferred allowance");
         assert_eq!(work.receipt().source_bytes_read, source.len() as u64);
         assert_eq!(work.receipt().authority_bytes_read, 0);
         assert_eq!(work.receipt().bytes_encoded, 0);

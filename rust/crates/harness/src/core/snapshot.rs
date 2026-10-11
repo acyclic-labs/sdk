@@ -205,6 +205,10 @@ fn source_inventory<T: Serialize + ?Sized>(source: &T) -> Result<u64> {
 pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> { source_inventory(event) }
 pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
 pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
+
+pub(crate) fn effect_clone_reservation(effect: &EffectState) -> Result<u64> {
+    source_inventory(effect)
+}
 pub(crate) fn command_clone_reservation(command: &super::Command) -> Result<u64> {
     // Cover the original transition result and event construction while both
     // remain live, including their fixed digests and original recorded scope.

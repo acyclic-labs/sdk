@@ -3,6 +3,9 @@
 //! The certificate authenticates the entire compressed index root, including
 //! absence. Nodes confer no authority; original effect events still undergo
 //! their existing admission/atomic-index checks and core projection.
+//! Native source strings, path payloads, and encoded vectors remain on the
+//! original ledger until physical drop; serde failures retain their diagnostic
+//! reservation with the original typed cause.
 
 use super::{checkpoints, operations, history::HistoryIo};
 use crate::{
@@ -10,7 +13,6 @@ use crate::{
     core::{Authority, AuthorityVerifier, Event},
 };
 use acyclic_stream::{StreamClient, StreamPath, StreamProvider};
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 type Digest = [u8; 32];
@@ -54,7 +56,8 @@ fn decode_certificate_with_work(
             .iter().map(|label| label.len() as u64 + 4).sum(),
     )?;
     let mut observed_failure = false;
-    let decoded = crate::contract::json_from_slice_bounded_trusted::<Certificate, _>(
+    let native = operations::original_native_decode_mode(observer);
+    let decoded = operations::decode_preclaimed_json_with_mode::<Certificate, _>(
         bytes,
         crate::contract::JsonBounds {
             maximum_bytes: MAX_CERTIFICATE_BYTES,
@@ -62,6 +65,8 @@ fn decode_certificate_with_work(
             maximum_depth: 256,
         },
         bytes.len() as u64,
+        crate::wire::ErrorCode::Storage,
+        native,
         &mut |charge| {
             let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
                 reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
@@ -80,10 +85,21 @@ fn decode_certificate_with_work(
             }
         }
     });
-    observer.release_owned(reservation)?;
-    let certificate = decoded?;
-    observer.retain_owned((certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64)?;
-    observer.copy_bytes((certificate.authority.id.len() + certificate.canonical_path.len()) as u64)?;
+    let decoded = operations::retain_original_decode_error(decoded, &mut reservation, observer);
+    let certificate = match decoded {
+        Ok(certificate) => certificate,
+        Err(error) => {
+            observer.release_owned(reservation)?;
+            return Err(error);
+        }
+    };
+    let owned = (certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64;
+    observer.release_owned(reservation - owned)?;
+    if let Err(error) = observer.copy_bytes((certificate.authority.id.len() + certificate.canonical_path.len()) as u64) {
+        drop(certificate);
+        let _ = observer.release_owned(owned);
+        return Err(error);
+    }
     Ok(certificate)
 }
 
@@ -118,7 +134,8 @@ fn decode_node_with_work(
             .iter().map(|label| label.len() as u64 + 4).sum(),
     )?;
     let mut observed_failure = false;
-    let decoded = crate::contract::json_from_slice_bounded_trusted::<Node, _>(
+    let native = operations::original_native_decode_mode(observer);
+    let decoded = operations::decode_preclaimed_json_with_mode::<Node, _>(
         bytes,
         crate::contract::JsonBounds {
             maximum_bytes: MAX_NODE_BYTES,
@@ -126,6 +143,8 @@ fn decode_node_with_work(
             maximum_depth: 256,
         },
         bytes.len() as u64,
+        crate::wire::ErrorCode::Storage,
+        native,
         &mut |charge| {
             let charged = match charge {
                 crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
@@ -162,6 +181,7 @@ fn decode_node_with_work(
             }
         }
     });
+    let decoded = operations::retain_original_decode_error(decoded, &mut reservation, observer);
     observer.release_owned(reservation)?;
     decoded
 }
@@ -188,25 +208,38 @@ pub(super) struct Selection {
     pub(super) consumed_bytes: u64,
 }
 
-fn prefix(authority: &Authority) -> Result<String> {
-    let canonical = authority.stream_path()?;
-    let (version, suffix) = canonical
-        .strip_prefix("harness/")
-        .and_then(|path| path.split_once('/'))
-        .ok_or_else(|| Error::Invalid("effect root authority path is invalid".into()))?;
-    Ok(format!("harness/{version}/effect-heads/{suffix}"))
+fn certificate_path_with_work(
+    authority: &Authority, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(StreamPath, u64)> {
+    operations::publication_path_with_work(
+        authority, "harness/v2/effect-heads/", Some((&"cuts", 4)), work)
 }
 
+#[cfg(test)]
 fn certificate_path(authority: &Authority) -> Result<StreamPath> {
-    Ok(StreamPath::new(format!("{}/cuts", prefix(authority)?))?)
+    certificate_path_with_work(authority, &mut None).map(|(path, _)| path)
 }
 
-fn node_path(authority: &Authority, hash: Digest) -> Result<StreamPath> {
-    Ok(StreamPath::new(format!(
-        "{}/nodes/{}",
-        prefix(authority)?,
-        blake3::Hash::from_bytes(hash).to_hex()
-    ))?)
+fn node_path_with_work(
+    authority: &Authority, hash: Digest, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(StreamPath, u64)> {
+    let suffix = blake3::Hash::from_bytes(hash).to_hex();
+    struct NodeSuffix<'a>(&'a dyn std::fmt::Display);
+    impl std::fmt::Display for NodeSuffix<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "nodes/{}", self.0)
+        }
+    }
+    operations::publication_path_with_work(
+        authority, "harness/v2/effect-heads/", Some((&NodeSuffix(&suffix), 70)), work)
+}
+
+fn release_after_drop<T>(result: Result<T>, owned: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {
+    let release = match work.as_deref_mut() {
+        Some(observer) => observer.release_owned(owned),
+        None => Ok(()),
+    };
+    match result { Err(error) => Err(error), Ok(value) => release.map(|()| value) }
 }
 
 fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
@@ -232,14 +265,13 @@ async fn root_at<P: StreamProvider>(
             consumed: 0,
         });
     }
-    let path = certificate_path(authority)?;
-    let record = operations::one_record_with_work(client, &path, revision - 1, work)
-        .await?
-        .ok_or_else(|| {
-            Error::Unsupported(
-                "effect history requires its original complete cut certificate".into(),
-            )
-        })?;
+    let (path, path_owned) = certificate_path_with_work(authority, work)?;
+    let record = operations::one_record_with_work(client, &path, revision - 1, work).await;
+    drop(path);
+    let record = release_after_drop(record, path_owned, work)?
+        .ok_or_else(|| Error::Unsupported(
+            "effect history requires its original complete cut certificate".into()))?;
+    let result = async {
     let mut used = 0;
     charge(&mut used, record.value.len() as u64, maximum_bytes)?;
     if record.value.len() as u64 > MAX_CERTIFICATE_BYTES {
@@ -248,8 +280,12 @@ async fn root_at<P: StreamProvider>(
         ));
     }
     let certificate = decode_certificate_with_work(&record.value, work)?;
+    let certificate_owned = (certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64;
+    let result = async {
+    let (source_path, source_owned) = operations::publication_path_with_work(authority, "harness/v2/", None, work)?;
+    let result = async {
     if &certificate.authority != authority
-        || certificate.canonical_path != authority.stream_path()?
+        || certificate.canonical_path != source_path.as_str()
         || certificate.revision != revision
         || certificate.proof
             != verifier.effect_history_root_proof_with_work(
@@ -265,12 +301,13 @@ async fn root_at<P: StreamProvider>(
     }
     let canonical = operations::one_record_with_work(
         client,
-        &StreamPath::new(authority.stream_path()?)?,
+        &source_path,
         revision - 1,
         work,
     )
     .await?
     .ok_or_else(|| Error::Storage("effect cut canonical anchor is missing".into()))?;
+    let checked = (|| {
     charge(&mut used, canonical.value.len() as u64, maximum_bytes)?;
     if canonical.commit_id != record.commit_id || {
         if let Some(observer) = work.as_deref_mut() {
@@ -283,15 +320,30 @@ async fn root_at<P: StreamProvider>(
             "effect cut differs from its original atomic publication".into(),
         ));
     }
-    if let Some(observer) = work.as_deref_mut() {
-        observer.release_record(record.value.len() as u64)?;
-        observer.release_record(canonical.value.len() as u64)?;
-        observer.release_owned((certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64)?;
-    }
-    Ok(Root {
-        hash: certificate.root,
-        consumed: used,
-    })
+    Ok(Root { hash: certificate.root, consumed: used })
+    })();
+    let canonical_bytes = canonical.value.len() as u64;
+    drop(canonical);
+    let release = match work.as_deref_mut() {
+        Some(observer) => observer.release_record(canonical_bytes),
+        None => Ok(()),
+    };
+    match checked { Err(error) => Err(error), Ok(root) => release.map(|()| root) }
+    }.await;
+    drop(source_path);
+    release_after_drop(result, source_owned, work)
+    }.await;
+    drop(certificate);
+    let result = release_after_drop(result, certificate_owned, work);
+    result
+    }.await;
+    let record_bytes = record.value.len() as u64;
+    drop(record);
+    let release = match work.as_deref_mut() {
+        Some(observer) => observer.release_record(record_bytes),
+        None => Ok(()),
+    };
+    match result { Err(error) => Err(error), Ok(root) => release.map(|()| root) }
 }
 
 fn right(effect: EffectId, bit: u8) -> bool {
@@ -309,10 +361,12 @@ async fn load_node<P: StreamProvider>(
     maximum: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Node> {
-    let path = node_path(authority, hash)?;
+    let (path, path_owned) = node_path_with_work(authority, hash, work)?;
+    let result = async {
     let record = operations::one_record_with_work(client, &path, 0, work)
         .await?
         .ok_or_else(|| Error::Storage("authenticated effect index node is missing".into()))?;
+    let node = async {
     charge(used, record.value.len() as u64, maximum)?;
     if record.value.len() as u64 > MAX_NODE_BYTES || {
         let stream = client.stream(path.as_str())?;
@@ -329,11 +383,18 @@ async fn load_node<P: StreamProvider>(
             "authenticated effect index node differs".into(),
         ));
     }
-    let node = decode_node_with_work(&record.value, work)?;
-    if let Some(observer) = work.as_deref_mut() {
-        observer.release_record(record.value.len() as u64)?;
-    }
-    Ok(node)
+    decode_node_with_work(&record.value, work)
+    }.await;
+    let record_bytes = record.value.len() as u64;
+    drop(record);
+    let release = match work.as_deref_mut() {
+        Some(observer) => observer.release_record(record_bytes),
+        None => Ok(()),
+    };
+    match node { Err(error) => Err(error), Ok(node) => release.map(|()| node) }
+    }.await;
+    drop(path);
+    release_after_drop(result, path_owned, work)
 }
 
 async fn walk<P: StreamProvider>(
@@ -411,6 +472,7 @@ async fn stage_node<P: StreamProvider>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Digest> {
     let bytes = super::history::canonical_bytes_with_work(&node, MAX_NODE_BYTES, work)?;
+    let prepared = (|| {
     if bytes.len() as u64 > MAX_NODE_BYTES {
         return Err(Error::Invalid(
             "effect index node exceeds publication bound".into(),
@@ -420,12 +482,17 @@ async fn stage_node<P: StreamProvider>(
         observer.hashed_bytes(bytes.len() as u64)?;
     }
     let hash = *blake3::hash(&bytes).as_bytes();
-    let byte_capacity = bytes.capacity() as u64;
-    checkpoints::stage_immutable_record_with_work(client, node_path(authority, hash)?, Bytes::from(bytes), work)
-        .await?;
-    if let Some(observer) = work.as_deref_mut() {
-        observer.release_owned(byte_capacity)?;
-    }
+    Ok((hash, node_path_with_work(authority, hash, work)?))
+    })();
+    let (hash, path) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let capacity = bytes.capacity() as u64;
+            drop(bytes);
+            return release_after_drop(Err(error), capacity, work);
+        }
+    };
+    checkpoints::stage_immutable_vec_with_work(client, path, Ok(bytes), work).await?;
     Ok(hash)
 }
 
@@ -530,7 +597,14 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         .ok_or_else(|| Error::Invalid("effect cut publication revision must be positive".into()))?;
     let (encoded_authority, encoded_event) =
         crate::wire_codec::decode_event_with_work(&publication.bytes, work)?;
-    if publication.path.as_str() != authority.stream_path()?
+    let decoded_owned = crate::core::event_clone_reservation(&encoded_event)?
+        + encoded_authority.id.capacity() as u64;
+    let admitted = (|| {
+    let (canonical_path, canonical_owned) = operations::publication_path_with_work(authority, "harness/v2/", None, work)?;
+    let canonical_matches = publication.path.as_str() == canonical_path.as_str();
+    drop(canonical_path);
+    release_after_drop(Ok(()), canonical_owned, work)?;
+    if !canonical_matches
         || publication.expected_tail != previous_revision
         || publication.operation_id != event.operation_id
         || encoded_authority != *authority
@@ -540,6 +614,11 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
             "effect cut publication differs from its admitted canonical event".into(),
         ));
     }
+    Ok(())
+    })();
+    drop(encoded_event);
+    drop(encoded_authority);
+    release_after_drop(admitted, decoded_owned, work)?;
     let mut previous = root_at(
         client,
         authority,
@@ -577,35 +656,39 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         observer.hashed_bytes(publication.bytes.len() as u64)?;
     }
     let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
+    let proof = verifier.effect_history_root_proof_with_work(event.revision, canonical_digest, previous.hash, work)?;
+    let canonical_path = authority.stream_path_with_work(work)?;
+    let path_owned = canonical_path.capacity() as u64;
+    let cloned_authority = match work.as_deref_mut() {
+        Some(observer) => observer.clone_authority(authority),
+        None => Ok(authority.clone()),
+    };
+    let cloned_authority = match cloned_authority {
+        Ok(authority) => authority,
+        Err(error) => {
+            drop(canonical_path);
+            return release_after_drop(Err(error), path_owned, work);
+        }
+    };
     let certificate = Certificate {
-        authority: match work.as_deref_mut() {
-            Some(observer) => observer.clone_authority(authority)?,
-            None => authority.clone(),
-        },
-        canonical_path: authority.stream_path()?,
+        authority: cloned_authority,
+        canonical_path,
         revision: event.revision,
         canonical_digest,
         root: previous.hash,
-        proof: verifier.effect_history_root_proof_with_work(
-            event.revision,
-            canonical_digest,
-            previous.hash,
-            work,
-        )?,
+        proof,
     };
-    let bytes = super::history::canonical_bytes_with_work(&certificate, MAX_CERTIFICATE_BYTES, work)?;
-    if bytes.len() as u64 > MAX_CERTIFICATE_BYTES {
-        return Err(Error::Invalid(
-            "effect cut certificate exceeds publication bound".into(),
-        ));
-    }
-    publication.add_derived_index_with_work(
-        certificate_path(authority)?,
-        previous_revision,
-        Bytes::from(bytes),
-        work,
-    )?;
-    Ok(())
+    let owned = (certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64;
+    let path = certificate_path_with_work(authority, work);
+    let result = match path {
+        Ok(path) => {
+            let bytes = super::history::canonical_bytes_with_work(&certificate, MAX_CERTIFICATE_BYTES, work);
+            publication.add_derived_index_with_work(path, previous_revision, bytes, work)
+        }
+        Err(error) => Err(error),
+    };
+    drop(certificate);
+    release_after_drop(result, owned, work)
 }
 
 pub(super) async fn select<P: StreamProvider>(
@@ -647,9 +730,9 @@ pub(super) async fn select_with_work<P: StreamProvider>(
             "effect head exceeds authenticated original cut".into(),
         ));
     }
-    if let Some(observer) = work.as_deref_mut() {
-        observer.release_owned(observed.path.capacity() as u64 * std::mem::size_of::<Branch>() as u64)?;
-    }
+    let owned = observed.path.capacity() as u64 * std::mem::size_of::<Branch>() as u64;
+    drop(observed);
+    if let Some(observer) = work.as_deref_mut() { observer.release_owned(owned)?; }
     Ok(Selection {
         head,
         consumed_bytes: root.consumed,
@@ -658,3 +741,60 @@ pub(super) async fn select_with_work<P: StreamProvider>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_decode_controls {
+    use super::*;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            allocation_operations: 1024,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1024 * 1024,
+            source_bytes_read: 1024 * 1024,
+            items_examined: 1024 * 1024,
+            bytes_copied: 1024 * 1024,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[test]
+    fn malformed_node_and_certificate_keep_original_serde_custody() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
+        let mut io = super::super::history::native_work_io(&work).expect("original observer");
+        let node = decode_node_with_work(br#"{"kind":"leaf","effect":false,"head":{"revision":1,"position":0}}"#, &mut Some(&mut io));
+        let certificate = decode_certificate_with_work(br#"{"authority":false,"canonical_path":"harness/v2/task/x","revision":1,"canonical_digest":[],"root":null,"proof":[]}"#, &mut Some(&mut io));
+        for error in [node.err().expect("invalid node"), certificate.err().expect("invalid certificate")] {
+            match error {
+                Error::NativeDecode { source, custody: Some(custody), .. } => {
+                    assert!(custody.bytes() > 0);
+                    assert!(work.shares_ledger(custody.work()));
+                    assert!(source.is_data());
+                }
+                other => panic!("expected retained native serde cause: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_preserves_original_callback_cause() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
+        let mut io = super::super::history::native_work_io(&work).expect("original observer");
+        cancellation.cancel();
+        let error = decode_node_with_work(br#"{"kind":"branch","bit":0,"left":[],"right":[]}"#, &mut Some(&mut io)).err().expect("cancelled");
+        assert!(matches!(error, Error::NativeWork { .. }));
+    }
+
+    #[test]
+    fn original_quota_denies_node_before_serde_diagnostic_allocation() {
+        let cancellation = CancellationToken::new();
+        let mut limit = budget();
+        limit.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
+        let work = NativeMaterializationWork::new(limit, &cancellation).expect("original ledger");
+        let mut io = super::super::history::native_work_io(&work).expect("original observer");
+        let error = decode_node_with_work(br#"{"kind":"leaf","effect":false,"head":null}"#, &mut Some(&mut io)).err().expect("quota denial");
+        assert!(matches!(error, Error::NativeWork { .. }));
+    }
+}

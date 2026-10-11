@@ -12,6 +12,54 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
+pub(super) fn original_native_decode_mode(observer: &dyn super::history::HistoryIo) -> bool {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    { observer.original_native_work().is_some() }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    { let _ = observer; false }
+}
+
+pub(super) fn decode_preclaimed_json_with_mode<T, F>(
+    bytes: &[u8],
+    bounds: crate::contract::JsonBounds,
+    maximum_owned_bytes: u64,
+    code: crate::wire::ErrorCode,
+    native: bool,
+    charge: &mut F,
+) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut(crate::contract::JsonCodecCharge) -> Result<()>,
+{
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if native {
+        return crate::contract::json_from_slice_bounded_native_trusted(
+            bytes, bounds, maximum_owned_bytes, code, charge);
+    }
+    let _ = (native, code);
+    crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
+}
+
+pub(super) fn retain_original_decode_error<T>(
+    mut result: Result<T>,
+    reservation: &mut u64,
+    observer: &mut dyn super::history::HistoryIo,
+) -> Result<T> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Err(Error::NativeDecode { custody, .. }) = &mut result
+        && custody.is_none()
+    {
+        // The original Admission callback retained this exact reservation.
+        // Original-native adapters split it without cancellation/admission;
+        // another fallible claim must not replace the original serde cause.
+        *custody = Some(observer.take_native_custody(*reservation)
+            .expect("original native decoder reservation has source custody"));
+        *reservation = 0;
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    { let _ = (&mut result, reservation, observer); }
+    result
+}
 pub(super) fn validate_canonical_json_with_work(
     bytes: &[u8],
     maximum_bytes: u64,
@@ -31,7 +79,8 @@ pub(super) fn validate_canonical_json_with_work(
     let mut observed_failure = false;
     let parsed = {
         let observer = work.as_deref_mut().expect("observed canonical validation");
-        crate::contract::json_from_slice_bounded_trusted::<serde_json::Value, _>(
+        let native = original_native_decode_mode(observer);
+        decode_preclaimed_json_with_mode::<serde_json::Value, _>(
             bytes,
             crate::contract::JsonBounds {
                 maximum_bytes,
@@ -39,6 +88,8 @@ pub(super) fn validate_canonical_json_with_work(
                 maximum_depth: 256,
             },
             bytes.len() as u64,
+            crate::wire::ErrorCode::Storage,
+            native,
             &mut |charge| {
                 let charged = match charge {
                 crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
@@ -52,11 +103,13 @@ pub(super) fn validate_canonical_json_with_work(
                     // opaque map allocator overhead is outside this contract.
                     let slot = std::mem::size_of::<serde_json::Value>()
                         .max(std::mem::size_of::<(String, serde_json::Value)>()) as u64;
-                    reservation = items.checked_mul(10).and_then(|count| count.checked_mul(slot))
+                    let planned = items.checked_mul(10).and_then(|count| count.checked_mul(slot))
                         .and_then(|slots| slots.checked_add(maximum_owned_bytes))
                         .and_then(|owned| owned.checked_add(diagnostic_bytes))
                         .ok_or_else(|| Error::Invalid("index JSON reservation overflows".into()))?;
-                    observer.retain_owned(reservation)
+                    observer.retain_owned(planned)?;
+                    reservation = planned;
+                    Ok(())
                 }
                 _ => observer.codec_charge(charge),
                 };
@@ -65,6 +118,8 @@ pub(super) fn validate_canonical_json_with_work(
             },
         )
     };
+    let parsed = retain_original_decode_error(
+        parsed, &mut reservation, work.as_deref_mut().expect("observed canonical validation"));
     let parsed = parsed.map_err(|error| {
         if observed_failure { error } else {
             match error {
@@ -94,10 +149,7 @@ pub(super) fn validate_canonical_json_with_work(
         }
         Err(error) => Err(error),
     };
-    if let Some(observer) = work.as_deref_mut() {
-        observer.release_owned(reservation)?;
-    }
-    result
+    release_owned_after_drop(result, reservation, work)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -132,7 +184,8 @@ pub(super) fn decode_location_with_work(
             .iter().map(|label| label.len() as u64 + 4).sum(),
     )?;
     let mut observed_failure = false;
-    let decoded = crate::contract::json_from_slice_bounded_trusted::<OperationLocation, _>(
+    let native = original_native_decode_mode(observer);
+    let decoded = decode_preclaimed_json_with_mode::<OperationLocation, _>(
         bytes,
         crate::contract::JsonBounds {
             maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -140,11 +193,15 @@ pub(super) fn decode_location_with_work(
             maximum_depth: 256,
         },
         bytes.len() as u64,
+        crate::wire::ErrorCode::Storage,
+        native,
         &mut |charge| {
             let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
-                reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
+                let planned = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("operation locator reservation overflows".into()))?;
-                observer.retain_owned(reservation)
+                observer.retain_owned(planned)?;
+                reservation = planned;
+                Ok(())
             } else {
                 observer.codec_charge(charge)
             };
@@ -152,6 +209,7 @@ pub(super) fn decode_location_with_work(
             charged
         },
     );
+    let decoded = retain_original_decode_error(decoded, &mut reservation, observer);
     let decoded = decoded.map_err(|error| {
         if observed_failure { error } else {
             match error {
@@ -160,11 +218,24 @@ pub(super) fn decode_location_with_work(
             }
         }
     });
-    observer.release_owned(reservation)?;
-    let location = decoded?;
-    observer.retain_owned(location.authority.id.capacity() as u64)?;
-    observer.copy_bytes(location.authority.id.len() as u64)?;
-    Ok(location)
+    let location = match decoded {
+        Ok(location) => location,
+        Err(error) => {
+            let _ = observer.release_owned(reservation);
+            return Err(error);
+        }
+    };
+    let owned = location.authority.id.capacity() as u64;
+    let retained = observer.release_owned(reservation - owned)
+        .and_then(|()| observer.copy_bytes(location.authority.id.len() as u64));
+    match retained {
+        Ok(()) => Ok(location),
+        Err(error) => {
+            drop(location);
+            let _ = observer.release_owned(owned);
+            Err(error)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -192,7 +263,8 @@ pub(super) fn decode_message_location_with_work(
     )?;
     let mut reservation = 0;
     let mut observed_failure = false;
-    let decoded = crate::contract::json_from_slice_bounded_trusted::<MessageLocation, _>(
+    let native = original_native_decode_mode(observer);
+    let decoded = decode_preclaimed_json_with_mode::<MessageLocation, _>(
         bytes,
         crate::contract::JsonBounds {
             maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -200,16 +272,21 @@ pub(super) fn decode_message_location_with_work(
             maximum_depth: 256,
         },
         bytes.len() as u64,
+        crate::wire::ErrorCode::Storage,
+        native,
         &mut |charge| {
             let charged = if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } = charge {
-                reservation = maximum_owned_bytes.checked_add(diagnostic_bytes)
+                let planned = maximum_owned_bytes.checked_add(diagnostic_bytes)
                     .ok_or_else(|| Error::Invalid("message locator reservation overflows".into()))?;
-                observer.retain_owned(reservation)
+                observer.retain_owned(planned)?;
+                reservation = planned;
+                Ok(())
             } else { observer.codec_charge(charge) };
             if charged.is_err() { observed_failure = true; }
             charged
         },
     );
+    let decoded = retain_original_decode_error(decoded, &mut reservation, observer);
     let decoded = decoded.map_err(|error| {
         if observed_failure { error } else {
             match error {
@@ -218,11 +295,24 @@ pub(super) fn decode_message_location_with_work(
             }
         }
     });
-    observer.release_owned(reservation)?;
-    let location = decoded?;
-    observer.retain_owned(location.location.authority.id.capacity() as u64)?;
-    observer.copy_bytes(location.location.authority.id.len() as u64)?;
-    Ok(location)
+    let location = match decoded {
+        Ok(location) => location,
+        Err(error) => {
+            let _ = observer.release_owned(reservation);
+            return Err(error);
+        }
+    };
+    let owned = location.location.authority.id.capacity() as u64;
+    let retained = observer.release_owned(reservation - owned)
+        .and_then(|()| observer.copy_bytes(location.location.authority.id.len() as u64));
+    match retained {
+        Ok(()) => Ok(location),
+        Err(error) => {
+            drop(location);
+            let _ = observer.release_owned(owned);
+            Err(error)
+        }
+    }
 }
 
 fn message_path(authority: &Authority, message: uuid::Uuid) -> Result<StreamPath> {
@@ -280,6 +370,94 @@ pub(crate) fn operation_path(authority: &Authority, operation: OperationId) -> R
     ))?)
 }
 
+pub(super) fn release_owned_after_drop<T>(
+    result: Result<T>,
+    bytes: u64,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<T> {
+    let released = match work.as_deref_mut() {
+        Some(observer) => observer.release_owned(bytes),
+        None => Ok(()),
+    };
+    match result {
+        Ok(value) => released.map(|()| value),
+        Err(error) => Err(error),
+    }
+}
+
+// Both original String buffers and the SDK Arc<str> character payload are
+// known here. Arc headers and allocator bookkeeping are deliberately excluded.
+pub(super) fn publication_path_with_work(
+    authority: &Authority,
+    prefix: &str,
+    last: Option<(&dyn std::fmt::Display, usize)>,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(StreamPath, u64)> {
+    use std::fmt::Write as _;
+    let canonical = authority.stream_path_with_work(work)?;
+    let canonical_capacity = canonical.capacity() as u64;
+    let result = (|| {
+        let suffix = canonical.strip_prefix("harness/v2/")
+            .ok_or_else(|| Error::Invalid("publication authority path is invalid".into()))?;
+        let capacity = prefix.len().checked_add(suffix.len())
+            .and_then(|bytes| bytes.checked_add(last.map_or(0, |(_, bytes)| bytes + 1)))
+            .ok_or_else(|| Error::Invalid("publication path length overflows".into()))?;
+        let mut text = String::new();
+        let result = (|| {
+            match work.as_deref_mut() {
+                Some(observer) => observer.reserve_text(&mut text, capacity)?,
+                None => text.reserve_exact(capacity),
+            }
+            text.push_str(prefix);
+            text.push_str(suffix);
+            if let Some((last, _)) = last {
+                write!(&mut text, "/{last}")
+                    .map_err(|_| Error::Invalid("publication path formatting failed".into()))?;
+            }
+            if let Some(observer) = work.as_deref_mut() {
+                observer.copy_bytes(text.len() as u64)?;
+                observer.admit_allocation(text.len() as u64)?;
+                observer.copy_bytes(text.len() as u64)?;
+            }
+            let path = StreamPath::new(&text)?;
+            let retained = if let Some(observer) = work.as_deref_mut() {
+                let payload = path.as_str().len() as u64;
+                observer.retain_owned(payload)?;
+                payload
+            } else { 0 };
+            Ok((path, retained))
+        })();
+        let text_capacity = text.capacity() as u64;
+        drop(text);
+        release_owned_after_drop(result, text_capacity, work)
+    })();
+    drop(canonical);
+    release_owned_after_drop(result, canonical_capacity, work)
+}
+
+fn canonical_publication_path_with_work(
+    authority: &Authority,
+    work: &mut Option<&mut dyn super::history::HistoryIo>,
+) -> Result<(StreamPath, u64)> {
+    let text = authority.stream_path_with_work(work)?;
+    let capacity = text.capacity() as u64;
+    let result = (|| {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.admit_allocation(text.len() as u64)?;
+            observer.copy_bytes(text.len() as u64)?;
+        }
+        let path = StreamPath::new(&text)?;
+        let retained = if let Some(observer) = work.as_deref_mut() {
+            let payload = path.as_str().len() as u64;
+            observer.retain_owned(payload)?;
+            payload
+        } else { 0 };
+        Ok((path, retained))
+    })();
+    drop(text);
+    release_owned_after_drop(result, capacity, work)
+}
+
 /// The existing event and a ref-only location, without another admission lifecycle.
 pub(crate) struct IndexedPublication {
     pub(crate) operation_id: OperationId,
@@ -287,6 +465,8 @@ pub(crate) struct IndexedPublication {
     pub(crate) expected_tail: u64,
     pub(crate) bytes: Bytes,
     indexes: Vec<(StreamPath, u64, Bytes)>,
+    retained_payload_bytes: u64,
+    operation_index_capacity: u64,
 }
 
 fn reserve_indexes(
@@ -300,11 +480,10 @@ fn reserve_indexes(
     if needed <= indexes.capacity() { return Ok(()); }
     let element_bytes = std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64;
     let old_capacity = indexes.capacity();
-    observer.admit_allocation(needed as u64 * element_bytes)?;
+    observer.admit_allocation((needed - old_capacity) as u64 * element_bytes)?;
     indexes.try_reserve_exact(additional)
-        .map_err(|_| Error::Invalid("publication index allocation failed".into()))?;
-    observer.retain_owned(indexes.capacity() as u64 * element_bytes)?;
-    observer.release_owned(old_capacity as u64 * element_bytes)?;
+        .map_err(|cause| observer.allocation_failure(cause))?;
+    observer.retain_owned((indexes.capacity() - old_capacity) as u64 * element_bytes)?;
     Ok(())
 }
 
@@ -319,111 +498,164 @@ impl IndexedPublication {
         bytes: Vec<u8>,
         work: &mut Option<&mut dyn super::history::HistoryIo>,
     ) -> Result<Self> {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.check_cancellation()?;
-        }
-        let expected_tail = event
-            .revision
-            .checked_sub(1)
-            .ok_or_else(|| Error::Invalid("indexed event revision must be positive".into()))?;
-        let location = OperationLocation {
-            authority: match work.as_deref_mut() {
-                Some(observer) => observer.clone_authority(authority)?,
-                None => authority.clone(),
-            },
-            operation_id: event.operation_id,
-            revision: event.revision,
-            intent_digest: event.intent_digest,
-            effect_position: None,
-        };
-        let location_capacity = location.authority.id.capacity() as u64;
-        let mut indexes = Vec::new();
-        let initial_indexes = match event.payload {
-            crate::core::EventPayload::ConversationBound { .. } => 2,
-            crate::core::EventPayload::ConversationMessageAppended { .. }
-                | crate::core::EventPayload::ProjectMergePublished { .. } => 4,
-            _ => 1,
-        };
-        reserve_indexes(&mut indexes, initial_indexes, work)?;
-        indexes.push((
-            operation_path(authority, event.operation_id)?,
-            0,
-            Bytes::from(super::history::canonical_bytes_with_work(&location, acyclic_stream::MAX_RECORD_BYTES as u64, work)?),
-        ));
-        if matches!(
-            event.payload,
-            crate::core::EventPayload::ConversationBound { .. }
-        ) {
-            let binding_location = MessageLocation {
-                location: OperationLocation {
-                    authority: match work.as_deref_mut() {
-                        Some(observer) => observer.clone_authority(&location.authority)?,
-                        None => location.authority.clone(),
-                    },
-                    operation_id: location.operation_id,
-                    revision: location.revision,
-                    intent_digest: location.intent_digest,
-                    effect_position: location.effect_position,
-                },
-                message_id: uuid::Uuid::nil(),
-                sequence: 0,
-            };
-            let binding_bytes = super::history::canonical_bytes_with_work(
-                &binding_location, acyclic_stream::MAX_RECORD_BYTES as u64, work,
-            )?;
-            let binding_capacity = binding_location.location.authority.id.capacity() as u64;
-            drop(binding_location);
+        let byte_capacity = bytes.capacity() as u64;
+        let prepared = (|| {
             if let Some(observer) = work.as_deref_mut() {
-                observer.release_owned(binding_capacity)?;
+                observer.check_cancellation()?;
             }
-            indexes.push((message_head_path(authority)?, 0, Bytes::from(binding_bytes)));
-        }
-        let message = match &event.payload {
-            crate::core::EventPayload::ConversationMessageAppended { message } => {
-                Some(message.as_ref())
+            let expected_tail = event.revision.checked_sub(1)
+                .ok_or_else(|| Error::Invalid("indexed event revision must be positive".into()))?;
+            let path = canonical_publication_path_with_work(authority, work)?;
+            Ok((expected_tail, path))
+        })();
+        let (expected_tail, (path, path_owned)) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                drop(bytes);
+                return release_owned_after_drop(Err(error), byte_capacity, work);
             }
-            crate::core::EventPayload::ProjectMergePublished { receipt } => Some(&receipt.notice),
-            _ => None,
         };
-        if let Some(message) = message {
-            let message_location =
-                Bytes::from(super::history::canonical_bytes_with_work(&MessageLocation {
-                    location,
-                    message_id: message.id,
-                    sequence: message.sequence,
-                }, acyclic_stream::MAX_RECORD_BYTES as u64, work)?);
-            indexes.push((
-                message_path(authority, message.id)?,
-                0,
-                message_location.clone(),
-            ));
-            indexes.push((
-                message_sequence_path(authority, message.sequence)?,
-                0,
-                message_location.clone(),
-            ));
-            // One locator per logical message, in the same atomic commit as
-            // the canonical event and immutable ID/sequence indexes. Its tail
-            // is one plus the logical message count, including the initial
-            // binding marker, independent of subsequent non-message events.
-            indexes.push((
-                message_head_path(authority)?,
-                message.sequence,
-                message_location,
-            ));
-        } else {
-            drop(location);
-        }
-        if let Some(observer) = work.as_deref_mut() {
-            observer.release_owned(location_capacity)?;
-        }
-        Ok(Self {
+        let mut publication = Self {
             operation_id: event.operation_id,
-            path: StreamPath::new(authority.stream_path()?)?,
+            retained_payload_bytes: byte_capacity + path_owned,
+            operation_index_capacity: 0,
+            path,
             expected_tail,
             bytes: Bytes::from(bytes),
-            indexes,
-        })
+            indexes: Vec::new(),
+        };
+        let result = (|| {
+            let location = OperationLocation {
+                authority: match work.as_deref_mut() {
+                    Some(observer) => observer.clone_authority(authority)?,
+                    None => authority.clone(),
+                },
+                operation_id: event.operation_id,
+                revision: event.revision,
+                intent_digest: event.intent_digest,
+                effect_position: None,
+            };
+            let location_capacity = location.authority.id.capacity() as u64;
+            let result = (|| {
+                let initial_indexes = match event.payload {
+                    crate::core::EventPayload::ConversationBound { .. } => 2,
+                    crate::core::EventPayload::ConversationMessageAppended { .. }
+                        | crate::core::EventPayload::ProjectMergePublished { .. } => 4,
+                    _ => 1,
+                };
+                reserve_indexes(&mut publication.indexes, initial_indexes, work)?;
+                let path = if work.is_none() {
+                    (operation_path(authority, event.operation_id)?, 0)
+                } else {
+                    publication_path_with_work(authority, "harness/v2/aggregate-operations/",
+                        Some((&event.operation_id, 36)), work)?
+                };
+                let encoded = super::history::canonical_bytes_with_work(
+                    &location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
+                if let Ok(encoded) = &encoded {
+                    publication.operation_index_capacity = encoded.capacity() as u64;
+                }
+                publication.add_derived_index_with_work(path, 0, encoded, work)?;
+                if matches!(event.payload, crate::core::EventPayload::ConversationBound { .. }) {
+                    if authority.kind != crate::core::AggregateKind::Conversation {
+                        return Err(Error::Invalid("message head requires a conversation".into()));
+                    }
+                    let binding_location = MessageLocation {
+                        location: OperationLocation {
+                            authority: match work.as_deref_mut() {
+                                Some(observer) => observer.clone_authority(&location.authority)?,
+                                None => location.authority.clone(),
+                            },
+                            operation_id: location.operation_id,
+                            revision: location.revision,
+                            intent_digest: location.intent_digest,
+                            effect_position: location.effect_position,
+                        },
+                        message_id: uuid::Uuid::nil(),
+                        sequence: 0,
+                    };
+                    let binding_capacity = binding_location.location.authority.id.capacity() as u64;
+                    let encoded = (|| {
+                        let path = if work.is_none() { (message_head_path(authority)?, 0) } else {
+                            publication_path_with_work(authority, "harness/v2/conversation-heads/", None, work)?
+                        };
+                        let encoded = super::history::canonical_bytes_with_work(
+                            &binding_location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
+                        publication.add_derived_index_with_work(path, 0, encoded, work)
+                    })();
+                    drop(binding_location);
+                    release_owned_after_drop(encoded, binding_capacity, work)?;
+                }
+                Ok(())
+            })();
+            let message = match &event.payload {
+                crate::core::EventPayload::ConversationMessageAppended { message } => Some(message.as_ref()),
+                crate::core::EventPayload::ProjectMergePublished { receipt } => Some(&receipt.notice),
+                _ => None,
+            };
+            let result = result.and_then(|()| {
+                if let Some(message) = message {
+                    let location = MessageLocation {
+                        location,
+                        message_id: message.id,
+                        sequence: message.sequence,
+                    };
+                    let path = if authority.kind != crate::core::AggregateKind::Conversation {
+                        Err(Error::Invalid("message index requires a conversation".into()))
+                    } else if work.is_none() { message_path(authority, message.id).map(|path| (path, 0)) } else {
+                        publication_path_with_work(authority, "harness/v2/conversation-messages/",
+                            Some((&message.id, 36)), work)
+                    };
+                    let encoded = path.and_then(|path| {
+                        let bytes = super::history::canonical_bytes_with_work(
+                            &location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
+                        publication.add_derived_index_with_work(path, 0, bytes, work)
+                    });
+                    drop(location);
+                    encoded?;
+                    let index = publication.indexes.len() - 1;
+                    let path = if work.is_none() { (message_sequence_path(authority, message.sequence)?, 0) } else {
+                        if message.sequence == 0 || authority.kind != crate::core::AggregateKind::Conversation {
+                            return Err(Error::Invalid("message sequence index requires a positive conversation sequence".into()));
+                        }
+                        publication_path_with_work(authority, "harness/v2/conversation-sequences/",
+                            Some((&message.sequence, 20)), work)?
+                    };
+                    publication.push_index_with_work(path, 0, publication.indexes[index].2.clone(), 0, work)?;
+                    let path = if work.is_none() { (message_head_path(authority)?, 0) } else {
+                        publication_path_with_work(authority, "harness/v2/conversation-heads/", None, work)?
+                    };
+                    // These three locators share the original encoded allocation.
+                    publication.push_index_with_work(
+                        path, message.sequence, publication.indexes[index].2.clone(), 0, work)?;
+                } else {
+                    drop(location);
+                }
+                Ok(())
+            });
+            release_owned_after_drop(result, location_capacity, work)
+        })();
+        match result {
+            Ok(()) => Ok(publication),
+            Err(error) => {
+                let owned = publication.into_retained_owned();
+                release_owned_after_drop(Err(error), owned, work)
+            }
+        }
+    }
+
+    /// Exact source capacities, not encoded lengths or opaque SDK/provider heap.
+    pub(crate) fn retained_owned(&self) -> u64 {
+        self.retained_payload_bytes
+            + self.indexes.capacity() as u64 * std::mem::size_of::<(StreamPath, u64, Bytes)>() as u64
+    }
+
+    /// The caller must first drop request/ACK clones sharing these Bytes/paths.
+    /// This physically drops publication storage before returning its release size.
+    pub(crate) fn into_retained_owned(self) -> u64 {
+        let owned = self.retained_owned();
+        drop(self);
+        owned
     }
 
     pub(super) fn set_effect_position_with_work(
@@ -440,25 +672,55 @@ impl IndexedPublication {
             .ok_or_else(|| Error::Storage("publication operation index is absent".into()))?;
         let mut location = decode_location_with_work(bytes, work)?;
         location.effect_position = Some(position);
-        let encoded = super::history::canonical_bytes_with_work(&location, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-        if let Some(observer) = work.as_deref_mut() {
-            observer.release_owned(location.authority.id.capacity() as u64)?;
-        }
-        if let Some(observer) = work.as_deref_mut() {
-            observer.release_owned(bytes.len() as u64)?;
-        }
-        *bytes = Bytes::from(encoded);
+        let location_capacity = location.authority.id.capacity() as u64;
+        let encoded = super::history::canonical_bytes_with_work(
+            &location, acyclic_stream::MAX_RECORD_BYTES as u64, work);
+        drop(location);
+        let encoded = release_owned_after_drop(encoded, location_capacity, work)?;
+        let capacity = encoded.capacity() as u64;
+        let old = std::mem::replace(bytes, Bytes::from(encoded));
+        drop(old);
+        let old_capacity = std::mem::replace(&mut self.operation_index_capacity, capacity);
+        self.retained_payload_bytes = self.retained_payload_bytes - old_capacity + capacity;
+        release_owned_after_drop(Ok(()), old_capacity, work)?;
         Ok(())
     }
 
     pub(super) fn add_derived_index_with_work(
         &mut self,
-        path: StreamPath,
+        path: (StreamPath, u64),
         tail: u64,
-        bytes: Bytes,
+        bytes: Result<Vec<u8>>,
         work: &mut Option<&mut dyn super::history::HistoryIo>,
     ) -> Result<()> {
-        reserve_indexes(&mut self.indexes, 1, work)?;
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let (path, retained) = path;
+                drop(path);
+                return release_owned_after_drop(Err(error), retained, work);
+            }
+        };
+        let capacity = bytes.capacity() as u64;
+        self.push_index_with_work(path, tail, Bytes::from(bytes), capacity, work)
+    }
+
+    fn push_index_with_work(
+        &mut self,
+        path: (StreamPath, u64),
+        tail: u64,
+        bytes: Bytes,
+        capacity: u64,
+        work: &mut Option<&mut dyn super::history::HistoryIo>,
+    ) -> Result<()> {
+        let (path, path_bytes) = path;
+        let admitted = reserve_indexes(&mut self.indexes, 1, work);
+        if let Err(error) = admitted {
+            drop(path);
+            drop(bytes);
+            return release_owned_after_drop(Err(error), capacity + path_bytes, work);
+        }
+        self.retained_payload_bytes += capacity + path_bytes;
         self.indexes.push((path, tail, bytes));
         Ok(())
     }
@@ -639,7 +901,7 @@ pub(crate) async fn find_operation_bounded<P: StreamProvider>(
     operation: OperationId,
     maximum_bytes: u64,
 ) -> Result<(Option<Event>, u64)> {
-    find_operation_bounded_with_work(client, authority, verifier, operation, maximum_bytes, &mut None).await
+    find_operation_bounded_with_work(client, authority, verifier, operation, maximum_bytes, true, &mut None).await
 }
 
 pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
@@ -648,6 +910,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     verifier: &AuthorityVerifier,
     operation: OperationId,
     maximum_bytes: u64,
+    return_event: bool,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<Event>, u64)> {
     verifier.verify_audience(authority)?;
@@ -694,7 +957,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     if let Some(work) = work.as_deref_mut() { work.release_owned(location_bytes)?; }
     drop(index);
     if let Some(work) = work.as_deref_mut() {
-        work.stage_output(bytes - index_bytes, 1)?;
+        if return_event { work.stage_output(bytes - index_bytes, 1)?; }
         work.release_record(index_bytes)?;
     }
     Ok((Some(event), bytes))
@@ -1061,4 +1324,101 @@ pub(crate) async fn latest_message<P: StreamProvider>(
     )
     .await
     .map(|(message, _)| message)
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_publication_custody_tests {
+    use super::*;
+    use super::super::history::{HistoryIo, native_work_io};
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use acyclic_stream::MemoryStream;
+    use std::sync::Arc;
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            authority_records_read: 32,
+            authority_bytes_read: 1_048_576,
+            backend_read_operations: 32,
+            source_bytes_read: 1_048_576,
+            bytes_copied: 1_048_576,
+            bytes_encoded: 1_048_576,
+            bytes_hashed: 1_048_576,
+            authority_records_appended: 32,
+            authority_bytes_written: 1_048_576,
+            backend_write_operations: 32,
+            items_examined: 1_048_576,
+            allocation_operations: 1_048_576,
+            peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn original_provider_publication_releases_exact_source_after_receipt_drop() -> Result<()> {
+        use crate::core::{Action, AggregateKind, ApplyResult, AuthorityIssuer, Command,
+            LifecycleState, Reducer, SchemaRegistry};
+        let authority = Authority { kind: AggregateKind::Agent, id: "publication-custody".into() };
+        let issuer = AuthorityIssuer::new("publication-test", [7; 32], authority.clone());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let command = Command {
+            operation_id: OperationId::from_bytes([91; 16]),
+            idempotency_key: crate::IdempotencyKey("publication-custody".into()),
+            expected_revision: 0,
+            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            causal_parent: None,
+            action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
+        };
+        let ApplyResult::Applied { event } = reducer.plan(&command)? else {
+            panic!("fresh original lifecycle command");
+        };
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite publication ledger");
+        let mut io = native_work_io(&native).expect("original source custody");
+        let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
+        let encoded = crate::wire_codec::encode_event_with_work(&authority, &event, &mut work)?;
+        let original_capacity = encoded.capacity() as u64;
+        let mut publication = IndexedPublication::new_with_work(
+            &authority, &event, encoded, &mut work)?;
+        assert!(publication.retained_owned() >= original_capacity);
+        publication.set_effect_position_with_work(3, &mut work)?;
+        let retained = publication.retained_owned();
+        drop(work);
+        let mut custody = io.into_custody();
+        assert_eq!(custody.bytes(), retained);
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let request = publication.request(&client,
+            IdempotencyKey::new(Bytes::from_static(b"publication-custody"))?).await?;
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
+            panic!("original absent/Tail atomic publication");
+        };
+        publication.verify(&envelope)?;
+        drop(envelope);
+        assert_eq!(publication.into_retained_owned(), retained);
+        custody.release(retained).expect("physically dropped source publication");
+        assert_eq!(custody.bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_native_locator_preserves_original_serde_and_diagnostic_custody() -> Result<()> {
+        let source = br#"{"authority":{"id":"native-custody","kind":"agent"},"intent_digest":[3],"operation_id":"00000000-0000-0000-0000-000000000001","revision":1}"#;
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original finite decode ledger");
+        let mut io = native_work_io(&native).expect("original diagnostic source custody");
+        let error = decode_location_with_work(source, &mut Some(&mut io))
+            .expect_err("original fixed digest schema rejects malformed length");
+        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+            panic!("the original serde diagnostic must retain its source guard");
+        };
+        assert_eq!(code, crate::wire::ErrorCode::Storage);
+        assert!(source.is_data());
+        assert!(custody.bytes() > 0);
+        assert!(native.shares_ledger(custody.work()));
+        assert_eq!(io.into_custody().bytes(), 0);
+        drop(source);
+        drop(custody);
+        Ok(())
+    }
 }

@@ -88,7 +88,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             work.preflight()?;
             super::super::operations::find_operation_bounded_with_work(
                 &self.client, self.verifier.audience(), &self.verifier, operation,
-                maximum_bytes, &mut Some(&mut work),
+                maximum_bytes, true, &mut Some(&mut work),
             ).await
         }.await;
         work.finish(result)
@@ -463,27 +463,43 @@ impl HistoryIo for HistoryWork<'_> {
     fn verify_content<'a>(
         &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> crate::conversation::ContentFuture<'a, Result<()>> {
-        Box::pin(async move {
+    ) -> Result<super::HistoryContentFuture<'a, ()>> {
+        let build = |work: &'a mut Self| async move {
             let receipt = verifier.verify_measured(reference, reference.descriptor().byte_length(),
-                self.remaining()?, self.cancellation).await;
+                work.remaining()?, work.cancellation).await;
             match receipt {
-                Ok(receipt) => self.receive_work(receipt.work),
-                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+                Ok(receipt) => work.receive_work(receipt.work),
+                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
             }
+        };
+        let frame_bytes = super::content_frame_bytes(&build);
+        self.admit_owned(frame_bytes)?;
+        self.admit_allocation(frame_bytes)?;
+        self.retain(frame_bytes)?;
+        Ok(super::HistoryContentFuture::Ordinary {
+            future: Box::pin(build(self)),
+            frame_bytes,
         })
     }
     fn read_content<'a>(
         &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move {
+    ) -> Result<super::HistoryContentFuture<'a, Vec<u8>>> {
+        let build = |work: &'a mut Self| async move {
             let receipt = verifier.read_measured(reference, reference.descriptor().byte_length(),
-                self.remaining()?, self.cancellation).await;
+                work.remaining()?, work.cancellation).await;
             match receipt {
-                Ok(receipt) => { self.receive_work(receipt.work)?; self.retain(receipt.value.capacity() as u64)?; Ok(receipt.value) }
-                Err(failure) => { let _ = self.receive_work(*failure.work); Err(failure.error) }
+                Ok(receipt) => { work.receive_work(receipt.work)?; work.retain(receipt.value.capacity() as u64)?; Ok(receipt.value) }
+                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
             }
+        };
+        let frame_bytes = super::content_frame_bytes(&build);
+        self.admit_owned(frame_bytes)?;
+        self.admit_allocation(frame_bytes)?;
+        self.retain(frame_bytes)?;
+        Ok(super::HistoryContentFuture::Ordinary {
+            future: Box::pin(build(self)),
+            frame_bytes,
         })
     }
 }

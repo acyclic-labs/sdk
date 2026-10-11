@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 mod snapshot;
 pub use snapshot::Snapshot;
-pub(crate) use snapshot::event_clone_reservation;
+pub(crate) use snapshot::{effect_clone_reservation, event_clone_reservation};
 
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -2043,6 +2043,13 @@ impl Reducer {
         self.authority_verifier.clone()
     }
 
+    pub(crate) fn event_verifier_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<AuthorityVerifier> {
+        self.authority_verifier.clone_with_work(work)
+    }
+
     /// Returns the current gapless revision.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -2388,6 +2395,16 @@ impl Reducer {
         &self, command: &Command, migration_verified: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ApplyResult> {
+        self.plan_indexed_with_retained_quota(command, migration_verified, work)
+            .map(|(result, _)| result)
+    }
+
+    /// Returns the original planner's already-retained output allowance.
+    /// The consumer releases it only after dropping the physical planned event.
+    pub(crate) fn plan_indexed_with_retained_quota(
+        &self, command: &Command, migration_verified: bool,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(ApplyResult, u64)> {
         if migration_verified && !matches!(&command.action, Action::MigrateExtensionState { .. }) {
             return crate::obs::outcome(Err(Error::Invalid(
                 "verified migration planner requires a migration action".into(),
@@ -2479,6 +2496,7 @@ impl Reducer {
         archived_effect: Option<(EffectId, &EffectState)>,
     ) -> Result<ApplyResult> {
         self.plan_with_migration_boundary_with_work(command, migration, identity_checked, archived_effect, &mut None)
+            .map(|(result, _)| result)
     }
 
     fn plan_with_migration_boundary_with_work(
@@ -2488,9 +2506,10 @@ impl Reducer {
         identity_checked: bool,
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<ApplyResult> {
+    ) -> Result<(ApplyResult, u64)> {
         self.verify_command_scope_with_work(command, work)?;
         let intent = canonical_intent_with_work(command, work)?;
+        let mut retained_quota = 0;
         if let Some(event) = self.event_for_operation(command.operation_id) {
             if event.intent_digest == intent {
                 if let Some(observer) = work.as_deref_mut() {
@@ -2500,10 +2519,11 @@ impl Reducer {
                     }
                     observer.admit_owned(reservation)?;
                     observer.retain_owned(reservation)?;
+                    retained_quota = reservation;
                 }
-                return Ok(ApplyResult::Replayed {
+                return Ok((ApplyResult::Replayed {
                     event: event.clone(),
-                });
+                }, retained_quota));
             }
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
@@ -2562,6 +2582,7 @@ impl Reducer {
             let reservation = snapshot::command_clone_reservation(command)?;
             observer.admit_owned(reservation)?;
             observer.retain_owned(reservation)?;
+            retained_quota = reservation;
         }
         let payload = self.transition_with_work(&command.action, archived_effect, work)?;
         let mut event = Event {
@@ -2577,7 +2598,7 @@ impl Reducer {
             Some(work) => self.authority_verifier.attest_event_with_work(&event, &mut Some(work))?,
             None => self.authority_verifier.attest_event(&event)?,
         };
-        Ok(ApplyResult::Applied { event })
+        Ok((ApplyResult::Applied { event }, retained_quota))
     }
 
     fn transition_effect<'a>(
@@ -2875,12 +2896,18 @@ impl Reducer {
     /// Reconstructs one read-only effect using the same authorization and
     /// payload reducer as canonical replay. Callers have already bound every
     /// sparse revision to its original atomic effect locator and canonical event.
-    pub(crate) fn project_effect_with_work(
+    pub(crate) fn project_effect_with_retained_quota(
         authority: Authority, verifier: AuthorityVerifier, effect_id: EffectId,
         events: &[Event], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<EffectState> {
+    ) -> Result<(EffectState, u64)> {
+        let metadata_owned = if work.is_some() {
+            (authority.id.capacity() as u64).checked_add(verifier.logical_owned_bytes()?)
+                .ok_or_else(|| Error::Invalid("effect metadata custody overflows".into()))?
+        } else { 0 };
+        let mut retained = 0_u64;
         let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
         let mut previous = 0;
+        let result = (|| {
         for event in events {
             if event.revision <= previous || event_effect_id(&event.payload) != Some(effect_id) {
                 return Err(Error::Storage(
@@ -2906,16 +2933,37 @@ impl Reducer {
                 // The closed event schema is a conservative logical reservation
                 // while that result and its original decoded source are live.
                 let owned = snapshot::event_clone_reservation(event)?;
+                let next_retained = retained.checked_add(owned)
+                    .ok_or_else(|| Error::Invalid("effect projected custody overflows".into()))?;
                 work.admit_owned(owned)?;
                 work.retain_owned(owned)?;
+                retained = next_retained;
             }
             projection.apply_payload_with_work(&event.payload, event.revision, work)?;
             previous = event.revision;
         }
-        projection
-            .effects
-            .remove(&effect_id)
+        projection.effects.remove(&effect_id)
             .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))
+        })();
+        drop(projection);
+        let released_metadata = match work.as_deref_mut() {
+            Some(work) => work.release_owned(metadata_owned),
+            None => Ok(()),
+        };
+        match result {
+            Err(error) => {
+                if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
+                Err(error)
+            }
+            Ok(effect) => match released_metadata {
+                Ok(()) => Ok((effect, retained)),
+                Err(error) => {
+                    drop(effect);
+                    if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
+                    Err(error)
+                }
+            },
+        }
     }
 
     /// Returns the current resident effect status. Archived effects require the
@@ -4367,6 +4415,85 @@ mod tests {
             items_examined: 16_777_216,
             ..acyclic_fs::WorkBudget::default()
         }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn indexed_plan_returns_original_applied_and_replayed_retained_quota() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let issuer = issuer();
+        let mut reducer = Reducer::new(issuer.audience.clone(), issuer.verifier(), schemas());
+        let command = command(operation(47), 0, Action::AppendCustom {
+            schema: "example.message".into(), version: 1,
+            content: request_file(br#"{"text":"original planned content"}"#)?,
+        });
+        for replayed in [false, true] {
+            let expected_quota = if replayed {
+                snapshot::event_clone_reservation(reducer.event_for_operation(command.operation_id)
+                    .ok_or_else(|| Error::NotFound("resident original event".into()))?)?
+            } else {
+                snapshot::command_clone_reservation(&command)?
+            };
+            let (portable, portable_quota) =
+                reducer.plan_indexed_with_retained_quota(&command, false, &mut None)?;
+            assert_eq!(portable_quota, 0);
+            let token = CancellationToken::new();
+            let ledger = NativeMaterializationWork::new(original_proof_budget(), &token)
+                .expect("original ledger");
+            let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+            let (planned, retained) =
+                reducer.plan_indexed_with_retained_quota(&command, false, &mut Some(&mut io))?;
+            assert_eq!(planned, portable);
+            assert_eq!(retained, expected_quota);
+            assert!(retained > 0);
+            let original_receipt = ledger.receipt();
+            drop(planned);
+            crate::store::history::HistoryIo::release_owned(&mut io, retained)?;
+            assert_eq!(ledger.receipt(), original_receipt);
+            drop(io);
+
+            let other_token = CancellationToken::new();
+            let other = NativeMaterializationWork::new(original_proof_budget(), &other_token)
+                .expect("original comparison ledger");
+            let mut other_io = crate::store::history::native_work_io(&other).expect("original observer");
+            let ordinary = reducer.plan_indexed_with_work(&command, false, &mut Some(&mut other_io))?;
+            assert_eq!(ordinary, portable);
+            assert_eq!(other.receipt(), original_receipt);
+            drop(ordinary);
+            crate::store::history::HistoryIo::release_owned(&mut other_io, expected_quota)?;
+            drop(other_io);
+            if !replayed { reducer.apply(command.clone())?; }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn event_verifier_copy_preserves_original_key_and_preflights_denial() -> Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+        let issuer = issuer();
+        let reducer = Reducer::new(issuer.audience.clone(), issuer.verifier(), schemas());
+        assert_eq!(reducer.event_verifier_with_work(&mut None)?, reducer.event_verifier());
+        let token = CancellationToken::new();
+        let ledger = NativeMaterializationWork::new(original_proof_budget(), &token).expect("original ledger");
+        let mut io = crate::store::history::native_work_io(&ledger).expect("original observer");
+        let verifier = reducer.event_verifier_with_work(&mut Some(&mut io))?;
+        assert_eq!(verifier, reducer.event_verifier());
+        assert_eq!(ledger.receipt().bytes_copied, (verifier.id.len() + verifier.audience.id.len()) as u64);
+        assert_eq!(ledger.receipt().bytes_hashed, 0);
+        drop(verifier);
+        drop(io);
+        let mut budget = original_proof_budget();
+        budget.bytes_copied = 0;
+        let denied = NativeMaterializationWork::new(budget, &token).expect("denial ledger");
+        let mut denied_io = crate::store::history::native_work_io(&denied).expect("original observer");
+        let prefix = denied.receipt();
+        assert!(matches!(reducer.event_verifier_with_work(&mut Some(&mut denied_io)), Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", .. }), ..
+        })));
+        assert_eq!(denied.receipt(), prefix);
+        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

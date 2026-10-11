@@ -1189,7 +1189,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         match work.as_deref_mut() {
-            Some(work) => work.verify_content(self.content_verifier.as_ref(), reference).await,
+            Some(work) => crate::store::history::verify_content_with_work(
+                work, self.content_verifier.as_ref(), reference).await,
             None => self.content_verifier.verify(reference).await,
         }
     }
@@ -2544,7 +2545,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ));
         }
         let bytes = match work.as_deref_mut() {
-            Some(work) => work.read_content(self.content_verifier.as_ref(), reference).await?,
+            Some(work) => crate::store::history::read_content_with_work(
+                work, self.content_verifier.as_ref(), reference).await?,
             None => self.content_verifier.read(reference).await?,
         };
         if let Some(work) = work.as_deref_mut() {
@@ -3066,50 +3068,129 @@ pub(crate) async fn append_keyed_with_work<P: StreamProvider>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<AppendOutcome> {
     let byte_length = record.len() as u64;
+    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+    // Declaration order keeps the physical request ahead of its quota on
+    // every pre-call failure and when the original SDK future is cancelled.
     let mut records = Vec::new();
-    reserve_vector_with_work(&mut records, 1, work)?;
+    let slots = std::mem::size_of::<Bytes>() as u64;
+    if let Some(work) = custody.work().as_deref_mut() {
+        work.admit_owned(slots)?;
+        work.admit_allocation(slots)?;
+    }
+    records.try_reserve_exact(1).map_err(|cause| {
+        match custody.work().as_deref_mut() {
+            Some(work) => work.allocation_failure(cause),
+            None => Error::Storage(cause.to_string()),
+        }
+    })?;
     let capacity = (records.capacity() * std::mem::size_of::<Bytes>()) as u64;
+    custody.adopt(capacity)?;
+    if let Some(work) = custody.work().as_deref_mut() { work.retain_owned(capacity)?; }
     records.push(record);
-    let mut vector_live = true;
-    let result = async {
-        if let Some(work) = work.as_deref_mut() {
-            work.admit_acknowledgment(byte_length, 1)?;
-            work.begin_write()?;
+    if let Some(work) = custody.work().as_deref_mut() {
+        work.admit_acknowledgment(byte_length, 1)?;
+        work.begin_write()?;
+    }
+    let appended = stream.append_batch(records, if_tail, Some(key.clone())).await;
+    // The completed SDK future has dropped its physical request vector.
+    custody.relinquish(capacity)?;
+    match appended {
+        Ok(outcome) => {
+            if let Some(work) = custody.work().as_deref_mut()
+                && let AppendOutcome::Committed(receipt) = &outcome
+                && receipt.end.checked_sub(receipt.start) == Some(1)
+                && receipt.tail >= receipt.end
+            {
+                // A direct SDK ACK confirms the offered record, including an
+                // idempotent ACK. Scalar receipts contain no received records.
+                work.acknowledged(byte_length, 1)?;
+            }
+            if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
+            Ok(outcome)
         }
-        let appended = stream.append_batch(records, if_tail, Some(key.clone())).await;
-        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
-        vector_live = false;
-        match appended {
-            Ok(outcome) => {
-                if let Some(work) = work.as_deref_mut()
-                    && let AppendOutcome::Committed(receipt) = &outcome
-                    && receipt.end.checked_sub(receipt.start) == Some(1)
-                    && receipt.tail >= receipt.end
-                {
-                    // Scalar SDK receipts do not expose record or metadata
-                    // bytes. This confirms the one offered record only.
-                    work.acknowledged(byte_length, 1)?;
+        Err(StreamError::Unavailable) => {
+            if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
+            let mut received = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
+            match client.inspect_idempotency(key).await {
+                Ok(Some(observation)) => {
+                    // Inspect is evidence, never an SDK append acknowledgment.
+                    // Its raw envelope is accounted before examining its kind.
+                    let mut failure = None;
+                    let metadata = observation.idempotency_key.as_bytes().len() as u64;
+                    received.adopt(metadata)?;
+                    if let Some(work) = received.work().as_deref_mut() {
+                        failure = work.retain_owned(metadata).err();
+                    }
+                    if received.work().is_some()
+                        && let IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(envelope)) = &observation.outcome
+                    {
+                        let slots = (envelope.mutations.capacity()
+                            * std::mem::size_of::<acyclic_stream::CommittedMutation>()) as u64;
+                        received.adopt(slots)?;
+                        if let Some(work) = received.work().as_deref_mut() {
+                            let retained = work.retain_owned(slots);
+                            if failure.is_none() { failure = retained.err(); }
+                        }
+                        for mutation in &envelope.mutations {
+                            let records = match mutation {
+                                acyclic_stream::CommittedMutation::Append(append) => &append.records,
+                                acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
+                            };
+                            let slots = (records.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64;
+                            received.adopt(slots)?;
+                            if let Some(work) = received.work().as_deref_mut() {
+                                let retained = work.retain_owned(slots);
+                                if failure.is_none() { failure = retained.err(); }
+                            }
+                            for record in records {
+                                received.adopt(record.value.len() as u64)?;
+                                if let Some(work) = received.work().as_deref_mut() {
+                                    let received = work.receive_record(record.value.len() as u64);
+                                    if failure.is_none() { failure = received.err(); }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(error) = failure { return Err(error); }
+                    match observation.outcome {
+                        IdempotencyOutcome::Append(outcome) => {
+                            if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
+                            Ok(outcome)
+                        }
+                        _ => {
+                            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                            if received.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+                                return Err(Error::NativeBoundary {
+                                    code: wire::ErrorCode::Conflict,
+                                    reason: "append recovery identity has another operation kind",
+                                });
+                            }
+                            Err(Error::Conflict(format!("{identity} has another operation kind")))
+                        }
+                    }
                 }
-                Ok(outcome)
+                Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
             }
-            Err(StreamError::Unavailable) => {
-                if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-                match client.inspect_idempotency(key).await {
-                    Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Append(outcome) => Ok(outcome),
-                        _ => Err(Error::Conflict(format!("{identity} has another operation kind"))),
-                    },
-                    Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
-                }
+        }
+        Err(error) => {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if custody.work().as_deref().is_some_and(crate::store::operations::original_native_decode_mode) {
+                let code = if error == StreamError::IdempotencyMismatch {
+                    wire::ErrorCode::Conflict
+                } else {
+                    wire::ErrorCode::Storage
+                };
+                // StreamError is a closed unit-variant enum: the original
+                // typed source has no dynamically owned diagnostic payload.
+                return Err(Error::NativeStream { code, source: error, custody: None });
             }
-            Err(StreamError::IdempotencyMismatch) => {
+            if error == StreamError::IdempotencyMismatch {
                 Err(Error::Conflict(format!("{identity} was reused")))
+            } else {
+                Err(Error::Storage(error.to_string()))
             }
-            Err(error) => Err(Error::Storage(error.to_string())),
         }
-    }.await;
-    if vector_live && let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
-    result
+    }
 }
 
 pub(crate) fn execution_path(operation: OperationId) -> Result<acyclic_stream::StreamPath> {
@@ -3507,6 +3588,117 @@ mod tests {
     use acyclic_stream::MemoryStream;
     use serde_json::Value;
     use std::{collections::BTreeSet, sync::Arc};
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn keyed_append_native_budget() -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            allocation_operations: 8,
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1024,
+            backend_write_operations: 8,
+            backend_read_operations: 8,
+            authority_records_appended: 8,
+            authority_bytes_written: 1024,
+            authority_records_read: 8,
+            authority_bytes_read: 1024,
+            items_examined: 8,
+            ..acyclic_fs::WorkBudget::default()
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn keyed_append_native_counts_sdk_ack_not_inspected_or_physical_new_records() {
+        use std::sync::atomic::Ordering;
+        for lost_ack in [false, true] {
+            let provider = Arc::new(LostSessionAck::default());
+            let client = StreamClient::new(provider.clone());
+            let stream = client.stream("keyed-append-native-ack").expect("source stream");
+            let key = StreamIdempotencyKey::new(Bytes::from_static(b"original-key")).expect("key");
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
+                .expect("original ledger");
+            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
+            for attempt in 0..2 {
+                let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+                let outcome = append_keyed_with_work(
+                    (&stream, &client), Bytes::from_static(b"original"), Some(0), key.clone(),
+                    OperationId::from_bytes([13; 16]), "original retry", &mut Some(&mut observer),
+                ).await.expect("same engine append or recovery");
+                assert!(matches!(outcome, AppendOutcome::Committed(_)));
+                assert_eq!(observer.into_custody().bytes(), 0, "request and receiver custody released");
+                assert_eq!(work.receipt().authority_records_appended,
+                    (attempt + 1) - u64::from(lost_ack));
+                assert_eq!(work.receipt().authority_bytes_written,
+                    8 * ((attempt + 1) - u64::from(lost_ack)));
+            }
+            assert_eq!(stream.tail().await.expect("actual tail"), 1, "same identity never appends twice");
+            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 2);
+            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), u64::from(lost_ack));
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn keyed_append_native_denials_precede_actual_provider_request() {
+        use std::sync::atomic::Ordering;
+        for denial in 0..5 {
+            let provider = Arc::new(LostSessionAck::default());
+            let client = StreamClient::new(provider.clone());
+            let stream = client.stream("keyed-append-native-denied").expect("source stream");
+            let key = StreamIdempotencyKey::new(Bytes::from_static(b"denied-key")).expect("key");
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut budget = keyed_append_native_budget();
+            match denial {
+                0 => budget.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+                1 => budget.allocation_operations = 1,
+                2 => budget.authority_records_appended = 0,
+                3 => budget.backend_write_operations = 0,
+                _ => {}
+            }
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .expect("original ledger");
+            let prefix = work.receipt();
+            let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+            if denial == 4 { cancellation.cancel(); }
+            let error = append_keyed_with_work(
+                (&stream, &client), Bytes::from_static(b"original"), Some(0), key,
+                OperationId::from_bytes([14; 16]), "denied retry", &mut Some(&mut observer),
+            ).await.expect_err("native quota or cancellation");
+            assert!(matches!(error, Error::NativeWork { .. }));
+            assert_eq!(observer.into_custody().bytes(), 0, "denied request physically dropped and quota released");
+            assert_eq!(provider.io.writes.load(Ordering::SeqCst), 0);
+            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), 0);
+            assert_eq!(work.receipt().authority_records_appended, 0);
+            if denial < 2 || denial == 4 {
+                assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
+            }
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = client.stream("keyed-append-native-mismatch").expect("source stream");
+        let key = StreamIdempotencyKey::new(Bytes::from_static(b"mismatch-key")).expect("key");
+        let operation = OperationId::from_bytes([15; 16]);
+        append_keyed((&stream, &client), Bytes::from_static(b"original"), Some(0),
+            key.clone(), operation, "original retry").await.expect("original append");
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
+            .expect("original ledger");
+        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let error = append_keyed_with_work((&stream, &client), Bytes::from_static(b"changed"),
+            Some(0), key.clone(), operation, "original retry", &mut Some(&mut observer))
+            .await.expect_err("SDK mismatch");
+        assert!(matches!(error, Error::NativeStream {
+            code: wire::ErrorCode::Conflict, source: StreamError::IdempotencyMismatch, custody: None,
+        }));
+        assert_eq!(observer.into_custody().bytes(), 0);
+        assert_eq!(work.receipt().authority_records_appended, 0);
+        assert!(matches!(append_keyed((&stream, &client), Bytes::from_static(b"changed"),
+            Some(0), key, operation, "original retry").await, Err(Error::Conflict(_))));
+    }
 
     struct TestReducer {
         entrypoint: EntrypointRef,

@@ -20,6 +20,82 @@ pub(crate) use native::native_work_io;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native::native_state_work_io;
 
+/// The native branch owns its original pre-funded frame outside the boxed future.
+/// The ordinary branch records the concrete frame admitted before boxing.
+pub(crate) enum HistoryContentFuture<'a, T> {
+    Ordinary {
+        future: crate::conversation::ContentFuture<'a, Result<T>>,
+        frame_bytes: u64,
+    },
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Native(crate::NativeFutureBundle<'a, T>),
+}
+
+impl<T> Future for HistoryContentFuture<'_, T> {
+    type Output = Result<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Ordinary { future, .. } => future.as_mut().poll(cx),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(future) => std::pin::Pin::new(future).poll(cx),
+        }
+    }
+}
+
+impl<T> HistoryContentFuture<'_, T> {
+    fn ordinary_frame_bytes(&self) -> u64 {
+        match self {
+            Self::Ordinary { frame_bytes, .. } => *frame_bytes,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(_) => 0,
+        }
+    }
+}
+
+pub(crate) fn content_frame_bytes<A, F>(_: &impl FnOnce(A) -> F) -> u64 {
+    std::mem::size_of::<F>() as u64
+}
+
+pub(crate) async fn verify_content_with_work(
+    observer: &mut dyn HistoryIo,
+    verifier: &dyn crate::conversation::ContentResidencyVerifier,
+    reference: &crate::conversation::FileRef,
+) -> Result<()> {
+    let future = observer.verify_content(verifier, reference)?;
+    let frame_bytes = future.ordinary_frame_bytes();
+    let result = future.await;
+    let released = if frame_bytes == 0 { Ok(()) } else { observer.release_owned(frame_bytes) };
+    match result {
+        Err(error) => Err(error),
+        Ok(()) => released,
+    }
+}
+
+pub(crate) async fn read_content_with_work(
+    observer: &mut dyn HistoryIo,
+    verifier: &dyn crate::conversation::ContentResidencyVerifier,
+    reference: &crate::conversation::FileRef,
+) -> Result<Vec<u8>> {
+    let future = observer.read_content(verifier, reference)?;
+    let frame_bytes = future.ordinary_frame_bytes();
+    let result = future.await;
+    let released = if frame_bytes == 0 { Ok(()) } else { observer.release_owned(frame_bytes) };
+    match result {
+        Err(error) => Err(error),
+        Ok(bytes) => match released {
+            Ok(()) => Ok(bytes),
+            Err(error) => {
+                drop(bytes);
+                Err(error)
+            }
+        },
+    }
+}
+
 // The portable reader remains independent of the optional Filesystem SDK.
 // A receipt observer instruments this same engine, never another reader.
 pub(crate) trait HistoryIo: Send {
@@ -49,7 +125,7 @@ pub(crate) trait HistoryIo: Send {
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
     fn admit_encoding(&self, bytes: u64) -> Result<()>;
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()>;
-    fn decode_json_value(&mut self, _bytes: &[u8]) -> Result<serde_json::Value> {
+    fn decode_json_value(&mut self, _bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         Err(Error::Unsupported("this history observer has no guarded JSON value decoder".into()))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -77,12 +153,12 @@ pub(crate) trait HistoryIo: Send {
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> crate::conversation::ContentFuture<'a, Result<()>>;
+    ) -> Result<HistoryContentFuture<'a, ()>>;
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> crate::conversation::ContentFuture<'a, Result<Vec<u8>>>;
+    ) -> Result<HistoryContentFuture<'a, Vec<u8>>>;
     #[cfg(feature = "filesystem")]
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
     #[cfg(feature = "filesystem")]
@@ -346,7 +422,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let (operation, causal) = super::fork_child_binding_with_work(seed, work)?;
         let (publication, consumed) = super::operations::find_operation_bounded_with_work(
             &parent.client, parent.verifier.audience(), &parent.verifier,
-            seed.operation_id, limits.maximum_bytes, work).await?;
+            seed.operation_id, limits.maximum_bytes, false, work).await?;
         let publication = publication.ok_or_else(|| Error::Conflict("child has no original parent publication".into()))?;
         let publication_matches = publication.revision == causal.revision
             && matches!(&publication.payload, crate::core::EventPayload::ForkPublished { seed: published } if published.as_ref() == seed);
@@ -366,7 +442,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let remaining = limits.maximum_bytes.checked_sub(consumed).filter(|bytes| *bytes > 0)
             .ok_or_else(|| Error::Invalid("published child verification exceeds byte allowance".into()))?;
         let (binding, _) = super::operations::find_operation_bounded_with_work(
-            &self.client, self.verifier.audience(), &self.verifier, operation, remaining, work).await?;
+            &self.client, self.verifier.audience(), &self.verifier, operation, remaining, false, work).await?;
         let binding = binding.ok_or_else(|| Error::Conflict("child lacks its original fork binding".into()))?;
         let binding_matches = binding.revision == 1 && binding.revision <= cut
             && binding.scope.agent() == Some(seed.child_agent)
@@ -686,8 +762,16 @@ impl<P: StreamProvider> HistoryReader<P> {
 
     pub(crate) async fn effect_with_work(
         &self, cursor: &HistoryCursor, effect: crate::EffectId,
-        limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
+        limits: HistoryReadLimits, work: Option<&mut dyn HistoryIo>,
     ) -> Result<Option<crate::core::EffectState>> {
+        self.effect_with_retained_quota(cursor, effect, limits, work).await
+            .map(|effect| effect.map(|(state, _)| state))
+    }
+
+    pub(crate) async fn effect_with_retained_quota(
+        &self, cursor: &HistoryCursor, effect: crate::EffectId,
+        limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<(crate::core::EffectState, u64)>> {
         let events = super::effects::read_with_work(
             &self.client, &self.verifier, cursor, effect, limits, &mut work,
         ).await?;
@@ -706,7 +790,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                     .ok_or_else(|| Error::Invalid("effect source custody overflows".into())),
             )?
         } else { 0 };
-        let result = crate::core::Reducer::project_effect_with_work(
+        let result = crate::core::Reducer::project_effect_with_retained_quota(
             authority, verifier, effect, &events, &mut work,
         );
         drop(events);

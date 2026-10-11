@@ -946,27 +946,68 @@ fn decode_fork_manifest_with_work(
         ))
         .ok_or_else(|| Error::Invalid("attachment manifest schema storage overflows".into()))?;
     owned.retain(schema_bytes)?;
+    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+        bytes.len() as u64,
+        ["Attachment", "file", "label", "FileRefWire", "volume", "path", "version",
+            "descriptor", "display_name", "FileDescriptorWire", "sha256", "byte_length",
+            "media_type", "VolumeRefWire", "provider", "id", "class", "owner",
+            "ProviderRefWire", "namespace", "family", "project", "agent_private",
+            "session_shared", "kind", "agent", "session",
+            "SHA-256 digest must contain exactly 32 bytes", "provider identity is invalid"]
+            .iter().map(|label| label.len() as u64 + 4).sum(),
+    )?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let native = owned.work().as_deref().is_some_and(|observer| observer.original_native_work().is_some());
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let native = false;
     let bounds = crate::contract::JsonBounds {
         maximum_bytes: maximum,
         maximum_items: maximum.saturating_add(1),
         maximum_depth: 256,
     };
-    let items: Vec<crate::conversation::Attachment> =
-        crate::contract::json_from_slice_bounded_trusted(
-            bytes, bounds, schema_bytes, &mut |charge| {
-                match charge {
-                    crate::contract::JsonCodecCharge::Admission { .. } => {
-                        // The concrete schema plus decoder scratch was admitted
-                        // above, and stays in custody through this proof.
-                        owned.checkpoint()
-                    }
-                    _ => match owned.work().as_deref_mut() {
-                        Some(observer) => observer.codec_charge(charge),
-                        None => Ok(()),
-                    },
-                }
+    let mut observed_failure = false;
+    let mut charge = |charge| {
+        let result = match charge {
+            crate::contract::JsonCodecCharge::Admission { .. } => {
+                owned.retain(diagnostic_bytes).and_then(|()| owned.checkpoint())
+            }
+            _ => match owned.work().as_deref_mut() {
+                Some(observer) => observer.codec_charge(charge),
+                None => Ok(()),
             },
-        ).map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
+        };
+        observed_failure |= result.is_err();
+        result
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut decoded = if native {
+        crate::contract::json_from_slice_bounded_native_trusted::<Vec<crate::conversation::Attachment>, _>(
+            bytes, bounds, schema_bytes, crate::wire::ErrorCode::Invalid, &mut charge,
+        )
+    } else {
+        crate::contract::json_from_slice_bounded_trusted(bytes, bounds, schema_bytes, &mut charge)
+    };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let decoded: Result<Vec<crate::conversation::Attachment>> =
+        crate::contract::json_from_slice_bounded_trusted(bytes, bounds, schema_bytes, &mut charge);
+    drop(charge);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Err(Error::NativeDecode { custody, .. }) = &mut decoded
+        && custody.is_none()
+    {
+        let reservation = schema_bytes.checked_add(diagnostic_bytes)
+            .expect("original admitted manifest reservation");
+        let guard = owned.work().as_deref_mut().expect("original manifest observer")
+            .take_native_custody(reservation).expect("original manifest reservation custody");
+        owned.retained = owned.retained.checked_sub(reservation)
+            .expect("original manifest reservation belongs to the proof custodian");
+        *custody = Some(guard);
+    }
+    let items = decoded.map_err(|error| {
+        if native || observed_failure { error }
+        else { Error::Invalid(format!("attachment manifest is invalid: {error}")) }
+    })?;
+    owned.release(diagnostic_bytes)?;
     if items.len() as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
@@ -1061,7 +1102,8 @@ impl ContentForkVerifier {
             return Err(Error::Unauthorized("fork manifest belongs to another provider".into()));
         }
         match work.as_deref_mut() {
-            Some(observer) => observer.read_content(self.content.as_ref(), manifest).await,
+            Some(observer) => crate::store::history::read_content_with_work(
+                observer, self.content.as_ref(), manifest).await,
             None => self.content.read(manifest).await,
         }
     }
@@ -1075,7 +1117,8 @@ impl ContentForkVerifier {
             return Err(Error::Unauthorized("fork file belongs to another provider".into()));
         }
         match work.as_deref_mut() {
-            Some(observer) => observer.verify_content(self.content.as_ref(), file).await,
+            Some(observer) => crate::store::history::verify_content_with_work(
+                observer, self.content.as_ref(), file).await,
             None => self.content.verify(file).await,
         }
     }
