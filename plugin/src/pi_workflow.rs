@@ -213,7 +213,7 @@ impl<'a> PiWorkflowHost<'a> {
         &self, command: WorkflowCommand, wake_pending: bool,
     ) -> acyclic_harness::Result<Option<(Value, acyclic_fs::NativeAllocation)>> {
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-        self.runtime.verify_owner(&owner)?;
+        self.runtime.verify_owner_with_native_work(&owner, self.work()?)?;
         let host = self.runtime.runtime.task_host();
         let task = owner.policy().root_task;
         let operation = command.operation_id;
@@ -278,7 +278,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_control_context(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
         protected: pi_owner::PiOwnerConfig,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
@@ -300,7 +300,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_effects(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
         command: &WorkflowCommand, payload: &Value,
         owner: pi_owner::PiOwnerConfig,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -359,12 +359,12 @@ impl<'a> PiWorkflowHost<'a> {
             },
         )?;
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-        self.runtime.verify_owner(&owner)?;
+        self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
             && command.operation_id == pi_root_inputs::preparation_operation(task)
         {
             let effects = self.root_effects(
-                Arc::clone(&context), fence.clone(), &command, &payload, owner, work,
+                Arc::clone(&context), &fence, &command, &payload, owner, work,
             ).await?;
             let commands = self.runtime.runtime.commands().with_effects(effects);
             return if reconcile {
@@ -377,7 +377,7 @@ impl<'a> PiWorkflowHost<'a> {
         // creator proof before any scoped adapter can stage a reply. Children
         // already carry the SDK's sealed created-scratch output binding.
         let context = if task == owner.policy().root_task {
-            self.root_control_context(context, fence.clone(), owner, work).await?
+            self.root_control_context(context, &fence, owner, work).await?
         } else {
             context
         };
