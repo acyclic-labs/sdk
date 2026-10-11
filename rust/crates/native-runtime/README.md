@@ -92,6 +92,12 @@ submission and actual cleanup prefixes. First polling queues the existing job,
 and `wait_measured` reuses its prepared wake owner without a late allocation.
 Preparation is accounting custody, not namespace authority, and accepted
 observer drop still neither drains nor cancels the physical operation.
+
+`wait_measured(deadline, cancellation, on_deadline)` uses the task's captured
+original meter, not a caller-supplied replacement. Closing allocation admission
+after preparation does not prevent the prepared wake owner from draining an
+accepted physical operation and retiring its original custody.
+
 `NativeFile::write_bounded_async_with_custody` accepts owned `AsRef<[u8]>` payloads
 without converting or copying their backing. The same positional validation and
 ordered completion driver retain the complete payload before its separate custody

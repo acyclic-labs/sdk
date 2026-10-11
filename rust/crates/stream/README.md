@@ -63,6 +63,10 @@ The `http` feature provides `http::HttpStream`, implementing the same provider i
 
 Hosted HTTP receipt acknowledgement is explicit: `HttpStream::acknowledge_delivery` accepts exactly 32 token bytes and posts the Rust-owned `deliveryToken` projection to `/v1/stream/delivery/acknowledge`. A successful response must be a JSON object. HTTP reads and follow never request or automatically acknowledge delivery metadata. Tokens are issued, scoped, expired and durably deduplicated by the hosted service; acknowledgement does not claim application consumption, billing or cursor advancement. Memory, local and browser providers issue no delivery tokens, and the WASM local dispatch rejects explicit acknowledgement as `Unsupported`.
 
+The canonical `HTTP_RESPONSE_CONTRACT` includes this route as `empty`: the
+protobuf response projects to a validated JSON object, and the generated
+TypeScript/WASM decoder exposes its successful result as `undefined`.
+
 Native servers can use `http_response::encode(route, protobuf_bytes, maximum_json_bytes)` to project generated append, fork, Commit, commit-read, child-page and retry-observation responses through the same Rust code used by WASM. The successful Commit retains its existing `ok`, `commitId`, `tails` and `forks` fields and adds the complete `envelope`. The encoder does not authorize or durably accept mutations.
 
 Replicated providers can use `request::append_digest`, `request::fork_digest`, and `request::commit_digest` for the canonical state-independent validation and retry digest. Commit normalization sorts participants and rejects duplicate paths; providers still own atomic authorization, state checks, admission, durability and deadline decisions.
