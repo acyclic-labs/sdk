@@ -254,7 +254,10 @@ ledger identity is membership, not a replacement for current owner or grants.
 `EffectProvider::dispatch_with_native_work` admits the actual launch future before
 construction and threads the caller's original work ledger through authenticated
 history, protected receipt encoding/appends, and the original process/view engine.
-The supervisor retains that ledger and original cancellation after caller drop.
+The supervisor retains that ledger, original cancellation and cached payload custody
+after caller or registry/provider drop. The shared `NativeFutureBundle` drops its
+physical future before releasing the original frame guard; no second boxed adapter
+or replacement allowance is constructed.
 Successful dispatch and `reconcile_with_native_work` move the complete effect payload
 with its existing allocation guard; reconciliation never creates a view or launches
 again. A denial after the launch receipt leaves that same attempt indeterminate.
