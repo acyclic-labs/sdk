@@ -711,11 +711,13 @@ async fn run() -> Result<(), CliFailure> {
         (encoded, encoded_custody) = service_process::encode_native_control_value(
             &response, response_custody.work(),
         )?;
+        encoded_custody.work().admit(acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_cli_work_error)?;
         {
             let mut stdout = io::stdout().lock();
-            stdout.write_all(&encoded)?;
-            stdout.write_all(b"\n")?;
-            stdout.flush()?;
+            stdout.write_all(&encoded).map_err(CliFailure::NativeIo)?;
+            stdout.write_all(b"\n").map_err(CliFailure::NativeIo)?;
+            stdout.flush().map_err(CliFailure::NativeIo)?;
         }
         drop(encoded);
         drop(encoded_custody);

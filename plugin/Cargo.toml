@@ -54,7 +54,9 @@ windows-sys = { version = "0.61.2", features = [
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+async-trait.workspace = true
 bytes.workspace = true
+futures.workspace = true
 tempfile = "3"
 
 [lints]
