@@ -43,10 +43,14 @@ const INHERITED: [&str; 6] = [
 ];
 
 /// What to run.
-pub(crate) struct Launch<'a> {
+pub struct Launch<'a> {
+    /// Approved native executable path.
     pub binary: &'a Path,
+    /// Arguments for this original command.
     pub args: Vec<OsString>,
+    /// Explicit environment additions after clearing the ambient environment.
     pub env: Vec<(String, String)>,
+    /// The admitted command's working directory.
     pub workspace: &'a Path,
 }
 
@@ -78,8 +82,8 @@ pub trait RunningProcess: Send {
 }
 
 /// Consumer-owned physical process transport. Protected consumers must supply
-/// an implementation backed by their admitted sandbox and durable command
-/// receipt; this interface does not authorize a sandbox or a provider call.
+/// an implementation backed by their held original slot and durable command
+/// association; this interface does not itself authorize any external effect.
 pub trait ProcessHost: Send + Sync {
     /// Immutable implementation identity included in the durable turn binding.
     fn identity(&self) -> &acyclic_harness::registry::ComponentIdentity;
@@ -104,7 +108,7 @@ pub trait ProcessHost: Send + Sync {
 
 
 /// A running `codex exec`.
-pub(crate) struct CodexProcess {
+pub struct CodexProcess {
     child: Option<acyclic_native_runtime::ProcessTree>,
     status: Option<ExitStatus>,
     stdout: BufReader<ChildStdout>,
@@ -114,7 +118,9 @@ pub(crate) struct CodexProcess {
 }
 
 impl CodexProcess {
-    pub(crate) fn spawn(launch: Launch<'_>) -> Result<Self> {
+    /// Launches the native command in an owned process tree. Consumers must
+    /// establish their authority and mediated tool transport before calling.
+    pub fn spawn(launch: Launch<'_>) -> Result<Self> {
         let mut command = Command::new(launch.binary);
         command
             .args(&launch.args)
@@ -308,7 +314,7 @@ impl Drop for CodexProcess {
 }
 
 /// Runs `<binary> --version` and checks it is the pinned release.
-pub(crate) async fn check_version(binary: &Path) -> Result<()> {
+pub async fn check_version(binary: &Path) -> Result<()> {
     let mut command = Command::new(binary);
     command.arg("--version");
     let output = acyclic_native_runtime::run_blocking_io(move || {
@@ -347,13 +353,16 @@ pub(crate) async fn check_version(binary: &Path) -> Result<()> {
 }
 
 /// Per-operation directories under the configured state dir.
-pub(crate) struct Dirs {
+pub struct Dirs {
+    /// Native Codex configuration directory.
     pub codex_home: PathBuf,
+    /// Native engine home, separate from external tool workspaces.
     pub home: PathBuf,
 }
 
 impl Dirs {
-    pub(crate) fn create(state_dir: &Path, operation: &str) -> Result<Self> {
+    /// Reopens the same operation's engine directories, never a new run ID.
+    pub fn create(state_dir: &Path, operation: &str) -> Result<Self> {
         let root = state_dir.join(operation);
         let dirs = Self {
             codex_home: root.join("codex"),

@@ -515,21 +515,21 @@ impl SseScanner {
             };
             if event.get("type").and_then(Value::as_str) == Some("response.completed")
                 && let Some(usage) = event.pointer("/response/usage")
+                && let Some(usage) = usage_of(usage)
             {
-                found.push(usage_of(usage));
+                found.push(usage);
             }
         }
         found
     }
 }
 
-fn usage_of(usage: &Value) -> ResponsesUsage {
-    let count = |pointer: &str| usage.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
-    ResponsesUsage {
-        input_tokens: count("/input_tokens"),
-        cached_input_tokens: count("/input_tokens_details/cached_tokens"),
-        output_tokens: count("/output_tokens"),
-    }
+fn usage_of(usage: &Value) -> Option<ResponsesUsage> {
+    Some(ResponsesUsage {
+        input_tokens: usage.pointer("/input_tokens")?.as_u64()?,
+        cached_input_tokens: usage.pointer("/input_tokens_details/cached_tokens")?.as_u64()?,
+        output_tokens: usage.pointer("/output_tokens")?.as_u64()?,
+    })
 }
 
 #[cfg(test)]
