@@ -127,10 +127,24 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
 }
 
 /// Explicit registry; no ambient or process-global provider catalog exists.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct EffectRegistry {
     providers: BTreeMap<String, Arc<dyn EffectProvider>>,
     result_resolver: Option<Arc<dyn ContentResidencyVerifier>>,
+    // Payload fields drop before the original ledger's custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_metadata: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl Clone for EffectRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            providers: self.providers.clone(),
+            result_resolver: self.result_resolver.clone(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata: None,
+        }
+    }
 }
 
 /// The provider observation is dropped before its original allocation custody.
@@ -253,6 +267,108 @@ pub(crate) fn validate_effect_result_bytes_with_work(
 }
 
 impl EffectRegistry {
+    /// Creates an empty ordinary provider catalog.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates the original catalog with intrinsic logical metadata custody.
+    /// BTree allocator internals and provider-owned backing are not claimed.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        let native_metadata = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Self {
+            providers: BTreeMap::new(),
+            result_resolver: None,
+            native_metadata: Some(native_metadata),
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_native_metadata(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        if self.native_metadata.as_ref().is_some_and(|guard| guard.work().shares_ledger(work)) {
+            Ok(())
+        } else {
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "effect catalog does not retain the original native metadata",
+            })
+        }
+    }
+
+    /// Installs the same owner-mediated resolver without copying its backing.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn with_result_resolver_with_native_work(
+        mut self, resolver: Arc<dyn ContentResidencyVerifier>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        use crate::store::history::HistoryIo as _;
+        self.require_native_metadata(work)?;
+        let io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.check_cancellation()?;
+        self.result_resolver = Some(resolver);
+        Ok(self)
+    }
+
+    /// Copies only SDK-owned identity strings and logical map entry slots.
+    /// Provider and resolver Arcs continue to share their existing backing.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut cloned = Self::new_with_native_work(work)?;
+        for provider in self.providers.values() {
+            cloned.register_with_native_work(Arc::clone(provider), work)?;
+        }
+        cloned.result_resolver = self.result_resolver.clone();
+        Ok(cloned)
+    }
+
+    /// Registers on the original catalog, admitting its identity before growth.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn register_with_native_work(
+        &mut self, provider: Arc<dyn EffectProvider>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        use crate::store::history::HistoryIo as _;
+        self.require_native_metadata(work)?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.check_cancellation()?;
+        let source = provider.id();
+        if source.trim().is_empty() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "effect provider identity is empty",
+            });
+        }
+        if self.providers.contains_key(source) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "effect provider is already registered",
+            });
+        }
+        let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
+        io.admit_owned(slot)?;
+        io.retain_owned(slot)?;
+        let mut id = String::new();
+        io.reserve_text(&mut id, source.len())?;
+        io.admit_copy(source.len() as u64)?;
+        id.push_str(source);
+        io.copy_bytes(source.len() as u64)?;
+        let mut custody = io.into_custody();
+        self.native_metadata.as_mut().expect("validated native catalog")
+            .absorb(&mut custody)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.providers.insert(id, provider);
+        Ok(())
+    }
+
     /// Installs the owner-mediated byte boundary required to validate successful results.
     #[must_use]
     pub fn with_result_resolver(mut self, resolver: Arc<dyn ContentResidencyVerifier>) -> Self {
@@ -262,6 +378,11 @@ impl EffectRegistry {
 
     /// Registers one provider identity.
     pub fn register(&mut self, provider: Arc<dyn EffectProvider>) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(guard) = &self.native_metadata {
+            let work = guard.work().clone();
+            return self.register_with_native_work(provider, &work);
+        }
         let id = provider.id().to_owned();
         if id.trim().is_empty() {
             return Err(Error::Invalid("effect provider identity is empty".into()));
