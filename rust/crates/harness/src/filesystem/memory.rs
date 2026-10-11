@@ -1269,6 +1269,36 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Result<()> {
+        let token = acyclic_fs::CancellationToken::new();
+        let receiving = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &token)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let producing = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &token)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let receiver_io = super::super::PreparationIo::from_native_work(&receiving)?;
+        let receiver_baseline = receiving.live_allocation_bytes();
+        let producer_baseline = producing.live_allocation_bytes();
+        let producer_io = super::super::PreparationIo::from_native_work(&producing)?;
+        let bytes = producer_io.encode_json(&serde_json::Value::Null, 1024, true)?;
+        let incoming = producer_io.into_native_custody(bytes.capacity() as u64)?;
+        let held = incoming.bytes();
+        let error = match receiver_io.absorb_native_custody(incoming) {
+            Err(error) => error,
+            Ok(()) => panic!("distinct original allocation ledgers must not merge"),
+        };
+        let failure = (bytes, error);
+        assert!(matches!(&failure.1, Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: Some(_),
+        }));
+        assert_eq!(receiving.live_allocation_bytes(), receiver_baseline);
+        assert_eq!(producing.live_allocation_bytes(), producer_baseline + held);
+        drop(failure);
+        assert_eq!(producing.live_allocation_bytes(), producer_baseline);
+        Ok(())
+    }
+
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     fn synthetic_token_count(

@@ -128,6 +128,8 @@ causes need no guard; owned diagnostics transfer already admitted custody.
 A failed final custody transfer moves its existing data guard into that error,
 so already-owned output drops before its quota is released; failure never
 acquires a replacement guard.
+Absorbing native custody borrows the incoming guard; rejection preserves both
+ledgers unchanged and carries that original incoming guard with the failure.
 There is no secondary native error wrapper, marker trap, formatting allocation,
 or new retention attempt after a denied operation.
 Encoding first admits the necessary one-byte/one-token minimum without

@@ -194,12 +194,18 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn absorb_native_custody(&self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
+    pub(crate) fn absorb_native_custody(&self, mut incoming: acyclic_fs::NativeAllocation) -> Result<()> {
         match &self.ledger {
-            PreparationLedger::Native { custody, .. } => custody.lock()
-                .map_err(|_| Error::Storage("native preparation custody is poisoned".into()))?
-                .absorb(incoming).map_err(|cause| Error::NativeWork { cause, custody: None }),
-            PreparationLedger::Owned { .. } => Err(Error::Invalid("native custody belongs to another ledger".into())),
+            PreparationLedger::Native { custody, .. } => {
+                let mut held = custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                held.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+                    cause, custody: Some(incoming),
+                })
+            }
+            PreparationLedger::Owned { .. } => Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: Some(incoming),
+            }),
         }
     }
 
