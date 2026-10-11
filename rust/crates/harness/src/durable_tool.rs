@@ -67,6 +67,97 @@ impl ResumableToolRegistry {
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.0.values().map(|tool| &tool.definition)
     }
+
+    /// Validates every installed revision through the genuine native machine
+    /// identity and the same canonical machine registration engine.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        // Reject an unaudited installed provider before any schema/registry
+        // allocation for other rows. Native identity is a borrowed pure gate.
+        for tool in self.0.values() {
+            work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            if !tool.machine.supports_native_work() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "resumable registry contains an unaudited native machine" });
+            }
+            tool.machine.identity_with_native_work(work)?;
+        }
+        for ((name, revision), tool) in &self.0 {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: (name.len() as u64).saturating_add(revision.len() as u64).saturating_add(1),
+                ..Default::default()
+            })?;
+            if name != &tool.definition.name || revision != &tool.definition.revision {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "resumable registry key differs from its installed definition" });
+            }
+            tool.validate_with_native_work(work)?;
+        }
+        Ok(())
+    }
+
+    /// Copies the actual installed definitions and keys while retaining the
+    /// same erased machine implementations. The caller keeps custody until the
+    /// physical registry drops; opaque BTree/Arc backing is not claimed as RSS.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::filesystem::UploadRecord as _;
+        self.validate_with_native_work(work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut copied = Self::default();
+        let entry_bytes = std::mem::size_of::<((String, String), ResumableTool)>() as u64;
+        for ((name, revision), tool) in &self.0 {
+            io.retain_owned(entry_bytes)?;
+            let name = crate::model::model_string_clone_with_io(name, Some(&io))?;
+            let revision = crate::model::model_string_clone_with_io(revision, Some(&io))?;
+            let definition = crate::model::model_tool_definition_clone_with_io(&tool.definition, Some(&io))?;
+            copied.0.insert((name, revision), ResumableTool {
+                definition, machine: tool.machine.clone(),
+            });
+        }
+        let mut retained = std::mem::size_of::<Self>() as u64;
+        for ((name, revision), tool) in &copied.0 {
+            work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+            let definition_bytes = tool.definition.logical_owned_bytes()?;
+            retained = retained.checked_add(entry_bytes)
+                .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
+                .and_then(|bytes| bytes.checked_add(revision.capacity() as u64))
+                .and_then(|bytes| bytes.checked_add(definition_bytes))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "resumable registry ownership overflow" })?;
+        }
+        let custody = io.into_native_custody(retained)?;
+        Ok((copied, custody))
+    }
+
+    /// Uses the same exact-version tuple lookup with paid temporary keys; never
+    /// invokes ordinary lookup or clones the installed tool/issued context.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn get_with_native_work<'a>(
+        &'a self, name: &str, revision: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&'a ResumableTool>> {
+        work.remaining()?;
+        let name_custody;
+        let (name, hold) = work.display(name)?;
+        name_custody = hold;
+        let revision_custody;
+        let (revision, hold) = work.display(revision)?;
+        revision_custody = hold;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        let key = (name, revision);
+        let found = self.0.get(&key);
+        drop(key);
+        drop(revision_custody);
+        drop(name_custody);
+        Ok(found)
+    }
 }
 
 impl ResumableTool {
@@ -82,6 +173,32 @@ impl ResumableTool {
         }
         let mut registry = MachineRegistry::default();
         registry.register(self.machine.clone())
+    }
+
+    /// Validates native metadata without consulting ordinary machine identity
+    /// or allocating an unaudited ordinary registration callback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        if !self.machine.supports_native_work() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "resumable tool has no native machine producer" });
+        }
+        let identity = self.machine.identity_with_native_work(work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        self.definition.validate_with_io(Some(&io))?;
+        if identity.name != self.definition.name || identity.version != self.definition.revision {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "resumable tool machine identity differs from its definition" });
+        }
+        let registry_custody;
+        let mut registry = MachineRegistry::default();
+        registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
+        drop(registry);
+        drop(registry_custody);
+        Ok(())
     }
 
     /// Derives the complete original workflow envelope for this exact scoped
