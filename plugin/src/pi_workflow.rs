@@ -142,15 +142,19 @@ impl<'a> PiWorkflowHost<'a> {
         }
     }
 
-    pub(crate) async fn root_output(&self) -> acyclic_harness::Result<Option<(FileRef, pi_root_allocation::PiRootAllocation)>> {
+    pub(crate) async fn root_output(
+        &self,
+    ) -> acyclic_harness::Result<Option<((FileRef, pi_root_allocation::PiRootAllocation), acyclic_fs::NativeAllocation)>> {
+        let work = self.work()?;
         let Some(provider) = self.root_provider.lock().await.clone() else { return Ok(None); };
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-        self.runtime.verify_owner(&owner)?;
-        let effect = acyclic_harness::effect_host::task_effect_id(
-            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task),
+        self.runtime.verify_owner_with_native_work(&owner, work)?;
+        let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
+            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task), work,
         )?;
-        provider.observe_allocation(acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()))
-            .await
+        provider.observe_allocation_with_native_work(
+            acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), work,
+        ).await
     }
 
     /// Resume only the original passive root workflow. Its checkpoint is the
@@ -158,17 +162,20 @@ impl<'a> PiWorkflowHost<'a> {
     pub(crate) async fn control_with_native_work(
         &self, operation: acyclic_harness::OperationId, kind: &str, payload: &Value,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
+        let work = self.work()?;
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
-        self.runtime.verify_owner(&owner)?;
+        self.runtime.verify_owner_with_native_work(&owner, work)?;
         let payload_custody;
-        let payload;
-        (payload, payload_custody) = pi_root_provider::stage_pi_input_with_native_work(
-            &owner, &self.filesystem, operation, "command", payload, self.work()?,
+        let staged_payload;
+        (staged_payload, payload_custody) = pi_root_provider::stage_pi_input_with_native_work(
+            &owner, &self.filesystem, operation, "command", payload, work,
         ).await?;
-        let command = WorkflowCommand {
-            operation_id: operation, kind: kind.to_owned(), payload,
-        };
+        let kind_custody;
+        let owned_kind;
+        (owned_kind, kind_custody) = guarded_cli_text(&[kind], work)?;
+        let command = WorkflowCommand { operation_id: operation, kind: owned_kind, payload: staged_payload };
         let result = self.control_command_with_native_work(command).await;
+        drop(kind_custody);
         drop(payload_custody);
         result
     }

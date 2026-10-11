@@ -214,6 +214,10 @@ cancellation checks; early denial retains the original unresolved reservation.
 Caller scopes use the protected coordinator's original issuer on that same
 ledger. Their exact claims are compared against borrowed retained bindings,
 without copying a second claims DTO or giving callers operator or file grants.
+Root allocation observations return their actual output reference, allocation
+DTO and original allocation custody together. Warm and cold service consumers
+must retain that custody through source restoration and activation; recorded native
+paths alone never prove creation.
 Opaque original scratch-allocation evidence is separate from native disposal
 authority. Releasing SDK-owned scratch additionally requires its original owned
 preparation, current fenced write grant and drained effects; never project or
@@ -523,6 +527,10 @@ metadata allowance. Spawn arguments cannot widen these limits.
 
 Launch must run outside the session/catalog actor so recursive child RPCs can
 use it. Lost acknowledgement/restart uses original effect reconciliation only.
+Both effect operations borrow the provider's original funded plan and use the
+runner's original ledger. Their returned `(EffectStatus, NativeAllocation)` stays
+intact through status comparison and completion encoding; restart does not clone
+the plan or erase the returned status custody.
 Cancellation orders the existing task/subtree intent; only the real provider's
 observation establishes process cleanup. Every destination publication uses the
 original fresh task guard within its actual Filesystem publication boundary;
@@ -545,6 +553,10 @@ admits the compiled future frame before its builder runs, without a Pi wrapper
 or second ledger. SDK mount, scratch-view and provider payload guards reside
 inside the actual Arc-backed values, so every clone retains their custody.
 Logical SDK byte accounting excludes opaque Arc/allocator headers and process RSS.
+The protected conversation scope and verifier are funded before construction;
+their owned tuple transfers into the live mixed-view project binding with its
+original custody guard, rather than an external host cache. The separate
+filesystem mount source never derives task authority from that accounting guard.
 The real driver callback scope is acquired under its short session mutex; the
 mutex is released before held-file IO awaits. The actual native process retains
 each project's owned original-work scope until its tree and stdio are physically
@@ -559,6 +571,8 @@ binding and request construction use borrowed DTOs and the original bounded
 native codec before owned copies. A partial startup retains the actual native
 session, including its source watcher and destination guard, until bounded stop
 and `cleanup_state().cleanup_complete` establish physical drainage.
+Runner construction borrows the staged plan; the original SDK provider owns its
+funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.
 Normal cleanup confirms the authenticated native process result and stops the
 actual project drivers, retaining SDK session scratch. Explicit scratch disposal
