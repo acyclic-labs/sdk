@@ -990,19 +990,6 @@ fn task_definition_digest_with_io(
     }, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_child_schema_with_work(
-    schema: &Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Value> {
-    if work.as_deref().and_then(|io| io.original_native_work()).is_none() {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "registered schema copy requires its original native ledger" });
-    }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let copied = crate::core::copy_value(schema, &mut quota)?;
-    quota.transfer();
-    Ok(copied)
-}
 
 pub(crate) fn scope_metadata_boundary(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
@@ -7917,32 +7904,6 @@ impl TaskContext {
             .await
     }
 
-    /// Verifies whole-volume READ under this issued context and its original owner.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn verify_original_volume_read_with_native_work<P: acyclic_stream::StreamProvider>(
-        &self, owner: &crate::durable_host::TaskJournalOwner<P>, volume: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
-        let (task, fence) = owner.task_binding();
-        if !self.original_task_binding_matches(task, fence) {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
-                reason:"project READ context differs from its original task owner"});
-        }
-        owner.require_volume_grant_with_native_work(volume, crate::conversation::VolumeOperation::Read, work)?;
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let granted = io.contains_capability(&self.scope.grants, volume, "volume:read:")?
-            || match self.scope.created_grants() {
-                Some(grants) => io.contains_capability(grants, volume, "volume:read:")?,
-                None => false,
-            };
-        if !granted {
-            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
-                reason:"issued task context does not retain whole-project READ"});
-        }
-        owner.verify_read_access_with_native_work(work).await
-    }
 
     /// Reads through the original bound provider on the caller's native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

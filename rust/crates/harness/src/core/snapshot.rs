@@ -227,7 +227,6 @@ pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
         None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
     }
 }
-pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
 pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
 
 fn preparation_inventory_error(

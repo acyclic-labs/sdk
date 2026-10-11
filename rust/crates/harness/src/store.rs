@@ -2109,57 +2109,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    #[cfg(feature = "filesystem")]
-    async fn validate_admission_content_with_work(
-        &self, action: &Action, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<()> {
-        if work.is_none() { return self.validate_admission_content(action).await; }
-        self.validate_interaction_admission_with_work(action, work).await?;
-        self.validate_extension_admission_content_with_work(action, work).await?;
-        let message = match action {
-            Action::AppendConversationMessage { message } => Some(message.as_ref()),
-            Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
-            _ => None,
-        };
-        if let Some(message) = message {
-            self.limits.validate_message_with_work(message, work)?;
-            let verifier = self.content_verifier.as_ref().ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::Unsupported,
-                    "conversation content verifier is not bound"))?;
-            if let Some(observer) = work.as_deref_mut() {
-                history::verify_content_with_work(observer, verifier.as_ref(), &message.content).await?;
-            }
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for attachment in items {
-                        if let Some(observer) = work.as_deref_mut() {
-                            history::verify_content_with_work(
-                                observer, verifier.as_ref(), &attachment.file).await?;
-                        }
-                    }
-                },
-                ReferencedAttachments::Manifest { manifest, item_count } => {
-                    crate::conversation::verified_attachment_manifest_with_work(
-                        verifier.as_ref(), manifest, *item_count, &self.limits, work).await?;
-                },
-            }
-            for reference in message.extensions.values() {
-                if let Some(observer) = work.as_deref_mut() {
-                    history::verify_content_with_work(observer, verifier.as_ref(), reference).await?;
-                }
-            }
-        }
-        if matches!(action, Action::PlanEffect { .. } | Action::ResolveEffect { .. }) {
-            self.validate_task_admission_content_with_work(action, work).await?;
-        }
-        if let Action::PublishProjectMerge { receipt } = action {
-            let verifier = self.merge_verifier.as_ref().ok_or_else(||
-                guarded::guarded_boundary(work, guarded::GuardedBoundary::Unsupported,
-                    "project merge verifier is not bound"))?;
-            crate::merge::verify_project_merge_with_work(verifier.as_ref(), receipt, work).await?;
-        }
-        Ok(())
-    }
     async fn validate_admission_content(&self, action: &crate::core::Action) -> Result<()> {
         self.validate_interaction_admission(action).await?;
         self.validate_extension_admission_content(action).await?;
@@ -5268,4 +5217,3 @@ mod tests {
         Ok(())
     }
 }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             

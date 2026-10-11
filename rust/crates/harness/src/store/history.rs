@@ -1000,16 +1000,6 @@ impl<P: StreamProvider> HistoryReader<P> {
 }
 
 
-pub(crate) fn verify_history_record_with_work(
-    verifier: &AuthorityVerifier,
-    authority: &Authority,
-    sequence: u64,
-    record: &acyclic_stream::Record,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Event> {
-    verify_history_record_with_retained_quota(verifier, authority, sequence, record, work)
-        .map(|(event, _)| event)
-}
 
 pub(crate) fn verify_history_record_with_retained_quota(
     verifier: &AuthorityVerifier,

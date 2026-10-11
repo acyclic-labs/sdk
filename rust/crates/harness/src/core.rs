@@ -2868,41 +2868,6 @@ impl Reducer {
         self.schemas.pinned_binding(name, to_version, None)?;
         Ok(())
     }
-    pub(crate) fn preflight_extension_migration_with_work(
-        &self, scope: &Scope, expected_revision: u64, previous: &EventReference,
-        name: &str, to_version: u32, destination: &VolumeRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return self.preflight_extension_migration(scope, expected_revision, previous, name, to_version, destination); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return self.preflight_extension_migration(scope, expected_revision, previous, name, to_version, destination);
-        }
-        self.authority_verifier.verify_audience_with_work(&self.authority, work)?;
-        self.authority_verifier.verify_with_work(scope, work)?;
-        require_capability(scope, capability::EXTENSION_MIGRATE)?;
-        destination.require_writer(scope.agent())?;
-        Self::require_volume_operation_with_work(&|capability| {
-            if scope.capabilities().contains(capability) { Ok(()) }
-            else { Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized, reason: "volume operation is not granted",
-            }) }
-        }, destination, VolumeOperation::Write, work)?;
-        if expected_revision != self.revision {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "extension migration revision changed" });
-        }
-        let (source, current) = self.extension_states.get(name).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::NotFound, reason: "extension state is absent",
-        })?;
-        if source != previous || previous.authority != self.authority || current.version == to_version {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "extension migration source or target is not exact" });
-        }
-        self.schemas.pinned_binding_with_work(name, to_version, None, work)?;
-        Ok(())
-        }
-    }
 
     /// Validates staged configuration bytes before an event can be admitted.
     pub fn validate_configuration_bytes(

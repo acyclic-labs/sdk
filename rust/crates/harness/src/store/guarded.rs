@@ -42,18 +42,6 @@ fn guarded_boundary(
 }
 
 impl<P: StreamProvider> StreamAggregate<P> {
-    /// Executes or authenticates the original ROOT Bind command on the ordinary conversation engine.
-    pub async fn execute_task_command_measured(
-        &mut self, command: Command, owner: &TaskJournalOwner<P>,
-        budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<ApplyResult>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.execute_root_bind_with_work(command, owner, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
 
     /// Executes the same protected ROOT binding on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -160,96 +148,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(result)
     }
 
-    pub(super) async fn append_planned_command_with_work(
-        &mut self, command: &Command, event: crate::core::Event,
-        planned_quota: u64, publication: operations::IndexedPublication,
-        mut request: crate::distributed::PreparedCommitRequest<'_, '_>,
-        fork_guard: Option<crate::fork::ObservedForkPublicationGuard>,
-    ) -> Result<ApplyResult> {
-        let applied = async {
-            let append = match request.commit_once_with_work(&self.client).await {
-                Ok(append) => append,
-                Err(error) => {
-                    if matches!(request.commit_phase(),
-                        crate::distributed::CommitPhase::NotCalled
-                            | crate::distributed::CommitPhase::Conflict
-                            | crate::distributed::CommitPhase::Failed)
-                        && let Some(guard) = fork_guard.as_deref() {
-                        let _ = crate::fork::release_fork_guard_with_work(guard, request.work()).await;
-                    }
-                    return Err(error);
-                },
-            };
-            let committed = match append {
-                Ok(committed) => committed,
-                Err(StreamError::Unavailable) => {
-                    return match self.reconcile_inner_with_work(command, request.work()).await {
-                        Ok(Some(result)) => {
-                            if let Some(guard) = fork_guard.as_deref() {
-                                crate::fork::release_fork_guard_with_work(guard, request.work()).await
-                                    .map_err(|error| guarded_publication_error(error, command.operation_id))?;
-                            }
-                            Ok(result)
-                        },
-                        Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(command.operation_id)),
-                        Err(error) => Err(error),
-                    };
-                },
-                Err(StreamError::IdempotencyMismatch) => {
-                    if let Some(guard) = fork_guard.as_deref() {
-                        crate::fork::release_fork_guard_with_work(guard, request.work()).await
-                            .map_err(|error| guarded_publication_error(error, command.operation_id))?;
-                    }
-                    return Err(guarded_boundary(request.work(), GuardedBoundary::Conflict,
-                        "retry identity is already bound to another append"));
-                },
-                Err(error) => {
-                    if let Some(guard) = fork_guard.as_deref() {
-                        crate::fork::release_fork_guard_with_work(guard, request.work()).await
-                            .map_err(|error| guarded_publication_error(error, command.operation_id))?;
-                    }
-                    return Err(operations::stream_error_with_work(error, request.work()));
-                },
-            };
-            let mut observed = crate::wire_codec::CodecQuota::from_retained(request.work(), committed.1);
-            let outcome = committed.0;
-            let applied = match &outcome {
-                CommitOutcome::Committed(envelope) => {
-                    publication.verify_with_work(envelope, observed.work())
-                        .map_err(|error| guarded_publication_error(error, publication.operation_id))?;
-                    let (cloned, _) = crate::core::native_event_clone_with_custody(
-                        &event, observed.work())?;
-                    self.reducer.apply_committed_with_work(cloned, observed.work())
-                        .and_then(|result| self.reducer.mark_indexed_terminal_effect_with_work(
-                            &event, observed.work()).map(|()| result))
-                        .map_err(|error| guarded_publication_error(error, command.operation_id))
-                },
-                CommitOutcome::Conflict(_) => Err(guarded_boundary(
-                    observed.work(), GuardedBoundary::Conflict,
-                    "aggregate tail or operation identity changed")),
-            };
-            drop(outcome);
-            drop(observed);
-            if let Some(guard) = fork_guard.as_deref() {
-                crate::fork::release_fork_guard_with_work(guard, request.work()).await
-                    .map_err(|error| guarded_publication_error(error, command.operation_id))?;
-            }
-            applied
-        }.await;
-        let publication_bytes = publication.into_retained_owned();
-        drop(event);
-        let released = match request.work().as_deref_mut() {
-            Some(observer) => observer.release_owned(publication_bytes + planned_quota),
-            None => Ok(()),
-        };
-        match applied {
-            Ok(result) => {
-                released.map_err(|error| guarded_publication_error(error, command.operation_id))?;
-                Ok(result)
-            },
-            Err(error) => { let _ = released; Err(error) },
-        }
-    }
 
     pub(super) async fn release_replayed_fork_fence_with_work(
         &self, seed: &crate::fork::ForkSeed,
@@ -474,11 +372,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(Some((ApplyResult::Replayed { event }, original_owned)))
     }
 
-    pub(super) async fn read_event_at_with_work(
-        &self, revision: u64, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<crate::core::Event> {
-        self.read_event_at_with_retained_quota(revision, work).await.map(|(event, _)| event)
-    }
 
     pub(super) async fn read_event_at_with_retained_quota(
         &self, revision: u64, work: &mut Option<&mut dyn history::HistoryIo>,

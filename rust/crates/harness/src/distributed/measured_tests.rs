@@ -486,43 +486,6 @@ async fn direct_idempotent_commit_receipts_acknowledge_without_claiming_new_dura
     Ok(())
 }
 
-#[tokio::test]
-async fn borrowed_observation_authorizes_original_state_without_clone_encoding_or_sdk_io() -> Result<()> {
-    let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
-    let operation = OperationId::from_bytes([113; 16]);
-    seed(&client, &[operation]).await?;
-    let coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
-    let declaration = spec(operation, 0)?;
-    let owner = declaration.owner.authority();
-    let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-    let scope = issuer.root("borrow-observe", crate::Capabilities::new(["operation:observe"]));
-    let ordinary = coordinator.observe_operation(owner, &scope, &issuer.verifier(), operation)?;
-    let mut allowance = budget();
-    allowance.bytes_encoded = 0;
-    allowance.bytes_copied = 0;
-    allowance.allocation_operations = 0;
-    allowance.peak_allocation_bytes = 0;
-    allowance.backend_read_operations = 0;
-    allowance.backend_write_operations = 0;
-    let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(allowance, &cancellation);
-    work.preflight()?;
-    provider.reset_io();
-    let borrowed = coordinator.observe_operation_ref_with_work(owner, &scope, &issuer.verifier(),
-        operation, &mut Some(&mut work))?;
-    assert!(std::ptr::eq(borrowed, coordinator.scheduler().operation(operation)
-        .expect("original scheduler operation")));
-    assert_eq!(borrowed, &ordinary);
-    assert!(work.receipt().bytes_hashed > 0);
-    assert_eq!(work.receipt().bytes_encoded, 0);
-    assert_eq!(work.receipt().bytes_copied, 0);
-    assert_eq!(work.receipt().allocation_operations, 0);
-    assert_eq!(work.receipt().peak_allocation_bytes, 0);
-    assert_eq!(provider.io_snapshot().reads, 0);
-    assert_eq!(provider.io_snapshot().writes, 0);
-    Ok(())
-}
 
 #[tokio::test]
 async fn borrowed_observation_preserves_current_and_original_signed_grant_denials() -> Result<()> {

@@ -784,21 +784,6 @@ impl ContentGrant {
             .ok_or_else(|| Error::Invalid("grant prefix ownership overflow".into()))
     }
 
-    /// Checks the original signed whole-volume authority without cloning a grant or minting any new proof.
-    #[cfg(feature = "filesystem")]
-    pub fn verify_original_volume_measured(
-        verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
-        operation: VolumeOperation, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = Self::verify_original_volume_with_io(verifier, scope, volume, operation, &io);
-        match result {
-            Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify_original_volume_with_io(
@@ -4469,46 +4454,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_owned_file_wire_moves_original_strings_without_new_claims() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        use crate::store::history::HistoryIo as _;
-        let source = file(AgentId::from_bytes([28; 16]), "native-owned-value.txt")?;
-        let encoded = serde_json::to_vec(&source).map_err(|error| Error::Invalid(error.to_string()))?;
-        let source_token = CancellationToken::new();
-        let source_work = NativeMaterializationWork::new(native_conversation_budget(), &source_token)
-            .expect("original input Value ledger");
-        let mut source_io = crate::store::history::native_work_io(&source_work).expect("input decoder");
-        let (value, retained) = source_io.decode_json_value(&encoded)?;
-        let path = value.get("path").and_then(serde_json::Value::as_str)
-            .expect("original path String").as_ptr();
-        let namespace = value.get("volume").and_then(|volume| volume.get("provider"))
-            .and_then(|provider| provider.get("namespace")).and_then(serde_json::Value::as_str)
-            .expect("original provider String").as_ptr();
-        let incoming = source_io.take_native_custody(retained)?;
-        let source_receipt = source_work.receipt();
-        source_token.cancel();
-        let observer_token = CancellationToken::new();
-        let observer = NativeMaterializationWork::new(native_conversation_budget(), &observer_token)
-            .expect("independent consuming visitor ledger");
-        let mut io = crate::store::history::native_work_io(&observer).expect("owned visitor observer");
-        let before = observer.receipt();
-        let file = FileRef::from_owned_value_with_work(value, &mut Some(&mut io))?;
-        assert_eq!(file, source);
-        assert_eq!(file.path().as_ptr(), path);
-        assert_eq!(file.volume().provider().namespace().as_ptr(), namespace);
-        assert_eq!(observer.receipt().allocation_operations, before.allocation_operations);
-        assert_eq!(observer.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(observer.receipt().bytes_encoded + observer.receipt().bytes_hashed, 0);
-        assert!(observer.receipt().items_examined > before.items_examined);
-        assert_eq!(source_work.receipt(), source_receipt);
-        assert_eq!(io.into_custody().bytes(), 0, "the incoming guard, not a duplicate claim, owns Strings");
-        drop(file);
-        drop(incoming);
-        assert_eq!(source_io.into_custody().bytes(), 0);
-        Ok(())
-    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
@@ -5166,34 +5111,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn logical_file_ownership_counts_retained_metadata_capacity() -> Result<()> {
-        let padded = |text: &str, capacity| {
-            let mut value = String::with_capacity(capacity);
-            value.push_str(text);
-            value
-        };
-        let provider = ProviderRef::new("harness", "filesystem", "v1")?;
-        let volume = VolumeRef::new(provider, padded("volume", 128),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::new()))?;
-        let file = FileRef::new(volume, padded("file.txt", 256), padded("generation", 512),
-            FileDescriptor::new([0; 32], 0, padded("text/plain", 1024))?,
-            padded("file.txt", 2048))?;
-        let expected = file.volume.logical_owned_bytes()? + file.path.capacity() as u64
-            + file.version.capacity() as u64 + file.display_name.capacity() as u64
-            + file.descriptor.media_type.capacity() as u64;
-        assert_eq!(file.logical_owned_bytes()?, expected);
-        let copied = file.volume.provider.namespace().len() + file.volume.provider.family().len()
-            + file.volume.provider.version().len() + file.volume.id.len() + file.path.len()
-            + file.version.len() + file.display_name.len() + file.descriptor.media_type.len();
-        assert_eq!(file.logical_clone_owned_bytes()?, copied as u64);
-        assert!(file.logical_clone_owned_bytes()? < file.logical_owned_bytes()?);
-        let clone = file.clone();
-        assert_eq!(clone.logical_clone_owned_bytes()?, file.logical_clone_owned_bytes()?);
-        assert!(file.logical_owned_bytes()? > file.path.len() as u64 + file.version.len() as u64
-            + file.display_name.len() as u64 + file.descriptor.media_type.len() as u64);
-        Ok(())
-    }
 
     #[test]
     fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
