@@ -370,12 +370,13 @@ scope's logical Self slot without claiming a heap allocation. Native run-limit,
 session-limit, and limit validation keep ordinary wire codes and authority
 attenuation, with cancellation and static denial text. Drop each returned value
 before its guard.
-`RuntimeScope::clone_with_native_work` and `narrow_with_native_work` retain
-concrete proof/extension vector slots and buffers before copying, then reconcile
-actual private field capacities. Narrowing consumes already-paid child grants;
-immutable configured registries and authenticated created access share existing
-Arcs without minting authority or a created-resource seal. Ordinary `Clone`
-preserves policy but does not propagate native metadata origin.
+`RuntimeScope::clone_with_native_work` and `narrow_with_native_work` physically
+copy proof/extension fields through the canonical guarded SDK copy factories,
+admitting and retaining each actual buffer before its allocation/copy. There is
+no aggregate clone prepricing or serialized-size estimate. Narrowing consumes
+already-paid child grants; immutable configured registries and authenticated
+created access share existing Arcs without minting authority or a created-resource
+seal. Ordinary `Clone` preserves policy but does not propagate native origin.
 Borrowed native narrowing/run-limit validators apply those same attenuation
 checks without cloning a context; metadata custody and extension pinning are not
 issuer authentication.
