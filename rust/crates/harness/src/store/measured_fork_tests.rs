@@ -359,7 +359,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         &fixture.stream, aggregate.stream.path(), 0, &mut None,
     ).await?.ok_or_else(|| Error::NotFound("original canonical ROOT record".into()))?;
     let raw_bytes = record.value.len() as u64;
-    let dto_owned = crate::core::event_clone_reservation(&canonical)?;
+    let dto_owned = crate::core::source_inventory(&canonical)?;
     assert_eq!(native.receipt().output_bytes, raw_bytes);
     assert_eq!(native.receipt().items_returned, 1);
     assert_eq!(first_custody.bytes(), dto_owned);

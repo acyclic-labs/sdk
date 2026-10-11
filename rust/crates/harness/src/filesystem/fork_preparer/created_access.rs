@@ -66,7 +66,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
             return Err(native_error(crate::wire::ErrorCode::Invalid, "resource creator belongs to another original native resource"));
         }
         work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
-            ..acyclic_fs::WorkCounters::UNCHARGED })
+            ..acyclic_fs::WorkCounters::default() })
             .map_err(Error::from)?;
         Ok(Arc::new(self))
     }
@@ -378,7 +378,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             root_operation: OperationId::from_bytes(root.into_bytes()), graph_root: root, role,
             volume, evidence, generation, native_snapshot: snapshot,
         };
-        let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::UNCHARGED };
+        let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::default() };
         io.preflight(hashing)?;
         let record_digest = *blake3::hash(&record).as_bytes();
         io.charge(hashing)?;
@@ -402,7 +402,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         let bytes_hold;
         let bytes = bounded_io::read(&self.host, &journal, "/root-bootstrap.json", maximum, Some(io)).await?;
         bytes_hold = io.guard_bytes(&bytes)?;
-        let hashing = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+        let hashing = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() };
         io.preflight(hashing)?;
         let exact = *blake3::hash(&bytes).as_bytes() == self.record_digest;
         io.charge(hashing)?;
@@ -493,7 +493,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         if let Some(io) = io {
             io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64,
-                ..WorkCounters::UNCHARGED })?;
+                ..WorkCounters::default() })?;
         }
         let revision = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         Ok((file.version() == revision.as_str()).then_some(generation))
@@ -521,7 +521,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64,
-            ..WorkCounters::UNCHARGED };
+            ..WorkCounters::default() };
         io.preflight(hashing)?;
         let operation = super::super::filesystem_key(key);
         io.charge(hashing)?;
@@ -556,7 +556,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
         if !self.matches_native_work(work) {
             return Err(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap allocation belongs to another original ledger"));
         }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })?;
+        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
         Ok(Arc::new(self))
     }
 }
@@ -629,7 +629,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
     async fn read_snapshot_file(&self, file: &FileRef, maximum: u64,
         io: &PreparationIo) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let Some(snapshot) = self.allocation.native_snapshot else { return Ok(None); };
-        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::UNCHARGED })?;
+        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         if file.version() != blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex().as_str() {
             return Ok(None);
         }
@@ -666,7 +666,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
             &bytes, "application/octet-stream", Some(io),
         )?;
-        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::UNCHARGED })?;
+        io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         let version = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         if io.uses_native_work() { io.claim(std::mem::size_of::<FileRef>() as u64)?; }
         let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
@@ -743,7 +743,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     fn supports_measured_read(&self, volume: &VolumeRef, budget: WorkBudget,
         cancellation: &CancellationToken) -> MeasuredResult<OperationReceipt<bool>, Error> {
         if volume != &self.allocation.request.volume {
-            return Ok(OperationReceipt { value: false, work: WorkCounters::UNCHARGED });
+            return Ok(OperationReceipt { value: false, work: WorkCounters::default() });
         }
         self.reader.supports_measured_read(volume, budget, cancellation)
     }
@@ -1103,7 +1103,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let canonical = io.encode_json(request, request.maximum_bytes, true)?;
     canonical_hold = io.guard_bytes(&canonical)?;
     let hashing = WorkCounters { bytes_hashed: (encoded.len() + canonical.len()) as u64,
-        ..WorkCounters::UNCHARGED };
+        ..WorkCounters::default() };
     io.preflight(hashing)?;
     let digest = *blake3::hash(&encoded).as_bytes();
     let request_digest = *blake3::hash(&canonical).as_bytes();
@@ -1116,7 +1116,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let encoded_seed = io.encode(&seed, record_limit)?;
     seed_hold = io.guard_bytes(&encoded_seed)?;
     let hashing = WorkCounters { bytes_hashed: encoded_seed.len() as u64,
-        ..WorkCounters::UNCHARGED };
+        ..WorkCounters::default() };
     io.preflight(hashing)?;
     let binding = SeedBinding { digest: *blake3::hash(&encoded_seed).as_bytes() };
     io.charge(hashing)?;
@@ -1160,11 +1160,11 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let prepared = bounded_io::generation(host, &original_workspace, prepared_generation, io).await?;
         let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
         io.charge(WorkCounters { bytes_hashed: creation_key.as_str().len() as u64,
-            ..WorkCounters::UNCHARGED })?;
+            ..WorkCounters::default() })?;
         let key = super::super::filesystem_key(&creation_key);
         #[cfg(not(target_arch = "wasm32"))]
         let initial = if let Some(original) = io.original_native_work() {
-            original_workspace.operation_generation_with_native_work(key, original, &io.cancellation)
+            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation)
                 .await.map_err(native_workspace_error)?
         } else {
             io.receive(original_workspace.operation_generation_measured(
@@ -1190,7 +1190,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let prepared_generation = bounded_io::generation_ref(host, &prepared, Some(io))?;
             if role == ForkAllocationRole::Scratch {
                 let copied = WorkCounters { bytes_copied: fork.child.id.len() as u64,
-                    ..WorkCounters::UNCHARGED };
+                    ..WorkCounters::default() };
                 io.preflight(copied)?;
                 io.claim(fork.child.id.len() as u64)?;
                 if !fork.child.id.is_empty() { io.allocation_attempt(fork.child.id.len() as u64)?; }
@@ -1403,7 +1403,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 context.original_root().limits.file_bytes, Some(&io))?;
             let capture = io.owned_bytes()?;
             custody = io.into_native_custody(capture)?;
-            work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED })?;
+            work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
             let access = Arc::new(RootCreatedFilesystemAccess {
                 allocation: allocation.clone(), reader, writer, _custody: custody,
             });
@@ -1549,7 +1549,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             origin: allocation.origin, resource: proof.resource.clone(), evidence: proof.evidence.clone(),
             allocation_generation: allocation.generation, operations, references,
             content: vec![CreatedContentBinding { volume: allocation.volume,
-                default_writer: allocation.default_writer,
+                authority: allocation.authority, default_writer: allocation.default_writer,
+                artifact_writer: allocation.artifact_writer,
+                scratch_creation: allocation.default_writer.then(||
+                    crate::resource_preparation::ChildScratchCreationProof::new(access.clone())),
                 binding: ContentBindings { reader: access.clone(), writer: Some(access) } }],
         })
     }

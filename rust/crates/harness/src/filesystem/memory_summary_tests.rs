@@ -1,5 +1,7 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
+use crate::filesystem::{PreparationIo, workspace_ref};
+use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{
@@ -142,7 +144,7 @@ async fn sealed_summary_preparation(
     let grants = Capabilities::new(grants);
     let signed = issuer.root_for_agent(agent, "summary-preparation", grants.clone());
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
-        .with_run_limits(crate::TaskRunLimits {
+        .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
         })?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(

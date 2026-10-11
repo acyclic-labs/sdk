@@ -1,6 +1,6 @@
 //! Finite per-attempt accounting over the Filesystem's measured engine APIs.
 use super::*;
-use crate::conversation::{FileDescriptor, FileRef, VolumeOwner};
+use crate::conversation::{FileDescriptor, FileRef};
 use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 use std::sync::Mutex;
 
@@ -1310,7 +1310,7 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
             if let Some(original) = io.original_native_work() {
                 let hash = WorkCounters {
                     bytes_hashed: key.as_str().len() as u64,
-                    ..WorkCounters::UNCHARGED
+                    ..WorkCounters::default()
                 };
                 original.admit(hash)
                     .map_err(Error::from)?;
@@ -1318,7 +1318,7 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
                 original.spent(hash)
                     .map_err(Error::from)?;
                 return workspace.operation_generation_with_native_work(
-                    operation, original, &io.cancellation,
+                    acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
                 ).await.map_err(native_workspace_error);
             }
             let hash = WorkCounters { bytes_hashed: key.as_str().len() as u64, ..Default::default() };
@@ -1424,7 +1424,19 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
         let generation = workspace.head_with_native_work(original, &io.cancellation)
             .await.map_err(native_workspace_error)?;
         return Ok(super::super::WorkspaceObservation {
-            workspace: reference.clone_with_io(io)?,
+            workspace: {
+                let mut history = io.history_io();
+                let mut observer = Some(&mut history as &mut dyn crate::store::history::HistoryIo);
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+                let reference = reference.as_resource();
+                let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
+                let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
+                let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
+                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
+                quota.transfer();
+                workspace
+            },
             generation: generation_ref(host, &generation, Some(io))?,
         });
     }
@@ -1457,8 +1469,9 @@ pub(in crate::filesystem) async fn create_guarded<A: AsyncAuthorityStore, O: Asy
             acyclic_fs::Lifecycle::Ephemeral
         };
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let verified = guard.verify_creation_with_native_work(work);
-            async move { verified?.await }
+            let guard = Arc::clone(&guard);
+            let work = work.clone();
+            async move { guard.verify_creation_with_native_work(&work)?.await }
         };
         host.filesystem.create_workspace_with_operation_guarded_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle), operation,
@@ -1487,7 +1500,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
         let hash_work = WorkCounters {
-            bytes_hashed: key.as_str().len() as u64, ..WorkCounters::UNCHARGED
+            bytes_hashed: key.as_str().len() as u64, ..WorkCounters::default()
         };
         original.admit(hash_work)
             .map_err(Error::from)?;
@@ -1498,7 +1511,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             .map_err(Error::from)?;
         host.filesystem.create_workspace_with_operation_with_native_work(
             name, acyclic_fs::VolumeConfig::portable(lifecycle),
-            operation, original, &io.cancellation,
+            acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
         ).await.map_err(native_workspace_error)?;
         return Ok(());
     }
@@ -1540,8 +1553,9 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let guard = std::sync::Arc::clone(native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "task-bound native mutation requires its original issued creation guard"))?);
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let verified = guard.verify_creation_with_native_work(work);
-            async move { verified?.await }
+            let guard = Arc::clone(&guard);
+            let work = work.clone();
+            async move { guard.verify_creation_with_native_work(&work)?.await }
         };
         return apply_generation_guarded(
             host, reference, expected, mutations, key, io, &mut before,
@@ -1619,7 +1633,7 @@ where
                 }
             }
             WorkspaceMutation::PutFile { path, bytes } => {
-                let result = transaction.put_measured(
+                let result = transaction.write_measured(
                     path, bytes.clone(), io.remaining()?, &io.cancellation,
                 ).await;
                 match result {
@@ -1765,7 +1779,7 @@ where
                 .await.map_err(native_workspace_error)?,
         };
         let hashing = WorkCounters {
-            bytes_hashed: key.0.len() as u64, ..WorkCounters::UNCHARGED
+            bytes_hashed: key.0.len() as u64, ..WorkCounters::default()
         };
         original.admit(hashing)
             .map_err(Error::from)?;
@@ -1773,7 +1787,7 @@ where
         original.spent(hashing)
             .map_err(Error::from)?;
         let mut transaction = workspace.begin_pinned_transaction_with_native_work(
-            &pinned, operation, original, &io.cancellation,
+            &pinned, acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
         ).await.map_err(native_workspace_error)?;
         for mutation in mutations {
             before_publication(original).await?;
@@ -1928,8 +1942,9 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         let forked = if let Some(original) = io.original_native_work() {
             let guard = Arc::clone(native_creation_guard.expect("native creation guard was verified"));
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-                let verified = guard.verify_creation_with_native_work(work);
-                async move { verified?.await }
+                let guard = Arc::clone(&guard);
+                let work = work.clone();
+                async move { guard.verify_creation_with_native_work(&work)?.await }
             };
             workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation, &mut before).await?
@@ -1940,7 +1955,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
         #[cfg(not(target_arch = "wasm32"))]
         let initial = if let Some(original) = io.original_native_work() {
-            forked.operation_generation_with_native_work(operation, original, &io.cancellation)
+            forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation)
                 .await.map_err(native_workspace_error)?
         } else {
             io.receive(forked.operation_generation_measured(operation, io.remaining()?, &io.cancellation).await)?

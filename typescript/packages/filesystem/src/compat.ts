@@ -388,16 +388,6 @@ export function gitCompatSafeTimestamp(value: bigint): number {
 
 /** Decode and validate the native façade's stable JSON envelope. */
 export function parseGitCompatOutputJson(json: string): GitCompatOutput {
-  return projectGitCompatOutputJson(json);
-}
-
-/**
- * Rehydrates the Rust JSON projection for package callers. Rust has already
- * deserialized and validated this payload; this adapter only restores JS
- * ownership types (typed arrays, bigint, and omitted optional values) using
- * the generated field contract.
- */
-export function projectGitCompatOutputJson(json: string): GitCompatOutput {
   const value = parseGitJson(json);
   if (value === "NoOp") return value;
   const output = object(value, "Git command output");
@@ -432,7 +422,7 @@ export function projectGitCompatOutputJson(json: string): GitCompatOutput {
 }
 
 /** Rehydrates a pending Rust transition without reproducing its action union. */
-export function projectGitPendingTransitionJson(json: string): GitPendingTransition {
+export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
   const value = object(parseGitJson(json), "pending transition");
   for (const field of GIT_COMPAT_PENDING_FIELDS) {
     if (!(field in value)) throw new TypeError(`Git pending transition lacks its ${field}`);
@@ -446,7 +436,7 @@ export function projectGitPendingTransitionJson(json: string): GitPendingTransit
 }
 
 /** Serializes a public executor result using the Rust wire field contract. */
-export function stringifyGitFilesystemResultPublic(result: GitFilesystemResult): string {
+export function stringifyGitFilesystemResult(result: GitFilesystemResult): string {
   tagged(result, ["Captured", "Forked", "Applied", "Data"], "filesystem result");
   return JSON.stringify(serializeGitCompatValue(result, ""));
 }
@@ -543,16 +533,6 @@ function isOpaqueGitValuePath(path: string): boolean {
     || path.startsWith("Data.value.")
     || path.endsWith(".Filesystem.Data.value")
     || path.includes(".Filesystem.Data.value.");
-}
-
-/** Decode one durable pending transition returned by the native store. */
-export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
-  return projectGitPendingTransitionJson(json);
-}
-
-/** Encode an executor result without relying on `Uint8Array`'s object-shaped JSON form. */
-export function stringifyGitFilesystemResult(result: GitFilesystemResult): string {
-  return stringifyGitFilesystemResultPublic(result);
 }
 
 /** Execute and complete one durable action with Rust-equivalent return semantics. */

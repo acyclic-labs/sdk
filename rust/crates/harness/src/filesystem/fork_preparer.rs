@@ -186,6 +186,16 @@ macro_rules! preparation_journal_records {
 }
 preparation_journal_records!(AllocationClaim, SeedBinding, CaptureAttempt, CaptureResult);
 
+macro_rules! fork_preparation_records {
+    ($($record:ident),+ $(,)?) => {$(
+        impl bounded_io::PreparationRecord for $record {
+            fn maximum_slot_bytes() -> u64 { super::default_tools::recursive_decode_slot_bytes::<Self>() }
+            fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::$record }
+        }
+    )+};
+}
+fork_preparation_records!(ForkRequest, ForkReport);
+
 /// Idempotent local capture of an exact Stream-backed parent snapshot and its Filesystem project/private resources.
 pub struct FilesystemForkPreparer<A, O> {
     host: Arc<FilesystemHost<A, O>>,
@@ -974,7 +984,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 
     fn digest(&self, bytes: &[u8]) -> Result<blake3::Hash> {
-        let hash = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+        let hash = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() };
         if let Some(io) = &self.io { io.preflight(hash)?; }
         let digest = blake3::hash(bytes);
         if let Some(io) = &self.io { io.charge(hash)?; }
@@ -1822,7 +1832,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let encoded_hold;
             let encoded = io.encode(&*fork, MAX_REQUEST_BYTES.min(request.maximum_bytes))?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..WorkCounters::UNCHARGED };
+            let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..WorkCounters::default() };
             io.preflight(hash)?;
             let preparation_digest = *blake3::hash(&encoded).as_bytes();
             io.charge(hash)?;

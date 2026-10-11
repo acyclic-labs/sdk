@@ -283,10 +283,10 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
                     reason: "created resource task has a stale or foreign lease fence" });
             }
         } else {
-            crate::scheduler::require_execution_owner(operation, fence, false)?;
+            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        crate::scheduler::require_execution_owner(operation, fence, false)?;
+        crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
         if self.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
             let mut text = String::new();
             if let Some(io) = work.as_deref_mut() {
@@ -977,7 +977,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         let access = self.input_created.as_ref()
             .ok_or_else(|| Self::grant_denied(work, "task has no created scratch allocation"))?;
-        let binding = access.current_content_with_work(work)?
+        let binding = access.current_content(work)?
             .ok_or_else(|| Self::grant_denied(work, "task has no current scratch allocation"))?;
         let proof = binding.scratch_creation.as_ref()
             .ok_or_else(|| Self::grant_denied(work, "current scratch is not a verified filesystem allocation"))?;
@@ -1090,7 +1090,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 &self.host.owner,&self.host.owner_scope,&self.host.verifier,
                 self.operation_id(),&mut Some(&mut io),
             )?;
-            crate::scheduler::require_execution_owner(operation,&self.fence,true)?;
+            crate::scheduler::require_execution_owner(operation, &self.fence, true, &mut None)?;
             if operation.cancellation_requested {
                 return Err(Error::Conflict("read-only close cannot settle task cancellation".into()));
             }
@@ -1357,7 +1357,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .map_err(|cause| Error::NativeWork {cause,custody:None})?;
         let result: Result<()> = async {
             if !allow_settlement && let Some(access) = self.input_created.as_ref() {
-                if let Some(binding) = access.current_content_with_work(&mut Some(&mut io))? {
+                if let Some(binding) = access.current_content(&mut Some(&mut io))? {
                     if binding.binding.writer.is_none() {
                         return Err(Self::grant_denied(&Some(&mut io), "current created scratch has no WRITE custody"));
                     }
@@ -1653,7 +1653,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             #[cfg(target_arch = "wasm32")]
             self.verify(false).await?;
             self.host.coordinator.lock().await.scheduler()
-                .session_limits(self.operation_id())?.validate_with_work(quota.work())?;
+                .session_limits(self.operation_id(), &mut None)?.validate_with_work(quota.work())?;
             let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;
             if quota.work().is_some() {
                 let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
@@ -2194,7 +2194,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn authenticate_fork_parent(&self, parent: &Authority) -> Result<()> {
         self.authenticated_fork_agent()?;
         let audience = match &self.input_created {
-            Some(access) => access.current_content()?.and_then(|binding| binding.authority.as_ref()),
+            Some(access) => access.current_content(&mut None)?.and_then(|binding| binding.authority.as_ref()),
             None if self.input_is_root => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
             None => None,
         }.ok_or_else(|| Error::Unauthorized("current caller has no authenticated publication audience".into()))?;
@@ -2215,7 +2215,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized("binding scope differs from the original task actor or grant".into()));
         }
         if !self.input_is_root {
-            let binding = match &self.input_created { Some(access) => access.current_content()?, None => None };
+            let binding = match &self.input_created { Some(access) => access.current_content(&mut None)?, None => None };
             if binding.and_then(|binding| binding.authority.as_ref()) != Some(audience) {
                 return Err(Error::Unauthorized("binding audience differs from the current sealed child".into()));
             }
@@ -2737,8 +2737,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation = coordinator.observe_operation_ref_with_work(
             &self.owner, &self.owner_scope, &self.verifier, operation_id, work,
         )?;
-        crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)?;
-        let session = coordinator.scheduler().session_limits_with_work(operation_id, work)?;
+        crate::scheduler::require_execution_owner(operation, fence, false, work)?;
+        let session = coordinator.scheduler().session_limits(operation_id, work)?;
         let ceiling = (scope.limits().model_steps as u64)
             .min(scope.run_limits().max_steps.map_or(u64::MAX, |value| value as u64))
             .min(session.model_steps);
@@ -3275,7 +3275,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(parent.into_bytes()),
         )?;
-        crate::scheduler::require_execution_owner(&parent_state, &fence, false)?;
+        crate::scheduler::require_execution_owner(&parent_state, &fence, false, &mut None)?;
         coordinator.cancel_child_operation(
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(child.into_bytes()),
@@ -3330,7 +3330,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             },
         };
         if operation.phase == crate::scheduler::OperationPhase::Running {
-            return crate::scheduler::require_execution_owner(operation, &fence, false);
+            return crate::scheduler::require_execution_owner(operation, &fence, false, &mut None);
         }
         let key = worker_key_with_work("start", operation_id, &fence, operation.revision, work)?;
         let event = if operation.phase == crate::scheduler::OperationPhase::Reconciling {
@@ -3794,7 +3794,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 operation_id,
                 work,
             )?;
-            crate::scheduler::require_execution_owner(operation, fence, false)?;
+            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
             operation.workflow.as_ref().map(|slot| slot.clone_with_work(work)).transpose()?
         };
         let Some(slot) = slot else { return Ok((None, 0)) };
@@ -3910,7 +3910,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let current = coordinator.observe_operation_ref_with_work(
             &self.owner, &self.owner_scope, &self.verifier, operation_id, work,
         )?;
-        crate::scheduler::require_execution_owner(current, &fence, settlement)?;
+        crate::scheduler::require_execution_owner(current, &fence, settlement, &mut None)?;
         coordinator.apply_with_work(
             operation_id, key,
             crate::scheduler::SchedulerEvent::Completed {
@@ -3943,7 +3943,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task_id.into_bytes()),
             work,
         )?;
-        crate::scheduler::require_execution_owner(operation, fence, settlement)
+        crate::scheduler::require_execution_owner(operation, fence, settlement, &mut None)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5594,15 +5594,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = spec.operation_id;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
-            let retained = match coordinator.scheduler().session_limits_with_work(operation_id, work) {
+            let retained = match coordinator.scheduler().session_limits(operation_id, work) {
                 Err(Error::NotFound(_)) => {
                     coordinator.refresh_with_work(work).await?;
-                    coordinator.scheduler().session_limits_with_work(operation_id, work)?
+                    coordinator.scheduler().session_limits(operation_id, work)?
                 }
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, .. }) => {
                     coordinator.refresh_with_work(work).await?;
-                    coordinator.scheduler().session_limits_with_work(operation_id, work)?
+                    coordinator.scheduler().session_limits(operation_id, work)?
                 }
                 other => other?,
             };
@@ -8998,6 +8998,7 @@ pub(crate) mod tests {
                 max_output_tokens: Some(32),
             },
             Limits::default(),
+            None,
         )?;
         let model_digest = prepared_request.manifest().request_digest;
         let payloads = Arc::new(MemoryPayloads::new()?);

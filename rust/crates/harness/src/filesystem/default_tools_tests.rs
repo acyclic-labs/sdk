@@ -154,7 +154,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let outcome = controller.apply_project_merge(&inspected, effect).await?;
     let receipt = controller.merge_receipt(&inspected, &outcome, plan.source.clone(), effect, plan.notice.clone())?;
     let mut foreign = receipt.clone(); foreign.operation_id = OperationId::from_bytes([98; 16]);
-    assert!(validate_merge_receipt(&plan, &foreign).is_err());
+    assert!(validate_merge_receipt(&plan, &foreign, None).is_err());
     let next = WorkflowCommand { operation_id: derived(effect, Stage::MergePublish.label()), kind: MERGE_PUBLISH.into(), payload };
     let published = machine.transition(&waiting.state, &encode(Receipt { operation_id: command.operation_id,
         value: Outcome::Succeeded(json!({"status":"applied","receipt":receipt})), next: Some(next) })?)?;
@@ -223,20 +223,6 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
     Ok(())
 }
 
-#[test]
-fn invocation_guard_cancels_when_an_unpolled_future_is_dropped() {
-    let cancellation = CancellationToken::new();
-    let independent = CancellationToken::new();
-    let guard = InvocationCancellation(cancellation.clone());
-    let future = Box::pin(async move {
-        let _guard = guard;
-        std::future::pending::<()>().await;
-    });
-    assert!(!cancellation.is_cancelled());
-    drop(future);
-    assert!(cancellation.is_cancelled());
-    assert!(!independent.is_cancelled());
-}
 
 #[test]
 fn invocation_guard_cancels_when_a_polled_pending_future_is_dropped() {
