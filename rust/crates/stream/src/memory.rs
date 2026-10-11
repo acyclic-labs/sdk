@@ -3453,6 +3453,7 @@ mod tests {
         struct Meter {
             held: AtomicU64,
             allocations: AtomicU64,
+            pending_allocations: parking_lot::Mutex<(u64, u64)>,
             deny_allocation: u64,
             read: AtomicU64,
             read_limit: u64,
@@ -3476,6 +3477,7 @@ mod tests {
             fn default() -> Self {
                 Self {
                     held: AtomicU64::new(0), allocations: AtomicU64::new(0),
+                    pending_allocations: parking_lot::Mutex::new((0, 0)),
                     deny_allocation: u64::MAX, read: AtomicU64::new(0), read_limit: u64::MAX,
                     pending_read: AtomicU64::new(0), pending_write: AtomicU64::new(0),
                     read_operations: AtomicU64::new(0), write_operations: AtomicU64::new(0),
@@ -3559,6 +3561,39 @@ mod tests {
                 if self.allocations.fetch_add(1, Ordering::SeqCst) + 1 == self.deny_allocation {
                     return Err(std::io::ErrorKind::OutOfMemory.into());
                 }
+                self.held.fetch_add(bytes, Ordering::SeqCst);
+                Ok(())
+            }
+            fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+                let mut pending = self.pending_allocations.lock();
+                self.check()?;
+                let operations = pending.0.checked_add(1)
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                let held_bytes = pending.1.checked_add(bytes)
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                let next = self.allocations.load(Ordering::SeqCst).checked_add(operations)
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                self.held.load(Ordering::SeqCst).checked_add(held_bytes)
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                if next == self.deny_allocation {
+                    return Err(std::io::ErrorKind::OutOfMemory.into());
+                }
+                *pending = (operations, held_bytes);
+                Ok(())
+            }
+            fn cancel_reserved_allocation(&self, bytes: u64) {
+                let mut pending = self.pending_allocations.lock();
+                pending.0 = pending.0.checked_sub(1).expect("refund owns one allocation credit");
+                pending.1 = pending.1.checked_sub(bytes).expect("refund owns its allocation byte credit");
+            }
+            fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
+                let mut pending = self.pending_allocations.lock();
+                let operations = pending.0.checked_sub(1)
+                    .ok_or(std::io::ErrorKind::InvalidData)?;
+                let held_bytes = pending.1.checked_sub(bytes)
+                    .ok_or(std::io::ErrorKind::InvalidData)?;
+                *pending = (operations, held_bytes);
+                self.allocations.fetch_add(1, Ordering::SeqCst);
                 self.held.fetch_add(bytes, Ordering::SeqCst);
                 Ok(())
             }
