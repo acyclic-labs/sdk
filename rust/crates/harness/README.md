@@ -246,6 +246,22 @@ their original allocation guard until the last consumer drops the bytes.
 Shared-slot accounting admits the known SDK value and its allocation attempt;
 it does not measure allocator overhead, RSS, or private standard-library Arc
 backing retained by weak references.
+`NativeTaskContext::with_output_volume_with_native_work` selects only an
+already-sealed created writer whose exact volume WRITE grant remains in the
+original scope. It copies actual scope/policy metadata on the original ledger,
+shares existing counters and handles, and preserves dispatch versus passive
+reconciliation purpose. READ/query contexts cannot select a writer; selection
+does not mint a grant or bypass the current owner checks on actual publication.
+The root result destination remains a separate immutable binding.
+
+Native preparation may attach one genuine `NativeTaskWorkingView` to that
+same issued dispatch context. Its retained physical view and original owner
+never capture the context. Builtin callbacks borrow it only after protected
+`ToolStarted` acceptance, current owner verification, and effective tool-scope
+READ/WRITE authorization for the exact canonical mount/path selection. The
+accepted marker is fixed inline metadata, not freshness or filesystem
+authority; ordinary context clones clear both marker and native funding.
+
 `ToolContext::new_with_native_work` retains that same shared context and
 observes its owned call-ID string on the original ledger. Ordinary tool-context
 clones preserve the context and policy but invalidate native tool-metadata

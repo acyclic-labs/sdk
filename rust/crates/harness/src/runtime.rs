@@ -5497,6 +5497,15 @@ enum NativeContextPurpose<'a> {
     },
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum IssuedContextPurpose {
+    Read,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Dispatch,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    Reconciliation,
+}
+
 impl AgentHarness {
     async fn validate_observed_admission(&self, observed: &TaskAdmissionRecord) -> Result<()> {
         observed.validate()?;
@@ -7019,19 +7028,23 @@ impl AgentHarness {
             ContextSource::Native { work, .. } => Some(*work),
             ContextSource::Ordinary(_) => None,
         };
-        let (scope, descendants, model_steps, owned_mailbox, custody, dispatch_source) = match source {
+        let (scope, descendants, model_steps, owned_mailbox, custody, issued_purpose) = match source {
             ContextSource::Ordinary(_) => {
                 let admitted = host.resume_scope(task, operation).await?;
                 let scope = self.scope.resume_sealed(admitted, operation)?;
                 let group = self.live.child(scope.concurrency_bound(self.concurrency));
                 let descendants = group.child(scope.concurrency_bound(self.concurrency));
-                (scope, descendants, Arc::new(TaskModelSteps::ordinary()), None, None, false)
+                (scope, descendants, Arc::new(TaskModelSteps::ordinary()), None, None, IssuedContextPurpose::Read)
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             ContextSource::Native { work, purpose } => {
                 work.charge(acyclic_fs::WorkCounters::default())
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                let dispatch_source = matches!(&purpose, NativeContextPurpose::Dispatch { .. });
+                let issued_purpose = match &purpose {
+                    NativeContextPurpose::Read => IssuedContextPurpose::Read,
+                    NativeContextPurpose::Dispatch { .. } => IssuedContextPurpose::Dispatch,
+                    NativeContextPurpose::Reconciliation { .. } => IssuedContextPurpose::Reconciliation,
+                };
                 let mailbox = match purpose {
                     NativeContextPurpose::Read => None,
                     NativeContextPurpose::Dispatch { fence, mailbox } => {
@@ -7076,7 +7089,7 @@ impl AgentHarness {
                 let group = self.live.child_with_native_work(bound, work)?;
                 let descendants = group.child_with_native_work(bound, work)?;
                 let model_steps = TaskModelSteps::shared_with_native_work(work)?;
-                (admitted.0, descendants, model_steps, mailbox, Some(custody), dispatch_source)
+                (admitted.0, descendants, model_steps, mailbox, Some(custody), issued_purpose)
             }
         };
         let mut context = TaskContext {
@@ -7092,10 +7105,10 @@ impl AgentHarness {
         if let (Some(work), Some(custody)) = (native_work, custody.as_ref()) {
             context.mark_native_metadata_source(work, custody)?;
             context.native_metadata_source.as_mut().expect("issued metadata source")
-                .dispatch_source = dispatch_source;
+                .purpose = issued_purpose;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = dispatch_source;
+        let _ = issued_purpose;
         Ok((context, custody))
     }
 
@@ -7252,7 +7265,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
             reason: "mailbox has no original-ledger admitted scope verifier" })
     }
     #[cfg(feature = "filesystem")]
-    fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence);
+    fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
     #[cfg(feature = "filesystem")]
     fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
@@ -7263,17 +7276,6 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
     ) -> BoxFuture<'a, Result<Vec<u8>>>;
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_scope_with_native_work(
-        &self,
-        _scope: &RuntimeScope,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "owned mailbox has no original native-ledger scope verifier",
-        })
-    }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn send_with_native_work<'a>(
@@ -7474,7 +7476,7 @@ impl TaskContext {
         if self.durable_task != Some(task) {
             return Err(Error::Unauthorized("task context differs from original owner".into()));
         }
-        Ok(fence)
+        Ok(fence.clone())
     }
 
     #[cfg(feature = "filesystem")]
@@ -10616,6 +10618,8 @@ pub struct ToolContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     effective_scope: Option<(RuntimeScope, Option<acyclic_fs::NativeAllocation>)>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    accepted_native_tool: std::sync::OnceLock<native_context::NativeToolAcceptance>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -10629,6 +10633,8 @@ impl Clone for ToolContext {
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             effective_scope: self.effective_scope.as_ref().map(|(scope, _)| (scope.clone(), None)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -10654,6 +10660,8 @@ impl ToolContext {
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             effective_scope: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         })
