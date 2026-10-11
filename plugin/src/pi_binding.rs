@@ -44,6 +44,9 @@ pub(crate) struct PiTaskBinding {
     /// Same root keys as the existing physical context; no second agent index.
     pub(crate) project_volumes: BTreeMap<String, VolumeRef>,
     pub(crate) scratch: PiScratchBinding,
+    /// Explicit unmounted result storage. Root Pi itself is host-native; its
+    /// subprocess children acquire this separate volume through creator proofs.
+    pub(crate) results: Option<PiScratchBinding>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -75,14 +78,14 @@ pub(crate) struct PiScratchCreation {
 }
 
 impl PiScratchCreation {
-    pub(crate) fn validate(&self, volume: &VolumeRef) -> Result<(), String> {
-        self.generation.validate().map_err(display)?;
+    pub(crate) fn validate(&self, volume: &VolumeRef) -> acyclic_harness::Result<()> {
+        self.generation.validate()?;
         if self.workspace_id == [0; 16]
             || self.generation.as_resource().provider() != volume.provider()
             || self.generation.as_resource().key().len() != 32
             || self.generation.as_resource().version().is_some()
         {
-            return Err("Pi scratch creation is invalid".to_owned());
+            return Err(invalid_binding("Pi scratch creation is invalid"));
         }
         Ok(())
     }
@@ -118,7 +121,7 @@ pub(crate) fn validate_pi_bindings(state: &AdapterState) -> Result<(), String> {
         let PluginTaskBinding::Pi(binding) = binding else {
             return Err("Pi session contains a host-managed task binding".to_owned());
         };
-        binding.validate(session, roots, preparing)?;
+        binding.validate(session, roots, preparing).map_err(display)?;
         if !tasks.insert(binding.task_id.into_bytes())
             || !agents.insert(binding.agent_id.into_bytes())
             || !sessions.insert(binding.native_session_id.clone())
@@ -133,35 +136,35 @@ pub(crate) fn validate_pi_bindings(state: &AdapterState) -> Result<(), String> {
         state.roots.keys().map(String::as_str).collect(),
         state.pending_root_registration,
     )?;
+    let mut aliases = BTreeSet::from(["root", state.root_agent_id.as_str(), state.root_session_id.as_str()]);
     for (key, route) in &state.routes {
-        if key != &route.agent_id {
-            return Err("Pi route key differs from its native agent identity".to_owned());
+        if key != &route.agent_id || !aliases.insert(key.as_str()) {
+            return Err("Pi route key differs from its original alias or collides with another route".to_owned());
         }
         validate(
             &route.task_binding,
-            Some(&route.agent_id),
+            None,
             route.roots.keys().map(String::as_str).collect(),
             false,
         )?;
     }
     for pending in &state.pending {
+        let alias = pending.agent_id.as_deref()
+            .ok_or_else(|| "Pi pending spawn has no original agent alias".to_owned())?;
+        if alias.is_empty() || alias.len() > 128 || !aliases.insert(alias)
+            || !alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err("Pi pending agent alias is invalid or duplicated".to_owned());
+        }
         let preparing = matches!(
             pending.lifecycle,
             PendingSpawnLifecycle::Preparing | PendingSpawnLifecycle::Discarding
         ) && pending.roots.is_empty();
         let roots = if preparing {
-            if pending.parent_agent_id == state.root_agent_id {
-                state.roots.keys().map(String::as_str).collect()
-            } else {
-                state
-                    .routes
-                    .get(&pending.parent_agent_id)
-                    .ok_or_else(|| "Pi pending spawn has no retained parent route".to_owned())?
-                    .roots
-                    .keys()
-                    .map(String::as_str)
-                    .collect()
-            }
+            let PluginTaskBinding::Pi(binding) = &pending.task_binding else {
+                return Err("Pi pending has no actual planned task binding".to_owned());
+            };
+            binding.project_volumes.keys().map(String::as_str).collect()
         } else {
             pending.roots.keys().map(String::as_str).collect()
         };
@@ -171,12 +174,12 @@ pub(crate) fn validate_pi_bindings(state: &AdapterState) -> Result<(), String> {
 }
 
 impl PiTaskBinding {
-    pub(crate) fn validate(
+    pub(crate) fn validate<'a>(
         &self,
         session: Option<&str>,
-        roots: Vec<&str>,
+        roots: impl IntoIterator<Item = &'a str>,
         preparing: bool,
-    ) -> Result<(), String> {
+    ) -> acyclic_harness::Result<()> {
         let id = self.native_session_id.as_bytes();
         if id.is_empty()
             || id.len() > 256
@@ -189,53 +192,74 @@ impl PiTaskBinding {
             || self.task_id.into_bytes() == [0; 16]
             || self.agent_id.into_bytes() == [0; 16]
         {
-            return Err(
-                "Pi binding has an invalid task, agent or native session identity".to_owned(),
-            );
+            return Err(invalid_binding(
+                "Pi binding has an invalid task, agent or native session identity",
+            ));
         }
         if self.project_volumes.len() > MAXIMUM_ADAPTER_ROOTS
             || !self.project_volumes.keys().map(String::as_str).eq(roots)
         {
-            return Err("Pi project selection differs from its retained root map".to_owned());
+            return Err(invalid_binding("Pi project selection differs from its retained root map"));
         }
         let scratch = &self.scratch.volume;
         validate_pi_provider(scratch.provider())?;
         if scratch.class() != VolumeClass::AgentPrivate
             || scratch.owner() != &VolumeOwner::Agent(self.agent_id)
         {
-            return Err("Pi scratch is not private to its admitted agent".to_owned());
+            return Err(invalid_binding("Pi scratch is not private to its admitted agent"));
         }
-        let mut volumes = BTreeSet::new();
-        for volume in self.project_volumes.values() {
+        for (index, volume) in self.project_volumes.values().enumerate() {
             if volume.class() != VolumeClass::Project
                 || !matches!(volume.owner(), VolumeOwner::Project(_))
                 || volume.provider() != scratch.provider()
-                || !volumes.insert(volume.storage_name().map_err(display)?)
+                || self.project_volumes.values().take(index).any(|prior| prior == volume)
             {
-                return Err(
-                    "Pi project volume selection has an invalid role, provider or alias".to_owned(),
-                );
+                return Err(invalid_binding(
+                    "Pi project volume selection has an invalid role, provider or alias",
+                ));
             }
         }
         match &self.scratch.allocation {
             PiScratchAllocation::Created(creation) => creation.validate(scratch)?,
             PiScratchAllocation::Preparing if preparing => {}
-            _ => return Err("Pi scratch creation is missing or invalid".to_owned()),
+            _ => return Err(invalid_binding("Pi scratch creation is missing or invalid")),
+        }
+        if let Some(results) = &self.results {
+            if results.volume == *scratch
+                || results.volume.class() != VolumeClass::AgentPrivate
+                || results.volume.owner() != &VolumeOwner::Agent(self.agent_id)
+                || results.volume.provider() != scratch.provider()
+                || self.project_volumes.values().any(|volume| volume == &results.volume)
+            {
+                return Err(invalid_binding("Pi result storage must be distinct and private to its admitted agent"));
+            }
+            match &results.allocation {
+                PiScratchAllocation::Created(creation) => creation.validate(&results.volume)?,
+                PiScratchAllocation::Preparing if preparing => {}
+                _ => return Err(invalid_binding("Pi result storage has no authenticated creation")),
+            }
         }
         Ok(())
     }
 }
 
-fn validate_pi_provider(provider: &ProviderRef) -> Result<(), String> {
-    provider.validate().map_err(display)?;
+fn validate_pi_provider(provider: &ProviderRef) -> acyclic_harness::Result<()> {
+    provider.validate()?;
     if [provider.namespace(), provider.family(), provider.version()]
         .iter()
         .any(|part| part.len() > 256)
         || provider.family() != "filesystem"
     {
-        return Err("Pi volume provider is invalid or exceeds its identity bound".to_owned());
+        return Err(invalid_binding("Pi volume provider is invalid or exceeds its identity bound"));
     }
     Ok(())
+}
+
+fn invalid_binding(reason: &'static str) -> acyclic_harness::Error {
+    acyclic_harness::Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason,
+    }
 }
 
 #[cfg(test)]

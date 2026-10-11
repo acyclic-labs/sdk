@@ -230,6 +230,10 @@ its admitted parser quota until the native error consumer drops it; empty
 codec-error guards are not manufactured. Native canonical-byte and digest
 helpers use that same original ledger and the existing SDK canonical/BLAKE3
 identity, rather than rebuilding a remaining-budget meter.
+Root allocation schemas serialize borrowed, fixed wire descriptors through this
+same bounded encoder; the native path does not first build an unguarded JSON
+schema. Binding validation compares retained full volume identities and borrowed
+root keys without allocating a second identity index.
 
 Imported-file evidence retains its original SDK allocation guard through the
 existing service actor, response channel and bounded RPC encoder. Encoding
