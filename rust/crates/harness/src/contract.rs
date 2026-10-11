@@ -223,13 +223,29 @@ enum JsonSchemaDataScope<'a> {
 }
 
 // A conservative, scoped logical data allowance around opaque schema calls.
-// Serialization visits actual JSON nodes before the allowance is admitted.
+// Native inputs use the resident shape witness, not encoded sizing as node count.
 #[cfg(feature = "filesystem")]
 fn json_schema_scope<'a>(
     value: &serde_json::Value,
     io: Option<&'a crate::filesystem::PreparationIo>,
 ) -> Result<Option<JsonSchemaDataScope<'a>>> {
     let Some(io) = io else { return Ok(None); };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        let shape = json_owned_value_shape_bounded(
+            value,
+            JsonBounds { maximum_bytes: u64::MAX, maximum_items: u64::MAX, maximum_depth: 256 },
+            JsonValueSchema::None,
+            &mut |charge| io.codec_charge(charge, false),
+        )?;
+        // ValidationError::to_owned can clone the whole resident instance.
+        // Admit that new ownership before validation, without reinterpreting
+        // literal private keys or emitting hypothetical encoded output.
+        let owned = json_value_decode_owned_bytes(shape)?;
+        return work.retain_owned(owned)
+            .map(|custody| Some(JsonSchemaDataScope::Native(custody)))
+            .map_err(|cause| Error::NativeWork { cause, custody: None });
+    }
     let before = io.receipt().items_examined;
     let _bytes;
     let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
