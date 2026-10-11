@@ -1949,7 +1949,7 @@ impl crate::store::history::HistoryIo for PreparationHistoryIo<'_> {
         Ok(copy)
     }
     fn reserve_events(&mut self, values: &mut Vec<crate::core::Event>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
-    fn reserve_records(&mut self, values: &mut Vec<acyclic_stream::Record>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
+    fn reserve_records(&mut self, values: &mut Vec<crate::store::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_messages(&mut self, values: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve(values, maximum) }
     fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {

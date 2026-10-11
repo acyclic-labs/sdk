@@ -262,6 +262,10 @@ Ordinary measured reads capture the actual returned vector capacity before
 moving it into the carrier and acquire that retention once. Consumers destroy
 the carrier before releasing this separate scalar; it is not another byte guard
 or an estimate of opaque `Bytes` capacity.
+History record vectors reserve the actual canonical `ObservedRecord` element
+size through the same generic capacity engine. Native record metadata custody
+remains inside that record, and its byte storage remains inside `OwnedBytes`;
+neither guard is extracted or replaced by another record wrapper.
 Native scheduler-payload, content-reader, and content-publisher constructors
 likewise authenticate borrowed configuration before funding metadata copies.
 Their intrinsic guard outlives owned fields; `into_native_shared` admits the actual
