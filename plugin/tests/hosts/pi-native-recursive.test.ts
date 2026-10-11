@@ -113,8 +113,13 @@ export default function(pi) {
       if (!done("g-write")) return call("g-write","write",{path:"grandchild.txt",content:"grandchild inherited edited source\\n"});
     } else if (role === "FOREIGN") {
       if (!done("foreign-read")) return call("foreign-read","read",{path:"child-a.txt"});
-    } else if (role === "REOPEN" && !done("reopen-status")) {
-      return call("reopen-status","acyclic_agents",{});
+    } else if (role === "REOPEN") {
+      const steps = [
+        ["reopen-inspect-a", "acyclic_inspect", {id:"child-a",maximum_entries:128}],
+        ["reopen-diff-a", "acyclic_diff", {id:"child-a",maximum_entries:128}],
+        ["reopen-status", "acyclic_agents", {}],
+      ];
+      for (const [id,name,args] of steps) if (!done(id)) return call(id,name,args);
     }
     return fauxAssistantMessage(JSON.stringify({role,sessionId,model:model.id,
       tools:getCurrentTools(context.messages).map(tool=>tool.name).sort(),
@@ -219,11 +224,16 @@ test("required pinned Pi recursively launches original native effects and reopen
     assert.doesNotMatch(childABytes, /ACYCLIC_NATIVE_CHILD_B|changed duplicate child instruction/);
     assert.doesNotMatch(childBBytes, /grandchild inherited edited source|child A edited/);
     assert.ok(childA.getEntries().some(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "edit"));
-    await fixture.kill();
+    await fixture.close();
     await fixture.start();
     ownedServicePids.push(fixture.servicePid()!);
     const reopened = JSON.parse((await fixture.run("ACYCLIC_NATIVE_REOPEN", "switched")).stdout.trim());
     assert.equal(reopened.model, "switched");
+    for (const id of ["reopen-inspect-a", "reopen-diff-a"]) {
+      const selected = reopened.results.find((result: {id:string}) => result.id === id);
+      assert.equal(selected?.isError, false, `${id} must select the protected final publication after cold service reopen`);
+      assert.match(selected.text, /child-a\.txt/, `${id} substituted the initial project generation for the published child edit`);
+    }
     const reopenedStatus = JSON.parse(reopened.results.find((result: {id:string}) => result.id === "reopen-status").text);
     assert.deepEqual(reopenedStatus, originalStatus, "actual service/runtime reopen repeated a task/effect or changed original outcomes");
     assert.equal(readFileSync(first.session_file, "utf8"), childABytes);

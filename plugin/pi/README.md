@@ -702,6 +702,9 @@ Required source-bound lanes (not executed by this change):
   inspection/diff, destination imports/root writeback, independent outside-model
   host inspection/consent with a wrong-digest engine denial, forged-source/
   destination/caller denials, and service reopen/model switch without repetition.
+  The actual service drains and exits successfully before restart; reopened
+  inspection and diff must still contain the published child edit, rejecting a
+  substituted initial project generation.
 - Rust `required_pinned_pi_native_*` tests require absolute
   `ACYCLIC_PI_TEST_NODE`, `ACYCLIC_PI_TEST_CLI` (the package's
   `dist/bundle/cli.js`) and `ACYCLIC_PI_TEST_PROVIDER_DIR` (an owned directory
