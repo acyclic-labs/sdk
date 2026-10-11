@@ -674,6 +674,8 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
 
     /// Verifies that same retained approval on the original native ledger.
     /// An unsupported provider rejects before future allocation or journal IO.
+    /// Stock implementations admit their actual concrete future frame through
+    /// NativeFutureBundle::new before constructing its body or allocating Box.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,
@@ -681,7 +683,7 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _definition_digest: [u8; 32],
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<BoxFuture<'a, Result<()>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "approval verifier has no native journal observer",
