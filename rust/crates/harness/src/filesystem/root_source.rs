@@ -156,7 +156,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
-                let (commit, snapshot) = self.lazy.write_batch_at_snapshot_with_native_work_guarded(
+                let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
                     &io.cancellation, &mut before_mutation,
                 ).await?;
@@ -175,13 +175,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                         Err(error) => Err(acyclic_fs::OperationFailure::new(error, callback.receipt())),
                     }
                 };
-                io.receive_content(self.lazy.write_batch_at_snapshot_measured_guarded(
+                io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
                     allowance, &io.cancellation, &mut before_mutation,
                 ).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
-                self.lazy.write_batch_at_snapshot_guarded(
+                self.lazy.write_at_snapshot_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
                     &io.cancellation, &mut before_mutation,
                 ).await?
