@@ -20,10 +20,10 @@ fn native_read(work: &mut DemandWork) -> Result<(), DemandError> {
     })
 }
 
-fn native_buffer(work: &mut DemandWork, bytes: u64, copied: u64, encoded: u64) -> Result<(), DemandError> {
+fn native_buffer<W: crate::demand::SourceDemandReadWork>(work: &mut W, bytes: u64, copied: u64, encoded: u64) -> Result<(), DemandError> {
     let delta = WorkCounters { bytes_copied: copied, bytes_encoded: encoded, ..WorkCounters::UNCHARGED };
     work.check()?;
-    work.work.admit(&delta, &work.budget)?;
+    work.preflight(delta)?;
     work.allocate(bytes)?;
     work.record(delta)?;
     Ok(())
@@ -34,11 +34,23 @@ pub(crate) trait NativeHostWork {
     type Allocation;
     type CleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind>;
+    fn invalid_request() -> Self::Error {
+        io::Error::new(io::ErrorKind::InvalidInput, "invalid native source request").into()
+    }
     fn check(&self) -> Result<(), Self::Error>;
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error>;
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error>;
+    /// Records the actual started request before invoking host IO. Shared
+    /// meters must release their admission leaf lock before `operation`.
+    fn attempt_io<T>(
+        &mut self, delta: WorkCounters, operation: impl FnOnce() -> io::Result<T>,
+    ) -> Result<T, Self::Error> {
+        self.admit(delta)?;
+        self.record(delta)?;
+        operation().map_err(Into::into)
+    }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
     /// Always invokes cleanup, including when recording its actual attempt fails.
@@ -54,6 +66,7 @@ impl NativeHostWork for DemandWork {
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
         match error { DemandError::Io(error) => Some(error.kind()), _ => None }
     }
+    fn invalid_request() -> Self::Error { DemandError::InvalidRequest }
     fn check(&self) -> Result<(), Self::Error> { DemandWork::check(self) }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.check()?;
@@ -117,16 +130,14 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     }
 }
 
-fn native_write(work: &mut DemandWork) -> Result<(), DemandError> {
+fn native_write<W: crate::demand::SourceDemandReadWork>(work: &mut W) -> Result<(), DemandError> {
     work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })
 }
 
 fn native_attempt<W: NativeHostWork, T>(
     work: &mut W, delta: WorkCounters, operation: impl FnOnce() -> io::Result<T>,
 ) -> Result<T, W::Error> {
-    work.admit(delta)?;
-    work.record(delta)?;
-    operation().map_err(Into::into)
+    work.attempt_io(delta, operation)
 }
 
 fn native_read_with_work<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error> {
@@ -175,8 +186,8 @@ pub(crate) fn canonical_directory_path_with_work(
 }
 
 #[cfg(unix)]
-pub(crate) fn canonical_directory_path_held_with_work(
-    directory: Dir, work: &mut DemandWork,
+pub(crate) fn canonical_directory_path_held_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    directory: Dir, work: &mut W,
 ) -> Result<std::path::PathBuf, DemandError> {
     let canonical = cwd_ancestry_measured(directory, work)?;
     if let Err(error) = work.check() {
@@ -200,16 +211,16 @@ pub(crate) fn canonical_directory_wide_path_with_work(
 /// capacity, including native terminator/growth space, remains claimed until
 /// the caller drops the vector and releases `capacity * size_of::<u16>()`.
 #[cfg(windows)]
-pub(crate) fn canonical_directory_wide_with_work(
-    directory: &Dir, work: &mut DemandWork,
+pub(crate) fn canonical_directory_wide_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    directory: &Dir, work: &mut W,
 ) -> Result<Vec<u16>, DemandError> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
         FILE_NAME_NORMALIZED, VOLUME_NAME_DOS, GetFinalPathNameByHandleW,
     };
-    let query = |buffer: &mut [u16], work: &mut DemandWork| -> Result<usize, DemandError> {
-        native_read(work)?;
+    let query = |buffer: &mut [u16], work: &mut W| -> Result<usize, DemandError> {
+        native_read_with_work(work)?;
         // SAFETY: the held handle and admitted mutable native buffer remain
         // live; the API supports an empty slice for its required-size query.
         let count = unsafe { GetFinalPathNameByHandleW(HANDLE(directory.as_raw_handle()),
@@ -221,7 +232,7 @@ pub(crate) fn canonical_directory_wide_with_work(
     let mut capacity = query(&mut [], work)?;
     loop {
         let bytes = capacity.checked_mul(std::mem::size_of::<u16>()).ok_or(crate::WorkError::Overflow)? as u64;
-        work.allocate(bytes)?;
+        work.claim(bytes)?;
         let mut buffer = Vec::new();
         if let Err(error) = buffer.try_reserve_exact(capacity) {
             work.release(bytes)?;
@@ -288,8 +299,10 @@ pub(crate) fn normalize_root_path_measured(
 }
 
 #[cfg(unix)]
-fn cwd_buffer_measured(length: usize, work: &mut DemandWork) -> Result<Vec<u8>, DemandError> {
-    work.allocate(length as u64)?;
+fn cwd_buffer_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    length: usize, work: &mut W,
+) -> Result<Vec<u8>, DemandError> {
+    work.claim(length as u64)?;
     let mut bytes = Vec::new();
     if let Err(error) = bytes.try_reserve_exact(length) {
         work.release(length as u64)?;
@@ -299,7 +312,7 @@ fn cwd_buffer_measured(length: usize, work: &mut DemandWork) -> Result<Vec<u8>, 
 }
 
 #[cfg(unix)]
-fn cwd_open_measured(name: &std::ffi::CStr, work: &mut DemandWork) -> Result<Dir, DemandError> {
+fn cwd_open_measured<W: NativeHostWork<Error = DemandError>>(name: &std::ffi::CStr, work: &mut W) -> Result<Dir, DemandError> {
     use std::os::fd::FromRawFd as _;
     let flags = cwd_metadata_flags();
     loop {
@@ -449,8 +462,8 @@ struct CwdAncestor {
 }
 
 #[cfg(unix)]
-fn cwd_ancestor_name_measured(
-    parent: &Dir, child: &HostStat, work: &mut DemandWork,
+fn cwd_ancestor_name_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    parent: &Dir, child: &HostStat, work: &mut W,
 ) -> Result<OsString, DemandError> {
     // Reuse the one raw-record decoder/stat engine, never an unmetered
     // readdir/opendir scanner. A fresh "." description has its own cursor.
@@ -458,8 +471,8 @@ fn cwd_ancestor_name_measured(
         libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
             | { #[cfg(target_os = "linux")] { libc::O_NOATIME }
                 #[cfg(not(target_os = "linux"))] { 0 } },
-        || native_read(work))?);
-    work.allocate(HostStatReader::BUFFER_BYTES as u64)?;
+        || native_read_with_work(work))?);
+    work.claim(HostStatReader::BUFFER_BYTES as u64)?;
     let mut reader = HostStatReader {
         directory,
         buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
@@ -468,7 +481,7 @@ fn cwd_ancestor_name_measured(
         base: 0,
     };
     let result = (|| {
-        while let Some(entry) = reader.next_measured(work)? {
+        while let Some((entry, _allocation)) = reader.next_with_work(work)? {
             if entry.stat.as_ref().is_some_and(|stat|
                 stat.is_dir() && stat.dev() == child.dev() && stat.ino() == child.ino()) {
                 return Ok(entry.name);
@@ -486,7 +499,9 @@ fn cwd_ancestor_name_measured(
 }
 
 #[cfg(unix)]
-fn cwd_ancestry_measured(mut current: Dir, work: &mut DemandWork) -> Result<std::path::PathBuf, DemandError> {
+fn cwd_ancestry_measured<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    mut current: Dir, work: &mut W,
+) -> Result<std::path::PathBuf, DemandError> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
     let root = cwd_open_measured(c"/", work)?;
@@ -501,7 +516,7 @@ fn cwd_ancestry_measured(mut current: Dir, work: &mut DemandWork) -> Result<std:
             let child = stat_unix_fd_at(current.as_raw_fd(), OsStr::new(""), true, work)?;
             if child.dev() == root_stat.dev() && child.ino() == root_stat.ino() { break; }
             let parent = Dir::from_std_file(open_unix_named_with(&current, c"..",
-                cwd_metadata_flags(), || native_read(work))?);
+                cwd_metadata_flags(), || native_read_with_work(work))?);
             let parent_stat = stat_unix_fd_at(parent.as_raw_fd(), OsStr::new(""), true, work)?;
             if parent_stat.dev() == child.dev() && parent_stat.ino() == child.ino() {
                 return Err(io::Error::from_raw_os_error(libc::ENOENT).into());
@@ -513,7 +528,7 @@ fn cwd_ancestry_measured(mut current: Dir, work: &mut DemandWork) -> Result<std:
                     length.checked_add(usize::from(ancestors.is_some())))
                     .ok_or(crate::WorkError::Overflow)?;
                 name_bytes = name_bytes.checked_add(name.len()).ok_or(crate::WorkError::Overflow)?;
-                work.allocate(slot_bytes)?;
+                work.claim(slot_bytes)?;
                 Ok::<_, DemandError>(())
             })();
             if let Err(error) = retained {
@@ -815,17 +830,18 @@ fn open_unix_directory_path_with_work<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-fn with_unix_parent_leaf<T>(
-    root: &Dir, path: &Path, work: &mut DemandWork,
-    operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut DemandWork) -> Result<T, DemandError>,
+fn with_unix_parent_leaf<W: crate::demand::SourceDemandReadWork, T>(
+    root: &Dir, path: &Path, work: &mut W,
+    operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, DemandError>,
 ) -> Result<T, DemandError> {
     let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
     let parent = open_unix_directory_path_with_work(root, path.parent().ok_or(DemandError::InvalidRequest)?, false, work)?;
-    unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work))
+    unix_name_with_work(leaf, work, |leaf, work| operation(&parent, leaf, work))
 }
 
 pub(crate) enum NativeOpenOptions {
     Read,
+    ReadWrite,
     CreateNew,
     ReadWriteCreate,
 }
@@ -947,6 +963,7 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
         let flags = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            NativeOpenOptions::ReadWrite => libc::O_RDWR,
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
         unix_name_with_work(name.as_os_str(), work, |name, work| {
@@ -975,6 +992,80 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
     }
     #[cfg(windows)]
     { with_wide_path_with_work(name, work, |name, work| open_windows_leaf_with_options_with_work(parent, name, options, work)) }
+}
+
+/// Opens exactly one held directory component; no ambient relative reopen.
+pub(crate) fn open_builtin_directory_with_work<W: NativeHostWork>(
+    parent: &Dir, name: &Path, create: bool, work: &mut W,
+) -> Result<Dir, W::Error> {
+    require_leaf(name)?;
+    #[cfg(unix)]
+    { open_unix_directory_with_work(parent, name.as_os_str(), create, work) }
+    #[cfg(windows)]
+    {
+        with_wide_path_with_work(name, work, |name, work| {
+            if create {
+                return create_windows_directory_with_work(parent, name, work).map(Dir::from_std_file);
+            }
+            use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+            open_windows_leaf_handle_with_work(parent, name, FILE_GENERIC_READ, Some(true), work)
+                .map(Dir::from_std_file)
+        })
+    }
+}
+
+/// Records completed byte transfer even when cancellation arrives during IO.
+pub(crate) fn read_builtin_file(
+    file: &File, destination: &mut [u8], work: &crate::materializer::NativeMaterializationWork,
+) -> Result<usize, crate::materializer::NativeTreeMaterializationError> {
+    use std::io::Read as _;
+    let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
+        work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read, destination.len(),
+    ).map_err(native_builtin_runtime_error)?;
+    let copy = work.reserve_copy(destination.len() as u64)?;
+    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+    let count = (&*file).read(destination)?;
+    let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
+    let copied = copy.record(count as u64);
+    transferred?;
+    copied?;
+    Ok(count)
+}
+
+pub(crate) fn write_builtin_file(
+    file: &File, source: &[u8], work: &crate::materializer::NativeMaterializationWork,
+) -> Result<usize, crate::materializer::NativeTreeMaterializationError> {
+    use std::io::Write as _;
+    let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
+        work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Write, source.len(),
+    ).map_err(native_builtin_runtime_error)?;
+    let copy = work.reserve_copy(source.len() as u64)?;
+    work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
+    let count = (&*file).write(source)?;
+    let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
+    let copied = copy.record(count as u64);
+    transferred?;
+    copied?;
+    Ok(count)
+}
+
+fn native_builtin_runtime_error(error: io::Error) -> crate::materializer::NativeTreeMaterializationError {
+    crate::materializer::native_materialization_work_error(crate::demand::native_demand_error(error))
+}
+
+/// Serializes these SDK leaf operations without claiming an OS-wide content
+/// transaction. Unrelated writers may ignore advisory Unix locks.
+pub(crate) fn lock_builtin_file(
+    file: &File, writable: bool, work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    use crate::materializer::NativeTreeMaterializationError;
+    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+    let result = if writable { file.try_lock() } else { file.try_lock_shared() };
+    match result {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => Err(NativeTreeMaterializationError::PreimageConflict),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
 }
 
 pub(crate) fn remove_leaf_with_work<W: NativeHostWork>(
@@ -1011,7 +1102,7 @@ fn remove_leaf_kind_with_work<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-fn unix_mutation(work: &mut DemandWork, mut operation: impl FnMut() -> libc::c_int) -> Result<(), DemandError> {
+fn unix_mutation<W: crate::demand::SourceDemandReadWork>(work: &mut W, mut operation: impl FnMut() -> libc::c_int) -> Result<(), DemandError> {
     loop {
         native_write(work)?;
         if operation() == 0 { return Ok(()); }
@@ -1020,10 +1111,92 @@ fn unix_mutation(work: &mut DemandWork, mut operation: impl FnMut() -> libc::c_i
     }
 }
 
+#[cfg(unix)]
+fn fence_cookie_held_with_work<W: NativeHostWork>(
+    parent: &Dir, leaf: &std::ffi::CStr, work: &mut W,
+) -> Result<(), W::Error> {
+    use std::os::fd::AsRawFd as _;
+    let cleanup = work.reserve_cleanup_write()?;
+    let created = match open_unix_named_with(parent, leaf,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        || {
+            let delta = WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED };
+            work.admit(delta)?;
+            work.record(delta)
+        }) {
+        Ok(file) => file,
+        Err(error) => {
+            work.cancel_cleanup_write(cleanup);
+            return Err(error);
+        }
+    };
+    let completion = work.check();
+    let (removed, recorded) = work.attempt_cleanup_write(cleanup, || {
+        // SAFETY: the same held parent and prepared leaf remain live, even
+        // after cancellation; no path/name allocation can gate this cleanup.
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } < 0 {
+            Err(io::Error::last_os_error())
+        } else { Ok(()) }
+    });
+    drop(created);
+    recorded?;
+    removed?;
+    completion?;
+    work.check()
+}
+
+#[cfg(windows)]
+fn fence_cookie_held_with_work<W: NativeHostWork>(
+    parent: &Dir, leaf: &[u16], work: &mut W,
+) -> Result<(), W::Error> {
+    use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
+    let cleanup = work.reserve_cleanup_write()?;
+    let created = match create_windows_provisional_file_with_work(parent, leaf, work) {
+        Ok(file) => file,
+        Err(error) => {
+            work.cancel_cleanup_write(cleanup);
+            return Err(error);
+        }
+    };
+    let completion = work.check();
+    let (removed, recorded) = work.attempt_cleanup_write(cleanup, || {
+        windows_set_information_held(&created,
+            &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
+    });
+    // The original delete-capable FILE_CREATE handle owns final disposal:
+    // neither cleanup nor close reopens a replaced name after cancellation.
+    drop(created);
+    recorded?;
+    removed?;
+    completion?;
+    work.check()
+}
+
 impl HostRoot {
-    pub(crate) fn create_file_measured(&self, path: &Path, work: &mut DemandWork) -> Result<File, DemandError> {
+    /// Emits an exclusive ordered watcher cookie, reserving its mandatory
+    /// removal before the namespace is mutated. Cleanup still runs on cancel.
+    pub(crate) fn fence_cookie_measured(
+        &self, relative: &Path, work: &mut DemandWork,
+    ) -> Result<(), DemandError> {
+        #[cfg(unix)]
+        {
+            with_unix_parent_leaf(&self.directory, relative, work, |parent, leaf, work| {
+                fence_cookie_held_with_work(parent, leaf, work)
+            })
+        }
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.create_file_wide_measured(path, work)) }
+        {
+            with_wide_path(relative, work, |relative, work| {
+                let (parent, leaf) = wide_parent_leaf(relative)?;
+                let parent = self.open_dir_held_wide_measured(parent, work)?;
+                fence_cookie_held_with_work(&parent, leaf, work)
+            })
+        }
+    }
+
+    pub(crate) fn create_file_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<File, DemandError> {
+        #[cfg(windows)]
+        { with_wide_path_with_work(path, work, |path, work| self.create_file_wide_measured(path, work)) }
         #[cfg(unix)]
         {
             with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
@@ -1034,9 +1207,9 @@ impl HostRoot {
         }
     }
 
-    pub(crate) fn create_dir_measured(&self, path: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn create_dir_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<(), DemandError> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.create_dir_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.create_dir_wide_measured(path, work)) }
         #[cfg(unix)]
         {
             with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
@@ -1045,17 +1218,17 @@ impl HostRoot {
         }
     }
 
-    pub(crate) fn create_dir_all_held_measured(&self, path: &Path, work: &mut DemandWork) -> Result<HostDirectory, DemandError> {
+    pub(crate) fn create_dir_all_held_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<HostDirectory, DemandError> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.create_dir_all_held_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.create_dir_all_held_wide_measured(path, work)) }
         #[cfg(unix)]
         { Ok(HostDirectory { directory: open_unix_directory_path_with_work(&self.directory, path, true, work)? }) }
     }
 
-    pub(crate) fn hard_link_measured(&self, source: &Path, destination: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn hard_link_measured<W: crate::demand::SourceDemandReadWork>(&self, source: &Path, destination: &Path, work: &mut W) -> Result<(), DemandError> {
         #[cfg(windows)]
         {
-            with_wide_path(source, work, |source, work| with_wide_path(destination, work,
+            with_wide_path_with_work(source, work, |source, work| with_wide_path_with_work(destination, work,
                 |destination, work| self.hard_link_wide_measured(source, destination, work)))
         }
         #[cfg(unix)]
@@ -1072,10 +1245,10 @@ impl HostRoot {
     }
 
     #[cfg(unix)]
-    pub(crate) fn symlink_measured(&self, target: &OsStr, destination: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn symlink_measured<W: crate::demand::SourceDemandReadWork>(&self, target: &OsStr, destination: &Path, work: &mut W) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         with_unix_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-            unix_name(target, work, |target, work| {
+            unix_name_with_work(target, work, |target, work| {
                 // SAFETY: held directory and both terminated strings are live.
                 unix_mutation(work, || unsafe { libc::symlinkat(target.as_ptr(), parent.as_raw_fd(), leaf.as_ptr()) })
             })
@@ -1083,7 +1256,7 @@ impl HostRoot {
     }
 
     #[cfg(unix)]
-    pub(crate) fn set_permissions_without_open_measured(&self, path: &Path, mode: u32, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn set_permissions_without_open_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, mode: u32, work: &mut W) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         let mode = libc::mode_t::try_from(mode & 0o7777).map_err(|_| DemandError::InvalidRequest)?;
         with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
@@ -1094,7 +1267,7 @@ impl HostRoot {
 
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn create_fifo_held_measured(&self, path: &Path, mode: u32, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn create_fifo_held_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, mode: u32, work: &mut W) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         let mode = libc::mode_t::try_from(mode & 0o7777).map_err(|_| DemandError::InvalidRequest)?;
         with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
@@ -1105,7 +1278,7 @@ impl HostRoot {
 
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", all(test, target_os = "macos")))]
-    pub(crate) fn create_device_held_measured(&self, path: &Path, mode: u32, device: libc::dev_t, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn create_device_held_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, mode: u32, device: libc::dev_t, work: &mut W) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         let mask = mode & libc::S_IFMT as u32;
         if mask != libc::S_IFCHR as u32 && mask != libc::S_IFBLK as u32 { return Err(DemandError::InvalidRequest); }
@@ -1117,13 +1290,13 @@ impl HostRoot {
     }
 
     #[cfg(unix)]
-    pub(crate) fn bind_unix_socket_measured(&self, path: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn bind_unix_socket_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<(), DemandError> {
         with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| bind_unix_socket_in_measured(parent, leaf, work))
     }
 }
 
 #[cfg(unix)]
-fn bind_unix_socket_in_measured(parent: &Dir, leaf: &std::ffi::CStr, work: &mut DemandWork) -> Result<(), DemandError> {
+fn bind_unix_socket_in_measured<W: crate::demand::SourceDemandReadWork>(parent: &Dir, leaf: &std::ffi::CStr, work: &mut W) -> Result<(), DemandError> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     let mut address = unsafe { std::mem::zeroed::<libc::sockaddr_un>() };
     address.sun_family = libc::AF_UNIX as libc::sa_family_t;
@@ -1153,7 +1326,7 @@ fn bind_unix_socket_in_measured(parent: &Dir, leaf: &std::ffi::CStr, work: &mut 
     };
     #[cfg(target_os = "macos")]
     let base = {
-        native_read(work)?;
+        native_read_with_work(work)?;
         // SAFETY: F_GETPATH writes no more than PATH_MAX into this live buffer.
         if unsafe { libc::fcntl(parent.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
@@ -1194,7 +1367,7 @@ fn bind_unix_socket_in_measured(parent: &Dir, leaf: &std::ffi::CStr, work: &mut 
         use std::os::unix::ffi::OsStrExt as _;
         let through_descriptor = stat_unix_at(parent, OsStr::from_bytes(leaf.to_bytes()), work)?;
         let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-        native_read(work)?;
+        native_read_with_work(work)?;
         if unsafe { libc::lstat(path.as_ptr().cast(), observed.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -2433,19 +2606,19 @@ impl HostDirectory {
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
 impl LinuxMetadataTarget {
-    fn open_measured(root: &Dir, path: &Path, work: &mut DemandWork) -> Result<Self, DemandError> {
+    fn open_measured<W: crate::demand::SourceDemandReadWork>(root: &Dir, path: &Path, work: &mut W) -> Result<Self, DemandError> {
         let file = with_unix_parent_leaf(root, path, work, |parent, leaf, work| {
             open_unix_named_with(parent, leaf, libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                || native_read(work))
+                || native_read_with_work(work))
         })?;
         Ok(Self { inode: file.into() })
     }
 
-    fn observed_measured(&self, work: &mut DemandWork) -> Result<libc::stat, DemandError> {
+    fn observed_measured<W: crate::demand::SourceDemandReadWork>(&self, work: &mut W) -> Result<libc::stat, DemandError> {
         use std::os::fd::AsRawFd as _;
 
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        native_read(work)?;
+        native_read_with_work(work)?;
         // SAFETY: the held inode is live and fstat initializes stat on success.
         if unsafe { libc::fstat(self.inode.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
@@ -2470,10 +2643,10 @@ impl LinuxMetadataTarget {
     }
 
     #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes_measured(
+    pub(crate) fn set_extended_attributes_measured<W: crate::demand::SourceDemandReadWork>(
         &self,
         attributes: &[(Vec<u8>, bytes::Bytes)],
-        work: &mut DemandWork,
+        work: &mut W,
     ) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         use std::os::unix::ffi::OsStrExt as _;
@@ -2502,7 +2675,9 @@ impl LinuxMetadataTarget {
             .map_err(|_| LinuxMetadataError::Unsupported("named_attributes"))?;
         for (name, value) in attributes {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let result = unix_name(OsStr::from_bytes(name), work, |name, work| {
+            let mut entered = false;
+            let result = unix_name_with_work(OsStr::from_bytes(name), work, |name, work| {
+                entered = true;
                 native_write(work)?;
                 // SAFETY: names and the exact value slice remain live.
                 if unsafe { libc::setxattr(pinned.as_ptr(), name.as_ptr(),
@@ -2513,8 +2688,9 @@ impl LinuxMetadataTarget {
                 work.allocate(length as u64)?;
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
-                    admit_native_bytes(work, length as u64)?;
-                    native_read(work)?;
+                    work.check()?;
+                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    native_read_with_work(work)?;
                     // SAFETY: the output buffer is writable for its full length.
                     let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(),
                         readback.as_mut_ptr().cast(), readback.len()) };
@@ -2537,7 +2713,7 @@ impl LinuxMetadataTarget {
                 result
             });
             match result {
-                Err(DemandError::InvalidRequest) =>
+                Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
                     return Err(LinuxMetadataError::Unsupported("named_attributes").into()),
                 result => result?,
             }
@@ -2557,8 +2733,8 @@ impl LinuxMetadataTarget {
 
     /// Charges each pinned-inode read, capability probe, and mutation before
     /// attempting it, preserving unsupported metadata as a typed failure.
-    pub(crate) fn apply_measured(
-        &self, metadata: crate::kernel::FileMetadata, work: &mut DemandWork,
+    pub(crate) fn apply_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, metadata: crate::kernel::FileMetadata, work: &mut W,
     ) -> Result<(), DemandError> {
         use crate::kernel::MetadataField;
         use std::os::fd::AsRawFd as _;
@@ -2650,10 +2826,10 @@ const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-fn validate_linux_metadata(
+fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
-    work: &mut DemandWork,
+    work: &mut W,
 ) -> Result<(), DemandError> {
     use crate::kernel::MetadataField;
 
@@ -2705,7 +2881,7 @@ fn validate_linux_metadata(
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-fn linux_require_fchmodat2(work: &mut DemandWork) -> Result<(), DemandError> {
+fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(work: &mut W) -> Result<(), DemandError> {
     native_write(work)?;
     // An invalid descriptor makes the capability probe non-mutating. A kernel
     // with fchmodat2 and AT_EMPTY_PATH support returns EBADF; an older kernel
@@ -2886,8 +3062,8 @@ fn windows_wide_name_with_work<W: NativeHostWork, T>(
 
 
 #[cfg(windows)]
-fn stat_windows_wide_at_measured(directory: &Dir, path: &[u16], volume: u32, work: &mut DemandWork) -> Result<Option<HostStat>, DemandError> {
-    Ok(windows_wide_name(path, work, |name, work| {
+fn stat_windows_wide_at_measured<W: NativeHostWork>(directory: &Dir, path: &[u16], volume: u32, work: &mut W) -> Result<Option<HostStat>, W::Error> {
+    Ok(windows_wide_name_with_work(path, work, W::invalid_request, |name, work| {
         stat_windows_name_with_work(directory, name, volume, work)
     })?.flatten())
 }
@@ -3012,22 +3188,36 @@ fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandError> {
 #[cfg(windows)]
 impl HostRoot {
     pub(crate) fn stat_file_measured(&self, file: &File, work: &mut DemandWork) -> Result<HostStat, DemandError> {
-        stat_windows_file_measured(file, self.volume_serial_number()?, work)
+        self.stat_file_with_work(file, work)
     }
 
     pub(crate) fn open_dir_held_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<Dir, DemandError> {
         self.open_dir_held_wide_with_identity_measured(path, work).map(|(directory, _)| directory)
     }
 
+    pub(crate) fn open_dir_held_wide_with_work<W: NativeHostWork>(
+        &self, path: &[u16], work: &mut W,
+    ) -> Result<Dir, W::Error> {
+        self.open_dir_held_wide_with_identity_with_work(path, work).map(|(directory, _)| directory)
+    }
+
     pub(crate) fn open_dir_held_wide_with_identity_measured(
         &self, path: &[u16], work: &mut DemandWork,
     ) -> Result<(Dir, NativeRootIdentity), DemandError> {
-        let mut current = clone_directory_with(&self.directory, || native_read(work))?;
+        self.open_dir_held_wide_with_identity_with_work(path, work)
+    }
+
+    pub(crate) fn open_dir_held_wide_with_identity_with_work<W: NativeHostWork>(
+        &self, path: &[u16], work: &mut W,
+    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
+        let mut current = clone_directory_with(&self.directory, || native_read_with_work(work))?;
         let mut identity = self.identity;
         if path.is_empty() { return Ok((current, identity)); }
         for component in path.split(|unit| *unit == u16::from(b'\\')) {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let (next, next_identity) = self.open_dir_component_wide_measured(&current, component, work)?;
+            let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+            work.admit(item)?;
+            work.record(item)?;
+            let (next, next_identity) = self.open_dir_component_wide_with_work(&current, component, work)?;
             identity = next_identity;
             current = next;
         }
@@ -3037,40 +3227,57 @@ impl HostRoot {
     pub(crate) fn open_dir_component_wide_measured(
         &self, parent: &Dir, name: &[u16], work: &mut DemandWork,
     ) -> Result<(Dir, NativeRootIdentity), DemandError> {
+        self.open_dir_component_wide_with_work(parent, name, work)
+    }
+
+    pub(crate) fn open_dir_component_wide_with_work<W: NativeHostWork>(
+        &self, parent: &Dir, name: &[u16], work: &mut W,
+    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
         use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
         use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_ATTRIBUTE_REPARSE_POINT};
-        if name.is_empty() || name == [46] || name == [46, 46] { return Err(DemandError::InvalidRequest); }
-        let file = open_windows_wide_at_measured(parent, name, FILE_GENERIC_READ,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work)?
-            .ok_or(DemandError::InvalidRequest)?.into_std();
-        let stat = self.stat_file_measured(&file, work)?;
-        if stat.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 { return Err(DemandError::InvalidRequest); }
-        let identity = stat.identity()?;
+        if name.is_empty() || name == [46] || name == [46, 46] { return Err(W::invalid_request()); }
+        let file = open_windows_wide_at_with_work(parent, name, FILE_GENERIC_READ,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work,
+            W::invalid_request)?.ok_or_else(W::invalid_request)?.into_std();
+        let stat = self.stat_file_with_work(&file, work)?;
+        if stat.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 { return Err(W::invalid_request()); }
+        let identity = NativeRootIdentity {
+            device: u64::from(stat.volume_serial_number()), object: stat.file_index(),
+        };
         Ok((Dir::from_std_file(file), identity))
     }
 
     pub(crate) fn stat_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<HostStat, DemandError> {
+        self.stat_wide_with_work(path, work)
+    }
+
+    pub(crate) fn stat_wide_with_work<W: NativeHostWork>(&self, path: &[u16], work: &mut W) -> Result<HostStat, W::Error> {
         use windows::Wdk::Storage::FileSystem::{FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
         use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let volume = self.volume_serial_number()?;
         if path.is_empty() { return stat_windows_file_measured(&self.directory, volume, work); }
         if let Some(stat) = stat_windows_wide_at_measured(&self.directory, path, volume, work)? { return Ok(stat); }
-        let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
-        let file = open_windows_wide_at_measured(&parent, leaf, FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work)?
-            .ok_or(DemandError::InvalidRequest)?.into_std();
-        self.stat_file_measured(&file, work)
+        let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
+        let file = open_windows_wide_at_with_work(&parent, leaf, FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work,
+            W::invalid_request)?.ok_or_else(W::invalid_request)?.into_std();
+        self.stat_file_with_work(&file, work)
     }
 
     pub(crate) fn read_dir_stats_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<HostStatReader, DemandError> {
-        let volume_serial_number = self.volume_serial_number()?;
-        let directory = self.open_dir_held_wide_measured(path, work)?;
-        read_dir_held_with_volume_with_work(&directory, volume_serial_number, work)
-            .map(|(reader, _live_bytes)| reader)
+        self.read_dir_stats_wide_with_work(path, work).map(|(reader, _allocation)| reader)
     }
 
-    fn open_file_wide_for_measured(&self, path: &[u16], reads: FileReads, work: &mut DemandWork) -> Result<cap_std::fs::File, DemandError> {
+    pub(crate) fn read_dir_stats_wide_with_work<W: NativeHostWork>(
+        &self, path: &[u16], work: &mut W,
+    ) -> Result<(HostStatReader, W::Allocation), W::Error> {
+        let volume_serial_number = self.volume_serial_number()?;
+        let directory = self.open_dir_held_wide_with_work(path, work)?;
+        read_dir_held_with_volume_with_work(&directory, volume_serial_number, work)
+    }
+
+    fn open_file_wide_for_with_work<W: NativeHostWork>(&self, path: &[u16], reads: FileReads, work: &mut W) -> Result<cap_std::fs::File, W::Error> {
         use windows::Wdk::Storage::FileSystem::{
             FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NTCREATEFILE_CREATE_OPTIONS,
         };
@@ -3079,20 +3286,27 @@ impl HostRoot {
             FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
             FileReads::Positional => NTCREATEFILE_CREATE_OPTIONS(0),
         };
-        if let Some(file) = open_windows_wide_at_measured(&self.directory, path, FILE_GENERIC_READ, options, work)? {
+        if let Some(file) = open_windows_wide_at_with_work(&self.directory, path, FILE_GENERIC_READ, options, work, W::invalid_request)? {
             return Ok(file);
         }
-        let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
-        open_windows_wide_at_measured(&parent, leaf, FILE_GENERIC_READ, options, work)?.ok_or(DemandError::InvalidRequest)
+        let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
+        open_windows_wide_at_with_work(&parent, leaf, FILE_GENERIC_READ, options, work, W::invalid_request)?
+            .ok_or_else(W::invalid_request)
     }
 
     pub(crate) fn open_file_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<cap_std::fs::File, DemandError> {
-        self.open_file_wide_for_measured(path, FileReads::Cursor, work)
+        self.open_file_wide_for_with_work(path, FileReads::Cursor, work)
     }
 
     pub(crate) fn open_file_positional_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<cap_std::fs::File, DemandError> {
-        self.open_file_wide_for_measured(path, FileReads::Positional, work)
+        self.open_file_positional_wide_with_work(path, work)
+    }
+
+    pub(crate) fn open_file_positional_wide_with_work<W: NativeHostWork>(
+        &self, path: &[u16], work: &mut W,
+    ) -> Result<cap_std::fs::File, W::Error> {
+        self.open_file_wide_for_with_work(path, FileReads::Positional, work)
     }
 
     pub(crate) fn open_file_yielding_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<YieldingFile, DemandError> {
@@ -3117,9 +3331,15 @@ impl HostRoot {
     }
 
     pub(crate) fn read_link_wide_measured(&self, path: &[u16], maximum_bytes: u64, work: &mut DemandWork) -> Result<Vec<u16>, DemandError> {
-        let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
-        read_windows_link_wide_measured(&parent, leaf, maximum_bytes, work)
+        self.read_link_wide_with_work(path, maximum_bytes, work).map(|(target, _allocation)| target)
+    }
+
+    pub(crate) fn read_link_wide_with_work<W: NativeHostWork>(
+        &self, path: &[u16], maximum_bytes: u64, work: &mut W,
+    ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
+        let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
+        read_link_held_wide_with_work(&parent, leaf, maximum_bytes, work)
     }
 
     pub(crate) fn read_link_units_measured(&self, path: &Path, maximum_bytes: u64, work: &mut DemandWork) -> Result<Vec<u16>, DemandError> {
@@ -3364,15 +3584,21 @@ fn read_unix_link_with_work<W: NativeHostWork>(
 }
 
 pub(crate) fn root_path_identity_measured(path: &Path, work: &mut DemandWork) -> Result<crate::NativeRootIdentity, DemandError> {
+    root_path_identity_with_work(path, work)
+}
+
+pub(crate) fn root_path_identity_with_work<W: NativeHostWork>(
+    path: &Path, work: &mut W,
+) -> Result<crate::NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
         let stat = stat_unix_fd_at(libc::AT_FDCWD, path.as_os_str(), false, work)?;
-        if !stat.is_dir() { return Err(DemandError::SourceUnavailable); }
+        if !stat.is_dir() { return Err(io::Error::new(io::ErrorKind::NotADirectory, "native root is not a directory").into()); }
         Ok(crate::NativeRootIdentity { device: stat.dev(), object: stat.ino() })
     }
     #[cfg(windows)]
     {
-        with_root_path_name_with_work(path, false, work, |name, work| root_path_identity_wide_measured(name, work))
+        with_root_path_name_with_work(path, false, work, |name, work| root_path_identity_wide_with_work(name, work))
     }
 }
 
@@ -3466,16 +3692,16 @@ fn open_unix_named_with<E: From<io::Error>>(
 }
 
 #[cfg(unix)]
-fn open_unix_at(
-    directory: &Dir, name: &OsStr, flags: i32, work: &mut DemandWork,
-) -> Result<cap_std::fs::File, DemandError> {
-    unix_name(name, work, |name, work| {
-        open_unix_named_with(directory, name, flags, || native_read(work)).map(cap_std::fs::File::from_std)
+fn open_unix_at<W: NativeHostWork>(
+    directory: &Dir, name: &OsStr, flags: i32, work: &mut W,
+) -> Result<cap_std::fs::File, W::Error> {
+    unix_name_with_work(name, work, |name, work| {
+        open_unix_named_with(directory, name, flags, || native_read_with_work(work)).map(cap_std::fs::File::from_std)
     })
 }
 
 #[cfg(unix)]
-fn stat_unix_at(directory: &Dir, name: &OsStr, work: &mut DemandWork) -> Result<HostStat, DemandError> {
+fn stat_unix_at<W: NativeHostWork>(directory: &Dir, name: &OsStr, work: &mut W) -> Result<HostStat, W::Error> {
     use std::os::fd::AsRawFd as _;
     stat_unix_fd_at(directory.as_raw_fd(), name, false, work)
 }
@@ -3743,14 +3969,20 @@ impl HostStatReader {
 
 impl HostRoot {
     pub(crate) fn open_dir_held_measured(&self, path: &Path, work: &mut DemandWork) -> Result<Dir, DemandError> {
+        self.open_dir_held_with_work(path, work)
+    }
+
+    pub(crate) fn open_dir_held_with_work<W: NativeHostWork>(&self, path: &Path, work: &mut W) -> Result<Dir, W::Error> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.open_dir_held_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.open_dir_held_wide_with_work(path, work)) }
         #[cfg(unix)]
         {
-            let mut current = clone_directory_with(&self.directory, || native_read(work))?;
+            let mut current = clone_directory_with(&self.directory, || native_read_with_work(work))?;
             for component in path.components() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                let std::path::Component::Normal(name) = component else { return Err(DemandError::InvalidRequest); };
+                let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+                work.admit(item)?;
+                work.record(item)?;
+                let std::path::Component::Normal(name) = component else { return Err(W::invalid_request()); };
                 let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW;
                 #[cfg(target_os = "linux")]
                 let flags = flags | libc::O_NOATIME;
@@ -3801,36 +4033,50 @@ impl HostRoot {
     }
 
     pub(crate) fn read_dir_stats_measured(&self, path: &Path, work: &mut DemandWork) -> Result<HostStatReader, DemandError> {
+        self.read_dir_stats_with_work(path, work).map(|(reader, _allocation)| reader)
+    }
+
+    pub(crate) fn read_dir_stats_with_work<W: NativeHostWork>(
+        &self, path: &Path, work: &mut W,
+    ) -> Result<(HostStatReader, W::Allocation), W::Error> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.read_dir_stats_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.read_dir_stats_wide_with_work(path, work)) }
         #[cfg(unix)]
         {
-            let directory = self.open_dir_held_measured(path, work)?;
-            read_dir_held_with_work(&directory, work).map(|(reader, _live_bytes)| reader)
+            let directory = self.open_dir_held_with_work(path, work)?;
+            read_dir_held_with_work(&directory, work)
         }
     }
 
     pub(crate) fn stat_measured(&self, path: &Path, work: &mut DemandWork) -> Result<HostStat, DemandError> {
+        self.stat_with_work(path, work)
+    }
+
+    pub(crate) fn stat_with_work<W: NativeHostWork>(&self, path: &Path, work: &mut W) -> Result<HostStat, W::Error> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.stat_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.stat_wide_with_work(path, work)) }
         #[cfg(unix)]
         {
             work.check()?;
             if path.as_os_str().is_empty() { return stat_unix_at(&self.directory, OsStr::new("."), work); }
-            let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
-            let parent = self.open_dir_held_measured(path.parent().ok_or(DemandError::InvalidRequest)?, work)?;
+            let leaf = path.file_name().ok_or_else(W::invalid_request)?;
+            let parent = self.open_dir_held_with_work(path.parent().ok_or_else(W::invalid_request)?, work)?;
             stat_unix_at(&parent, leaf, work)
         }
     }
 
     pub(crate) fn open_file_measured(&self, path: &Path, work: &mut DemandWork) -> Result<cap_std::fs::File, DemandError> {
+        self.open_file_with_work(path, work)
+    }
+
+    pub(crate) fn open_file_with_work<W: NativeHostWork>(&self, path: &Path, work: &mut W) -> Result<cap_std::fs::File, W::Error> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.open_file_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.open_file_wide_for_with_work(path, FileReads::Cursor, work)) }
         #[cfg(unix)]
         {
             work.check()?;
-            let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
-            let parent = self.open_dir_held_measured(path.parent().ok_or(DemandError::InvalidRequest)?, work)?;
+            let leaf = path.file_name().ok_or_else(W::invalid_request)?;
+            let parent = self.open_dir_held_with_work(path.parent().ok_or_else(W::invalid_request)?, work)?;
             // A type-changing race must not block opening a FIFO or acquire a
             // controlling terminal before the caller validates the held inode.
             let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
@@ -3841,25 +4087,47 @@ impl HostRoot {
     }
 
     pub(crate) fn open_file_positional_measured(&self, path: &Path, work: &mut DemandWork) -> Result<cap_std::fs::File, DemandError> {
+        self.open_file_positional_with_work(path, work)
+    }
+
+    pub(crate) fn open_file_positional_with_work<W: NativeHostWork>(
+        &self, path: &Path, work: &mut W,
+    ) -> Result<cap_std::fs::File, W::Error> {
         #[cfg(windows)]
-        { with_wide_path(path, work, |path, work| self.open_file_positional_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.open_file_positional_wide_with_work(path, work)) }
         #[cfg(unix)]
-        { self.open_file_measured(path, work) }
+        { self.open_file_with_work(path, work) }
     }
 
     #[cfg(unix)]
     pub(crate) fn stat_file_measured(&self, file: &File, work: &mut DemandWork) -> Result<HostStat, DemandError> {
-        use std::os::fd::AsRawFd as _;
-        stat_unix_fd_at(file.as_raw_fd(), OsStr::new(""), true, work)
+        self.stat_file_with_work(file, work)
+    }
+
+    pub(crate) fn stat_file_with_work<W: NativeHostWork>(&self, file: &File, work: &mut W) -> Result<HostStat, W::Error> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            stat_unix_fd_at(file.as_raw_fd(), OsStr::new(""), true, work)
+        }
+        #[cfg(windows)]
+        { stat_windows_file_measured(file, self.volume_serial_number()?, work) }
     }
 
     #[cfg(unix)]
     pub(crate) fn read_link_measured(&self, path: &Path, maximum_bytes: u64, work: &mut DemandWork) -> Result<std::path::PathBuf, DemandError> {
-        let leaf = path.file_name().ok_or(DemandError::InvalidRequest)?;
-        let parent = self.open_dir_held_measured(path.parent().ok_or(DemandError::InvalidRequest)?, work)?;
+        let (target, _) = self.read_link_with_work(path, maximum_bytes, work)?;
         use std::os::unix::ffi::OsStringExt as _;
-        let (target, _) = read_unix_link_with_work(&parent, leaf, maximum_bytes, work, || DemandError::InvalidRequest)?;
         Ok(OsString::from_vec(target).into())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn read_link_with_work<W: NativeHostWork>(
+        &self, path: &Path, maximum_bytes: u64, work: &mut W,
+    ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
+        let leaf = path.file_name().ok_or_else(W::invalid_request)?;
+        let parent = self.open_dir_held_with_work(path.parent().ok_or_else(W::invalid_request)?, work)?;
+        read_unix_link_with_work(&parent, leaf, maximum_bytes, work, W::invalid_request)
     }
 }
 
@@ -4070,41 +4338,73 @@ fn encode_root_path_name_with_work<W: NativeHostWork>(
 /// this exact owned encoding lets later root proofs borrow it without growth.
 #[cfg(windows)]
 pub(crate) fn normalize_root_wide_measured(path: &Path, work: &mut DemandWork) -> Result<Vec<u16>, DemandError> {
+    normalize_root_wide_with_work(path, work).map(|(name, _allocation)| name)
+}
+
+/// Returns the owned spelling and its live allocation lease. Release the lease
+/// only after dropping the spelling.
+#[cfg(windows)]
+pub(crate) fn normalize_root_wide_with_work<W: NativeHostWork<Allocation = u64, Error = DemandError>>(
+    path: &Path, work: &mut W,
+) -> Result<(Vec<u16>, u64), DemandError> {
     let (name, live_bytes) = encode_root_path_name_with_work(path, work)?;
     let short_absolute = path.is_absolute() && name.len() < 248;
     if short_absolute || name.starts_with(&[92, 92, 63, 92]) || name.starts_with(&[92, 63, 63, 92]) {
-        return Ok(name);
+        return Ok((name, live_bytes));
     }
     let result = with_normalized_windows_root_name(&name, !path.is_absolute(), work, |name, work| {
         let bytes = name.len() as u64 * 2;
-        native_buffer(work, bytes, bytes, 0)?;
-        Ok(name.to_vec())
+        let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
+        work.admit(copied)?;
+        let allocation = work.claim(bytes)?;
+        let output = name.to_vec();
+        if let Err(error) = work.record(copied) {
+            drop(output);
+            work.release(allocation)?;
+            return Err(error);
+        }
+        Ok((output, allocation))
     });
     drop(name);
-    work.release(live_bytes)?;
+    if let Err(error) = work.release(live_bytes) {
+        if let Ok((output, allocation)) = result {
+            drop(output);
+            work.release(allocation)?;
+        }
+        return Err(error);
+    }
     result
 }
 
 #[cfg(windows)]
-fn check_root_wide_name(name: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+fn check_root_wide_name<W: NativeHostWork>(name: &[u16], work: &mut W) -> Result<(), W::Error> {
     work.check()?;
-    let Some((last, body)) = name.split_last() else { return Err(DemandError::InvalidRequest); };
-    if *last != 0 { return Err(DemandError::InvalidRequest); }
+    let Some((last, body)) = name.split_last() else { return Err(W::invalid_request()); };
+    if *last != 0 { return Err(W::invalid_request()); }
     for unit in body {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        if *unit == 0 { return Err(DemandError::InvalidRequest); }
+        let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+        work.admit(delta)?;
+        work.record(delta)?;
+        if *unit == 0 { return Err(W::invalid_request()); }
     }
     Ok(())
 }
 
 #[cfg(windows)]
 pub(crate) fn root_path_identity_wide_measured(name: &[u16], work: &mut DemandWork) -> Result<NativeRootIdentity, DemandError> {
+    root_path_identity_wide_with_work(name, work)
+}
+
+#[cfg(windows)]
+pub(crate) fn root_path_identity_wide_with_work<W: NativeHostWork>(
+    name: &[u16], work: &mut W,
+) -> Result<NativeRootIdentity, W::Error> {
     check_root_wide_name(name, work)?;
-    native_read(work)?;
-    let file = open_windows_root_name_with_access(name, windows::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES)?;
+    let file = native_attempt(work,
+        WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED },
+        || open_windows_root_name_with_access(name, windows::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES))?;
     let directory = Dir::from_std_file(file);
-    native_read(work)?;
-    query_held_root_identity(&directory, || DemandError::SourceUnavailable)
+    directory_identity_with_work(&directory, work)
 }
 
 #[cfg(windows)]
@@ -4253,25 +4553,50 @@ pub(crate) fn open_root_directory_with_work<W: NativeHostWork>(
     open_root_directory_identity_with_work(path, work).map(|(directory, _)| directory)
 }
 
-fn open_root_directory_identity_with_work<W: NativeHostWork>(
+pub(crate) fn open_root_directory_identity_with_work<W: NativeHostWork>(
     path: &Path, work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
+    let cleanup = work.reserve_cleanup_write()?;
+    // Keep successful open custody outside temporary-name helpers so a later
+    // allocation-release error still reaches the reserved physical close.
+    let mut opened = None;
     #[cfg(unix)]
-    let file = unix_name_with_work(path.as_os_str(), work, |name, work| {
-        open_unix_root_with(name, || {
+    let result = unix_name_with_work(path.as_os_str(), work, |name, work| {
+        opened = Some(open_unix_root_with(name, || {
             let delta = WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED };
             work.admit(delta)?;
             work.record(delta)
-        })
-    })?;
+        })?);
+        Ok(())
+    });
     #[cfg(windows)]
-    let file = with_root_path_name_with_work(path, false, work, |name, work| {
-        native_attempt(work, WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED },
-            || open_windows_root_name(name))
-    })?;
-    let directory = Dir::from_std_file(file);
-    let identity = directory_identity_with_work(&directory, work)?;
-    Ok((directory, identity))
+    let result = with_root_path_name_with_work(path, false, work, |name, work| {
+        opened = Some(native_attempt(work,
+            WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED },
+            || open_windows_root_name(name))?);
+        Ok(())
+    });
+    if let Err(error) = result {
+        if let Some(file) = opened {
+            let ((), recorded) = work.attempt_cleanup_write(cleanup, || drop(file));
+            recorded?;
+        } else {
+            work.cancel_cleanup_write(cleanup);
+        }
+        return Err(error);
+    }
+    let directory = Dir::from_std_file(opened.expect("successful native root open retains its file"));
+    match directory_identity_with_work(&directory, work) {
+        Ok(identity) => {
+            work.cancel_cleanup_write(cleanup);
+            Ok((directory, identity))
+        }
+        Err(error) => {
+            let ((), recorded) = work.attempt_cleanup_write(cleanup, || drop(directory));
+            recorded?;
+            Err(error)
+        }
+    }
 }
 
 impl HostRoot {
@@ -4287,6 +4612,10 @@ impl HostRoot {
     }
 
     pub(crate) fn open_measured(path: &Path, work: &mut DemandWork) -> Result<Self, DemandError> {
+        Self::open_with_work(path, work)
+    }
+
+    pub(crate) fn open_with_work<W: NativeHostWork>(path: &Path, work: &mut W) -> Result<Self, W::Error> {
         let (directory, identity) = open_root_directory_identity_with_work(path, work)?;
         Ok(Self::from_held_dir_with_identity(directory, identity))
     }
@@ -4318,6 +4647,10 @@ impl HostRoot {
     }
 
     pub(crate) fn is_local_measured(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
+        self.is_local_with_work(work)
+    }
+
+    pub(crate) fn is_local_with_work<W: NativeHostWork>(&self, work: &mut W) -> Result<bool, W::Error> {
         filesystem_is_local_measured(&self.directory, work)
     }
 
@@ -4647,16 +4980,16 @@ impl HostRoot {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn clone_file_measured(&self, source: &Path, destination: &Path, work: &mut DemandWork) -> Result<bool, DemandError> {
+    pub(crate) fn clone_file_measured<W: crate::demand::SourceDemandReadWork>(&self, source: &Path, destination: &Path, work: &mut W) -> Result<bool, DemandError> {
         self.clone_file_from_measured(self, source, destination, work)
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn clone_file_from_measured(
-        &self, source_root: &HostRoot, source: &Path, destination: &Path, work: &mut DemandWork,
+    pub(crate) fn clone_file_from_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, source_root: &HostRoot, source: &Path, destination: &Path, work: &mut W,
     ) -> Result<bool, DemandError> {
         use std::os::fd::AsRawFd as _;
-        let source = match source_root.open_file_measured(source, work) {
+        let source = match source_root.open_file_with_work(source, work) {
             Ok(source) => source,
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
             Err(error) => return Err(error),
@@ -4815,8 +5148,8 @@ impl HostRoot {
 
     #[cfg(target_os = "macos")]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_macos_metadata_target_measured(
-        &self, path: &Path, work: &mut DemandWork,
+    pub(crate) fn open_macos_metadata_target_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, path: &Path, work: &mut W,
     ) -> Result<MacMetadataTarget, DemandError> {
         open_macos_metadata_target_measured(&self.directory, path, work)
     }
@@ -4837,8 +5170,8 @@ impl HostRoot {
 
     #[cfg(target_os = "linux")]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_linux_metadata_target_measured(
-        &self, path: &Path, work: &mut DemandWork,
+    pub(crate) fn open_linux_metadata_target_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, path: &Path, work: &mut W,
     ) -> Result<LinuxMetadataTarget, DemandError> {
         LinuxMetadataTarget::open_measured(&self.directory, path, work)
     }
@@ -4858,16 +5191,16 @@ impl HostRoot {
 
     #[cfg(windows)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_windows_metadata_target_measured(
-        &self, path: &Path, work: &mut DemandWork,
+    pub(crate) fn open_windows_metadata_target_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, path: &Path, work: &mut W,
     ) -> Result<WindowsMetadataTarget, DemandError> {
-        with_wide_path(path, work, |path, work| self.open_windows_metadata_target_wide_measured(path, work))
+        with_wide_path_with_work(path, work, |path, work| self.open_windows_metadata_target_wide_measured(path, work))
     }
 
     #[cfg(windows)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_windows_metadata_target_wide_measured(
-        &self, path: &[u16], work: &mut DemandWork,
+    pub(crate) fn open_windows_metadata_target_wide_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, path: &[u16], work: &mut W,
     ) -> Result<WindowsMetadataTarget, DemandError> {
         WindowsMetadataTarget::open_wide_measured(&self.directory, path, work)
     }
@@ -4914,8 +5247,8 @@ impl HostRoot {
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
-fn open_macos_metadata_target_measured(
-    root: &Dir, path: &Path, work: &mut DemandWork,
+fn open_macos_metadata_target_measured<W: crate::demand::SourceDemandReadWork>(
+    root: &Dir, path: &Path, work: &mut W,
 ) -> Result<MacMetadataTarget, DemandError> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::ffi::OsStrExt as _;
@@ -4925,9 +5258,10 @@ fn open_macos_metadata_target_measured(
         let kind = before.st_mode & libc::S_IFMT;
         if !matches!(kind, libc::S_IFREG | libc::S_IFDIR | libc::S_IFIFO) {
             // Sockets and symlinks cannot safely be opened for mutation.
-            let parent = clone_directory_with(parent, || native_read(work))?;
+            let parent = clone_directory_with(parent, || native_read_with_work(work))?;
             let bytes = leaf.to_bytes();
-            native_buffer(work, bytes.len() as u64, bytes.len() as u64, 0)?;
+            let copied = WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+            work.allocate_for(bytes.len() as u64, copied)?;
             let leaf = Path::new(OsStr::from_bytes(bytes)).to_path_buf();
             let target = MacMetadataTarget::Noop {
                 parent, leaf, device: before.st_dev as u64, inode: before.st_ino,
@@ -4937,7 +5271,7 @@ fn open_macos_metadata_target_measured(
         let file = open_unix_named_with(parent, leaf,
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
                 | if kind == libc::S_IFIFO { libc::O_EVTONLY } else { 0 },
-            || native_read(work))?;
+            || native_read_with_work(work))?;
         let after = macos_fstat_measured(file.as_raw_fd(), work)?;
         if before.st_dev != after.st_dev || before.st_ino != after.st_ino {
             return Err(io::Error::other("metadata target changed during admission").into());
@@ -4951,12 +5285,12 @@ fn open_macos_metadata_target_measured(
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
-fn macos_stat_at_measured(
-    parent: &Dir, leaf: &std::ffi::CStr, work: &mut DemandWork,
+fn macos_stat_at_measured<W: crate::demand::SourceDemandReadWork>(
+    parent: &Dir, leaf: &std::ffi::CStr, work: &mut W,
 ) -> Result<libc::stat, DemandError> {
     use std::os::fd::AsRawFd as _;
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-    native_read(work)?;
+    native_read_with_work(work)?;
     // SAFETY: the parent, single-component name, and output remain live.
     if unsafe { libc::fstatat(parent.as_raw_fd(), leaf.as_ptr(),
         observed.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) } != 0 {
@@ -4994,8 +5328,8 @@ impl MacMetadataTarget {
     }
 
     #[cfg(feature = "native-mount")]
-    pub(crate) fn set_extended_attributes_measured(
-        &self, attributes: &[(Vec<u8>, bytes::Bytes)], work: &mut DemandWork,
+    pub(crate) fn set_extended_attributes_measured<W: crate::demand::SourceDemandReadWork>(
+        &self, attributes: &[(Vec<u8>, bytes::Bytes)], work: &mut W,
     ) -> Result<(), DemandError> {
         use std::os::fd::AsRawFd as _;
         use std::os::unix::ffi::OsStrExt as _;
@@ -5007,7 +5341,9 @@ impl MacMetadataTarget {
         let fd = file.as_raw_fd();
         for (name, value) in attributes {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let result = unix_name(OsStr::from_bytes(name), work, |name, work| {
+            let mut entered = false;
+            let result = unix_name_with_work(OsStr::from_bytes(name), work, |name, work| {
+                entered = true;
                 native_write(work)?;
                 // SAFETY: the name and exact value slice remain live.
                 if unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(),
@@ -5018,8 +5354,9 @@ impl MacMetadataTarget {
                 work.allocate(length as u64)?;
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
-                    admit_native_bytes(work, length as u64)?;
-                    native_read(work)?;
+                    work.check()?;
+                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    native_read_with_work(work)?;
                     // SAFETY: readback is writable for its whole length.
                     let read = unsafe { libc::fgetxattr(fd, name.as_ptr(),
                         readback.as_mut_ptr().cast(), readback.len(), 0, 0) };
@@ -5042,7 +5379,7 @@ impl MacMetadataTarget {
                 result
             });
             match result {
-                Err(DemandError::InvalidRequest) =>
+                Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
                     return Err(MacMetadataError::Unsupported("named_attributes").into()),
                 result => result?,
             }
@@ -5067,8 +5404,8 @@ impl MacMetadataTarget {
 
     /// Admits each held-inode primitive separately. A no-op target revalidates
     /// its identity without following the leaf or opening its payload.
-    pub(crate) fn apply_measured(
-        self, metadata: crate::kernel::FileMetadata, work: &mut DemandWork,
+    pub(crate) fn apply_measured<W: crate::demand::SourceDemandReadWork>(
+        self, metadata: crate::kernel::FileMetadata, work: &mut W,
     ) -> Result<(), DemandError> {
         use crate::kernel::MetadataField;
         use std::os::fd::AsRawFd as _;
@@ -5089,7 +5426,7 @@ impl MacMetadataTarget {
                     if metadata != crate::kernel::FileMetadata::default() {
                         return Err(MacMetadataError::Unsupported("non-ordinary file kind").into());
                     }
-                    let observed = unix_name(leaf.as_os_str(), work, |leaf, work|
+                    let observed = unix_name_with_work(leaf.as_os_str(), work, |leaf, work|
                         macos_stat_at_measured(&parent, leaf, work))?;
                     if observed.st_dev as u64 != device || observed.st_ino != inode {
                         return Err(io::Error::other("metadata target changed during no-op").into());
@@ -5191,8 +5528,8 @@ fn validate_macos_metadata_fields(
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
-fn apply_macos_timestamp_metadata_measured(
-    fd: libc::c_int, metadata: crate::kernel::FileMetadata, work: &mut DemandWork,
+fn apply_macos_timestamp_metadata_measured<W: crate::demand::SourceDemandReadWork>(
+    fd: libc::c_int, metadata: crate::kernel::FileMetadata, work: &mut W,
 ) -> Result<(), DemandError> {
     use crate::kernel::MetadataField;
 
@@ -5272,9 +5609,9 @@ fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> 
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
-fn macos_fstat_measured(fd: std::os::fd::RawFd, work: &mut DemandWork) -> Result<libc::stat, DemandError> {
+fn macos_fstat_measured<W: crate::demand::SourceDemandReadWork>(fd: std::os::fd::RawFd, work: &mut W) -> Result<libc::stat, DemandError> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-    native_read(work)?;
+    native_read_with_work(work)?;
     // SAFETY: fstat initializes the whole result on success.
     if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error().into());
@@ -5286,7 +5623,7 @@ fn macos_fstat_measured(fd: std::os::fd::RawFd, work: &mut DemandWork) -> Result
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
 impl WindowsMetadataTarget {
-    fn open_wide_measured(directory: &Dir, path: &[u16], work: &mut DemandWork) -> Result<Self, DemandError> {
+    fn open_wide_measured<W: crate::demand::SourceDemandReadWork>(directory: &Dir, path: &[u16], work: &mut W) -> Result<Self, DemandError> {
         use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
         use windows::Win32::Storage::FileSystem::{
             FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
@@ -5294,9 +5631,9 @@ impl WindowsMetadataTarget {
 
         work.check()?;
         if path.is_empty() {
-            let file = open_windows_wide_at_measured(directory, &[u16::from(b'.')],
+            let file = open_windows_wide_at_with_work(directory, &[u16::from(b'.')],
                 FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
-                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work)?
+                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
                 .ok_or(DemandError::InvalidRequest)?;
             return Ok(Self { file });
         }
@@ -5313,12 +5650,12 @@ impl WindowsMetadataTarget {
             return Err(DemandError::InvalidRequest);
         }
         let parent = if parent_path.is_empty() { None } else {
-            Some(Dir::from_std_file(open_windows_wide_at_measured(directory, parent_path,
-                FILE_GENERIC_READ, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work)?
+            Some(Dir::from_std_file(open_windows_wide_at_with_work(directory, parent_path,
+                FILE_GENERIC_READ, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
                 .ok_or(DemandError::InvalidRequest)?.into_std()))
         };
         let parent = parent.as_ref().unwrap_or(directory);
-        let file = cap_std::fs::File::from_std(open_windows_leaf_handle_measured(parent, leaf,
+        let file = cap_std::fs::File::from_std(open_windows_leaf_handle_with_work(parent, leaf,
             FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, None, work)?);
         Ok(Self { file })
     }
@@ -5337,8 +5674,8 @@ impl WindowsMetadataTarget {
 
     /// Admits the held-handle query, update, and readback independently; a
     /// denied or cancelled boundary never begins the corresponding call.
-    pub(crate) fn apply_measured(
-        self, metadata: crate::kernel::FileMetadata, work: &mut DemandWork,
+    pub(crate) fn apply_measured<W: crate::demand::SourceDemandReadWork>(
+        self, metadata: crate::kernel::FileMetadata, work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
         reject_unsupported_windows_metadata(metadata)?;
@@ -5493,14 +5830,14 @@ fn verify_windows_basic_info(
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
-fn query_windows_basic_info_measured(file: &cap_std::fs::File, work: &mut DemandWork) -> Result<FILE_BASIC_INFO, DemandError> {
+fn query_windows_basic_info_measured<W: crate::demand::SourceDemandReadWork>(file: &cap_std::fs::File, work: &mut W) -> Result<FILE_BASIC_INFO, DemandError> {
     query_windows_basic_info_with_work(file, work)
 }
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
-fn set_windows_basic_info_measured(
-    file: &cap_std::fs::File, information: FILE_BASIC_INFO, work: &mut DemandWork,
+fn set_windows_basic_info_measured<W: crate::demand::SourceDemandReadWork>(
+    file: &cap_std::fs::File, information: FILE_BASIC_INFO, work: &mut W,
 ) -> Result<(), DemandError> {
     set_windows_basic_info_with_work(file, information, work)
 }
@@ -5789,7 +6126,7 @@ fn clone_windows_file_into(source: &mut File, target: &mut File, length: u64) ->
 }
 
 #[cfg(windows)]
-fn clone_windows_file_into_measured(source: &File, target: &File, length: u64, work: &mut DemandWork) -> Result<bool, DemandError> {
+fn clone_windows_file_into_measured<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, length: u64, work: &mut W) -> Result<bool, DemandError> {
     for alignment in [4 * 1024, 64 * 1024] {
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
         match clone_windows_file_measured(source, target, length, alignment, work) {
@@ -5890,20 +6227,27 @@ fn windows_set_information_measured<T, W: NativeHostWork>(
     file: &File, information: &T,
     class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS, work: &mut W,
 ) -> Result<(), W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
-    native_attempt(work, WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, || {
-        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: correctly sized initialized information and held handle outlive the call.
-        let status = unsafe { windows::Wdk::Storage::FileSystem::NtSetInformationFile(
-            windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut block,
-            std::ptr::from_ref(information).cast(), std::mem::size_of::<T>() as u32, class) };
-        if status.is_err() { return Err(status_error(status)); }
-        Ok(())
-    })
+    native_attempt(work, WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
+        || windows_set_information_held(file, information, class))
 }
 
 #[cfg(windows)]
-fn windows_keep_created_file_measured(file: &File, work: &mut DemandWork) -> Result<(), DemandError> {
+fn windows_set_information_held<T>(
+    file: &File, information: &T,
+    class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
+) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
+    // SAFETY: correctly sized initialized information and held handle outlive the call.
+    let status = unsafe { windows::Wdk::Storage::FileSystem::NtSetInformationFile(
+        windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut block,
+        std::ptr::from_ref(information).cast(), std::mem::size_of::<T>() as u32, class) };
+    if status.is_err() { return Err(status_error(status)); }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_keep_created_file_measured<W: crate::demand::SourceDemandReadWork>(file: &File, work: &mut W) -> Result<(), DemandError> {
     keep_windows_created_file_with_work(file, work)
 }
 
@@ -5916,10 +6260,10 @@ pub(crate) fn keep_windows_created_file_with_work<W: NativeHostWork>(file: &File
 }
 
 #[cfg(windows)]
-pub(crate) fn open_windows_leaf_handle_measured(
+pub(crate) fn open_windows_leaf_handle_measured<W: crate::demand::SourceDemandReadWork>(
     parent: &Dir, name: &[u16],
     access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
-    directory: Option<bool>, work: &mut DemandWork,
+    directory: Option<bool>, work: &mut W,
 ) -> Result<File, DemandError> {
     open_windows_leaf_handle_with_work(parent, name, access, directory, work)
 }
@@ -5977,8 +6321,17 @@ pub(crate) fn create_windows_provisional_file_with_work<W: NativeHostWork>(paren
     create_windows_wide_at_measured(parent, name, false, false, false, true, work)
 }
 
+/// A caller-held provisional writer in the existing native creation engine.
+/// Delete-on-close retains failed-start cleanup while positional I/O is pending.
 #[cfg(windows)]
-pub(crate) fn open_windows_leaf_with_options_measured(parent: &Dir, name: &[u16], options: &NativeOpenOptions, work: &mut DemandWork) -> Result<File, DemandError> {
+pub(crate) fn create_windows_provisional_overlapped_file_with_work<W: NativeHostWork>(
+    parent: &Dir, name: &[u16], work: &mut W,
+) -> Result<File, W::Error> {
+    create_windows_wide_at_measured(parent, name, false, true, false, true, work)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_windows_leaf_with_options_measured<W: crate::demand::SourceDemandReadWork>(parent: &Dir, name: &[u16], options: &NativeOpenOptions, work: &mut W) -> Result<File, DemandError> {
     open_windows_leaf_with_options_with_work(parent, name, options, work)
 }
 
@@ -5989,6 +6342,10 @@ pub(crate) fn open_windows_leaf_with_options_with_work<W: NativeHostWork>(parent
     use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_ATTRIBUTE_REPARSE_POINT};
     let file = match options {
         NativeOpenOptions::Read => open_windows_leaf_handle_with_work(parent, name, FILE_GENERIC_READ, Some(false), work)?,
+        NativeOpenOptions::ReadWrite => {
+            use windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+            open_windows_leaf_handle_with_work(parent, name, FILE_GENERIC_READ | FILE_GENERIC_WRITE, Some(false), work)?
+        }
         NativeOpenOptions::CreateNew => create_windows_wide_at_measured(parent, name, false, false, false, false, work)?,
         NativeOpenOptions::ReadWriteCreate => create_windows_wide_at_measured(parent, name, false, false, true, false, work)?,
     };
@@ -6008,7 +6365,7 @@ pub(crate) fn open_windows_leaf_with_options_with_work<W: NativeHostWork>(parent
 }
 
 #[cfg(windows)]
-pub(crate) fn remove_windows_leaf_measured(parent: &Dir, name: &[u16], directory: bool, work: &mut DemandWork) -> Result<(), DemandError> {
+pub(crate) fn remove_windows_leaf_measured<W: crate::demand::SourceDemandReadWork>(parent: &Dir, name: &[u16], directory: bool, work: &mut W) -> Result<(), DemandError> {
     remove_windows_leaf_with_work(parent, name, directory, work)
 }
 
@@ -6052,7 +6409,7 @@ fn remove_windows_leaf_with_identity_with_work<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-pub(crate) fn rename_windows_leaf_measured(from: &Dir, name: &[u16], to: &Dir, to_name: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+pub(crate) fn rename_windows_leaf_measured<W: crate::demand::SourceDemandReadWork>(from: &Dir, name: &[u16], to: &Dir, to_name: &[u16], work: &mut W) -> Result<(), DemandError> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     use windows::Wdk::Storage::FileSystem::{FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile};
@@ -6063,7 +6420,7 @@ pub(crate) fn rename_windows_leaf_measured(from: &Dir, name: &[u16], to: &Dir, t
         if *unit == 92 { return Err(DemandError::InvalidRequest); }
     }
     if to_name == [46] || to_name == [46, 46] { return Err(DemandError::InvalidRequest); }
-    windows_wide_name(to_name, work, |_, work| {
+    windows_wide_name_with_work(to_name, work, || DemandError::InvalidRequest, |_, work| {
         let name_bytes = to_name.len().checked_mul(2).ok_or(crate::WorkError::Overflow)?;
         let offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
         let total = offset.checked_add(name_bytes).ok_or(crate::WorkError::Overflow)?.max(size_of::<FILE_RENAME_INFORMATION>());
@@ -6096,33 +6453,33 @@ pub(crate) fn rename_windows_leaf_measured(from: &Dir, name: &[u16], to: &Dir, t
 
 #[cfg(windows)]
 impl HostRoot {
-    pub(crate) fn create_overlapped_file_measured(&self, path: &Path, work: &mut DemandWork) -> Result<File, DemandError> {
-        with_wide_path(path, work, |path, work| self.create_overlapped_file_wide_measured(path, work))
+    pub(crate) fn create_overlapped_file_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<File, DemandError> {
+        with_wide_path_with_work(path, work, |path, work| self.create_overlapped_file_wide_measured(path, work))
     }
 
-    pub(crate) fn create_file_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<File, DemandError> {
+    pub(crate) fn create_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<File, DemandError> {
         self.create_windows_file_wide_measured(path, false, false, work)
     }
 
-    pub(crate) fn create_overlapped_file_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<File, DemandError> {
+    pub(crate) fn create_overlapped_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<File, DemandError> {
         self.create_windows_file_wide_measured(path, true, false, work)
     }
 
-    fn create_windows_file_wide_measured(&self, path: &[u16], overlapped: bool, temporary: bool, work: &mut DemandWork) -> Result<File, DemandError> {
+    fn create_windows_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], overlapped: bool, temporary: bool, work: &mut W) -> Result<File, DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
         create_windows_wide_at_measured(&parent, leaf, false, overlapped, false, temporary, work)
     }
 
-    pub(crate) fn create_dir_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn create_dir_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<(), DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
         create_windows_wide_at_measured(&parent, leaf, true, false, false, false, work)?;
         Ok(())
     }
 
-    pub(crate) fn create_dir_all_held_wide_measured(&self, path: &[u16], work: &mut DemandWork) -> Result<HostDirectory, DemandError> {
-        let mut current = clone_directory_with(&self.directory, || native_read(work))?;
+    pub(crate) fn create_dir_all_held_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<HostDirectory, DemandError> {
+        let mut current = clone_directory_with(&self.directory, || native_read_with_work(work))?;
         if path.is_empty() { return Ok(HostDirectory { directory: current }); }
         for component in path.split(|unit| *unit == 92) {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
@@ -6135,31 +6492,31 @@ impl HostRoot {
         Ok(HostDirectory { directory: current })
     }
 
-    pub(crate) fn hard_link_wide_measured(&self, source: &[u16], destination: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn hard_link_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, source: &[u16], destination: &[u16], work: &mut W) -> Result<(), DemandError> {
         use windows::Wdk::Storage::FileSystem::{FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
         use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let (source_parent, source_leaf) = wide_parent_leaf(source)?;
-        let source_parent = self.open_dir_held_wide_measured(source_parent, work)?;
-        let source = open_windows_wide_at_measured(&source_parent, source_leaf,
+        let source_parent = self.open_dir_held_wide_with_work(source_parent, work)?;
+        let source = open_windows_wide_at_with_work(&source_parent, source_leaf,
             DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work)?
+            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
             .ok_or(DemandError::InvalidRequest)?.into_std();
         let (parent, leaf) = wide_parent_leaf(destination)?;
-        let parent = self.open_dir_held_wide_measured(parent, work)?;
+        let parent = self.open_dir_held_wide_with_work(parent, work)?;
         link_windows_wide_measured(&source, &parent, leaf, work)
     }
 
-    pub(crate) fn clone_file_wide_measured(&self, source: &[u16], destination: &[u16], work: &mut DemandWork) -> Result<bool, DemandError> {
+    pub(crate) fn clone_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, source: &[u16], destination: &[u16], work: &mut W) -> Result<bool, DemandError> {
         self.clone_file_from_wide_measured(self, source, destination, work)
     }
 
-    pub(crate) fn clone_file_from_wide_measured(&self, source_root: &HostRoot, source: &[u16], destination: &[u16], work: &mut DemandWork) -> Result<bool, DemandError> {
+    pub(crate) fn clone_file_from_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, source_root: &HostRoot, source: &[u16], destination: &[u16], work: &mut W) -> Result<bool, DemandError> {
         self.clone_file_from_identity_wide_measured(source_root, source, destination, None, work)
     }
 
-    fn clone_file_from_identity_wide_measured(&self, source_root: &HostRoot, source: &[u16], destination: &[u16], expected: Option<crate::NativeRootIdentity>, work: &mut DemandWork) -> Result<bool, DemandError> {
-        let source = source_root.open_file_wide_measured(source, work)?.into_std();
-        let stat = source_root.stat_file_measured(&source, work)?;
+    fn clone_file_from_identity_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, source_root: &HostRoot, source: &[u16], destination: &[u16], expected: Option<crate::NativeRootIdentity>, work: &mut W) -> Result<bool, DemandError> {
+        let source = source_root.open_file_wide_for_with_work(source, FileReads::Cursor, work)?.into_std();
+        let stat = source_root.stat_file_with_work(&source, work)?;
         if !stat.file_type().is_file() || stat.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
             return Err(DemandError::InvalidRequest);
         }
@@ -6177,7 +6534,7 @@ impl HostRoot {
         cloned
     }
 
-    pub(crate) fn symlink_file_wide_measured(&self, target: &[u16], destination: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn symlink_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, target: &[u16], destination: &[u16], work: &mut W) -> Result<(), DemandError> {
         let file = self.create_windows_file_wide_measured(destination, false, true, work)?;
         set_windows_symlink_wide_measured(&file, target, work)?;
         windows_keep_created_file_measured(&file, work)
@@ -6185,11 +6542,11 @@ impl HostRoot {
 }
 
 #[cfg(windows)]
-fn link_windows_wide_measured(file: &File, parent: &Dir, name: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+fn link_windows_wide_measured<W: crate::demand::SourceDemandReadWork>(file: &File, parent: &Dir, name: &[u16], work: &mut W) -> Result<(), DemandError> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     use windows::Wdk::Storage::FileSystem::{FILE_LINK_INFORMATION, FileLinkInformation, NtSetInformationFile};
-    windows_wide_name(name, work, |_, work| {
+    windows_wide_name_with_work(name, work, || DemandError::InvalidRequest, |_, work| {
         let name_bytes = name.len().checked_mul(2).ok_or(crate::WorkError::Overflow)?;
         let offset = offset_of!(FILE_LINK_INFORMATION, FileName);
         let total = offset.checked_add(name_bytes).ok_or(crate::WorkError::Overflow)?.max(size_of::<FILE_LINK_INFORMATION>());
@@ -6221,7 +6578,7 @@ fn link_windows_wide_measured(file: &File, parent: &Dir, name: &[u16], work: &mu
 }
 
 #[cfg(windows)]
-fn set_windows_symlink_wide_measured(file: &File, target: &[u16], work: &mut DemandWork) -> Result<(), DemandError> {
+fn set_windows_symlink_wide_measured<W: crate::demand::SourceDemandReadWork>(file: &File, target: &[u16], work: &mut W) -> Result<(), DemandError> {
     use std::os::windows::io::AsRawHandle as _;
     for unit in target {
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
@@ -6402,50 +6759,50 @@ impl HostDirectory {
 }
 
 impl HostDirectory {
-    pub(crate) fn open_root_measured(&self, name: &Path, work: &mut DemandWork) -> Result<HostRoot, DemandError> {
+    pub(crate) fn open_root_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, work: &mut W) -> Result<HostRoot, DemandError> {
         #[cfg(unix)]
         let directory = open_unix_directory_path_with_work(&self.directory, name, false, work)?;
         #[cfg(windows)]
         let directory = {
             let root = self.root_measured(work)?;
-            root.open_dir_held_measured(name, work)?
+            root.open_dir_held_with_work(name, work)?
         };
-        native_read(work)?;
+        native_read_with_work(work)?;
         let identity = held_root_identity(&directory)?;
         Ok(HostRoot::from_held_dir_with_identity(directory, identity))
     }
 
-    fn root_measured(&self, work: &mut DemandWork) -> Result<HostRoot, DemandError> {
-        let directory = clone_directory_with(&self.directory, || native_read(work))?;
-        native_read(work)?;
+    fn root_measured<W: crate::demand::SourceDemandReadWork>(&self, work: &mut W) -> Result<HostRoot, DemandError> {
+        let directory = clone_directory_with(&self.directory, || native_read_with_work(work))?;
+        native_read_with_work(work)?;
         let identity = held_root_identity(&directory)?;
         Ok(HostRoot::from_held_dir_with_identity(directory, identity))
     }
 
-    pub(crate) fn create_dir_measured(&self, name: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn create_dir_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, work: &mut W) -> Result<(), DemandError> {
         require_leaf(name)?;
         self.root_measured(work)?.create_dir_measured(name, work)
     }
 
-    pub(crate) fn stat_measured(&self, name: &Path, work: &mut DemandWork) -> Result<HostStat, DemandError> {
+    pub(crate) fn stat_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, work: &mut W) -> Result<HostStat, DemandError> {
         if !name.as_os_str().is_empty() { require_leaf(name)?; }
         #[cfg(unix)]
         { stat_unix_at(&self.directory, if name.as_os_str().is_empty() { OsStr::new(".") } else { name.as_os_str() }, work) }
         #[cfg(windows)]
-        { self.root_measured(work)?.stat_measured(name, work) }
+        { self.root_measured(work)?.stat_with_work(name, work) }
     }
 
-    pub(crate) fn open_file_with_measured(&self, name: &Path, options: &NativeOpenOptions, work: &mut DemandWork) -> Result<File, DemandError> {
+    pub(crate) fn open_file_with_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, options: &NativeOpenOptions, work: &mut W) -> Result<File, DemandError> {
         open_leaf_with_work(&self.directory, name, options, work)
     }
 
-    pub(crate) fn rename_to_measured(&self, name: &Path, destination: &Self, destination_name: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn rename_to_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, destination: &Self, destination_name: &Path, work: &mut W) -> Result<(), DemandError> {
         require_leaf(name)?;
         require_leaf(destination_name)?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd as _;
-            unix_name(name.as_os_str(), work, |name, work| unix_name(destination_name.as_os_str(), work, |destination_name, work| {
+            unix_name_with_work(name.as_os_str(), work, |name, work| unix_name_with_work(destination_name.as_os_str(), work, |destination_name, work| {
                 // SAFETY: held parent capabilities and terminated leaf names are live.
                 unix_mutation(work, || unsafe { libc::renameat(self.directory.as_raw_fd(), name.as_ptr(),
                     destination.directory.as_raw_fd(), destination_name.as_ptr()) })
@@ -6453,24 +6810,24 @@ impl HostDirectory {
         }
         #[cfg(windows)]
         {
-            with_wide_path(name, work, |name, work| with_wide_path(destination_name, work, |destination_name, work|
+            with_wide_path_with_work(name, work, |name, work| with_wide_path_with_work(destination_name, work, |destination_name, work|
                 rename_windows_leaf_measured(&self.directory, name, &destination.directory, destination_name, work)))
         }
     }
 
-    pub(crate) fn sync_measured(&self, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn sync_measured<W: crate::demand::SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
         sync_directory_held_with_work(&self.directory, work)
     }
 
-    fn remove_empty_dir_measured(&self, name: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    fn remove_empty_dir_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, work: &mut W) -> Result<(), DemandError> {
         self.unlink_measured(name, true, work)
     }
 
-    fn unlink_measured(&self, name: &Path, directory: bool, work: &mut DemandWork) -> Result<(), DemandError> {
+    fn unlink_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, directory: bool, work: &mut W) -> Result<(), DemandError> {
         remove_leaf_kind_with_work(&self.directory, name, directory, work)
     }
 
-    pub(crate) fn remove_measured(&self, name: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn remove_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, work: &mut W) -> Result<(), DemandError> {
         let stat = match self.stat_measured(name, work) {
             Ok(stat) => stat,
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -6479,7 +6836,7 @@ impl HostDirectory {
         self.remove_identity_measured(name, stat.identity()?, work)
     }
 
-    pub(crate) fn remove_identity_measured(&self, name: &Path, expected: crate::NativeRootIdentity, work: &mut DemandWork) -> Result<(), DemandError> {
+    pub(crate) fn remove_identity_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &Path, expected: crate::NativeRootIdentity, work: &mut W) -> Result<(), DemandError> {
         require_leaf(name)?;
         #[cfg(unix)]
         {
@@ -6490,11 +6847,9 @@ impl HostDirectory {
                 if root.identity() != expected { return Err(DemandError::StaleVersion); }
                 let child = HostDirectory { directory: root.directory };
                 let root = child.root_measured(work)?;
-                let mut reader = root.read_dir_stats_measured(Path::new(""), work)?;
-                let buffer_bytes = reader.logical_owned_bytes();
+                let (mut reader, buffer_bytes) = root.read_dir_stats_with_work(Path::new(""), work)?;
                 let result: Result<(), DemandError> = (|| {
-                    while let Some(entry) = reader.next_measured(work)? {
-                        let name_bytes = entry.logical_owned_bytes();
+                    while let Some((entry, name_bytes)) = reader.next_with_work(work)? {
                         let result = child.remove_measured(Path::new(&entry.name), work);
                         drop(entry);
                         work.release(name_bytes)?;
@@ -6512,27 +6867,25 @@ impl HostDirectory {
             self.unlink_measured(name, stat.file_type().is_dir() && !stat.file_type().is_symlink(), work)
         }
         #[cfg(windows)]
-        { with_wide_path(name, work, |name, work| self.remove_identity_wide_measured(name, expected, work)) }
+        { with_wide_path_with_work(name, work, |name, work| self.remove_identity_wide_measured(name, expected, work)) }
     }
 
     #[cfg(windows)]
-    fn remove_identity_wide_measured(&self, name: &[u16], expected: crate::NativeRootIdentity, work: &mut DemandWork) -> Result<(), DemandError> {
+    fn remove_identity_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, name: &[u16], expected: crate::NativeRootIdentity, work: &mut W) -> Result<(), DemandError> {
         let root = self.root_measured(work)?;
-        let stat = root.stat_wide_measured(name, work)?;
+        let stat = root.stat_wide_with_work(name, work)?;
         if stat.identity()? != expected { return Err(DemandError::StaleVersion); }
         let real_directory = stat.is_dir() && stat.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0;
         if real_directory {
-            let directory = root.open_dir_held_wide_measured(name, work)?;
+            let directory = root.open_dir_held_wide_with_work(name, work)?;
             let child = HostDirectory { directory };
             let child_root = child.root_measured(work)?;
             if child_root.identity() != expected { return Err(DemandError::StaleVersion); }
-            let mut reader = child_root.read_dir_stats_wide_measured(&[], work)?;
-            let bytes = reader.logical_owned_bytes();
+            let (mut reader, bytes) = child_root.read_dir_stats_wide_with_work(&[], work)?;
             let result: Result<(), DemandError> = (|| {
-                while let Some(entry) = reader.next_wide_measured(work)? {
-                    let bytes = entry.logical_owned_bytes();
+                while let Some((entry, bytes)) = reader.next_wide_with_work(work)? {
                     let result = (|| {
-                        let stat = child_root.stat_wide_measured(&entry.name, work)?;
+                        let stat = child_root.stat_wide_with_work(&entry.name, work)?;
                         child.remove_identity_wide_measured(&entry.name, stat.identity()?, work)
                     })();
                     drop(entry);
@@ -6545,7 +6898,7 @@ impl HostDirectory {
             work.release(bytes)?;
             result?;
         }
-        if root.stat_wide_measured(name, work)?.identity()? != expected { return Err(DemandError::StaleVersion); }
+        if root.stat_wide_with_work(name, work)?.identity()? != expected { return Err(DemandError::StaleVersion); }
         remove_windows_leaf_measured(&self.directory, name, stat.is_dir(), work)
     }
 }
@@ -6574,11 +6927,11 @@ fn filesystem_is_local(directory: &Dir) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Result<bool, DemandError> {
+fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     use std::os::fd::AsRawFd as _;
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
-    native_read(work)?;
+    native_read_with_work(work)?;
     if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
         return Ok(false);
     }
@@ -6589,11 +6942,11 @@ fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Resul
 }
 
 #[cfg(target_os = "macos")]
-fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Result<bool, DemandError> {
+fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     use std::os::fd::AsRawFd as _;
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
-    native_read(work)?;
+    native_read_with_work(work)?;
     if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
         return Ok(false);
     }
@@ -6603,7 +6956,7 @@ fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Resul
 }
 
 #[cfg(windows)]
-fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Result<bool, DemandError> {
+fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::{
         FileFsDeviceInformation, NtQueryVolumeInformationFile,
@@ -6617,7 +6970,7 @@ fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Resul
     let mut status = IO_STATUS_BLOCK::default();
     // SAFETY: the handle is live for the call, and the buffer is exactly one
     // `FILE_FS_DEVICE_INFORMATION` of the length passed.
-    native_read(work)?;
+    native_read_with_work(work)?;
     let queried = unsafe {
         NtQueryVolumeInformationFile(
             HANDLE(directory.as_raw_handle()),
@@ -6632,7 +6985,7 @@ fn filesystem_is_local_measured(directory: &Dir, work: &mut DemandWork) -> Resul
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn filesystem_is_local_measured(_directory: &Dir, work: &mut DemandWork) -> Result<bool, DemandError> {
+fn filesystem_is_local_measured<W: NativeHostWork>(_directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     work.check()?;
     Ok(false)
 }
@@ -6724,7 +7077,7 @@ fn punch_hole_with_admission(
 }
 
 #[cfg(windows)]
-fn clone_windows_file_measured(source: &File, target: &File, length: u64, alignment: u64, work: &mut DemandWork) -> Result<(), DemandError> {
+fn clone_windows_file_measured<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, length: u64, alignment: u64, work: &mut W) -> Result<(), DemandError> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::IO::DeviceIoControl;
@@ -6802,15 +7155,15 @@ pub(crate) fn truncate_file_with_work<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-fn windows_copy_tail_measured(source: &File, target: &File, offset: u64, buffer: &mut [u8], work: &mut DemandWork) -> Result<(), DemandError> {
+fn windows_copy_tail_measured<W: crate::demand::SourceDemandReadWork>(source: &File, target: &File, offset: u64, buffer: &mut [u8], work: &mut W) -> Result<(), DemandError> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::{NtReadFile, NtWriteFile};
     use windows::Win32::Foundation::HANDLE;
     let mut consumed = 0usize;
     while consumed < buffer.len() {
         let length = buffer.len() - consumed;
-        work.work.admit(&WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED }, &work.budget)?;
-        native_read(work)?;
+        work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+        native_read_with_work(work)?;
         let position = i64::try_from(offset.checked_add(consumed as u64).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
         // SAFETY: synchronous held handle and writable admitted tail slice.
@@ -7219,21 +7572,47 @@ impl Drop for YieldingFile {
     }
 }
 
-pub(crate) fn allocated_data_ranges_measured(
+pub(crate) fn allocated_data_ranges_measured<W: crate::demand::SourceDemandReadWork>(
     file: &File,
     logical_bytes: u64,
     maximum_ranges: u32,
-    work: &mut DemandWork,
+    work: &mut W,
 ) -> Result<Vec<HostDataRange>, DemandError> {
     query_allocated_data_ranges_measured(file, 0, logical_bytes, maximum_ranges, work)
 }
 
-pub(crate) fn query_allocated_data_ranges_measured(
+pub(crate) fn allocated_data_ranges_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    file: &File, logical_bytes: u64, maximum_ranges: u32, work: &mut W,
+    remaining: impl FnMut(&mut W) -> Result<crate::WorkBudget, DemandError>,
+    #[cfg(windows)]
+    device_control: impl FnMut(&File, u32, &[u8], &mut [u8], &mut W) -> Result<usize, DemandError>,
+) -> Result<Vec<HostDataRange>, DemandError> {
+    query_allocated_data_ranges_with_work(
+        file, 0, logical_bytes, maximum_ranges, work, remaining,
+        #[cfg(windows)]
+        device_control,
+    )
+}
+
+pub(crate) fn query_allocated_data_ranges_measured<W: crate::demand::SourceDemandReadWork>(
     file: &File,
     offset: u64,
     length: u64,
     maximum_ranges: u32,
-    work: &mut DemandWork,
+    work: &mut W,
+) -> Result<Vec<HostDataRange>, DemandError> {
+    query_allocated_data_ranges_with_work(
+        file, offset, length, maximum_ranges, work, |work| work.remaining(),
+        #[cfg(windows)]
+        crate::native_capture::native_device_control_measured,
+    )
+}
+
+pub(crate) fn query_allocated_data_ranges_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+    file: &File, offset: u64, length: u64, maximum_ranges: u32, work: &mut W,
+    _remaining: impl FnMut(&mut W) -> Result<crate::WorkBudget, DemandError>,
+    #[cfg(windows)]
+    mut device_control: impl FnMut(&File, u32, &[u8], &mut [u8], &mut W) -> Result<usize, DemandError>,
 ) -> Result<Vec<HostDataRange>, DemandError> {
     work.check()?;
     if length == 0 { return Ok(Vec::new()); }
@@ -7241,12 +7620,13 @@ pub(crate) fn query_allocated_data_ranges_measured(
     if maximum_ranges == 0 { return Err(DemandError::InvalidRequest); }
     #[cfg(unix)]
     {
+        let mut remaining = _remaining;
         use std::os::fd::AsRawFd as _;
         let mut ranges = Vec::new();
         let mut offset = offset;
-        let seek = |offset: i64, kind: i32, work: &mut DemandWork| {
+        let seek = |offset: i64, kind: i32, work: &mut W| {
             loop {
-                native_read(work)?;
+                native_read_with_work(work)?;
                 // SAFETY: the held regular-file descriptor remains live for
                 // the call; lseek changes only its offset, never its contents.
                 let result = unsafe { libc::lseek(file.as_raw_fd(), offset, kind) };
@@ -7280,22 +7660,26 @@ pub(crate) fn query_allocated_data_ranges_measured(
                 let grown = ranges.capacity().saturating_mul(2).max(4)
                     .min(maximum_ranges as usize).max(wanted);
                 let capacity = match grown.checked_mul(element) {
-                    Some(bytes) if bytes as u64 <= work.remaining()?.peak_allocation_bytes => grown,
+                    Some(bytes) if bytes as u64 <= remaining(work)?.peak_allocation_bytes => grown,
                     _ => wanted,
                 };
                 let bytes = capacity.checked_mul(element).ok_or(crate::WorkError::Overflow)?;
-                work.allocate(bytes as u64)?;
+                work.claim(bytes as u64)?;
                 let mut replacement = Vec::new();
                 replacement.try_reserve_exact(capacity).map_err(|_| DemandError::InvalidRequest)?;
-                work.charge(WorkCounters { bytes_copied: (ranges.len() * element) as u64,
-                    ..WorkCounters::UNCHARGED })?;
+                let copied = WorkCounters { bytes_copied: (ranges.len() * element) as u64,
+                    ..WorkCounters::UNCHARGED };
+                work.admit(copied)?;
+                work.record(copied)?;
                 replacement.append(&mut ranges);
                 let previous = std::mem::replace(&mut ranges, replacement);
                 drop(previous);
                 work.release(old as u64)?;
             }
-            work.charge(WorkCounters { bytes_copied: std::mem::size_of::<HostDataRange>() as u64,
-                items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            let copied = WorkCounters { bytes_copied: std::mem::size_of::<HostDataRange>() as u64,
+                items_examined: 1, ..WorkCounters::UNCHARGED };
+            work.admit(copied)?;
+            work.record(copied)?;
             ranges.push(HostDataRange { offset: data, length: hole - data });
             offset = hole;
         }
@@ -7309,7 +7693,7 @@ pub(crate) fn query_allocated_data_ranges_measured(
         let maximum = usize::try_from(u64::from(maximum_ranges) + 1).map_err(|_| DemandError::InvalidRequest)?
             .min(u32::MAX as usize / element);
         let mut count = maximum.min(8);
-        work.allocate((count * element) as u64)?;
+        work.claim((count * element) as u64)?;
         let mut output = Vec::new();
         output.try_reserve_exact(count).map_err(|_| DemandError::InvalidRequest)?;
         output.resize(count, FILE_ALLOCATED_RANGE_BUFFER::default());
@@ -7324,7 +7708,7 @@ pub(crate) fn query_allocated_data_ranges_measured(
             // SAFETY: the vector's initialized records stay alive, exclusive,
             // and correctly aligned through synchronous ioctl completion.
             let bytes = unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), output.len() * element) };
-            match crate::native_capture::native_device_control_measured(file, FSCTL_QUERY_ALLOCATED_RANGES, input, bytes, work) {
+            match device_control(file, FSCTL_QUERY_ALLOCATED_RANGES, input, bytes, work) {
                 Ok(returned) => break returned,
                 Err(DemandError::Io(error)) if [ERROR_MORE_DATA, ERROR_INSUFFICIENT_BUFFER].iter()
                     .any(|code| error.raw_os_error() == i32::try_from(code.0).ok()) => {
@@ -7332,7 +7716,7 @@ pub(crate) fn query_allocated_data_ranges_measured(
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "host file exceeds admitted sparse range count").into());
                     }
                     let next = count.saturating_mul(2).min(maximum);
-                    work.allocate((next * element) as u64)?;
+                    work.claim((next * element) as u64)?;
                     let mut replacement = Vec::new();
                     replacement.try_reserve_exact(next).map_err(|_| DemandError::InvalidRequest)?;
                     replacement.resize(next, FILE_ALLOCATED_RANGE_BUFFER::default());
@@ -7352,13 +7736,15 @@ pub(crate) fn query_allocated_data_ranges_measured(
             return Err(io::Error::new(io::ErrorKind::InvalidData, "host file exceeds admitted sparse range count").into());
         }
         let bytes = returned_count.checked_mul(std::mem::size_of::<HostDataRange>()).ok_or(crate::WorkError::Overflow)?;
-        work.allocate(bytes as u64)?;
+        work.claim(bytes as u64)?;
         let mut ranges = Vec::new();
         ranges.try_reserve_exact(returned_count).map_err(|_| DemandError::InvalidRequest)?;
         let mut prior_end = offset;
         for range in output.iter().take(returned_count) {
-            work.charge(WorkCounters { items_examined: 1, bytes_copied: std::mem::size_of::<HostDataRange>() as u64,
-                ..WorkCounters::UNCHARGED })?;
+            let copied = WorkCounters { items_examined: 1, bytes_copied: std::mem::size_of::<HostDataRange>() as u64,
+                ..WorkCounters::UNCHARGED };
+            work.admit(copied)?;
+            work.record(copied)?;
             let native_start = u64::try_from(range.FileOffset).map_err(|_| DemandError::InvalidRequest)?;
             let start = native_start.max(offset);
             let length = u64::try_from(range.Length).map_err(|_| DemandError::InvalidRequest)?;
@@ -9618,6 +10004,72 @@ mod bounded_source_tests {
 mod bounded_record_tests {
     use super::*;
 
+    #[test]
+    fn exclusive_fence_cookie_reserves_removal_before_create() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = HostRoot::open(temporary.path())?;
+        for writes in [0, 1] {
+            let mut budget = WorkBudget::UNBOUNDED;
+            budget.backend_write_operations = writes;
+            let mut work = DemandWork::new(budget, &crate::CancellationToken::new());
+            assert!(matches!(root.fence_cookie_measured(Path::new("cookie"), &mut work),
+                Err(DemandError::Work(crate::WorkError::BudgetExceeded { counter: "backend_write_operations", .. }))));
+            assert_eq!(work.work.backend_write_operations, 0);
+            assert_eq!(work.budget.backend_write_operations, writes);
+            assert!(!temporary.path().join("cookie").exists());
+            assert_eq!(work.live_allocation_bytes(), 0);
+        }
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.backend_write_operations = 2;
+        let mut work = DemandWork::new(budget, &crate::CancellationToken::new());
+        root.fence_cookie_measured(Path::new("cookie"), &mut work)?;
+        assert_eq!(work.work.backend_write_operations, 2);
+        assert_eq!(work.budget.backend_write_operations, 2);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.work.source_bytes_read, 0);
+        assert!(!temporary.path().join("cookie").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn exclusive_fence_cookie_never_removes_an_existing_name() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("cookie"), b"keep")?;
+        let root = HostRoot::open(temporary.path())?;
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.backend_write_operations = 2;
+        let mut work = DemandWork::new(budget, &crate::CancellationToken::new());
+        let error = root.fence_cookie_measured(Path::new("cookie"), &mut work).expect_err("exclusive collision");
+        assert!(matches!(error, DemandError::Io(error) if error.kind() == io::ErrorKind::AlreadyExists));
+        assert_eq!(std::fs::read(temporary.path().join("cookie"))?, b"keep");
+        assert_eq!(work.work.backend_write_operations, 1);
+        assert_eq!(work.budget.backend_write_operations, 2);
+        assert_eq!(work.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn committed_fence_cookie_is_removed_and_charged_after_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let parent = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.backend_write_operations = 2;
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|failure| failure.error)?;
+        let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation, cancel_on_write: true };
+        #[cfg(unix)]
+        let name = c"cookie";
+        #[cfg(windows)]
+        let name = &[99_u16, 111, 111, 107, 105, 101][..];
+        assert!(matches!(fence_cookie_held_with_work(&parent, name, &mut boundary),
+            Err(crate::materializer::NativeTreeMaterializationError::Cancelled)));
+        assert_eq!(work.receipt().backend_write_operations, 2);
+        assert_eq!(work.live_allocation_bytes(), ACCOUNTING_STATE_BYTES);
+        assert!(!temporary.path().join("cookie").exists());
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn held_canonical_directory_observes_renamed_object_not_replaced_spelling() -> Result<(), Box<dyn std::error::Error>> {
@@ -9935,6 +10387,7 @@ mod bounded_record_tests {
     struct CancelAfterName<'a> {
         work: &'a crate::materializer::NativeMaterializationWork,
         cancellation: &'a crate::CancellationToken,
+        cancel_on_write: bool,
     }
 
     impl NativeHostWork for CancelAfterName<'_> {
@@ -9948,7 +10401,10 @@ mod bounded_record_tests {
         fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.work.admit(delta) }
         fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
             self.work.record_admitted(delta)?;
-            if delta.bytes_copied != 0 { self.cancellation.cancel(); }
+            if self.cancel_on_write && delta.backend_write_operations != 0
+                || !self.cancel_on_write && delta.bytes_copied != 0 {
+                self.cancellation.cancel();
+            }
             Ok(())
         }
         fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes) }
@@ -9972,7 +10428,7 @@ mod bounded_record_tests {
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64 + 32;
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).map_err(|failure| failure.error)?;
-        let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation };
+        let mut boundary = CancelAfterName { work: &work, cancellation: &cancellation, cancel_on_write: false };
         let (mut reader, allocation) = read_dir_held_with_work(&directory, &mut boundary)?;
         #[cfg(unix)]
         let failure = reader.next_with_work(&mut boundary);

@@ -64,3 +64,39 @@ fn lexical_receipt_failure_retains_its_original_diagnostic_admission() {
     assert!(work.receipt().items_examined > 0);
     drop(failure);
 }
+
+#[test]
+fn effect_extraction_keeps_original_custody_and_retires_other_receipt_data() {
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let baseline = work.live_allocation_bytes();
+    let effect = EffectObservation {
+        provider: "native-process".into(),
+        effect_id: crate::EffectId::from_bytes([1; 16]),
+        attempt_id: crate::EffectAttemptId::from_bytes([2; 16]),
+        request_digest: [3; 32],
+        guarantee: EffectGuarantee::IdempotentRetry,
+        status: EffectStatus::Failed { message: "actual retained failure".into() },
+    };
+    let fence = crate::scheduler::LeaseFence {
+        reservation_id: "original-reservation".into(), placement: "original-worker".into(),
+    };
+    let invocation_failure = String::from("discarded receipt-only diagnostic");
+    let retained = super::receipt_observation::effect_bytes(&effect).unwrap()
+        + fence.reservation_id.capacity() as u64 + fence.placement.capacity() as u64
+        + invocation_failure.capacity() as u64;
+    let receipt = NativeProcessReceipt {
+        task: crate::TaskId::from_bytes([4; 16]), command: OperationId::from_bytes([5; 16]),
+        original_fence: fence, effect, observed: true, diagnostic: None,
+        publication_failure: None, invocation_failure: Some(invocation_failure),
+        work: WorkCounters::default(), _custody: Some(work.retain_owned(retained).unwrap()),
+    };
+    let allocations = work.receipt().allocation_operations;
+    let (effect, custody) = receipt.into_effect_with_native_custody().unwrap();
+    assert_eq!(custody.bytes(), super::receipt_observation::effect_bytes(&effect).unwrap());
+    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
+    assert_eq!(work.receipt().allocation_operations, allocations);
+    drop(effect);
+    drop(custody);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+}
