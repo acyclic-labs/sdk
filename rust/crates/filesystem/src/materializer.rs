@@ -603,7 +603,7 @@ pub struct NativeTreeMaterializationBackend {
 struct CapturedNativeSource {
     generation: GenerationId,
     preimages: Arc<BTreeMap<NamespacePath, MaterializationPreimage>>,
-    config: crate::VolumeConfig,
+    config: crate::model::VolumeConfig,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -659,7 +659,7 @@ impl NativeTreeMaterializationBackend {
         root: Arc<HostRoot>,
         generation: GenerationId,
         preimages: Arc<BTreeMap<NamespacePath, MaterializationPreimage>>,
-        config: crate::VolumeConfig,
+        config: crate::model::VolumeConfig,
         operation_directory: &Path,
     ) -> Result<Self, NativeTreeMaterializationError> {
         let mut backend = Self::with_root(root_path.to_path_buf(), root, operation_directory.to_path_buf())?;
@@ -824,7 +824,8 @@ impl CapturedNativeSource {
 pub(crate) fn namespace_materialization_path(path: &NamespacePath) -> Result<PathBuf, NativeTreeMaterializationError> {
     let mut host = PathBuf::new();
     for component in path.components() {
-        host.push(component.unicode_text().ok_or_else(|| NativeTreeMaterializationError::InvalidPath("<non-Unicode>".to_owned()))?);
+        let text = component.unicode_text().ok_or_else(|| NativeTreeMaterializationError::InvalidPath("<non-Unicode>".to_owned()))?;
+        host.push(text.as_ref());
     }
     Ok(host)
 }
