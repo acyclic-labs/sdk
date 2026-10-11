@@ -1740,6 +1740,11 @@ pub struct NativeByteReservation<'a> {
 }
 
 impl<'a> NativeByteReservation<'a> {
+    /// Reserves the maximum transfer on the original request meter.
+    ///
+    /// # Errors
+    /// Returns the original cancellation, quota, or arithmetic denial before
+    /// the caller issues I/O. No allocation or transfer occurs here.
     pub fn new(
         meter: &'a dyn NativeReadMeter, kind: NativeOperationKind, maximum: usize,
     ) -> io::Result<Self> {

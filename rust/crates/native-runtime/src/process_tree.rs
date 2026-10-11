@@ -3032,7 +3032,7 @@ mod platform {
     use std::io::{Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::windows::process::CommandExt as _;
-    use std::process::{Child, Command};
+    use std::process::Command;
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
     };

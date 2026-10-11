@@ -68,6 +68,13 @@ custody until their payload or file is dropped, rather than until an observer
 stops awaiting. Capacity reconciliation records completed SDK-owned capacity
 before evaluating a late cancellation or quota refusal.
 
+`NativeReadMeter::allocation_owner` can separate a captured request's pending
+activation from its retained payload custody. It returns only the same original
+meter and resource attribution, never a fresh allowance. Accepted jobs retain
+the captured meter until physical terminal completion; returned buffers and
+retired file fences retain the original allocation owner instead. A healthy
+file tail must not keep a completed request's capture activation alive.
+
 These limits cover SDK-visible logical payload capacities and known metadata,
 not allocator bookkeeping, RSS, kernel buffers, private codec allocations, or
 physical transport acknowledgments. An `Arc`'s known value is charged for its
