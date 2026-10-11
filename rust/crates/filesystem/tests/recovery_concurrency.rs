@@ -1,4 +1,6 @@
 //! Deterministic recovery and concurrency conformance for durable filesystem protocols.
+//! Crash injection wraps the production Memory journal store and keeps each
+//! ordinary or original-ledger-funded ownership packet through the write seam.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -9,11 +11,17 @@
 
 use acyclic_fs::{
     Digest, GenerationId, JournaledMaterializer, MaterializationBackend, MaterializationEdit,
-    MaterializationError, MaterializationIntent, MaterializationJournal, MaterializationJournalStore,
+    MaterializationError, MaterializationIntent, MaterializationJournalStore,
     MaterializationObservation, MaterializationPhase, MaterializationPlan, MaterializationPreimage,
-    MaterializationRecovery,
+    MaterializationRecovery, MemoryMaterializationJournalStore,
+    MemoryMaterializationJournalStoreError, OwnedMaterializationJournal,
     OperationId, OperationWindowCoordinator, OperationWindowError, OperationWindowFinish,
     OperationWindowPhase, OperationWindowSnapshot, OperationWindowStore, WorkspaceId,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::{
+    CancellationToken, MaterializationActionCompletion, NativeMaterializationWork,
+    NativeTreeMaterializationBackend, WorkBudget,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -246,12 +254,16 @@ async fn concurrent_open_expiry_and_late_writer_fencing_survive_restart() {
     ));
 }
 
+// Keep the production packet store; the fixture controls only its write seam.
 #[derive(Clone, Default)]
-struct CrashJournalStore(Arc<Mutex<CrashJournalState>>);
+struct CrashJournalStore {
+    inner: Arc<MemoryMaterializationJournalStore>,
+    state: Arc<Mutex<CrashJournalState>>,
+    write_gate: Arc<tokio::sync::Mutex<()>>,
+}
 
 #[derive(Default)]
 struct CrashJournalState {
-    journals: BTreeMap<OperationId, MaterializationJournal>,
     writes: usize,
     fail_before_write: Option<usize>,
     fail_after_write: Option<usize>,
@@ -259,12 +271,12 @@ struct CrashJournalState {
 
 impl CrashJournalStore {
     fn fail_before_relative_write(&self, offset: usize) {
-        let mut state = self.0.lock().expect("journal state");
+        let mut state = self.state.lock().expect("journal fault state");
         state.fail_before_write = Some(state.writes + offset);
     }
 
     fn fail_on_relative_write(&self, offset: usize) {
-        let mut state = self.0.lock().expect("journal state");
+        let mut state = self.state.lock().expect("journal fault state");
         state.fail_after_write = Some(state.writes + offset);
     }
 
@@ -277,56 +289,115 @@ impl CrashJournalStore {
     }
 
     fn clear_failure(&self) {
-        let mut state = self.0.lock().expect("journal state");
+        let mut state = self.state.lock().expect("journal fault state");
         state.fail_before_write = None;
         state.fail_after_write = None;
+    }
+
+    fn fails_before_next_write(&self) -> bool {
+        let state = self.state.lock().expect("journal fault state");
+        state.fail_before_write == Some(state.writes + 1)
+    }
+
+    fn did_write(&self) -> bool {
+        let mut state = self.state.lock().expect("journal fault state");
+        state.writes += 1;
+        state.fail_after_write == Some(state.writes)
     }
 }
 
 #[derive(Debug, Error)]
-#[error("simulated process crash at durable journal write")]
-struct CrashStoreError;
+enum CrashStoreError {
+    #[error(transparent)]
+    Memory(#[from] MemoryMaterializationJournalStoreError),
+    #[error("simulated process crash at durable journal write")]
+    InjectedCrash(OwnedMaterializationJournal),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CrashActionCompletion<'a> {
+    actual: <MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>,
+    before_write: Option<OwnedMaterializationJournal>,
+    store: &'a CrashJournalStore,
+    // Freeze the relative write ordinal from admission through the real action.
+    _write_gate: tokio::sync::MutexGuard<'a, ()>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MaterializationActionCompletion for CrashActionCompletion<'_> {
+    type Error = CrashStoreError;
+
+    async fn complete(self) -> Result<OwnedMaterializationJournal, Self::Error> {
+        let Self { actual, before_write, store, _write_gate } = self;
+        if let Some(journal) = before_write {
+            // No CAS took place. Retire the genuine accepted frame, retaining
+            // its real-store-loaded packet and original guard in the failure.
+            drop(actual);
+            return Err(CrashStoreError::InjectedCrash(journal));
+        }
+        let journal = actual.complete().await?;
+        if store.did_write() {
+            // The actual CAS happened; only its acknowledgement is lost.
+            return Err(CrashStoreError::InjectedCrash(journal));
+        }
+        Ok(journal)
+    }
+}
 
 impl MaterializationJournalStore for CrashJournalStore {
     type Error = CrashStoreError;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    type ActionCompletion<'a> = CrashActionCompletion<'a> where Self: 'a;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn prepare_action<'a>(
+        &'a self,
+        journal: OwnedMaterializationJournal,
+    ) -> Result<Self::ActionCompletion<'a>, Self::Error> {
+        let write_gate = self.write_gate.lock().await;
+        // The fault is armed before admission. Its retained error packet is
+        // a real Memory load funded by the original native ledger, never a
+        // plain journal clone or an allocation after the host action.
+        let before_write = if self.fails_before_next_write() {
+            self.inner.load(journal.plan.operation_id).await?
+        } else {
+            None
+        };
+        let actual = self.inner.prepare_action(journal).await?;
+        Ok(CrashActionCompletion {
+            actual, before_write, store: self, _write_gate: write_gate,
+        })
+    }
+
     async fn load(
         &self,
         operation_id: OperationId,
-    ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        Ok(self
-            .0
-            .lock()
-            .map_err(|_| CrashStoreError)?
-            .journals
-            .get(&operation_id)
-            .cloned())
+    ) -> Result<Option<OwnedMaterializationJournal>, Self::Error> {
+        self.inner.load(operation_id).await.map_err(CrashStoreError::from)
     }
 
     async fn compare_and_swap(
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-        replacement: MaterializationJournal,
-    ) -> Result<(bool, MaterializationJournal), Self::Error> {
-        let mut state = self.0.lock().map_err(|_| CrashStoreError)?;
-        if state
-            .journals
-            .get(&operation_id)
-            .map_or(0, |journal| journal.revision)
-            != expected_revision
-        {
-            return Ok((false, replacement));
+        replacement: OwnedMaterializationJournal,
+    ) -> Result<(bool, OwnedMaterializationJournal), Self::Error> {
+        let _write_gate = self.write_gate.lock().await;
+        if self.fails_before_next_write() {
+            // Rejected CAS attempts neither consume a write ordinal nor crash.
+            // Query only at an armed pre-write seam, through the actual store.
+            let current = self.inner.load(operation_id).await?;
+            if current.as_ref().map_or(0, |journal| journal.revision) == expected_revision {
+                return Err(CrashStoreError::InjectedCrash(replacement));
+            }
         }
-        if state.fail_before_write == Some(state.writes + 1) {
-            return Err(CrashStoreError);
+        let (stored, replacement) = self.inner
+            .compare_and_swap(operation_id, expected_revision, replacement).await?;
+        if stored && self.did_write() {
+            return Err(CrashStoreError::InjectedCrash(replacement));
         }
-        state.journals.insert(operation_id, replacement.clone());
-        state.writes += 1;
-        if state.fail_after_write == Some(state.writes) {
-            return Err(CrashStoreError);
-        }
-        Ok((true, replacement))
+        Ok((stored, replacement))
     }
 }
 
@@ -625,10 +696,13 @@ fn plan(case: u8) -> MaterializationPlan {
 }
 
 fn assert_original_forward_journal(
-    journal: &MaterializationJournal,
+    packet: &OwnedMaterializationJournal,
     original: &MaterializationPlan,
     durable_writes: usize,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
+    assert!(packet.custody.is_none(), "ordinary tree fixture alone permits receipt copies");
+    let journal = &packet.journal;
     let edits = original.edits.len();
     assert_eq!(&journal.plan, original);
     assert_eq!(
@@ -848,7 +922,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             let captured: Vec<_> = original.edits[..ordinal - 1]
                 .iter()
                 .cloned()
-                .zip(retained.preimages.iter().cloned())
+                .zip(retained.journal.preimages.iter().cloned())
                 .collect();
             assert_eq!(receipts.captures, captured);
             let inspected = restarted
@@ -892,8 +966,9 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     Err(MaterializationError::PlanConflict)
                 ));
                 assert_eq!(
-                    restarted.load(original.operation_id).await.expect("query after conflict"),
-                    Some(retained.clone())
+                    restarted.load(original.operation_id).await.expect("query after conflict")
+                        .as_ref().map(|packet| &packet.journal),
+                    Some(&retained.journal)
                 );
                 assert_eq!(tree.snapshot(), source_tree());
             }
@@ -916,10 +991,12 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     assert_eq!(recovered.phase, MaterializationPhase::Applied);
                     assert_eq!(tree.snapshot(), target_tree());
                     assert_eq!(recovered.preimages[..ordinal - 1], retained.preimages);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    assert!(recovered.custody.is_none(), "ordinary receipt copy only");
                     let expected_receipts: Vec<_> = original.edits
                         .iter()
                         .cloned()
-                        .zip(recovered.preimages.iter().cloned())
+                        .zip(recovered.journal.preimages.iter().cloned())
                         .collect();
                     assert_eq!(final_receipts.captures, expected_receipts);
                     assert_eq!(final_receipts.applications, expected_receipts);
@@ -981,10 +1058,12 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         assert_eq!(retained.plan, forward_plan);
         assert_eq!(retained.phase, MaterializationPhase::Applying);
         assert_eq!(retained.applied, u32::try_from(ordinal - 1).expect("small ordinal"));
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(retained.custody.is_none(), "ordinary receipt copy only");
         let expected_receipts: Vec<_> = forward_plan.edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().cloned())
+            .zip(retained.journal.preimages.iter().cloned())
             .collect();
         let receipts = forward_backend.receipts.lock().expect("forward receipts").clone();
         assert_eq!(receipts.capture_attempts, forward_plan.edits);
@@ -1030,10 +1109,12 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         assert_eq!(retained.plan, rollback_plan);
         assert_eq!(retained.phase, MaterializationPhase::RollingBack);
         assert_eq!(retained.restored, u32::try_from(ordinal - 1).expect("small ordinal"));
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(retained.custody.is_none(), "ordinary receipt copy only");
         let expected_restores: Vec<_> = rollback_plan.edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().cloned())
+            .zip(retained.journal.preimages.iter().cloned())
             .rev()
             .take(ordinal)
             .collect();
@@ -1076,4 +1157,230 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
         materializer.apply(altered).await,
         Err(MaterializationError::PlanConflict)
     ));
+}
+
+#[tokio::test]
+async fn rejected_cas_does_not_consume_or_trip_a_relative_crash_boundary() {
+    for after_write in [false, true] {
+        let store = CrashJournalStore::default();
+        let engine = JournaledMaterializer::new(store.clone(), TreeBackend::source());
+        let journal = engine.prepare(plan(0x70)).await.expect("ordinary original intent");
+        let operation_id = journal.plan.operation_id;
+        assert_eq!(store.state.lock().expect("fault state").writes, 1);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(journal.custody.is_none(), "ordinary fixture has no native authority");
+        store.fail_at_relative_write(1, after_write);
+
+        let mut candidate = store.load(operation_id).await.expect("real load").expect("intent");
+        candidate.revision += 1;
+        let payload = candidate.plan.edits.as_ptr();
+        let (stored, candidate) = store.compare_and_swap(operation_id, 0, candidate)
+            .await.expect("stale CAS is not a write or an injected crash");
+        assert!(!stored);
+        assert_eq!(candidate.plan.edits.as_ptr(), payload);
+        assert_eq!(store.state.lock().expect("fault state").writes, 1);
+        let error = store.compare_and_swap(operation_id, 1, candidate)
+            .await.expect_err("the next accepted write reaches the armed boundary");
+        let CrashStoreError::InjectedCrash(candidate) = error else {
+            panic!("expected the static injected crash with its owned packet");
+        };
+        assert_eq!(candidate.plan.edits.as_ptr(), payload);
+        assert_eq!(
+            store.state.lock().expect("fault state").writes,
+            1 + usize::from(after_write),
+        );
+        drop(engine);
+        store.clear_failure();
+        let reopened = JournaledMaterializer::new(store.clone(), TreeBackend::source());
+        let retained = reopened.load(operation_id).await.expect("same real store reopen")
+            .expect("original intent");
+        assert_eq!(retained.revision, 1 + u64::from(after_write));
+        assert_eq!(&retained.plan, &candidate.plan);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(retained.custody.is_none());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn finite_native_budget() -> WorkBudget {
+    let mut value = serde_json::to_value(WorkBudget::UNBOUNDED).expect("budget encoding");
+    for field in value.as_object_mut().expect("budget object").values_mut() {
+        *field = serde_json::Value::from(100_000_000_u64);
+    }
+    serde_json::from_value(value).expect("finite native budget")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_backend(
+    directory: &std::path::Path,
+    work: &NativeMaterializationWork,
+) -> NativeTreeMaterializationBackend {
+    let root = directory.join("root");
+    let operation = directory.join("operation");
+    std::fs::create_dir(&root).expect("fixture source root");
+    std::fs::create_dir_all(operation.join("target")).expect("fixture target");
+    std::fs::write(root.join("file"), b"before").expect("fixture source bytes");
+    std::fs::write(operation.join("target/file"), b"target").expect("fixture target bytes");
+    let (root, custody) = work.copy_path(&root).expect("funded backend root path");
+    let mut custody = custody;
+    let root = root;
+    let (operation, operation_custody) = work.copy_path(&operation)
+        .expect("funded backend operation path");
+    let mut operation_custody = operation_custody;
+    let operation = operation;
+    custody.absorb(&mut operation_custody).expect("same original allocation context");
+    NativeTreeMaterializationBackend::new_owned_with_work(root, operation, custody, work.clone())
+        .expect("real original-resource backend")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_prepared_packet(
+    store: &CrashJournalStore,
+    backend: &NativeTreeMaterializationBackend,
+    work: &NativeMaterializationWork,
+    case: u8,
+) -> OwnedMaterializationJournal {
+    let (path, path_custody) = work.copy_bytes(b"file").expect("real paid path copy");
+    let mut path_custody = path_custody;
+    let path = path;
+    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64)
+        .expect("admit plan vector before allocation");
+    let path = path; // Retire path data before either possible owning guard.
+    let mut edits = Vec::with_capacity(1);
+    custody.reconcile_capacity(
+        (edits.capacity() * std::mem::size_of::<MaterializationEdit>()) as u64,
+    ).expect("retain actual vector capacity before any late refusal");
+    custody.absorb(&mut path_custody).expect("same original paid plan");
+    edits.push(MaterializationEdit::Remove {
+        path: String::from_utf8(path).expect("static valid UTF-8 without copying"),
+    });
+    let plan = MaterializationPlan {
+        operation_id: OperationId::from_bytes([case; 16]),
+        intent: MaterializationIntent::GenerationTransition {
+            from: generation(1), to: generation(2),
+        },
+        edits,
+    };
+    JournaledMaterializer::new(store.clone(), backend.clone())
+        .prepare_owned(plan, custody).await.expect("production-owned original journal")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_prefixes() {
+    acyclic_native_runtime::initialize_native_io_services().expect("actual native I/O services");
+    for after_write in [false, true] {
+        for cancel_after_action in [false, true] {
+            let directory = tempfile::tempdir().expect("physical action fixture");
+            let cancellation = CancellationToken::new();
+            let budget = finite_native_budget();
+            let original = NativeMaterializationWork::new(budget, &cancellation)
+                .expect("one original finite work ledger");
+            let work = original.native_volume_work(budget).expect("original native resource");
+            let backend = native_backend(directory.path(), &work);
+            let store = CrashJournalStore::default();
+            let journal = native_prepared_packet(&store, &backend, &work, 0x71).await;
+            let operation_id = journal.plan.operation_id;
+            let last_durable_work = journal.work;
+            let payload = journal.plan.edits.as_ptr();
+            let packet_bytes = journal.custody.as_ref().expect("production Some custody").bytes();
+            assert!(journal.custody.as_ref().expect("original custody").work()
+                .shares_allocation_context(&work));
+            let file = directory.path().join("root/file");
+            let mut output = std::fs::OpenOptions::new().write(true).open(&file)
+                .expect("fixture output before admission");
+            store.fail_at_relative_write(1, after_write);
+            let before_admission = original.receipt();
+            let completion = store.prepare_action(journal).await
+                .expect("genuine Memory completion accepted before the physical action");
+            assert!(original.receipt().bytes_copied > before_admission.bytes_copied);
+            assert_eq!(std::fs::read(&file).expect("unchanged before acceptance"), b"before");
+            work.write_owned_bytes(&mut output, b"after!").expect("actual original-resource action");
+            if cancel_after_action {
+                cancellation.cancel();
+            }
+            let live_prefix = original.receipt();
+            let durable_prefix = work.journal_work().expect("pure original durable prefix");
+            let error = completion.complete().await.expect_err("real before/after write seam");
+            assert_eq!(original.receipt(), live_prefix, "no allocation, copy, or admission after action");
+            let CrashStoreError::InjectedCrash(packet) = error else {
+                panic!("expected the injected crash to retain its real owned packet");
+            };
+            let custody = packet.custody.as_ref().expect("native fault never becomes ordinary None");
+            assert!(custody.work().shares_allocation_context(&work));
+            let retained_packet_bytes = custody.bytes();
+            assert_eq!(retained_packet_bytes,
+                NativeMaterializationWork::journal_control_bytes(&packet.journal)
+                    .expect("actual packet capacities"));
+            assert_eq!(packet.revision, 1 + u64::from(after_write));
+            assert_eq!(packet.work, if after_write { durable_prefix } else { last_durable_work });
+            if after_write {
+                assert_eq!(retained_packet_bytes, packet_bytes);
+                assert_eq!(packet.plan.edits.as_ptr(), payload, "actual completion returns its input");
+            }
+            assert_eq!(store.state.lock().expect("fault state").writes, 1 + usize::from(after_write));
+            assert!(live_prefix.output_bytes > last_durable_work.output_bytes);
+            assert_eq!(std::fs::read(&file).expect("independent physical observation"), b"after!");
+            live_prefix.verify(budget).expect("full observed prefix fits the original finite budget");
+            store.clear_failure();
+            if cancel_after_action {
+                assert!(matches!(
+                    store.load(operation_id).await,
+                    Err(CrashStoreError::Memory(MemoryMaterializationJournalStoreError::NativeWork(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    )))
+                ), "cold reads never replace the cancelled original meter with an unbounded one");
+            } else {
+                // Reopen the consumer, not a replacement journal engine or ledger.
+                let reopened = JournaledMaterializer::new(store.clone(), backend.clone());
+                let retained = reopened.load_owned(operation_id).await.expect("real same-store reopen")
+                    .expect("original durable journal");
+                assert_eq!(&retained.journal, &packet.journal);
+                assert!(retained.custody.as_ref().expect("funded reopened packet").work()
+                    .shares_allocation_context(&work));
+            }
+            let live_bytes = original.live_allocation_bytes();
+            drop(packet);
+            assert_eq!(original.live_allocation_bytes(), live_bytes - retained_packet_bytes);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_packet() {
+    acyclic_native_runtime::initialize_native_io_services().expect("actual native I/O services");
+    let directory = tempfile::tempdir().expect("real native conflict fixture");
+    let budget = finite_native_budget();
+    let original = NativeMaterializationWork::new(budget, &CancellationToken::new())
+        .expect("original finite meter");
+    let work = original.native_volume_work(budget).expect("original native resource");
+    let backend = native_backend(directory.path(), &work);
+    let store = CrashJournalStore::default();
+    let journal = native_prepared_packet(&store, &backend, &work, 0x72).await;
+    let operation_id = journal.plan.operation_id;
+    let payload = journal.plan.edits.as_ptr();
+    let completion = store.prepare_action(journal).await.expect("actual accepted Memory completion");
+    // An independent actor reaches the same real Memory store, not fixture metadata.
+    let mut competitor = store.inner.load(operation_id).await.expect("actual competing load")
+        .expect("original record");
+    competitor.revision += 1;
+    let (stored, competitor) = store.inner.compare_and_swap(operation_id, 1, competitor).await
+        .expect("genuine competing CAS");
+    assert!(stored);
+    let before = original.receipt();
+    let error = completion.complete().await.expect_err("actual accepted CAS sees the winner");
+    assert_eq!(original.receipt(), before, "conflict performs no late copy or allocation");
+    let CrashStoreError::Memory(MemoryMaterializationJournalStoreError::ActionConflict(packet))
+        = error else {
+        panic!("expected the intact real Memory conflict error");
+    };
+    assert_eq!(packet.plan.edits.as_ptr(), payload);
+    assert!(packet.custody.as_ref().expect("intact original error custody").work()
+        .shares_allocation_context(&work));
+    let retained = store.load(operation_id).await.expect("real winning record query").expect("winner");
+    assert_eq!(&retained.journal, &competitor.journal);
+    assert_eq!(store.state.lock().expect("fault state").writes, 1,
+        "failed completion consumes no wrapped write ordinal");
+    original.receipt().verify(budget).expect("actual whole conflict prefix");
 }
