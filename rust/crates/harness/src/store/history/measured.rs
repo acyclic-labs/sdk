@@ -74,6 +74,24 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok((events, native_io.into_custody()))
     }
 
+    /// Projects the archived effect through the original bounded state engine.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn effect_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let state = self.effect_with_retained_quota(
+            cursor, effect, limits, Some(&mut native_io),
+        ).await?.map(|(state, _)| state);
+        native_io.return_staged_output()?;
+        Ok((state, native_io.into_custody()))
+    }
+
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
     /// Tail metadata exposes no encoded byte size; none is invented here.
     pub async fn pin_measured(

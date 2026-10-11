@@ -582,6 +582,21 @@ mod measured_open_tests {
             assert!(native.receipt().output_bytes > 0);
             drop(events);
             drop(custody);
+            let cursor = HistoryCursor {
+                authority: authority(), after_revision: 0, through_revision: 3,
+            };
+            let expected_state = reader.effect(
+                &cursor, effect_id, default_projection_read_limits()).await?;
+            let prefix = native.receipt();
+            provider.reset_io();
+            let (state, state_custody) = reader.effect_with_native_work(
+                &cursor, effect_id, default_projection_read_limits(), &native).await?;
+            assert_eq!(state, expected_state);
+            assert!(native.shares_ledger(state_custody.work()));
+            assert_eq!(native.receipt().authority_bytes_read - prefix.authority_bytes_read,
+                provider.io_snapshot().read_bytes);
+            drop(state);
+            drop(state_custody);
         }
         provider.reset_io();
         let absent = reader.effect_events_measured(

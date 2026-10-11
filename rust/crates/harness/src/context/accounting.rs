@@ -46,21 +46,56 @@ pub struct ModelTokenCount {
 impl ModelTokenCount {
     /// Verifies request identity and dimensions, returning the full input bound.
     pub fn validate(&self, request: &PreparedModelRequest) -> Result<u64> {
+        self.validate_with_work(request, &mut None)
+    }
+
+    /// Validates the original count on its admitted ledger without allocating denial diagnostics.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(
+        &self, request: &PreparedModelRequest, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<u64> {
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        self.validate_with_work(request, &mut Some(&mut observer))
+    }
+
+    fn validate_with_work(
+        &self,
+        request: &PreparedModelRequest,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<u64> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        }
         if self.request_digest != request.manifest().request_digest
             || self.message_tokens.len() != request.request().messages.len()
         {
-            return Err(Error::Invalid(
-                "token count does not bind the prepared request".into(),
-            ));
+            return Err(token_count_invalid(work, "token count does not bind the prepared request"));
         }
         self.message_tokens
             .iter()
             .try_fold(u64::from(self.fixed_tokens), |total, count| {
+                if let Some(io) = work.as_deref_mut() {
+                    io.check_cancellation()?;
+                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                }
                 total
                     .checked_add(u64::from(*count))
-                    .ok_or_else(|| Error::Invalid("token count exceeds portable arithmetic".into()))
+                    .ok_or_else(|| token_count_invalid(work, "token count exceeds portable arithmetic"))
             })
     }
+}
+
+fn token_count_invalid(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    }
+    let _ = work;
+    Error::Invalid(reason.into())
 }
 
 #[cfg(test)]

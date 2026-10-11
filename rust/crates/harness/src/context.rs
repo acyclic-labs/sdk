@@ -28,6 +28,12 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub use compaction::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use compaction::{
+    clone_base_messages_native, clone_content_native, clone_context_native, clone_context_prefix_native, clone_file_native,
+    clone_messages_native, clone_metadata_native, clone_retention_native, mandatory_positions_native,
+    NativeContextValueRecipe,
+};
 mod snapshot;
 pub use snapshot::*;
 
@@ -82,6 +88,17 @@ impl CompactionRetention {
                 return Err(crate::Error::Invalid(
                     "compaction retention repeats a role".into(),
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_native(&self) -> Result<()> {
+        for (position, role) in self.roles.iter().enumerate() {
+            if self.roles[..position].contains(role) {
+                return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                    "compaction retention repeats a role"));
             }
         }
         Ok(())
@@ -250,6 +267,14 @@ struct StoredContextRevision {
     source_revision: String,
     context: FileRef,
     compaction: Option<CompactionReference>,
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for StoredContextRevision {
+    fn maximum_slot_bytes() -> u64 {
+        (<Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
+            .max(std::mem::size_of::<Self>() as u64)
+    }
 }
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
@@ -696,6 +721,115 @@ impl DurableContextProvider {
             .map_or_else(Context::default, |record| record.context))
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn tail_revision_on_original_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<u64> {
+        use crate::store::history::HistoryIo as _;
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        observer.begin_call()?;
+        match self.provider.tail(self.path.clone()).await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(source) => Err(native_context_stream_error(source)),
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn read_revision_on_original_work(
+        &self, revision: u64, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ContextRevision, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        let limits = restrict_context_limits_native(self.limits, limits, work)?;
+        if revision == 0 {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "context revision must be positive"));
+        }
+        let mut observer = crate::store::history::native_work_io(work)
+            .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        observer.begin_call()?;
+        let mut stream = self.provider.read(ReadRequest {
+            path: self.path.clone(), from: revision - 1, limit: 1,
+        }).await.map_err(native_context_stream_error)?;
+        let record = stream.next().await.ok_or_else(|| native_context_boundary(
+            crate::wire::ErrorCode::Storage, "context revision is missing"))?
+            .map_err(native_context_stream_error)?;
+        observer.receive_record(record.value.len() as u64)?;
+        if record.sequence != revision - 1 {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "context revision read returned an invalid range"));
+        }
+        if let Some(extra) = stream.next().await {
+            let extra = extra.map_err(native_context_stream_error)?;
+            observer.receive_record(extra.value.len() as u64)?;
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "context revision read returned an invalid range"));
+        }
+        if record.value.len() > MAX_RECORD_BYTES {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "context record exceeds Stream limit"));
+        }
+        let stored = io.decode_preparation::<StoredContextRevision>(&record.value)
+            .map_err(native_context_decode_storage)?.into_retained();
+        let canonical_guard;
+        let canonical = io.encode_json(&stored, MAX_RECORD_BYTES as u64, true)?;
+        canonical_guard = io.guard_owned(canonical.capacity() as u64)?;
+        if canonical.as_slice() != record.value.as_ref() || stored.format_version != 5 || stored.revision != revision
+            || stored.source != self.source || stored.source_revision != self.source_revision
+        {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "durable context identity, revision or canonical bytes are invalid"));
+        }
+        drop(canonical); drop(canonical_guard);
+        limits.validate_file_with_native_work(&stored.context, work)?;
+        if stored.context.descriptor().media_type() != "application/json"
+            || stored.context.descriptor().byte_length() > limits.render_bytes
+        {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "context payload descriptor is invalid"));
+        }
+        verify_context_file_native(&stored.context, self.content_verifier.as_ref(), work).await?;
+        if !self.content_verifier.supports_native_read(stored.context.volume(), work)? {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context reader has no original native capability"));
+        }
+        let payload = self.content_verifier.read_with_native_work(
+            &stored.context, stored.context.descriptor().byte_length(), work)?.await?;
+        stored.context.descriptor().verify_with_work(&payload.0, &mut Some(&mut observer))?;
+        let context = io.decode_preparation::<Context>(&payload.0)
+            .map_err(native_context_decode_storage)?.into_retained();
+        let context_canonical_guard;
+        let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
+        context_canonical_guard = io.guard_owned(context_canonical.capacity() as u64)?;
+        if context_canonical != payload.0 {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
+                "context payload is not canonical"));
+        }
+        drop(context_canonical); drop(context_canonical_guard);
+        validate_context_refs_native(&context, self.content_verifier.as_ref(), limits, work).await?;
+        let result = ContextRevision { format_version: stored.format_version, revision,
+            source: stored.source, source_revision: stored.source_revision, content: stored.context,
+            context, compaction: stored.compaction };
+        drop(payload); drop(record); drop(stream); drop(observer);
+        let retained = io.owned_bytes()?;
+        let guard = io.into_native_custody(retained)?;
+        Ok((result, guard))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn revision_on_original_work(
+        &self, revision: u64, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ContextRevision, acyclic_fs::NativeAllocation)> {
+        let record = self.read_revision_on_original_work(revision, limits, work).await?;
+        if let Some(reference) = &record.0.compaction {
+            let source = self.read_revision_on_original_work(revision - 1, limits, work).await?;
+            validate_compaction_native(reference, &source.0.context, &record.0.context, work)?;
+        }
+        Ok(record)
+    }
+
     /// Deterministically compacts a context and returns its immutable source reference.
     pub fn compact(
         context: &Context,
@@ -710,6 +844,14 @@ impl DurableContextProvider {
         context: &Context, max_messages: usize, summary: Option<ContextSummary>,
         retention: CompactionRetention, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Context, CompactionReference)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io
+            && let Some(work) = io.original_native_work()
+        {
+            let compacted = Self::compact_on_original_work(context, max_messages, summary, retention, work)?;
+            io.absorb_native_custody(compacted.1)?;
+            return Ok(compacted.0);
+        }
         #[cfg(feature = "filesystem")]
         let workspace = io.map(|io| crate::executor::reserve_preparation_workspace(context, io)).transpose()?;
         retention.validate()?;
@@ -768,6 +910,142 @@ impl DurableContextProvider {
         if let Some(workspace) = workspace { workspace.into_retained(); }
         Ok((compacted, reference))
     }
+
+    /// Native continuation of the original compaction policy; every clone is
+    /// admitted on the caller's original ledger before physical allocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn compact_on_original_work(
+        context: &Context,
+        max_messages: usize,
+        summary: Option<ContextSummary>,
+        retention: CompactionRetention,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<((Context, CompactionReference), acyclic_fs::NativeAllocation)> {
+        retention.validate_native()?;
+        context.validate_current_input_native()?;
+        if max_messages == 0 {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "compaction max_messages must be positive"));
+        }
+        let maximum_messages = u32::try_from(max_messages).map_err(|_| native_context_boundary(
+            crate::wire::ErrorCode::Invalid, "compaction budget exceeds portable count"))?;
+        let source_digest = context_digest_native(context, work)?;
+        if let Some(summary) = &summary {
+            let covered = context.messages.get(..summary.source_messages as usize)
+                .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
+                    "summary extent exceeds source projection"))?;
+            let summarized = BorrowedContext {
+                messages: ContextMessages { first: covered, user: None, second: &[] },
+                metadata: &context.metadata,
+                current_input_index: context.current_input_index.filter(|index| *index < summary.source_messages),
+            };
+            if summary.source_messages == 0
+                || summary.source_digest != context_digest_native(&summarized, work)?
+                || summary.output.descriptor().media_type() != "text/plain"
+            {
+                return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                    "summary does not bind its source prefix"));
+            }
+        }
+        let compacted = if context.messages.len() > max_messages
+            || (summary.is_some() && context.messages.len() == max_messages)
+        {
+            let summary = summary.as_ref().ok_or_else(|| native_context_boundary(
+                crate::wire::ErrorCode::Invalid,
+                "compaction requires a durable summary; context cannot be silently dropped"))?;
+            compact_projection_native(context, max_messages, summary, &retention, work)?
+        } else { clone_context_native(context, work)? };
+        Ok(((compacted.0, CompactionReference {
+            source_digest, maximum_messages, retention, summary,
+        }), compacted.1))
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn context_digest_native<T: Serialize>(
+    value: &T, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<[u8; 32]> {
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+    work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64,
+        ..acyclic_fs::WorkCounters::default() })
+        .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    Ok(*blake3::hash(&bytes).as_bytes())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn clone_summary_native(
+    summary: Option<&ContextSummary>, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Option<ContextSummary>, acyclic_fs::NativeAllocation)> {
+    match summary {
+        Some(summary) => {
+            let output = clone_file_native(&summary.output, work)?;
+            Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
+                source_messages: summary.source_messages, source_digest: summary.source_digest,
+                output: output.0 }), output.1))
+        }
+        None => Ok((None, work.retain_owned(0).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?)),
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn compact_projection_native(
+    context: &Context, max_messages: usize, summary: &ContextSummary,
+    retention: &CompactionRetention, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Context, acyclic_fs::NativeAllocation)> {
+    let invalid = |reason| native_context_boundary(crate::wire::ErrorCode::Invalid, reason);
+    if max_messages < 2 { return Err(invalid("compaction must retain the current input and summary")); }
+    let mut selected = mandatory_positions_native(context, summary.source_messages as usize, retention, work)?;
+    if selected.0.len() >= max_messages { return Err(invalid("mandatory context exceeds compaction message budget")); }
+    let mut flags = compaction::native_vector::<bool>(context.messages.len(), work)?;
+    flags.0.resize(context.messages.len(), false);
+    for position in &selected.0 { flags.0[*position] = true; }
+    let mut count = selected.0.len();
+    for position in (0..context.messages.len()).rev() {
+        if count + 1 == max_messages { break; }
+        if !flags.0[position] { flags.0[position] = true; count += 1; }
+    }
+    selected.0.clear();
+    let parts = context.messages.iter().try_fold(0_usize, |count, message|
+        count.checked_add(message.content.parts().len())
+            .ok_or_else(|| invalid("compaction tool count overflows")))?;
+    let mut calls = compaction::native_vector::<&str>(parts, work)?;
+    let messages = compaction::native_vector::<ModelMessage>(count + 1, work)?;
+    let mut output = (Context { messages: messages.0, metadata: BTreeMap::new(), current_input_index: None }, messages.1);
+    let mut summary_file = clone_file_native(&summary.output, work)?;
+    output.1.absorb(&mut summary_file.1).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    output.0.messages.push(ModelMessage { role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::File {
+            file: summary_file.0, policy: crate::model::FileProjectionPolicy::BoundedFull,
+        }) });
+    for (position, message) in context.messages.iter().enumerate() {
+        if !flags.0[position] { continue; }
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall { call_id, .. } => {
+                    if !calls.0.contains(&call_id.as_str()) { calls.0.push(call_id); }
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    let index = calls.0.iter().position(|id| *id == call_id)
+                        .ok_or_else(|| invalid("compaction boundary splits a tool exchange"))?;
+                    calls.0.swap_remove(index);
+                }
+                _ => {}
+            }
+        }
+        if context.current_input_index.map(|index| index as usize) == Some(position) {
+            output.0.current_input_index = Some(u32::try_from(output.0.messages.len())
+                .map_err(|_| invalid("current input index exceeds portable count"))?);
+        }
+        let mut content = clone_content_native(&message.content, work)?;
+        output.1.absorb(&mut content.1).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        output.0.messages.push(ModelMessage { role: message.role, content: content.0 });
+    }
+    if !calls.0.is_empty() { return Err(invalid("compaction boundary splits a tool exchange")); }
+    let mut metadata = clone_metadata_native(&context.metadata, work)?;
+    output.1.absorb(&mut metadata.1).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    output.0.metadata = metadata.0;
+    Ok(output)
 }
 
 fn compact_projection(
@@ -957,6 +1235,22 @@ fn preparation_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn validate_compaction_native(
+    reference: &CompactionReference, source: &Context, compacted: &Context,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    let summary = clone_summary_native(reference.summary.as_ref(), work)?;
+    let retention = clone_retention_native(&reference.retention, work)?;
+    let reconstructed = DurableContextProvider::compact_on_original_work(
+        source, reference.maximum_messages as usize, summary.0, retention.0, work)?;
+    if reference.source_digest != reconstructed.0.1.source_digest || reconstructed.0.0 != *compacted {
+        return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+            "compaction reference does not bind the source and retained context"));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_projected_context_with_io(
     context: &Context, limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -981,6 +1275,125 @@ pub(crate) fn validate_projected_context_with_io(
         return Ok(());
     }
     validate_projected_context(context, limits)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn validate_projected_context_native(
+    context: &Context, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    limits.validate_with_native_work(work)?;
+    context.validate_current_input_native()?;
+    if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
+        return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+            "context projection exceeded declared bounds"));
+    }
+    for message in &context.messages { message.content.validate_limits_with_native_work(limits, work)?; }
+    for file in context.metadata.values() { limits.validate_file_with_native_work(file, work)?; }
+    let mut observer = crate::store::history::native_work_io(work)
+        .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    crate::contract::validate_trusted_json_byte_bound_with_work(
+        context, limits.render_bytes, &mut Some(&mut observer))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn context_contract_native<T: Serialize>(
+    value: &T, recipe: NativeContextValueRecipe<'_>, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    recipe.produce(value, work)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_context_stream_error(source: StreamError) -> crate::Error {
+    crate::Error::NativeStream { code: crate::wire::ErrorCode::Storage, source, custody: None }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_context_decode_storage(error: crate::Error) -> crate::Error {
+    match error {
+        crate::Error::NativeDecode { source, custody, .. } => crate::Error::NativeDecode {
+            code: crate::wire::ErrorCode::Storage, source, custody,
+        },
+        error => error,
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn restrict_context_limits_native(
+    pinned: Limits, admitted: Limits, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<Limits> {
+    pinned.validate_with_native_work(work)?;
+    admitted.validate_with_native_work(work)?;
+    Ok(Limits {
+        file_bytes: pinned.file_bytes.min(admitted.file_bytes),
+        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
+        attachments: pinned.attachments.min(admitted.attachments),
+        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        model_steps: pinned.model_steps.min(admitted.model_steps),
+        model_events_per_step: pinned.model_events_per_step.min(admitted.model_events_per_step),
+        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
+        context_messages: pinned.context_messages.min(admitted.context_messages),
+    })
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) async fn verify_context_file_native(
+    file: &FileRef, verifier: &dyn ContentResidencyVerifier,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    if !verifier.supports_native_read(file.volume(), work)? {
+        return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            "context verifier has no original native capability"));
+    }
+    verifier.verify_with_native_work(file, file.descriptor().byte_length(), work)?.await
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+async fn verify_context_media_native(
+    file: &FileRef, policy: &crate::model::FileProjectionPolicy,
+    verifier: &dyn ContentResidencyVerifier, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    verify_context_file_native(file, verifier, work).await?;
+    if let crate::model::FileProjectionPolicy::Native(policy) = policy
+        && let Some(configuration) = &policy.configuration
+    {
+        verify_context_file_native(&configuration.configuration.content, verifier, work).await?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) async fn validate_context_refs_native(
+    context: &Context, verifier: &dyn ContentResidencyVerifier, limits: Limits,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    validate_projected_context_native(context, limits, work)?;
+    for message in &context.messages {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::File { file, policy } =>
+                    verify_context_media_native(file, policy, verifier, work).await?,
+                ModelContentPart::ToolResult { content: crate::model::ToolResultContent::Parts { parts }, .. } => {
+                    for part in parts {
+                        if let crate::model::ModelDataPart::File { file, policy } = part {
+                            verify_context_media_native(file, policy, verifier, work).await?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for (name, file) in &context.metadata {
+        if !name.contains('.') || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "durable context metadata key is invalid"));
+        }
+        verify_context_file_native(file, verifier, work).await?;
+    }
+    Ok(())
 }
 
 async fn validate_context_refs(
@@ -1023,6 +1436,26 @@ impl ContextSource for DurableContextProvider {
             Ok(self.revision_bounded(tail, limits).await?.context.messages)
         })
     }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { true }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn load_native<'a>(
+        &'a self, _: &'a ContextInput, limits: Limits,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            limits.validate_with_native_work(work)?;
+            let tail = self.tail_revision_on_original_work(work).await?;
+            if tail == 0 {
+                return Ok((Vec::new(), work.retain_owned(0)
+                    .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?));
+            }
+            let record = self.revision_on_original_work(tail, limits, work).await?;
+            Ok((record.0.context.messages, record.1))
+        })
+    }
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
@@ -1035,6 +1468,22 @@ pub trait ContextSource: acyclic_stream::ProviderPlatform {
         input: &'a ContextInput,
         limits: Limits,
     ) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
+
+    /// Reports the explicit original-ledger source capability without constructing a future.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { false }
+
+    /// Resolves paid source messages; ordinary callbacks are never a native fallback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn load_native<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        _: Limits,
+        _: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
+        Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            "context source has no native capability"))
+    }
 }
 
 impl ContextSource for Context {
@@ -1046,6 +1495,22 @@ impl ContextSource for Context {
         Box::pin(async move {
             validate_source_messages(&self.messages, limits)?;
             Ok(self.messages.clone())
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { true }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn load_native<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: Limits,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            validate_source_messages_native(&self.messages, limits, work)?;
+            clone_messages_native(&self.messages, work)
         })
     }
 }
@@ -1123,6 +1588,41 @@ impl SourceStage {
             placement,
         }
     }
+
+    /// Copies native identities before construction; the caller retains the source provider's custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn new_with_native_work(
+        name: &str,
+        revision: &str,
+        source: Arc<dyn ContextSource>,
+        placement: ContextPlacement,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        work.remaining().map_err(native_context_work_error)?;
+        if !crate::is_valid_component_label(name) || !crate::is_valid_component_label(revision) {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "context source identity is invalid"));
+        }
+        if !source.supports_native() {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context source has no native capability"));
+        }
+        let mut name = clone_text_native(name, work)?;
+        let mut revision = clone_text_native(revision, work)?;
+        name.1.absorb(&mut revision.1).map_err(native_context_work_error)?;
+        Ok((Self::new(name.0, revision.0, source, placement), name.1))
+    }
+
+    fn contract_value(&self) -> Value {
+        serde_json::json!({
+            "name": self.name,
+            "revision": self.revision,
+            "placement": match self.placement {
+                ContextPlacement::Prepend => "prepend",
+                ContextPlacement::Append => "append",
+            },
+        })
+    }
 }
 
 impl ContextStage for SourceStage {
@@ -1136,14 +1636,7 @@ impl ContextStage for SourceStage {
     }
 
     fn contract(&self) -> Value {
-        serde_json::json!({
-            "name": self.name,
-            "revision": self.revision,
-            "placement": match self.placement {
-                ContextPlacement::Prepend => "prepend",
-                ContextPlacement::Append => "append",
-            },
-        })
+        self.contract_value()
     }
 
     fn apply<'a>(
@@ -1156,6 +1649,62 @@ impl ContextStage for SourceStage {
             validate_projected_context(&context, limits)?;
             let loaded = self.source.load(input, limits).await?;
             selection::place_messages(context, loaded, self.placement, limits)
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { self.source.supports_native() }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn contract_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        self.validate_native(work)?;
+        let placement = match self.placement {
+            ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append",
+        };
+        let text_bytes = ["name", "revision", "placement", self.name.as_str(),
+            self.revision.as_str(), placement].iter().try_fold(0_u64, |count, text|
+                count.checked_add(text.len() as u64)).ok_or_else(||
+                native_context_boundary(crate::wire::ErrorCode::Invalid, "context contract storage overflows"))?;
+        let owned = text_bytes.checked_add(3 * std::mem::size_of::<(String, Value)>() as u64)
+            .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "context contract storage overflows"))?;
+        // The original map convention retains typed entry slots; opaque std node/RSS layout is excluded.
+        let guard = work.retain_owned(owned).map_err(native_context_work_error)?;
+        work.charge(acyclic_fs::WorkCounters { bytes_copied: text_bytes, allocation_operations: 6,
+            ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+        Ok((self.contract_value(), guard))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_native(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if !crate::is_valid_component_label(&self.name)
+            || !crate::is_valid_component_label(&self.revision)
+        {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "context source identity is invalid"));
+        }
+        if !self.source.supports_native() {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context source has no native capability"));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn apply_native<'a>(
+        &'a self,
+        input: &'a ContextInput,
+        context: (Context, acyclic_fs::NativeAllocation),
+        limits: Limits,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
+        self.validate_native(work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            validate_projected_context_native(&context.0, limits, work)?;
+            let loaded = self.source.load_native(input, limits, work)?.await?;
+            selection::place_messages_native(context, loaded, self.placement, limits, work)
         })
     }
 }
@@ -1195,6 +1744,32 @@ impl ContextStage for CompactionStage {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn contract_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        self.validate_native(work)?;
+        #[derive(Serialize)]
+        struct Contract<'a> {
+            name: &'static str, revision: &'static str, max_messages: usize,
+            summary: &'a Option<ContextSummary>, retention: &'a CompactionRetention,
+        }
+        let mut recipe = NativeContextValueRecipe::new(work);
+        recipe.field_keys(&["name", "revision", "max_messages", "summary", "retention"])?;
+        recipe.text("compaction")?; recipe.text("3")?;
+        recipe.field_keys(&["roles", "native_media"])?;
+        recipe.array(self.retention.roles.len())?;
+        for role in &self.retention.roles { recipe.text(role.as_str())?; }
+        if let Some(summary) = &self.summary {
+            recipe.field_keys(&["operation_id", "step", "source_messages", "source_digest", "output"])?;
+            recipe.uuid()?;
+            recipe.array(summary.source_digest.len())?;
+            recipe.file(&summary.output)?;
+        }
+        context_contract_native(&Contract { name: "compaction", revision: "3",
+            max_messages: self.max_messages, summary: &self.summary, retention: &self.retention }, recipe, work)
+    }
+
     fn apply<'a>(
         &'a self,
         _: &'a ContextInput,
@@ -1213,6 +1788,41 @@ impl ContextStage for CompactionStage {
             .0;
             validate_projected_context(&compacted, limits)?;
             Ok(compacted)
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { true }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_native(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.retention.validate_native()?;
+        if self.max_messages == 0 {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "compaction max_messages must be positive"));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn apply_native<'a>(
+        &'a self, _: &'a ContextInput,
+        context: (Context, acyclic_fs::NativeAllocation),
+        limits: Limits, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
+        self.validate_native(work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            validate_projected_context_native(&context.0, limits, work)?;
+            let summary = clone_summary_native(self.summary.as_ref(), work)?;
+            let retention = clone_retention_native(&self.retention, work)?;
+            io.absorb_native_custody(summary.1)?;
+            io.absorb_native_custody(retention.1)?;
+            let compacted = DurableContextProvider::compact_with_io(
+                &context.0, self.max_messages, summary.0, retention.0, Some(&io))?.0;
+            validate_projected_context_native(&compacted, limits, work)?;
+            let retained = io.owned_bytes()?;
+            Ok((compacted, io.into_native_custody(retained)?))
         })
     }
 }
@@ -1243,6 +1853,15 @@ impl Context {
             return Err(crate::Error::Invalid(
                 "current input index is outside context".into(),
             ));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) fn validate_current_input_native(&self) -> Result<()> {
+        if self.current_input_index.is_some_and(|index| index as usize >= self.messages.len()) {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                "current input index is outside context"));
         }
         Ok(())
     }
@@ -1295,6 +1914,10 @@ struct BorrowedContext<'a> {
 
 impl BorrowedContext<'_> {
     fn validate_bounds(&self, limits: Limits) -> Result<()> {
+        self.validate_bounds_with_io(limits, None)
+    }
+
+    fn validate_bounds_with_io(&self, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
         let count = self
             .messages
             .first
@@ -1303,11 +1926,19 @@ impl BorrowedContext<'_> {
             .and_then(|count| count.checked_add(self.messages.second.len()))
             .filter(|count| *count <= limits.context_messages);
         if count.is_none() || self.metadata.len() > limits.attachments {
-            return Err(crate::Error::Invalid(
-                "context projection exceeded declared bounds".into(),
-            ));
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                "context projection exceeded declared bounds"));
         }
-        crate::contract::validate_json_byte_bound(self, limits.render_bytes)
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+            for message in self.messages.first.iter().chain(self.messages.second) {
+                message.content.validate_limits_with_native_work(limits, work)?;
+            }
+            if let Some(content) = self.messages.user {
+                content.validate_limits_with_native_work(limits, work)?;
+            }
+        }
+        validate_context_json_with_io(self, limits.render_bytes, io)
     }
 }
 
@@ -1326,6 +1957,302 @@ pub struct ContextInput {
     pub prior_messages: Vec<ModelMessage>,
 }
 
+impl ContextInput {
+    pub(crate) fn copy_for_turn(
+        turn: &crate::executor::TurnInput,
+        step: u32,
+        prior: &[ModelMessage],
+        io: Option<&ContextPreparationIo>,
+    ) -> Result<Self> {
+        let input = copy_context_content_with_io(&turn.input, io)?;
+        let selected_context = match &turn.selected_context {
+            Some(selected) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(io) = io
+                    && let Some(work) = io.original_native_work()
+                {
+                    let mut message_ids = Vec::new();
+                    let guard = reserve_context_vec_native(&mut message_ids, selected.selection.message_ids.len(), work)?;
+                    io.absorb_native_custody(guard)?;
+                    let copied = selected.selection.message_ids.len().checked_mul(std::mem::size_of::<uuid::Uuid>())
+                        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
+                            "context selection copy overflows"))?;
+                    work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
+                        ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+                    message_ids.extend_from_slice(&selected.selection.message_ids);
+                    let checkpoint = match &selected.selection.checkpoint {
+                        Some(file) => {
+                            let (file, guard) = clone_file_native(file, work)?;
+                            io.absorb_native_custody(guard)?;
+                            Some(file)
+                        }
+                        None => None,
+                    };
+                    let messages = copy_context_messages_with_io(&selected.messages, Some(io))?;
+                    Some(SelectedModelContext {
+                        selection: crate::conversation::ModelContextSelection {
+                            conversation_revision: selected.selection.conversation_revision,
+                            message_ids, checkpoint,
+                        },
+                        messages,
+                    })
+                } else {
+                    Some(selected.clone())
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                { Some(selected.clone()) }
+            }
+            None => None,
+        };
+        Ok(Self { input, selected_context, step, prior_messages: copy_context_messages_with_io(prior, io)? })
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) type ContextPreparationIo = crate::executor::PreparationIo;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub(crate) type ContextPreparationIo = ();
+
+fn context_boundary_with_io(
+    io: Option<&ContextPreparationIo>, code: crate::wire::ErrorCode, reason: &'static str,
+) -> crate::Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if io.and_then(ContextPreparationIo::original_native_work).is_some() {
+        return native_context_boundary(code, reason);
+    }
+    let _ = io;
+    match code {
+        crate::wire::ErrorCode::Unsupported => crate::Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::Conflict => crate::Error::Conflict(reason.into()),
+        _ => crate::Error::Invalid(reason.into()),
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn native_context_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> crate::Error {
+    crate::Error::NativeBoundary { code, reason }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_context_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> crate::Error {
+    crate::Error::NativeWork { cause, custody: None }
+}
+
+fn validate_context_limits_with_io(limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        return limits.validate_with_native_work(work);
+    }
+    let _ = io;
+    limits.validate()
+}
+
+fn validate_context_json_with_io<T: Serialize>(
+    value: &T, maximum: u64, io: Option<&ContextPreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        return validate_context_json_native(value, maximum, work);
+    }
+    let _ = io;
+    crate::contract::validate_json_byte_bound(value, maximum)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn validate_context_json_native<T: Serialize>(
+    value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    let mut observer = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
+    crate::contract::validate_trusted_json_byte_bound_with_work(value, maximum, &mut Some(&mut observer))
+}
+
+fn validate_context_content_with_io(
+    content: &ModelContent, limits: Limits, user: bool, io: Option<&ContextPreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        content.validate_limits_with_native_work(limits, work)?;
+        return if user { content.validate_user_input_with_native_work(work) } else { Ok(()) };
+    }
+    let _ = io;
+    content.validate_limits(limits)?;
+    if user { content.validate_user_input()?; }
+    Ok(())
+}
+
+fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        return content.validate_user_input_with_native_work(work);
+    }
+    let _ = io;
+    content.validate_user_input()
+}
+
+fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
+    if let Some(selected) = &input.selected_context {
+        selected.validate_for_input_with_io(&input.input, io)?;
+    }
+    Ok(())
+}
+
+fn validate_context_projection_with_io(context: &Context, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        return validate_projected_context_native(context, limits, work);
+    }
+    let _ = io;
+    validate_projected_context(context, limits)
+}
+
+fn copy_context_content_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<ModelContent> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        let (copy, guard) = clone_content_native(content, work)?;
+        io.absorb_native_custody(guard)?;
+        return Ok(copy);
+    }
+    let _ = io;
+    Ok(content.clone())
+}
+
+fn copy_context_messages_with_io(messages: &[ModelMessage], io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        let (copy, guard) = clone_messages_native(messages, work)?;
+        io.absorb_native_custody(guard)?;
+        return Ok(copy);
+    }
+    let _ = io;
+    Ok(messages.to_vec())
+}
+
+pub(crate) fn context_clone_with_io(context: &Context, io: Option<&ContextPreparationIo>) -> Result<Context> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        let (copy, guard) = clone_context_native(context, work)?;
+        io.absorb_native_custody(guard)?;
+        return Ok(copy);
+    }
+    let _ = io;
+    Ok(context.clone())
+}
+
+fn copy_context_base_messages_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        let (messages, guard) = clone_base_messages_native(
+            input.selected_context.as_ref().map_or(&[], |selected| selected.messages.as_slice()),
+            input.selected_context.is_none().then_some(&input.input), &input.prior_messages, work)?;
+        io.absorb_native_custody(guard)?;
+        return Ok(messages);
+    }
+    let _ = io;
+    let base = input.selected_context.as_ref().map_or_else(
+        || vec![ModelMessage { role: ModelRole::User, content: input.input.clone() }],
+        |selected| selected.messages.clone());
+    Ok(base.into_iter().chain(input.prior_messages.iter().cloned()).collect())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn reserve_context_vec_native<T>(
+    values: &mut Vec<T>, capacity: usize, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<acyclic_fs::NativeAllocation> {
+    let mut guard = work.retain_owned(0).map_err(native_context_work_error)?;
+    if capacity <= values.capacity() { return Ok(guard); }
+    let old = values.capacity();
+    let bytes = capacity.checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+    guard.resize_retained(bytes as u64).map_err(native_context_work_error)?;
+    let copied = values.len().checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
+    work.charge(acyclic_fs::WorkCounters { allocation_operations: 1, bytes_copied: copied as u64,
+        ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+    values.try_reserve_exact(capacity - values.len()).map_err(|cause| crate::Error::NativeWork {
+        cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None,
+    })?;
+    let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+    if let Err(cause) = guard.reconcile_capacity(actual as u64) {
+        return Err(crate::Error::NativeWork { cause, custody: Some(guard) });
+    }
+    let retired = old.checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+    if let Err(cause) = guard.release(retired as u64) {
+        return Err(crate::Error::NativeWork { cause, custody: Some(guard) });
+    }
+    if let Err(cause) = work.remaining() {
+        return Err(crate::Error::NativeWork { cause, custody: Some(guard) });
+    }
+    Ok(guard)
+}
+
+fn reserve_context_messages_with_io(
+    messages: &mut Vec<ModelMessage>, capacity: usize, io: Option<&ContextPreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        return io.absorb_native_custody(reserve_context_vec_native(messages, capacity, work)?);
+    }
+    let _ = io;
+    messages.reserve(capacity.saturating_sub(messages.len()));
+    Ok(())
+}
+
+fn append_context_messages_with_io(
+    first: &mut Vec<ModelMessage>, second: &mut Vec<ModelMessage>, io: Option<&ContextPreparationIo>,
+) -> Result<()> {
+    let capacity = first.len().checked_add(second.len()).ok_or_else(||
+        context_boundary_with_io(io, crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+    reserve_context_messages_with_io(first, capacity, io)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(ContextPreparationIo::original_native_work) {
+        let copied = second.len().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
+            native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
+        work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
+            ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+    }
+    first.append(second);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io
+        && io.original_native_work().is_some()
+    {
+        let bytes = second.capacity().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
+            native_context_boundary(crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
+        // The payloads moved, but the drained source vector's backing no longer has a physical user.
+        drop(std::mem::take(second));
+        io.release(bytes as u64)?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn validate_source_messages_native(
+    messages: &[ModelMessage], limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    limits.validate_with_native_work(work)?;
+    if messages.len() > limits.context_messages {
+        return Err(native_context_boundary(crate::wire::ErrorCode::Invalid, "context projection exceeded declared bounds"));
+    }
+    for message in messages { message.content.validate_limits_with_native_work(limits, work)?; }
+    let metadata = BTreeMap::new();
+    validate_context_json_native(&BorrowedContext {
+        messages: ContextMessages { first: messages, user: None, second: &[] },
+        metadata: &metadata, current_input_index: None,
+    }, limits.render_bytes, work)?;
+    Ok(())
+}
+
 /// Replaceable ordered context transformation.
 pub trait ContextStage: acyclic_stream::ProviderPlatform {
     /// Stable stage name used for diagnostics and composition.
@@ -1333,6 +2260,15 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 
     /// Immutable serializable identity included in durable execution binding.
     fn contract(&self) -> Value;
+
+    /// Constructs the same immutable contract under the original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn contract_with_native_work(
+        &self, _: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            "context stage has no native contract capability"))
+    }
 
     /// Validates a replacement before installation. Custom implementations may
     /// reject incompatible configuration; rejection never replaces the last valid pipeline.
@@ -1355,6 +2291,30 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         context: Context,
         limits: Limits,
     ) -> BoxFuture<'a, Result<Context>>;
+
+    /// Native capability is explicit; an ordinary stage is rejected before boxing or invocation.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool { false }
+
+    /// Validates native pinned state without invoking the allocating ordinary contract callback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_native(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            "context stage has no native capability"))
+    }
+
+    /// Transforms the actual guarded DTO on the original ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn apply_native<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        _: (Context, acyclic_fs::NativeAllocation),
+        _: Limits,
+        _: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
+        Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+            "context stage has no native capability"))
+    }
 }
 
 /// Explicit ordered pipeline; no hidden framework stages are inserted.
@@ -1369,6 +2329,36 @@ impl ContextPipeline {
             stage.validate()?;
         }
         Ok(())
+    }
+
+    /// Validates only the explicit native stage/source SPI before configuration copies or effects.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        work.remaining().map_err(native_context_work_error)?;
+        if self.0.iter().any(|stage| !stage.supports_native()) {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context stage has no native capability"));
+        }
+        for stage in &self.0 { stage.validate_native(work)?; }
+        Ok(())
+    }
+
+    /// Appends to a caller-guarded native pipeline, returning only its actual backing-capacity delta.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn append_with_native_work(
+        &mut self, stage: Arc<dyn ContextStage>, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeAllocation> {
+        work.remaining().map_err(native_context_work_error)?;
+        if !stage.supports_native() {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context stage has no native capability"));
+        }
+        stage.validate_native(work)?;
+        let capacity = self.0.len().checked_add(1).ok_or_else(||
+            native_context_boundary(crate::wire::ErrorCode::Invalid, "context stage count overflows"))?;
+        let guard = reserve_context_vec_native(&mut self.0, capacity, work)?;
+        self.0.push(stage);
+        Ok(guard)
     }
 
     /// Installs a structurally valid replacement for future operations only.
@@ -1401,7 +2391,15 @@ impl ContextPipeline {
     /// Builds the canonical selection/current input and in-turn messages before stages.
     /// This boundary contains no stage contributions and performs no source reads.
     pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
-        limits.validate()?;
+        Self::base_context_with_io(input, limits, None)
+    }
+
+    pub(crate) fn base_context_with_io(
+        input: &ContextInput,
+        limits: Limits,
+        io: Option<&ContextPreparationIo>,
+    ) -> Result<Context> {
+        validate_context_limits_with_io(limits, io)?;
         let metadata = BTreeMap::new();
         let messages = ContextMessages {
             first: input
@@ -1416,62 +2414,53 @@ impl ContextPipeline {
             .as_ref()
             .map_or(1, |selected| selected.messages.len());
         let current_input_index = u32::try_from(base_count.checked_sub(1).ok_or_else(|| {
-            crate::Error::Invalid("current input is missing from context".into())
+            context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                "current input is missing from context")
         })?)
-        .map_err(|_| crate::Error::Invalid("current input index exceeds portable count".into()))?;
+        .map_err(|_| context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+            "current input index exceeds portable count"))?;
         BorrowedContext {
             messages,
             metadata: &metadata,
             current_input_index: Some(current_input_index),
         }
-        .validate_bounds(limits)?;
-        input.input.validate_limits(limits)?;
-        input.input.validate_user_input()?;
-        if let Some(selected) = &input.selected_context {
-            selected.validate_for_input(&input.input)?;
-        }
+        .validate_bounds_with_io(limits, io)?;
+        validate_context_content_with_io(&input.input, limits, true, io)?;
+        validate_context_selection_with_io(input, io)?;
         if input
             .selected_context
             .as_ref()
             .is_some_and(|selected| selected.selection.checkpoint.is_some())
         {
-            return Err(crate::Error::Unsupported(
-                "canonical checkpoint requires owner-resolved base context".into(),
-            ));
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Unsupported,
+                "canonical checkpoint requires owner-resolved base context"));
         }
-        let base = input.selected_context.as_ref().map_or_else(
-            || {
-                vec![ModelMessage {
-                    role: ModelRole::User,
-                    content: input.input.clone(),
-                }]
-            },
-            |selected| selected.messages.clone(),
-        );
-        let context = Context {
-            messages: base
-                .into_iter()
-                .chain(input.prior_messages.iter().cloned())
-                .collect(),
-            metadata,
-            current_input_index: Some(current_input_index),
-        };
-        validate_projected_context(&context, limits)?;
+        let messages = copy_context_base_messages_with_io(input, io)?;
+        let context = Context { messages, metadata, current_input_index: Some(current_input_index) };
+        validate_context_projection_with_io(&context, limits, io)?;
         Ok(context)
     }
 
     /// Adds an exact new delta to an owner-resolved base before running stages.
     /// The caller establishes source provenance; the active input belongs to the delta.
-    pub fn continue_base(mut retained: Context, delta: Context, limits: Limits) -> Result<Context> {
-        validate_projected_context(&retained, limits)?;
+    pub fn continue_base(retained: Context, delta: Context, limits: Limits) -> Result<Context> {
+        Self::continue_base_with_io(retained, delta, limits, None)
+    }
+
+    pub(crate) fn continue_base_with_io(
+        mut retained: Context,
+        delta: Context,
+        limits: Limits,
+        io: Option<&ContextPreparationIo>,
+    ) -> Result<Context> {
+        validate_context_projection_with_io(&retained, limits, io)?;
         if delta.current_input_index.is_none() {
-            return Err(crate::Error::Invalid(
-                "continued base has no current input".into(),
-            ));
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                "continued base has no current input"));
         }
         // The retained parent's old active input is historical in this admission.
         retained.current_input_index = None;
-        selection::place_context(retained, delta, ContextPlacement::Append, limits)
+        selection::place_context_with_io(retained, delta, ContextPlacement::Append, limits, io)
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.
@@ -1486,33 +2475,58 @@ impl ContextPipeline {
     pub async fn transform_bounded(
         &self,
         input: &ContextInput,
-        mut context: Context,
+        context: Context,
         limits: Limits,
     ) -> Result<Context> {
-        limits.validate()?;
+        self.transform_bounded_with_io(input, context, limits, None).await
+    }
+
+    pub(crate) async fn transform_bounded_with_io(
+        &self,
+        input: &ContextInput,
+        mut context: Context,
+        limits: Limits,
+        io: Option<&ContextPreparationIo>,
+    ) -> Result<Context> {
+        validate_context_limits_with_io(limits, io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let native = io.and_then(ContextPreparationIo::original_native_work);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = native {
+            self.validate_with_native_work(work)?;
+        } else {
+            self.validate()?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         self.validate()?;
         if self.0.len() > limits.context_messages {
-            return Err(crate::Error::Invalid(
-                "context stage count exceeds limit".into(),
-            ));
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                "context stage count exceeds limit"));
         }
-        input.input.validate_user_input()?;
-        if let Some(selected) = &input.selected_context {
-            selected.validate_for_input(&input.input)?;
-        }
-        validate_projected_context(&context, limits)?;
+        validate_context_user_input_with_io(&input.input, io)?;
+        validate_context_selection_with_io(input, io)?;
+        validate_context_projection_with_io(&context, limits, io)?;
         if context.current_input_index.is_none() {
-            return Err(crate::Error::Invalid(
-                "base context has no current input marker".into(),
-            ));
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                "base context has no current input marker"));
         }
         for stage in &self.0 {
-            context = stage.apply(input, context, limits).await?;
-            validate_projected_context(&context, limits)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let (Some(io), Some(work)) = (io, native) {
+                // The operation observer retains the actual input payloads, not this zero transfer guard.
+                let guard = work.retain_owned(0).map_err(native_context_work_error)?;
+                let (next, guard) = stage.apply_native(input, (context, guard), limits, work)?.await?;
+                io.absorb_native_custody(guard)?;
+                context = next;
+            } else {
+                context = stage.apply(input, context, limits).await?;
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            { context = stage.apply(input, context, limits).await?; }
+            validate_context_projection_with_io(&context, limits, io)?;
             if context.current_input_index.is_none() {
-                return Err(crate::Error::Invalid(
-                    "context stage removed the current input marker".into(),
-                ));
+                return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                    "context stage removed the current input marker"));
             }
         }
         Ok(context)
@@ -1528,6 +2542,70 @@ impl ContextPipeline {
     #[must_use]
     pub fn contracts(&self) -> Vec<Value> {
         self.0.iter().map(|stage| stage.contract()).collect()
+    }
+
+    /// Copies only the real stage-handle vector; pinned stage implementations remain shared.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let mut output = (Self(Vec::new()), work.retain_owned(0).map_err(native_context_work_error)?);
+        let mut vector_guard = reserve_context_vec_native(&mut output.0.0, self.0.len(), work)?;
+        output.1.absorb(&mut vector_guard).map_err(native_context_work_error)?;
+        let copied = self.0.len().checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>()).ok_or_else(||
+            native_context_boundary(crate::wire::ErrorCode::Invalid, "context stage copy overflows"))?;
+        work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
+            ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
+        output.0.0.extend(self.0.iter().cloned());
+        Ok(output)
+    }
+
+    /// Produces each original immutable contract without invoking an ordinary custom callback.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn contracts_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Vec<Value>, acyclic_fs::NativeAllocation)> {
+        if self.0.iter().any(|stage| !stage.supports_native()) {
+            return Err(native_context_boundary(crate::wire::ErrorCode::Unsupported,
+                "context stage has no native capability"));
+        }
+        let mut output = (Vec::new(), work.retain_owned(0).map_err(native_context_work_error)?);
+        let mut vector_guard = reserve_context_vec_native(&mut output.0, self.0.len(), work)?;
+        output.1.absorb(&mut vector_guard).map_err(native_context_work_error)?;
+        for stage in &self.0 {
+            let mut source = stage.contract_with_native_work(work)?;
+            output.1.absorb(&mut source.1).map_err(native_context_work_error)?;
+            output.0.push(source.0);
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn summary_source(
+        source: Context, revision: String, io: Option<&ContextPreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io
+            && let Some(work) = io.original_native_work()
+        {
+            const NAME: &str = "summary-source";
+            let owned = (std::mem::size_of::<Context>() + std::mem::size_of::<SourceStage>()
+                + 4 * std::mem::size_of::<usize>() + NAME.len()) as u64;
+            let guard = work.retain_owned(owned).map_err(native_context_work_error)?;
+            work.charge(acyclic_fs::WorkCounters { allocation_operations: 3,
+                bytes_copied: NAME.len() as u64, ..acyclic_fs::WorkCounters::default() })
+                .map_err(native_context_work_error)?;
+            io.absorb_native_custody(guard)?;
+            let mut stages = Vec::new();
+            let guard = reserve_context_vec_native::<Arc<dyn ContextStage>>(&mut stages, 1, work)?;
+            io.absorb_native_custody(guard)?;
+            let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
+                NAME.to_owned(), revision, Arc::new(source), ContextPlacement::Prepend));
+            stages.push(stage);
+            return Ok(Self(stages));
+        }
+        let _ = io;
+        Ok(Self::new([Arc::new(SourceStage::new(
+            "summary-source", revision, Arc::new(source), ContextPlacement::Prepend)) as Arc<dyn ContextStage>]))
     }
 }
 

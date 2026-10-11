@@ -106,16 +106,24 @@ pub(crate) fn validate_json_byte_bound<T: Serialize + ?Sized>(value: &T, maximum
     json_byte_length(value, maximum).map(|_| ())
 }
 
-/// Counts the original compact serialization of an audited, finite SDK DTO.
-/// Callers must bound its source collections before entering this method and
-/// exclude unaudited serializers and user-generated serializer errors.
-/// Ordinary checks retain their bounded early-failure behavior. Native checks
-/// avoid allocating an I/O error merely because a small byte bound was selected.
 pub(crate) fn validate_trusted_json_byte_bound_with_work<T: Serialize + ?Sized>(
     value: &T,
     maximum: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
+    count_trusted_json_bytes_with_work(value, maximum, work).map(|_| ())
+}
+
+/// Counts the original compact serialization of an audited, finite SDK DTO.
+/// Callers must bound its source collections before entering this method and
+/// exclude unaudited serializers and user-generated serializer errors.
+/// Ordinary checks retain their bounded early-failure behavior. Native checks
+/// avoid allocating an I/O error merely because a small byte bound was selected.
+pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<u64> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(observer) = work.as_deref_mut()
         && observer.original_native_work().is_some()
@@ -179,17 +187,17 @@ pub(crate) fn validate_trusted_json_byte_bound_with_work<T: Serialize + ?Sized>(
                         reason: "JSON exceeds declared byte bound",
                     })
                 } else {
-                    Ok(())
+                    Ok(count.bytes)
                 }
             }
         }
     } else {
-        validate_json_byte_bound(value, maximum)
+        json_byte_length(value, maximum)
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {
         let _ = work;
-        validate_json_byte_bound(value, maximum)
+        json_byte_length(value, maximum)
     }
 }
 

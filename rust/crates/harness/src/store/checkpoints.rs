@@ -306,15 +306,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             Ok(()) => released?,
             Err(error) => return Err(error),
         }
-        if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-        if let Some(observer) = work.as_deref_mut() {
-            // StreamClient owns another exact Arc<str> character payload.
-            observer.admit_allocation(path.as_str().len() as u64)?;
-            observer.copy_bytes(path.as_str().len() as u64)?;
-            observer.retain_owned(path.as_str().len() as u64)?;
-            retained += path.as_str().len() as u64;
-        }
-        let tail = client.stream(path.as_str())?.tail().await?;
+        let tail = operations::tail_with_work(client, &path, work).await?;
         if tail == 1 { Ok(()) } else {
             Err(Error::Conflict("immutable record identity differs".into()))
         }
@@ -467,13 +459,19 @@ async fn tail<P: StreamProvider>(
     authority: &Authority,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
-    let stream = client.stream(authority.stream_path()?)?;
-    if let Some(work) = work.as_deref_mut() { work.begin_call()?; }
-    match stream.tail().await {
-        Ok(tail) => Ok(tail),
-        Err(StreamError::NotFound) => Ok(0),
-        Err(error) => Err(error.into()),
+    if work.is_none() {
+        let stream = client.stream(authority.stream_path()?)?;
+        return match stream.tail().await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(error.into()),
+        };
     }
+    let (path, retained) = operations::canonical_publication_path_with_work(authority, work)?;
+    let result = operations::tail_optional_with_work(client, &path, work).await
+        .map(|tail| tail.unwrap_or(0));
+    drop(path);
+    operations::release_owned_after_drop(result, retained, work)
 }
 
 fn projection_cut(committed_tail: u64, original_revision: Option<u64>) -> Result<u64> {
@@ -641,48 +639,7 @@ impl ProjectionLocation {
         }
         if let Some(work) = work.as_deref_mut() { work.stage_output(self.bytes, 1)?; }
         let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut admitted_owned = 0;
-        let admission = if let Some(observer) = custody.work().as_deref_mut() {
-            crate::contract::snapshot_json_admission(
-                &bytes,
-                crate::contract::JsonBounds {
-                    maximum_bytes,
-                    maximum_items: maximum_bytes,
-                    maximum_depth: 256,
-                },
-                &mut |charge| {
-                    let owned = match charge {
-                        crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes } => Some(maximum_owned_bytes),
-                        _ => None,
-                    };
-                    observer.codec_charge(charge)?;
-                    if let Some(owned) = owned { admitted_owned = owned; }
-                    Ok(())
-                },
-            ).map(Some)
-        } else { Ok(None) };
-        // Adoption happens even when the original guard reports a later
-        // error, so every successful prior claim is released by the same RAII.
-        custody.adopt(admitted_owned)?;
-        let admission = admission?;
-        let snapshot: Snapshot = if let Some(admission) = admission {
-            // One original Serde parse moves the conversation's wire fields,
-            // then the same rebuild observes its actual original digest work.
-            let wire = Snapshot::decode_admitted_wire(&bytes)
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            let future_cache = admission.conversation_cache_bytes
-                .checked_add(admission.conversation_canonical_scratch_bytes)
-                .ok_or_else(|| Error::Storage("snapshot cache allowance overflows".into()))?;
-            custody.relinquish(future_cache)?;
-            let (snapshot, cache_bytes) = wire.into_snapshot_with_work(
-                maximum_bytes, custody.work())?;
-            custody.adopt(cache_bytes)?;
-            snapshot
-        } else {
-            crate::contract::json_from_slice(&bytes)
-                .map_err(|error| Error::Storage(error.to_string()))?
-        };
+        let snapshot = Snapshot::decode_with_work(&bytes, maximum_bytes, work)?;
         if snapshot.authority != self.authority
             || snapshot.revision != self.revision
             || snapshot.events.last() != Some(&event)
@@ -691,28 +648,25 @@ impl ProjectionLocation {
                 "projection snapshot differs from its canonical anchor".into(),
             ));
         }
-        let anchor_owned = if custody.work().is_some() {
+        let anchor_owned = if work.is_some() {
             crate::core::event_clone_reservation(&event)?
                 .checked_add(actual_authority.id.capacity() as u64)
                 .ok_or_else(|| Error::Invalid("projection anchor custody overflows".into()))?
         } else { 0 };
         drop(event);
         drop(actual_authority);
-        if let Some(work) = custody.work().as_deref_mut() { work.release_owned(anchor_owned)?; }
-        if let Some(work) = custody.work().as_deref_mut() {
+        if let Some(work) = work.as_deref_mut() { work.release_owned(anchor_owned)?; }
+        if let Some(work) = work.as_deref_mut() {
             work.check_cancellation()?;
         }
         let capacity = bytes.capacity() as u64;
         drop(bytes);
         let canonical_bytes = canonical.value.len() as u64;
         drop(canonical);
-        if let Some(work) = custody.work().as_deref_mut() {
+        if let Some(work) = work.as_deref_mut() {
             work.release_bytes(capacity)?;
             work.release_record(canonical_bytes)?;
         }
-        // The original restore consumes these typed fields. The allowance
-        // travels with that result; no second snapshot decoder or meter exists.
-        custody.transfer();
         Ok(snapshot)
     }
 }
