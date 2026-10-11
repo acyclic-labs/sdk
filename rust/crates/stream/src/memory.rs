@@ -6,7 +6,7 @@
 //! copy a body. Opaque std tree/hash nodes and Tokio watch internals have no
 //! invented physical allocation count; tree entries use declared logical quota.
 //! Reads return their completed ordered prefix before a late original error.
-//! Accepted commits carry late causes to Local's canonical durability drain.
+//! Accepted commits/appends carry late causes to Local's canonical durability drain.
 //! Deadline-bound new facts check the trusted provider clock at publication;
 //! previously retained idempotent outcomes are replayed before deadline checks.
 
@@ -75,6 +75,15 @@ impl MemoryAllocation {
         #[cfg(target_arch = "wasm32")]
         let _ = &mut other;
         Ok(())
+    }
+}
+
+impl MemoryObserver {
+    fn is_native(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.meter.is_some() }
+        #[cfg(target_arch = "wasm32")]
+        { false }
     }
 }
 
@@ -577,7 +586,7 @@ impl MemoryStream {
         let key = observer.bytes(request.idempotency_key.as_bytes())?;
         prepare_retained_capacity(&mut state, observer)?;
         let prepared = PreparedPublication {
-            envelope, replay: IdempotencyOutcome::Commit(replay.value), key,
+            envelope, replay: IdempotencyOutcome::Commit(replay.value), key: Some(key),
             paths, mutations, resident,
         };
         observer.check()?;
@@ -593,6 +602,139 @@ impl MemoryStream {
         let error = write.record(bytes).err();
         Ok(MemoryCommitCompletion { outcome, error })
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn native_append_completion_borrowed_inner(
+        &self,
+        request: &mut AppendRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> std::io::Result<Result<NativeMemoryAppendCompletion, StreamError>> {
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        match self.append_observed(request, &observer).await {
+            Ok(completion) => Ok(Ok(NativeMemoryAppendCompletion {
+                outcome: native(Ok(completion.outcome), &meter)?
+                    .expect("a completed memory outcome is already a provider success"),
+                error: completion.error,
+            })),
+            Err(MemoryFailure::Provider(error)) => Ok(Err(error)),
+            Err(MemoryFailure::Observer(error)) => Err(error),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn native_append_inner(
+        &self,
+        mut request: AppendRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeStreamResult<AppendOutcome> {
+        match self.native_append_completion_borrowed_inner(&mut request, meter).await? {
+            Ok(completion) => match completion.error {
+                Some(error) => Err(error),
+                None => Ok(Ok(completion.outcome)),
+            },
+            Err(error) => Ok(Err(error)),
+        }
+    }
+
+    async fn append_observed(
+        &self,
+        request: &mut AppendRequest,
+        observer: &MemoryObserver,
+    ) -> MemoryResult<MemoryAppendCompletion> {
+        observer.check()?;
+        validate_records_with_observer(&request.records, observer)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let encoded_len = append_encoded_len_observed(request, observer.meter.as_ref())?;
+        #[cfg(target_arch = "wasm32")]
+        let encoded_len = append_encoded_len_with_observer(request, observer)?;
+        if encoded_len > MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded.into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let digest = append_digest_observed(request, observer.meter.as_ref())?;
+        #[cfg(target_arch = "wasm32")]
+        let digest = append_digest_with_observer(request, observer)?;
+        observer.write_boundary()?;
+        let bytes = request.records.iter().map(Bytes::len).sum();
+        let mut write = observer.write_bytes(bytes)?;
+        let mut state = self.state.write().await;
+        observer.admit_item()?;
+        let replay = request.idempotency_key.as_ref()
+            .and_then(|key| state.replays.get(key.as_bytes()));
+        observer.record_item()?;
+        if let Some(replay) = replay {
+            if replay.digest != digest { return Err(StreamError::IdempotencyMismatch.into()); }
+            let IdempotencyOutcome::Append(outcome) = &replay.result else {
+                return Err(StreamError::IdempotencyMismatch.into());
+            };
+            return Ok(MemoryAppendCompletion {
+                outcome: MemoryOutput { value: outcome.clone(), allocation: observer.allocate(0)? },
+                error: None,
+            });
+        }
+        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        observer.admit_item()?;
+        let actual_tail = state.paths.get(&request.path).map_or(0, |path| path.tail);
+        observer.record_item()?;
+        let mut resident = observer.allocate(0)?;
+        if request.idempotency_key.is_some() {
+            resident.absorb(observer.adopt(std::mem::size_of::<(Bytes, Replay)>())?)?;
+        }
+        let (outcome, envelope, paths, mutations, decision, committed_at) =
+            if request.if_tail.is_some_and(|expected| expected != actual_tail) {
+                (AppendOutcome::TailConflict { actual_tail }, None, observer.vec(0)?,
+                    observer.vec(0)?, None, state.last_committed_at_micros)
+            } else {
+                let missing = missing_observed_paths(&state, std::iter::once(&request.path), observer)?;
+                if reserve_append(&state, &missing.value, &request.records, self.limits).is_err() {
+                    recount_observed(&mut state, observer)?;
+                    reserve_append(&state, &missing.value, &request.records, self.limits)?;
+                }
+                let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+                let commit_id = planned_commit_id(decision, digest, observer)?;
+                let committed_at = state.last_committed_at_micros
+                    .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+                let mut facts = observer.vec(1)?;
+                let fact = if observer.is_native() {
+                    // Native borrowed inputs remain physically owned by Local's
+                    // request holder until its mandatory durability drain.
+                    crate::preparation::append_fact_with_observer(
+                        &request.path, actual_tail, request.records.iter().cloned(),
+                        commit_id, committed_at, observer,
+                    )?
+                } else {
+                    // Ordinary owned inputs can transfer immutable bodies;
+                    // avoid an unnecessary alias clone for every record.
+                    crate::preparation::append_fact_with_observer(
+                        &request.path, actual_tail, std::mem::take(&mut request.records),
+                        commit_id, committed_at, observer,
+                    )?
+                };
+                let outcome = AppendOutcome::Committed(AppendReceipt {
+                    start: fact.value.start, end: fact.value.end, tail: fact.value.tail, commit_id,
+                });
+                facts.allocation.absorb(fact.allocation)?;
+                facts.value.push(CommittedMutation::Append(fact.value));
+                let envelope = CommittedEnvelope { commit_id, mutations: facts.value };
+                let mutations = prepare_mutations(&state, &envelope, observer)?;
+                let paths = prepare_paths(&missing.value, &envelope, observer)?;
+                resident.absorb(facts.allocation)?;
+                resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, CommittedEnvelope)>())?)?;
+                (outcome, Some(envelope), paths, mutations, Some(decision), committed_at)
+            };
+        let key = request.idempotency_key.as_ref().map(|key| observer.bytes(key.as_bytes())).transpose()?;
+        if envelope.is_some() || key.is_some() { prepare_retained_capacity(&mut state, observer)?; }
+        let output = MemoryOutput { value: outcome.clone(), allocation: observer.allocate(0)? };
+        let prepared = PreparedPublication {
+            envelope, replay: IdempotencyOutcome::Append(outcome), key, paths, mutations, resident,
+        };
+        observer.check()?;
+        publish(&mut state, prepared, digest);
+        if let Some(decision) = decision { state.decision = decision; }
+        state.last_committed_at_micros = committed_at;
+        let error = if decision.is_some() { write.record(bytes).err() } else { None };
+        Ok(MemoryAppendCompletion { outcome: output, error })
+    }
 }
 
 struct MemoryCommitCompletion {
@@ -603,6 +745,17 @@ struct MemoryCommitCompletion {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeMemoryCommitCompletion {
     pub(crate) outcome: NativeStreamOutput<CommitOutcome>,
+    pub(crate) error: Option<std::io::Error>,
+}
+
+struct MemoryAppendCompletion {
+    outcome: MemoryOutput<AppendOutcome>,
+    error: Option<std::io::Error>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NativeMemoryAppendCompletion {
+    pub(crate) outcome: NativeStreamOutput<AppendOutcome>,
     pub(crate) error: Option<std::io::Error>,
 }
 
@@ -662,6 +815,7 @@ impl Drop for State {
 struct Retained {
     replay: Option<Bytes>,
     commit: Option<CommitId>,
+    _allocation: MemoryAllocation,
 }
 
 struct PathState {
@@ -881,86 +1035,12 @@ impl StreamProvider for MemoryStream {
         ordinary(self.bounds_inner(path, &MemoryObserver::default()).await)
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        validate_records(&request.records)?;
-        validate_append_size(&request)?;
-        let digest = append_digest(&request);
-        let mut state = self.state.write().await;
-        if let Some(result) = replay_append(&state, request.idempotency_key.as_ref(), digest)? {
-            return Ok(result);
-        }
-        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
-        let actual_tail = state.paths.get(&request.path).map_or(0, |path| path.tail);
-        if request
-            .if_tail
-            .is_some_and(|expected| expected != actual_tail)
-        {
-            let result = AppendOutcome::TailConflict { actual_tail };
-            retain(
-                &mut state,
-                None,
-                request.idempotency_key,
-                digest,
-                IdempotencyOutcome::Append(result.clone()),
-            );
-            return Ok(result);
-        }
-        if reserve_append(&state, &request.path, &request.records, self.limits).is_err() {
-            recount(&mut state);
-            reserve_append(&state, &request.path, &request.records, self.limits)?;
-        }
-        let commit_id = next_commit_id(&mut state, digest)?;
-        let committed_at_micros = state
-            .last_committed_at_micros
-            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
-        let fact = crate::preparation::append_fact(
-            request.path.clone(),
-            actual_tail,
-            request.records,
-            commit_id,
-            committed_at_micros,
-        )?;
-        let records = &fact.records;
-        ensure_path(&mut state, &request.path, commit_id);
-        let resulting_tail = {
-            let stream = state
-                .paths
-                .get_mut(&request.path)
-                .ok_or(StreamError::Unavailable)?;
-            stream.history = Some(Arc::new(History::Batch {
-                parent: stream.history.clone(),
-                records: Arc::new(MemoryRecords::from(records.clone())),
-                _allocation: MemoryAllocation::default(),
-            }));
-            stream.tail = fact.tail;
-            stream.changed.send_replace(stream.tail);
-            stream.tail
-        };
-        state.record_count += records.len();
-        state.payload_bytes += records
-            .iter()
-            .map(|record| record.value.len())
-            .sum::<usize>();
-        let receipt = AppendReceipt {
-            start: actual_tail,
-            end: resulting_tail,
-            tail: resulting_tail,
-            commit_id,
-        };
-        let envelope = CommittedEnvelope {
-            commit_id,
-            mutations: vec![CommittedMutation::Append(fact)],
-        };
-        let result = AppendOutcome::Committed(receipt);
-        state.last_committed_at_micros = committed_at_micros;
-        retain(
-            &mut state,
-            Some(envelope),
-            request.idempotency_key,
-            digest,
-            IdempotencyOutcome::Append(result.clone()),
-        );
-        Ok(result)
+    async fn append(&self, mut request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        let completion = self.append_observed(&mut request, &MemoryObserver::default()).await;
+        ordinary(completion.map(|completion| {
+            assert!(completion.error.is_none(), "ordinary appends have no fallible observer");
+            completion.outcome
+        }))
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -1267,6 +1347,16 @@ impl StreamProvider for MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, AppendOutcome> {
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, self.native_append_inner(request, meter))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn native_commit(
         &self,
         request: CommitRequest,
@@ -1327,18 +1417,9 @@ fn validate_records_with_observer(records: &[Bytes], observer: &MemoryObserver) 
 }
 
 pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
-    let wire = crate::wire::AppendRequest {
-        path: request.path.to_string(),
-        records: request.records.clone(),
-        if_tail: request.if_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    };
-    (wire.encoded_len() <= MAX_COMMAND_BYTES)
-        .then_some(())
-        .ok_or(StreamError::LimitExceeded)
+    (append_encoded_len_with_observer(request, &MemoryObserver::default())
+        .expect("ordinary sizing has no fallible observer") <= MAX_COMMAND_BYTES)
+        .then_some(()).ok_or(StreamError::LimitExceeded)
 }
 
 pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
@@ -1403,11 +1484,14 @@ fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError
 
 fn reserve_append(
     state: &State,
-    path: &StreamPath,
+    paths: &BTreeSet<&str>,
     records: &[Bytes],
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    reserve_paths(state, path, limits)?;
+    if state.paths.len().saturating_add(paths.len()) > limits.paths
+        || state.path_bytes.saturating_add(paths.iter().map(|path| path.len()).sum()) > limits.path_bytes {
+        return Err(StreamError::Capacity);
+    }
     reserve_commit(state, limits)?;
     let bytes = records.iter().map(Bytes::len).sum::<usize>();
     if state.record_count.saturating_add(records.len()) > limits.records
@@ -1766,17 +1850,6 @@ fn replay(
     Ok(Some(replay.result.clone()))
 }
 
-fn replay_append(
-    state: &State,
-    key: Option<&crate::IdempotencyKey>,
-    digest: [u8; 32],
-) -> Result<Option<AppendOutcome>, StreamError> {
-    match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result)),
-        Some(_) => Err(StreamError::IdempotencyMismatch),
-        None => Ok(None),
-    }
-}
 
 fn replay_fork(
     state: &State,
@@ -1824,16 +1897,57 @@ fn retain(
         key
     });
     if commit.is_some() || replay.is_some() {
-        state.retained.push_back(Retained { replay, commit });
+        state.retained.push_back(Retained { replay, commit, _allocation: MemoryAllocation::default() });
     }
 }
 
 pub(crate) fn append_digest(request: &AppendRequest) -> [u8; 32] {
-    let mut hash = request_hasher(b"append");
-    hash_path(&mut hash, &request.path);
-    hash.update(request.if_tail.unwrap_or(u64::MAX).to_le_bytes());
-    hash_records(&mut hash, &request.records);
-    hash.finalize().into()
+    append_digest_with_observer(request, &MemoryObserver::default())
+        .expect("ordinary hashing has no fallible observer")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn append_digest_observed(
+    request: &AppendRequest,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> std::io::Result<[u8; 32]> {
+    append_digest_with_observer(request, &MemoryObserver { meter: meter.cloned() })
+}
+
+fn append_digest_with_observer(
+    request: &AppendRequest,
+    observer: &MemoryObserver,
+) -> std::io::Result<[u8; 32]> {
+    let mut hash = Sha256::new();
+    hash_update_observed(&mut hash, b"acyclic.stream.request.v1\0", observer)?;
+    hash_update_observed(&mut hash, b"append", observer)?;
+    hash_path_observed(&mut hash, &request.path, observer)?;
+    hash_update_observed(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(), observer)?;
+    hash_records_observed(&mut hash, &request.records, observer)?;
+    Ok(hash.finalize().into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn append_encoded_len_observed(
+    request: &AppendRequest,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> std::io::Result<usize> {
+    append_encoded_len_with_observer(request, &MemoryObserver { meter: meter.cloned() })
+}
+
+fn append_encoded_len_with_observer(
+    request: &AppendRequest,
+    observer: &MemoryObserver,
+) -> std::io::Result<usize> {
+    let mut size = wire_bytes_len(request.path.as_str().len());
+    for record in &request.records {
+        observer.admit_item()?;
+        size += wire_bytes_len(record.len());
+        observer.record_item()?;
+    }
+    if let Some(tail) = request.if_tail { size += 1 + wire_varint_len(tail); }
+    if let Some(key) = &request.idempotency_key { size += wire_bytes_len(key.as_bytes().len()); }
+    Ok(size)
 }
 
 pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
@@ -1939,13 +2053,6 @@ fn hash_path(hash: &mut Sha256, path: &StreamPath) {
     hash.update(path.as_str().as_bytes());
 }
 
-fn hash_records(hash: &mut Sha256, records: &[Bytes]) {
-    hash.update((records.len() as u64).to_le_bytes());
-    for record in records {
-        hash.update((record.len() as u64).to_le_bytes());
-        hash.update(record);
-    }
-}
 
 fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
@@ -2140,12 +2247,20 @@ fn missing_commit_paths<'a>(
     request: &'a CommitRequest,
     observer: &MemoryObserver,
 ) -> MemoryResult<MemoryOutput<BTreeSet<&'a str>>> {
+    missing_observed_paths(state, request.mutations.iter().map(mutation_path), observer)
+}
+
+fn missing_observed_paths<'a>(
+    state: &State,
+    paths: impl IntoIterator<Item = &'a StreamPath>,
+    observer: &MemoryObserver,
+) -> MemoryResult<MemoryOutput<BTreeSet<&'a str>>> {
     let mut output = MemoryOutput {
         value: BTreeSet::new(),
         allocation: observer.allocate(0)?,
     };
-    for mutation in &request.mutations {
-        let mut current = Some(mutation_path(mutation).as_str());
+    for path in paths {
+        let mut current = Some(path.as_str());
         while let Some(path) = current {
             observer.admit_item()?;
             if !state.paths.contains_key(path) && !output.value.contains(path) {
@@ -2194,7 +2309,7 @@ struct PreparedMutation {
 struct PreparedPublication {
     envelope: Option<CommittedEnvelope>,
     replay: IdempotencyOutcome,
-    key: Bytes,
+    key: Option<Bytes>,
     paths: MemoryOutput<Vec<(StreamPath, PathState)>>,
     mutations: MemoryOutput<Vec<PreparedMutation>>,
     resident: MemoryAllocation,
@@ -2342,11 +2457,16 @@ fn publish(state: &mut State, prepared: PreparedPublication, digest: [u8; 32]) {
         if creates_paths { state.hierarchy_version = commit_id; }
         commit_id
     });
-    let key = prepared.key;
-    state.replays.insert(key.clone(), Replay {
-        digest, result: prepared.replay, _allocation: prepared.resident,
+    let mut resident = prepared.resident;
+    let replay = prepared.key.map(|key| {
+        state.replays.insert(key.clone(), Replay {
+            digest, result: prepared.replay, _allocation: std::mem::take(&mut resident),
+        });
+        key
     });
-    state.retained.push_back(Retained { replay: Some(key), commit });
+    if commit.is_some() || replay.is_some() {
+        state.retained.push_back(Retained { replay, commit, _allocation: resident });
+    }
 }
 
 #[cfg(test)]
@@ -2558,6 +2678,126 @@ mod tests {
                 }],
                 idempotency_key: key(b"native-commit")?,
             })
+        }
+
+        #[tokio::test]
+        async fn native_append_preserves_append_identity_conflict_and_cold_retry() -> MemoryResult<()> {
+            let provider = MemoryStream::default();
+            let ordinary_provider = MemoryStream::default();
+            let request = AppendRequest {
+                path: path("native/append")?, records: vec![Bytes::from_static(b"one")],
+                if_tail: Some(0), idempotency_key: Some(key(b"native-append")?),
+            };
+            let meter = Arc::new(Meter::default());
+            let appended = provider.native_append(request.clone(), meter.original()).await??;
+            let ordinary = ordinary_provider.append(request.clone()).await?;
+            assert_eq!(appended.value(), &ordinary);
+            let AppendOutcome::Committed(receipt) = appended.value() else {
+                return Err(StreamError::Unavailable.into());
+            };
+            let envelope = provider.native_read_commit(receipt.commit_id, meter.original()).await??;
+            assert_eq!(envelope.value(), &ordinary_provider.read_commit(receipt.commit_id).await?);
+            let observation = provider.native_inspect_idempotency(key(b"native-append")?, meter.original()).await??;
+            assert_eq!(observation.value().as_ref().map(|fact| &fact.outcome),
+                Some(&IdempotencyOutcome::Append(ordinary)));
+            let replay = provider.native_append(request.clone(), meter.original()).await??;
+            assert_eq!(appended.value(), replay.value());
+            let mut changed = request.clone();
+            changed.records = vec![Bytes::from_static(b"changed")];
+            assert!(matches!(provider.native_append(changed, meter.original()).await?,
+                Err(StreamError::IdempotencyMismatch)));
+            let wrong_kind = CommitRequest {
+                conditions: vec![CommitCondition::Tail { path: request.path.clone(), expected: 1 }],
+                mutations: vec![CommitMutation::Append {
+                    path: request.path.clone(), records: vec![Bytes::from_static(b"wrong")],
+                }],
+                idempotency_key: key(b"native-append")?,
+            };
+            assert!(matches!(provider.native_commit(wrong_kind, meter.original()).await?,
+                Err(StreamError::IdempotencyMismatch)));
+            let mut conflict = request.clone();
+            conflict.if_tail = Some(7);
+            conflict.idempotency_key = Some(key(b"native-append-conflict")?);
+            let rejected = provider.native_append(conflict.clone(), meter.original()).await??;
+            assert_eq!(rejected.value(), &AppendOutcome::TailConflict { actual_tail: 1 });
+            let extra = AppendRequest {
+                if_tail: Some(1), idempotency_key: None, ..request.clone()
+            };
+            drop(provider.native_append(extra, meter.original()).await??);
+            let rejected_replay = provider.native_append(conflict, meter.original()).await??;
+            assert_eq!(rejected.value(), rejected_replay.value());
+            assert_eq!(provider.tail(request.path).await?, 2);
+            assert_eq!(provider.state.read().await.decision, 2);
+            drop((appended, envelope, observation, replay, rejected, rejected_replay));
+            drop(provider);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn native_append_denial_and_late_cause_preserve_actual_publication() -> MemoryResult<()> {
+            let request = AppendRequest {
+                path: path("native/append")?, records: vec![Bytes::from_static(b"one")],
+                if_tail: Some(0), idempotency_key: Some(key(b"native-append")?),
+            };
+            for denied in [1, 2, 3] {
+                let provider = MemoryStream::default();
+                let meter = Arc::new(Meter { deny_allocation: denied, ..Meter::default() });
+                assert!(matches!(provider.native_append(request.clone(), meter.original()).await,
+                    Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory));
+                assert_eq!(provider.state.read().await.decision, 0);
+                assert!(provider.state.read().await.paths.is_empty());
+                assert!(provider.state.read().await.replays.is_empty());
+                assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
+                drop(provider);
+                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            }
+            let provider = MemoryStream::default();
+            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
+            let mut retained_input = request.clone();
+            let pointer = retained_input.records.as_ptr();
+            let completion = provider.native_append_completion_borrowed_inner(
+                &mut retained_input, meter.original(),
+            ).await??;
+            assert!(matches!(completion.error.as_ref(), Some(error)
+                if error.kind() == std::io::ErrorKind::Interrupted));
+            assert!(matches!(completion.outcome.value(), AppendOutcome::Committed(_)));
+            assert_eq!(pointer, retained_input.records.as_ptr());
+            let replay = provider.append(request).await?;
+            assert_eq!(completion.outcome.value(), &replay);
+            assert_eq!(provider.state.read().await.decision, 1);
+            drop(completion);
+            drop(provider);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[test]
+        fn append_size_and_digest_match_canonical_optional_scalar_fields() -> Result<(), StreamError> {
+            for tail in [None, Some(0), Some(127), Some(128), Some(u64::MAX)] {
+                let request = AppendRequest {
+                    path: path("native/append")?, records: vec![Bytes::new(), Bytes::from(vec![0; 128])],
+                    if_tail: tail, idempotency_key: Some(key(b"native-append")?),
+                };
+                let wire = crate::wire::AppendRequest {
+                    path: request.path.to_string(), records: request.records.clone(),
+                    if_tail: tail, idempotency_key: request.idempotency_key.as_ref()
+                        .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+                };
+                assert_eq!(append_encoded_len_with_observer(&request, &MemoryObserver::default())
+                    .expect("ordinary sizing"), wire.encoded_len());
+                let mut old = request_hasher(b"append");
+                hash_path(&mut old, &request.path);
+                old.update(tail.unwrap_or(u64::MAX).to_le_bytes());
+                old.update((request.records.len() as u64).to_le_bytes());
+                for record in &request.records {
+                    old.update((record.len() as u64).to_le_bytes());
+                    old.update(record);
+                }
+                let expected: [u8; 32] = old.finalize().into();
+                assert_eq!(append_digest(&request), expected);
+            }
+            Ok(())
         }
 
         #[tokio::test]

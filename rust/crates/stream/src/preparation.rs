@@ -108,15 +108,30 @@ pub(crate) fn append_fact(
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<CommittedAppend, StreamError> {
-    let end = start
-        .checked_add(u64::try_from(bodies.len()).map_err(|_| StreamError::LimitExceeded)?)
-        .ok_or(StreamError::LimitExceeded)?;
-    Ok(CommittedAppend {
-        path,
-        start,
-        end,
-        tail: end,
-        records: records(start, bodies, commit_id, committed_at_micros)?,
+    provider_result(append_fact_with_observer(
+        &path, start, bodies, commit_id, committed_at_micros, &MemoryObserver::default(),
+    )).map(|output| output.value)
+}
+
+pub(crate) fn append_fact_with_observer<I>(
+    path: &StreamPath,
+    start: u64,
+    bodies: I,
+    commit_id: CommitId,
+    committed_at_micros: u64,
+    observer: &MemoryObserver,
+) -> MemoryResult<MemoryOutput<CommittedAppend>>
+where
+    I: IntoIterator<Item = Bytes>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let records = records_with_observer(start, bodies, commit_id, committed_at_micros, observer)?;
+    let end = start.checked_add(records.value.len() as u64).ok_or(StreamError::LimitExceeded)?;
+    Ok(MemoryOutput {
+        value: CommittedAppend {
+            path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
+        },
+        allocation: records.allocation,
     })
 }
 
