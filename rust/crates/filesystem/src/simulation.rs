@@ -214,28 +214,17 @@ impl State {
             .ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
         let delta = WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED };
         accounting.admit(delta)?;
-        let (replacement, allocation) = accounting.with_owned_allocations(
-            |allocations, work, budget, _| {
-                allocations.claim_bytes(bytes, 1, work, budget)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                let mut replacement = Vec::new();
-                if let Err(error) = replacement.try_reserve_exact(capacity) {
-                    allocations.release(bytes)
-                        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                    return Err(ObjectStoreError::MemoryTableAllocationFailed(error).into());
-                }
-                let actual = u64::try_from(replacement.capacity().checked_mul(
-                    std::mem::size_of::<SimulationTrace>(),
-                ).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
-                allocations.record_owned_bytes(actual - bytes, work)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                Ok(replacement)
-            },
-        )?;
-        let mut replacement = SimulationTraceReplacement { trace: replacement, allocation };
-        accounting.admit(WorkCounters::UNCHARGED)?;
-        accounting.charge(delta)?;
+        let allocation = accounting.claim_owned(bytes, 1)?;
+        let mut replacement = SimulationTraceReplacement { trace: Vec::new(), allocation };
+        replacement.trace.try_reserve_exact(capacity)
+            .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        let actual = u64::try_from(replacement.trace.capacity().checked_mul(
+            std::mem::size_of::<SimulationTrace>(),
+        ).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
+        accounting.reconcile_owned(&mut replacement.allocation, bytes, actual)?;
+        accounting.admit(delta)?;
         replacement.trace.extend_from_slice(&self.trace);
+        accounting.record_completed(delta)?;
         let SimulationTraceReplacement { trace, allocation } = replacement;
         self.trace = trace;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1526,27 +1515,15 @@ fn altered_read_data(
     };
     let requested = u64::try_from(retained).map_err(|_| crate::WorkError::Overflow)?;
     accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
-    let (bytes, allocation) = accounting.with_owned_allocations(
-        |allocations, work, budget, _| {
-            allocations.claim_bytes(requested, u64::from(requested != 0), work, budget)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            let mut bytes = Vec::new();
-            if let Err(error) = bytes.try_reserve_exact(retained) {
-                allocations.release(requested)
-                    .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-                return Err(ObjectStoreError::MemoryTableAllocationFailed(error).into());
-            }
-            let actual = u64::try_from(bytes.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-            allocations.record_owned_bytes(actual - requested, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            Ok(bytes)
-        },
-    )?;
-    // Buffer and guard stay together on all post-reservation denials.
-    let mut bytes = SimulationAlteredBytes { value: bytes, allocation };
-    accounting.admit(WorkCounters::UNCHARGED)?;
-    accounting.charge(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
+    let allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
+    let mut bytes = SimulationAlteredBytes { value: Vec::new(), allocation };
+    bytes.value.try_reserve_exact(retained)
+        .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+    let actual = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+    accounting.reconcile_owned(&mut bytes.allocation, requested, actual)?;
+    accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     bytes.value.extend_from_slice(&read.bytes[..retained]);
+    accounting.record_completed(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     if matches!(fault, Some(SimulationFault::CorruptObjectRead))
         && let Some(first) = bytes.value.first_mut() { *first ^= 0x80; }
     let logical_bytes = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
@@ -1769,6 +1746,97 @@ mod native_write_controls {
             *field = serde_json::Value::from(1_000_000_u64);
         }
         serde_json::from_value(value).expect("finite budget")
+    }
+
+    #[tokio::test]
+    async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
+        let memory = crate::memory::MemoryObjectStore::default();
+        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        crate::storage::ObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
+        ).expect("seed memory");
+        let simulation = Simulation::wrap(
+            reference_backends().0, memory, SimulationOptions::default(),
+        ).expect("bounded simulation");
+        let (_, store) = simulation.stores();
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(
+            WorkBudget { allocation_operations: 1, ..budget() }, &cancellation,
+        ).expect("only actual accounting constructor");
+        let before = work.receipt();
+        assert!(store.read_with_native_work(object.object_id(), 4, &work, &cancellation).await.is_err());
+        assert_eq!(work.receipt(), before);
+        assert!(simulation.trace().expect("trace").is_empty());
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(store.read_with_native_work(
+            object.object_id(), 4, &work, &cancelled,
+        ).await, Err(ObjectStoreError::Cancelled)));
+        assert_eq!(work.receipt(), before);
+    }
+
+    #[tokio::test]
+    async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
+        let memory = crate::memory::MemoryObjectStore::default();
+        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        crate::storage::ObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
+        ).expect("seed memory");
+        let simulation = Simulation::wrap(
+            reference_backends().0, memory, SimulationOptions::default(),
+        ).expect("bounded simulation");
+        simulation.schedule_next(SimulationOperation::ObjectRead,
+            SimulationFault::PartialObjectRead).expect("partial fault");
+        let (_, store) = simulation.stores();
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
+        let baseline = work.live_allocation_bytes();
+        let read = store.read_with_native_work(
+            object.object_id(), 4, &work, &cancellation,
+        ).await.expect("actual partial SDK copy");
+        assert_eq!(read.read().bytes.as_ref(), b"bod");
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        assert_eq!(work.receipt().bytes_copied, 3);
+        let alias = read.read().bytes.clone();
+        let held = work.live_allocation_bytes();
+        drop(read);
+        assert_eq!(work.live_allocation_bytes(), held);
+        drop(alias);
+        assert!(work.live_allocation_bytes() + 3 <= held);
+        drop(store);
+        drop(simulation);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+
+    #[tokio::test]
+    async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
+        let memory = crate::memory::MemoryObjectStore::default();
+        let object = HashedObject::new(ObjectKind::TreePage, Bytes::from_static(b"body"));
+        crate::storage::ObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
+        ).expect("seed memory");
+        let simulation = Simulation::wrap(
+            reference_backends().0, memory, SimulationOptions::default(),
+        ).expect("bounded simulation");
+        simulation.schedule_next(SimulationOperation::ObjectReadMany,
+            SimulationFault::CorruptObjectRead).expect("batch fault");
+        let (_, store) = simulation.stores();
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
+        let baseline = work.live_allocation_bytes();
+        let requests = [ObjectReadRequest { object_id: object.object_id(), maximum_bytes: 4 }; 2];
+        let batch = store.read_many_with_native_work(&requests, &work, &cancellation)
+            .await.expect("one genuine batch");
+        assert_eq!(batch.reads().len(), 2);
+        assert_eq!(batch.reads()[0].bytes[0], b'b' ^ 0x80);
+        assert_eq!(batch.reads()[1].bytes.as_ref(), b"body");
+        assert_eq!(work.receipt().backend_read_operations, 1);
+        assert_eq!(work.receipt().object_probes, 2);
+        assert_eq!(work.receipt().bytes_copied, 4);
+        drop(batch);
+        drop(store);
+        drop(simulation);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 
     #[tokio::test]

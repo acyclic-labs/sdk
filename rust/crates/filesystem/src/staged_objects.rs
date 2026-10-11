@@ -72,7 +72,7 @@ fn staged_vector<T>(
     if let Some(control) = &mut control {
         let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
             .ok_or(crate::WorkError::Overflow)?;
-        control.resize_retained(actual as u64)?;
+        control.reconcile_capacity(actual as u64)?;
     }
     Ok((control, values))
 }
