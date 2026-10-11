@@ -259,12 +259,6 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
             }
             Error::Invalid("summary fork parent conversation is unbound".into())
         })?;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        // This retained enclosing DTO owns its inline checkpoint/context/
-        // selection fields; their canonical copy helpers account deep storage.
-        io.retain_owned(std::mem::size_of::<PreparedSummaryFork>() as u64)?;
-    }
     let through_sequence = conversation.logical_revision();
     let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through_with_io(
         journal,
