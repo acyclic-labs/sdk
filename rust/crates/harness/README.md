@@ -271,6 +271,12 @@ per-action read/write facades keep that selection fixed; no broader namespace
 resource escapes an attenuated READ check. The accepted marker is fixed inline
 metadata, not freshness or filesystem authority; ordinary context clones clear
 both marker and native funding.
+`ToolContext::original_admission_with_native_work` observes only that accepted
+invocation's protected original input, with its actual metadata custody.
+It verifies the original owner before and after reading. Input role fields
+remain metadata: builtin mount/path selection must match the full prepared
+manifest and still pass exact effective-scope READ/WRITE checks. Observing an
+admission never grants access to its named resources.
 
 `ToolContext::new_with_native_work` retains that same shared context and
 observes its owned call-ID string on the original ledger. Ordinary tool-context
