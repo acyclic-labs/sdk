@@ -853,6 +853,17 @@ recipient's `mail:read`. `CoordinatorTaskHost::send_owned` and WASM `send` retur
 reply can be recovered by the same fenced send. Changing the recipient or file
 under that identity is rejected.
 
+Native Mail uses that same sender, receipt and inbox engine with the original
+work observer. Its bounded SDK cursor retains each intrinsic byte carrier and
+record guard through audited decoding; it does not rebill a collected page.
+Output Vec and UUID String capacities are admitted before growth, including a
+genuine empty zero-owned page. The v3 recipient and schema/route revision 1 are
+mandatory. Canonical guarded intent and envelope bytes enter one atomic prepared
+commit, and its original receipt inspection recovers lost acknowledgements.
+Reconciliation reads that receipt without reopening the payload or sending again.
+The ordinary `send_owned` encoded limit remains `MAX_RECORD_BYTES`, not a claim
+that a caller supplied a native work budget.
+
 `FilesystemTaskRuntime::task_context(task, fence)` binds `TaskContext::send`
 and `inbox` to that same retained mailbox owner; stock workers and tool/model
 contexts receive it automatically. Unbound contexts cannot fall back to an

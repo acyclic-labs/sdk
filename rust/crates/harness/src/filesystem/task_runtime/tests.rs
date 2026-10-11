@@ -17,6 +17,8 @@ use acyclic_stream::MemoryStream;
 use std::{collections::BTreeMap, sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_mail;
 
 struct Clock(AtomicU64);
 impl UnixMillisClock for Clock {

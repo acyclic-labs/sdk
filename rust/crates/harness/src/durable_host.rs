@@ -43,6 +43,8 @@ mod headless;
 pub use headless::TaskVolumeSnapshot;
 #[cfg(feature = "filesystem")]
 mod source_authorization;
+#[cfg(feature = "filesystem")]
+mod mail;
 
 /// Exact canonical send acknowledgement, authenticated by the atomic mail receipt.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -3299,16 +3301,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<MailSendAck> {
-        // Validate the original task/lease before retaining or observing mail.
-        self.journal_owner(sender, fence.clone()).await?;
-        let ack = MailSendAck { sender, recipient, operation_id: message_id, payload };
-        let bytes = OwnedBytes::from(
-            self.mail_bytes(sender, recipient, message_id, ack.payload.clone())
-                .await?,
-        );
-        self.publish_mail(sender, recipient, message_id, bytes, Some(fence))
-            .await?;
-        Ok(ack)
+        // Ordinary sends use the same typed finite record engine, not a claim
+        // against a caller's native budget.
+        self.send_owned_with_io(sender, &fence, recipient, message_id, payload, None).await
     }
 
     /// Resolves one exact retained parcel under its receiver's original lease
@@ -6163,7 +6158,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<OwnedBytes> {
+        #[cfg(feature = "filesystem")]
+        {
+            return self.mail_bytes_with_io(sender, recipient, message_id, payload, None).await;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
         payload.validate()?;
         let sender_admission = self
             .admission(OperationId::from_bytes(sender.into_bytes()))
@@ -6190,24 +6191,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             route_revision: MAIL_ROUTE_REVISION,
             payload,
         };
-        event.encode(acyclic_stream::MAX_RECORD_BYTES as u64)
+        event.encode(acyclic_stream::MAX_RECORD_BYTES as u64).map(OwnedBytes::from)
+        }
     }
 
     /// Observes the original atomic mail receipt; never publishes another send.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn reconcile_sent_mail(
-        &self,
+        self: &Arc<Self>,
         sender: TaskId,
         fence: crate::scheduler::LeaseFence,
         recipient: TaskId,
         message: OperationId,
         payload: FileRef,
     ) -> Result<bool> {
-        self.verify_owner(sender, &fence, true).await?;
-        let bytes = self.mail_bytes(sender, recipient, message, payload).await?;
-        let retained = self.observe_mail_location(sender, recipient, message, &bytes, None).await?;
-        self.verify_owner(sender, &fence, true).await?;
-        Ok(retained)
+        self.reconcile_sent_mail_with_io(sender, &fence, recipient, message, payload, None).await
     }
 
     fn mail_location_path(
@@ -6307,6 +6305,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok((location, encoded))
     }
 
+    #[cfg(not(feature = "filesystem"))]
     fn mail_commit_key(
         location: &MailLocation,
         fence: &Option<crate::scheduler::LeaseFence>,
@@ -6342,6 +6341,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         bytes: OwnedBytes,
         fence: Option<crate::scheduler::LeaseFence>,
     ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        {
+            return self.publish_mail_with_io(
+                sender, recipient, message, bytes, fence.as_ref(), None, None,
+            ).await;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        {
         use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest};
         let mailbox = self.mailbox(recipient)?;
         let location_path = Self::mail_location_path(sender, message)?;
@@ -6450,6 +6457,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     return Ok(());
                 }
             }
+        }
         }
     }
 
@@ -7174,10 +7182,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             {
                 return Err(Error::Unauthorized("unfenced custom mail requires explicit mail and file grants".into()));
             }
-            let bytes = OwnedBytes::from(
-                self.mail_bytes(sender, recipient, message_id, payload)
-                    .await?,
-            );
+            let bytes = self.mail_bytes(sender, recipient, message_id, payload).await?;
             self.publish_mail(sender, recipient, message_id, bytes, None)
                 .await
         })
@@ -7190,6 +7195,12 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
         Box::pin(async move {
+            #[cfg(feature = "filesystem")]
+            {
+                return self.inbox_with_io(task_id, after, limit, None).await;
+            }
+            #[cfg(not(feature = "filesystem"))]
+            {
             if limit == 0 {
                 return Err(Error::Invalid("inbox page bound is invalid".into()));
             }
@@ -7266,6 +7277,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 });
             }
             Ok(items)
+            }
         })
     }
 
