@@ -1770,6 +1770,7 @@ mod tests {
         assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(work.receipt().items_examined, 1);
     }
+
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
         let value = serde_json::json!({
