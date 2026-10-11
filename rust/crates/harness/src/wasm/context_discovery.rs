@@ -40,7 +40,7 @@ struct ContextPathResult {
     #[tsify(type = "WasmFileRefWire")]
     file: FileRef,
     #[tsify(type = "Uint8Array")]
-    bytes: Vec<u8>,
+    bytes: acyclic_stream::OwnedBytes,
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -174,7 +174,7 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<Vec<u8>>> {
+    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             let query = ContextReadQuery {
                 source: PinnedContextPath {
@@ -188,6 +188,7 @@ impl ContentResidencyVerifier for BrowserReader {
                 maximum_bytes,
             };
             Self::bytes(self.invoke(&self.prefix, &query).await?, maximum_bytes)
+                .map(acyclic_stream::OwnedBytes::from)
         })
     }
 
@@ -197,7 +198,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-    ) -> ContentFuture<'a, Result<(FileRef, Vec<u8>)>> {
+    ) -> ContentFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         Box::pin(async move {
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
@@ -221,7 +222,7 @@ impl ContentResidencyVerifier for BrowserReader {
             let file =
                 from_js(Reflect::get(&result, &JsValue::from_str("file")).map_err(platform_error)?)
                     .map_err(platform_error)?;
-            Ok((file, bytes))
+            Ok((file, bytes.into()))
         })
     }
 }
@@ -293,7 +294,7 @@ pub async fn read_pinned_context_path(
     Reflect::set(
         &result,
         &JsValue::from_str("bytes"),
-        &Uint8Array::from(body.bytes.as_slice()),
+        &Uint8Array::from(body.bytes.as_ref()),
     )?;
     Ok(result.into())
 }

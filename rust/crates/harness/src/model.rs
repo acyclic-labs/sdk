@@ -2035,23 +2035,21 @@ impl ModelPrefix {
     }
 
     /// Exact bytes staged once and shared by children through pinned references.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+    pub fn canonical_bytes(&self) -> Result<acyclic_stream::OwnedBytes> {
         let bytes = crate::contract::canonical_json_bytes(self)?;
-        Ok(bytes)
+        Ok(bytes.into())
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) fn canonical_bytes_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<Vec<u8>> {
+    pub(crate) fn canonical_bytes_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
         io.encode_json(self, io.remaining()?.bytes_encoded, true)
     }
 
     /// Canonical bytes with allocation custody until their physical drop.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn canonical_bytes_with_native_work(&self, work: &NativeMaterializationWork) -> Result<(Vec<u8>, NativeAllocation)> {
+    pub fn canonical_bytes_with_native_work(&self, work: &NativeMaterializationWork) -> Result<acyclic_stream::OwnedBytes> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let bytes = self.canonical_bytes_with_io(&io)?;
-        let custody = io.into_native_custody(bytes.capacity() as u64)?;
-        Ok((bytes, custody))
+        self.canonical_bytes_with_io(&io)
     }
 }
 
@@ -2170,10 +2168,12 @@ impl PreparedModelRequest {
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("native branch retains original work");
                     verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work).await?;
-                    let (bytes, custody) = verifier.read_with_native_work(
+                    let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
                     ).await?;
-                    io.absorb_native_custody(custody)?;
+                    if !bytes.matches_meter(&work.runtime_meter_owner()) {
+                        return Err(io.invalid("model prefix bytes differ from the original native ledger"));
+                    }
                     bytes
                 }
                 #[cfg(feature = "filesystem")]
@@ -2190,7 +2190,7 @@ impl PreparedModelRequest {
             };
             #[cfg(feature = "filesystem")]
             {
-                _bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+                _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
             model_verify_descriptor(&reference, &bytes, io)?;
             let segment: ModelPrefix = match io {
@@ -2208,13 +2208,13 @@ impl PreparedModelRequest {
             };
             #[cfg(feature = "filesystem")]
             {
-                _canonical_hold = io.map(|io| io.guard_owned(canonical.capacity() as u64)).transpose()?;
+                _canonical_hold = io.map(|io| io.guard_bytes(&canonical)).transpose()?.flatten();
             }
             model_step(io, bytes.len() as u64)?;
             if segment.version != 1
                 || segment.messages.is_empty()
                 || expected_count.is_some_and(|count| count != segment.total_messages)
-                || canonical != bytes
+                || canonical.as_slice() != bytes.as_ref()
             {
                 return Err(Error::Invalid(
                     "model prefix contract differs from request".into(),
@@ -2856,6 +2856,29 @@ mod tests {
             Err(Error::Storage(_)),
         ));
         assert_eq!(cancelled.receipt(), WorkCounters::default());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = CancellationToken::new();
+            let native = NativeMaterializationWork::new(model_budget(), &cancellation)
+                .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+            let prefix = ModelPrefix::select(&ordinary, None)?;
+            let expected = prefix.canonical_bytes()?;
+            let baseline = native.live_allocation_bytes();
+            let bytes = prefix.canonical_bytes_with_native_work(&native)?;
+            assert_eq!(bytes.as_ref(), expected.as_ref());
+            assert!(bytes.matches_meter(&native.runtime_meter_owner()));
+            assert!(native.receipt().bytes_encoded > 0);
+            let held = native.live_allocation_bytes();
+            assert!(held > baseline);
+            let physical = native.receipt();
+            let alias = bytes.clone();
+            drop(bytes);
+            assert_eq!(alias.as_ref(), expected.as_ref());
+            assert_eq!(native.live_allocation_bytes(), held);
+            assert_eq!(native.receipt(), physical);
+            drop(alias);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
         Ok(())
     }
 
@@ -2972,7 +2995,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            ModelPrefix::select(&prepared, None)?.canonical_bytes()?,
+            ModelPrefix::select(&prepared, None)?.canonical_bytes()?.as_ref(),
             include_bytes!("../fixtures/model-prefix.json")
         );
         assert_eq!(
@@ -3008,7 +3031,7 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct PrefixReader(
-        std::collections::BTreeMap<String, Vec<u8>>,
+        std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
         std::collections::BTreeSet<String>,
     );
 
@@ -3026,7 +3049,7 @@ mod tests {
                 file.descriptor().verify(bytes)
             })
         }
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             Box::pin(async move {
                 self.0
                     .get(&file.read_capability()?)
@@ -3047,10 +3070,11 @@ mod tests {
 
     fn store_prefix_bytes(
         reader: &mut PrefixReader,
-        bytes: Vec<u8>,
+        bytes: impl Into<acyclic_stream::OwnedBytes>,
         media_type: &str,
         index: u8,
     ) -> Result<FileRef> {
+        let bytes = bytes.into();
         use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
         let file = FileRef::new(
             VolumeRef::new(
@@ -3179,7 +3203,7 @@ mod tests {
                     .is_err()
             );
             let mut corrupt = reader.clone();
-            corrupt.0.insert(head.read_capability()?, b"{}".to_vec());
+            corrupt.0.insert(head.read_capability()?, b"{}".to_vec().into());
             assert!(
                 PreparedModelRequest::inherit(local, &head, &corrupt, limits)
                     .await

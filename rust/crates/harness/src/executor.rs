@@ -357,7 +357,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>>;
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
 
     /// Optional finite-work load under the same original journal-owner grant.
     /// Unsupported journals reject before reading or invoking an unbounded load.
@@ -365,7 +365,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn load_measured<'a>(
         &'a self, _reference: &'a FileRef, _budget: acyclic_fs::WorkBudget,
         _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async {
             Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
                 "finite journal payload resolution is unavailable".into(),
@@ -489,7 +489,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn load_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution payload resolution is unavailable"))
     }
 
@@ -1018,14 +1018,14 @@ fn stock_encode_json<T: Serialize>(
     value: &T,
     maximum: u64,
     io: Option<&PreparationIo>,
-) -> Result<Vec<u8>> {
+) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         return io.encode_json(value, maximum, true);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::contract::canonical_json_bytes(value)
+    crate::contract::canonical_json_bytes(value).map(acyclic_stream::OwnedBytes::from)
 }
 
 fn stock_json_bound<T: Serialize>(
@@ -1047,7 +1047,7 @@ fn stock_json_bound<T: Serialize>(
     if let Some(io) = io {
         let _bytes_hold;
         let bytes = io.encode_json(value, maximum, false)?;
-        _bytes_hold = io.guard_owned(bytes.capacity() as u64)?;
+        _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
@@ -4094,7 +4094,7 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
     fn read_with_native_work<'a>(
         &'a self, file: &'a FileRef, maximum_bytes: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         self.io.filter(|io| stock_is_native(Some(io))).ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::Unsupported, "native checkpoint resolver has no original work"))?;
         self.authorize(file)?;
@@ -4129,7 +4129,7 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.authorize(file)?;
             match self.io {
@@ -4248,11 +4248,14 @@ async fn load_model_request(
 #[cfg(feature = "filesystem")]
 async fn load_preparation_bytes_with_io(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: &PreparationIo,
-) -> Result<Vec<u8>> {
+) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
-        let (bytes, custody) = journal.load_with_native_work(reference, work)?.await?;
-        io.absorb_native_custody(custody)?;
+        let bytes = journal.load_with_native_work(reference, work)?.await?;
+        if !bytes.matches_meter(&work.runtime_meter_owner()) {
+            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
+                "journal payload returned unowned or foreign native bytes"));
+        }
         reference.descriptor().verify_with_native_work(&bytes, work)?;
         return Ok(bytes);
     }
@@ -4279,16 +4282,15 @@ pub(crate) async fn load_model_request_with_io(
             return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                 "execution journal references non-private JSON content"));
         }
-        let before = io.owned_bytes()?;
         let _bytes_hold;
         let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
-        _bytes_hold = io.guard_owned(io.owned_bytes()? - before)?;
+        _bytes_hold = io.guard_bytes(&bytes)?;
         return crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io);
     }
     crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits)
 }
 
-async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<Vec<u8>> {
+async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
     {
@@ -4419,16 +4421,15 @@ pub(crate) async fn load_preparation_json<'a, T: PreparationRecord>(
             return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                 "execution journal references non-private JSON content"));
         }
-        let before_bytes = io.owned_bytes()?;
         let _bytes_hold;
         let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
-        _bytes_hold = io.guard_owned(io.owned_bytes()? - before_bytes)?;
+        _bytes_hold = io.guard_bytes(&bytes)?;
         {
             let parsed = io.decode_preparation::<Value>(&bytes)?;
             let _canonical_hold;
             let canonical = io.encode_json(&parsed.value, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_owned(canonical.len() as u64)?;
-            if canonical != bytes {
+            if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
@@ -5847,7 +5848,7 @@ mod tests {
         let summary = executor
             .summarize(&journal, operation, source.clone(), instruction.clone())
             .await?;
-        assert_eq!(journal.load(&summary.output).await?, b"summary");
+        assert_eq!(journal.load(&summary.output).await?.as_ref(), b"summary");
         let count_calls = provider.accounting_calls.load(Ordering::SeqCst);
         assert_eq!(count_calls, 1);
         assert_eq!(
@@ -5912,8 +5913,8 @@ mod tests {
             crate::contract::canonical_json_digest(&source)?
         );
         assert_eq!(
-            journal.load(&summary.output).await?,
-            format!("{}restored", "partial-".repeat(70)).into_bytes()
+            journal.load(&summary.output).await?.as_ref(),
+            format!("{}restored", "partial-".repeat(70)).as_bytes()
         );
         assert_eq!(
             executor
@@ -6059,10 +6060,51 @@ mod tests {
     #[derive(Default)]
     struct Journal(
         Mutex<Vec<ExecutionRecord>>,
-        Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
+        Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
         Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
         AtomicUsize,
     );
+
+    impl Journal {
+        fn stage_source<'a>(
+            &'a self,
+            operation_id: OperationId,
+            idempotency_key: String,
+            bytes: acyclic_stream::OwnedBytes,
+            media_type: &'static str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            async move {
+                let key = format!("{operation_id}:{idempotency_key}");
+                let mut stored = self
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                if let Some((reference, existing)) = stored.get(&key) {
+                    return if existing.as_ref() == bytes.as_ref() {
+                        Ok(reference.clone())
+                    } else {
+                        Err(Error::Conflict("journal staging identity reused".into()))
+                    };
+                }
+                let volume = VolumeRef::new(
+                    ProviderRef::new("test", "filesystem", "2")?,
+                    "journal",
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
+                )?;
+                let reference = FileRef::new(
+                    volume,
+                    format!("journal/{}.json", blake3::hash(key.as_bytes()).to_hex()),
+                    blake3::hash(&bytes).to_hex().to_string(),
+                    FileDescriptor::from_bytes(&bytes, media_type)?,
+                    "event.json",
+                )?;
+                stored.insert(key, (reference.clone(), bytes));
+                Ok(reference)
+            }
+            .boxed()
+        }
+    }
 
     struct ChangingContextSource(AtomicUsize);
 
@@ -6260,39 +6302,10 @@ mod tests {
             bytes: Vec<u8>,
             media_type: &'static str,
         ) -> BoxFuture<'a, Result<FileRef>> {
-            async move {
-                let key = format!("{operation_id}:{idempotency_key}");
-                let mut stored = self
-                    .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
-                if let Some((reference, existing)) = stored.get(&key) {
-                    return if existing == &bytes {
-                        Ok(reference.clone())
-                    } else {
-                        Err(Error::Conflict("journal staging identity reused".into()))
-                    };
-                }
-                let volume = VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
-                    "journal",
-                    VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
-                )?;
-                let reference = FileRef::new(
-                    volume,
-                    format!("journal/{}.json", blake3::hash(key.as_bytes()).to_hex()),
-                    blake3::hash(&bytes).to_hex().to_string(),
-                    FileDescriptor::from_bytes(&bytes, media_type)?,
-                    "event.json",
-                )?;
-                stored.insert(key, (reference.clone(), bytes));
-                Ok(reference)
-            }
-            .boxed()
+            self.stage_source(operation_id, idempotency_key, bytes.into(), media_type)
         }
 
-        fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             async move {
                 self.1
                     .lock()
@@ -6352,7 +6365,7 @@ mod tests {
                 file.descriptor().verify(&bytes)
             })
         }
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             self.0.load(file)
         }
     }
@@ -6482,7 +6495,7 @@ mod tests {
         )?;
         let journal = Arc::new(Journal::default());
         let root_file = journal
-            .stage(
+            .stage_source(
                 OperationId::from_bytes([66; 16]),
                 "root".into(),
                 crate::model::ModelPrefix::select(&root, None)?.canonical_bytes()?,
@@ -8468,7 +8481,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<FileRef>> {
             self.journal.stage(operation, key, bytes, media)
         }
-        fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             self.journal.load(file)
         }

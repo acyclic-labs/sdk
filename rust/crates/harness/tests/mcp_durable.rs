@@ -114,7 +114,7 @@ impl ExecutionJournal for FaultJournal {
             self.inner.stage(op, key, bytes, media).await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.inner.load(file)
     }
     fn open_interaction<'a>(

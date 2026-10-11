@@ -71,11 +71,15 @@ fn visit_references(context: &Context, mut visit: impl FnMut(&FileRef) -> Result
 
 fn reference_digest(file: &FileRef, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(file); };
+    let encoded_hold;
     let encoded = io.encode_json(file, io.remaining()?.bytes_encoded, true)?;
+    encoded_hold = io.guard_bytes(&encoded)?;
     let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
     io.preflight(work)?;
     let digest = *blake3::hash(&encoded).as_bytes();
     io.charge(work)?;
+    drop(encoded);
+    drop(encoded_hold);
     Ok(digest)
 }
 
@@ -172,19 +176,17 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     controller: &ParentProjectController<'_, A, O>, workspace: &crate::resources::WorkspaceRef,
     expected: &GenerationRef, mutations: &[WorkspaceMutation], key: &IdempotencyKey,
     io: Option<&PreparationIo>,
+    preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
 ) -> Result<GenerationRef> {
-    let generation = match io {
-        Some(io) => fork_preparer_io::apply_generation(controller.host, workspace, Some(expected), mutations, key, io).await?,
-        None => controller.host.apply_generation(workspace, Some(expected), mutations, key).await?,
-    };
+    let generation = fork_preparer_io::apply_generation_task_guarded(
+        controller.host, workspace, Some(expected), mutations, key, io, preparation,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_creation_guard,
+    ).await?;
+    fork_preparer_io::retain_generation(&generation, io).await?;
     let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
-    match io {
-        Some(io) => fork_preparer_io::retain(controller.host, &generation, io).await?,
-        None => {
-            generation.pin(format!("harness-generation-{}", hex::encode(reference.as_resource().key())))
-                .await.map_err(super::map_error)?;
-        }
-    }
     Ok(reference)
 }
 
@@ -193,11 +195,8 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<Option<GenerationRef>> {
     let Some(generation) = fork_preparer_io::operation_generation(controller.host, workspace, key, io).await? else { return Ok(None); };
+    fork_preparer_io::retain_generation(&generation, io).await?;
     let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
-    match io {
-        Some(io) => fork_preparer_io::retain(controller.host, &generation, io).await?,
-        None => controller.host.retain_generation(workspace, &reference).await?,
-    }
     Ok(Some(reference))
 }
 
@@ -220,7 +219,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         key: &IdempotencyKey,
         resolver: &dyn ContentResidencyVerifier,
         io: Option<&PreparationIo>,
+        preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
     ) -> Result<(SummaryForkCapture, GenerationRef)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = io.and_then(PreparationIo::original_native_work).is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            native_creation_guard.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native summary publication requires its original issued creation guard",
+            })?.verify_creation_with_native_work(work)?.await?;
+        }
+        if !native
+            && let Some(preparation) = preparation
+        { preparation.verify_creation().await?; }
         if let Some(io) = io {
             let capability = io.capability(&self.volume, "volume:read:")?;
             if !self.scope.capabilities().contains("fork:publish") || !self.scope.capabilities().contains(&capability) {
@@ -285,7 +301,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         validate_context(&context, limits, io)?;
         let planned_bytes = match io {
             Some(io) => io.encode_json(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
-            None => crate::contract::canonical_json_bytes(&context)?,
+            None => crate::contract::canonical_json_bytes(&context)?.into(),
         };
         if body_bytes
             .checked_add(planned_bytes.len() as u64)
@@ -336,9 +352,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             writes.push(WorkspaceMutation::CreateDirectory { path: fork_preparer_io::clone_text("/.system/inherited-conversation/summary-payloads", io)? });
             for (key, file) in &payloads {
                 let bytes = match io {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Some(io) if io.original_native_work().is_some() => {
+                        let original = io.original_native_work().expect("native summary retains original work");
+                        journal.load_with_native_work(file, original)?.await?
+                    }
                     Some(io) => {
                         let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, &io.cancellation).await)?;
-                        io.retain_owned(bytes.capacity() as u64)?;
+                        io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
                         bytes
                     }
                     None => journal.load(file).await?,
@@ -350,7 +371,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     bytes,
                 });
             }
-            publish(self, &workspace, initial_generation, &writes, &keys[0], io).await?
+            publish(self, &workspace, initial_generation, &writes, &keys[0], io, preparation,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_creation_guard,
+            ).await?
         };
         let payload_version = fork_preparer_io::hex_key(payload_generation.as_resource().key(), io)?;
         let copies = copy_references(
@@ -364,7 +388,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         validate_context(&context, limits, io)?;
         let bytes = match io {
             Some(io) => io.encode_json(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
-            None => crate::contract::canonical_json_bytes(&context)?,
+            None => crate::contract::canonical_json_bytes(&context)?.into(),
         };
         if bytes.len() != planned_bytes.len() {
             return Err(fork_preparer_io::invalid(io, "summary fork context changed its preflight extent"));
@@ -373,9 +397,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             generation
         } else {
             let writes = [WorkspaceMutation::PutFile {
-                path: fork_preparer_io::clone_text("/.system/inherited-conversation/summary-context.json", io)?, bytes: fork_preparer_io::clone_bytes(&bytes, io)?,
+                path: fork_preparer_io::clone_text("/.system/inherited-conversation/summary-context.json", io)?, bytes: bytes.clone(),
             }];
-            publish(self, &workspace, &payload_generation, &writes, &keys[1], io).await?
+            publish(self, &workspace, &payload_generation, &writes, &keys[1], io, preparation,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_creation_guard,
+            ).await?
         };
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let context = fork_preparer_io::file_ref(child_private,

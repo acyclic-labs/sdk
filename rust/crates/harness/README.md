@@ -65,6 +65,14 @@ File, volume, message, fork and snapshot deep copies share actual field-copy pro
 
 Content callbacks use one funded future carrier on the original native ledger: the concrete frame is admitted before its builder or box, and the frame guard drops after the future. Native verification returns no owned payload; native reads transfer the original byte-vector guard before returning bytes. Ordinary observed callbacks likewise admit their concrete frame before boxing and release that frame after the await has physically dropped it. Tracked publication paths admit the SDK string payload while the source String remains live; staging consumes the original canonical Vec and releases its captured capacity only after all request and acknowledgment views have dropped.
 Native fork verification, manifest resolution and private-fence release invoke the provider's original-ledger capability rather than rebuilding a budget or merging a new receipt. Native file/manifest capabilities receive the actual seed so Filesystem can authenticate the protected child-creation provenance; the original caller scope is never widened into a new child grant. A private guard's concrete metadata remains inside its owner, while its observed Box header allowance remains outside the Box and retires after physical deallocation. Manifest admission retains both original descriptor-verification stages and verifies every selected member under the unchanged limits.
+Finite ordinary filesystem publication borrows the same `PreparationIo` and history
+observer for its owner check. The canonical SDK seal supplies its actual remaining
+allowance before that callback's future or IO can start. Same-ledger events supply
+the real callback receipt, including failed work and local peak while SDK storage
+remains live; final SDK merging excludes already-charged additive callback work,
+never subtracting historical global peaks. The complete caller error and SDK
+preparation prefix survive denial, and no native ledger is created for this route.
+
 Native canonical identity of an already-admitted SDK Value preserves `JsonBounds::IDENTITY`, including its original depth semantics; it is not silently restricted to the bounded wire decoder's 256-level ceiling. This trusted path does not establish a universal recursive-stack or process-RSS bound. Untrusted wire values still require their concrete finite admission first.
 
 The append counter records SDK-confirmed append-record acknowledgments, not physical new records. An idempotent append acknowledgment counts; finding the original record after a lost acknowledgment does not manufacture an observed append acknowledgment. Native terminal SDK failures retain the original typed source; the current closed Stream error enum has no dynamic diagnostic payload.
@@ -649,6 +657,13 @@ original immutable binding revision, scope and operation, never the latest head.
 Those bytes and identifiers are not creation or WRITE authority: the original
 task owner authenticates the issuer, actor, scope and publication fence, and
 project/native source creation is verified independently.
+
+Source reads, frozen reads and `WorkspaceMutation::PutFile` payloads use the same
+`acyclic_stream::OwnedBytes` carrier in ordinary, measured and native modes.
+Native byte-only results retain their original guard intrinsically, including
+empty slices and last clones; request metadata drops before completion. Separate
+custody is returned only for actual output metadata such as a new `FileRef`.
+Canonical serialization preserves the existing JSON byte-array representation.
 Native provider/volume constructors copy the original borrowed fields on that same ledger and return the identity before its custody guard. Creating a reference creates no access grant. Native fork-verifier registration preserves the original provider map and admission predicates; its owned labels and logical entry payloads stay under intrinsic custody, while private Arc/B-tree backing is not claimed as observed physical heap.
 Fork report/seed validation threads the same observer through captures, grants, omissions and inherited files. Native denial preserves the original error classification without allocating a replacement diagnostic string. Report-to-seed conversion reserves its real output Vec capacities under custody before allocator attempts, using the same physical factory as other SDK copies.
 `publish_fork_report_with_native_work` and `bind_published_child_with_native_work` consume the same canonical publication and child-binding engines on one original native ledger. Borrowed report/scope inputs are physically copied under temporary custody; cached reducer components own only their funded copies. Publication returns its `ApplyResult` before the output guard. Full-history issuer attestation observes the exact original parent cut, prefix ownership and unchanged proof computation on that ledger.

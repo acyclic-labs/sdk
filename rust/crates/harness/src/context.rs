@@ -3790,7 +3790,7 @@ mod tests {
             Box::pin(async move { file.validate() })
         }
 
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             Box::pin(async move {
                 self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let files = self
@@ -3805,7 +3805,7 @@ mod tests {
                         "context payload reference changed".into(),
                     ));
                 }
-                Ok(bytes.clone())
+                Ok(bytes.clone().into())
             })
         }
     }
@@ -4261,7 +4261,7 @@ mod tests {
             })
         }
 
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             self.payloads.read(file)
         }
     }

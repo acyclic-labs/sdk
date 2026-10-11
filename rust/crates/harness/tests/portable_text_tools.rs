@@ -194,8 +194,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .clone(),
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(task.read_file(&edited).await?, b"one three");
-    assert_eq!(task.read_file(&source).await?, b"one two");
+    assert_eq!(task.read_file(&edited).await?.as_ref(), b"one three".as_ref());
+    assert_eq!(task.read_file(&source).await?.as_ref(), b"one two".as_ref());
     let user = writer
         .stage(
             OperationId::new(),
@@ -211,7 +211,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?,
         Some(first)
     );
-    assert_eq!(task.read_file(&user).await?, b"user edit");
+    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
     // The same portable composition also supports independent read and write
     // contracts; writing a second path preserves the edited path's user head.
     let write_tool = files::write_file()?;
@@ -237,7 +237,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
-        task.read_file(&written_ref).await?,
+        task.read_file(&written_ref).await?.as_ref(),
         "exact \u{e9}\r\n".as_bytes()
     );
     assert_eq!(
@@ -274,7 +274,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .clone(),
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(task.read_file(&patched_ref).await?, b"patched\r\n");
+    assert_eq!(task.read_file(&patched_ref).await?.as_ref(), b"patched\r\n".as_ref());
     let later = writer
         .stage(
             OperationId::new(),
@@ -291,7 +291,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?,
         Some(patched)
     );
-    assert_eq!(task.read_file(&later).await?, b"later user edit");
+    assert_eq!(task.read_file(&later).await?.as_ref(), b"later user edit".as_ref());
     let mut changed_patch = patch_invocation.clone();
     changed_patch.arguments = json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+different\n"});
     assert!(matches!(
@@ -315,8 +315,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(task.read_file(&later).await?, b"later user edit");
-    assert_eq!(task.read_file(&user).await?, b"user edit");
+    assert_eq!(task.read_file(&later).await?.as_ref(), b"later user edit".as_ref());
+    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
     assert_eq!(
         read_tool
             .executor
@@ -364,7 +364,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             Err(Error::Unauthorized(_))
         ));
     }
-    assert_eq!(task.read_file(&user).await?, b"user edit");
+    assert_eq!(task.read_file(&user).await?.as_ref(), b"user edit".as_ref());
     let ordinary = Arc::new(OrdinaryPublisher {
         volume: volume.clone(),
         calls: AtomicUsize::new(0),

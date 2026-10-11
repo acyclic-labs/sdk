@@ -688,7 +688,7 @@ where
                     ticket.request.volume(), VolumeOperation::Read, io)?;
                 let bytes_hold;
                 let bytes = self.host.read_pinned_owned_io(&ticket.request, self.maximum_bytes, io).await?;
-                bytes_hold = io.guard_owned(bytes.capacity() as u64)?;
+                bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode_preparation::<Interaction>(&bytes)?;
                 let mut borrowed = io.history_io();
                 ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
@@ -972,7 +972,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let bytes = match io {
             Some(io) => io.encode_json(value, self.maximum_bytes, false)?,
-            None => serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?,
+            None => serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,

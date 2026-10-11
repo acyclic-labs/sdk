@@ -897,7 +897,7 @@ impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for N
         })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.authorize(reference).await?;
             let bytes = self.context.context.read_file(reference).await?;
@@ -922,11 +922,15 @@ impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for N
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, (Vec<u8>, NativeAllocation)>> {
+    ) -> Result<NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         NativeFutureBundle::new(work, || async move {
             self.authorize_native(reference, maximum_bytes, work).await?;
             let output = self.context.context.read_file_with_native_work(reference, work).await?;
             self.authorize_native(reference, maximum_bytes, work).await?;
+            if !output.matches_meter(&work.runtime_meter_owner()) {
+                return Err(boundary(crate::wire::ErrorCode::Unauthorized,
+                    "content reader returned unowned or foreign native bytes"));
+            }
             Ok(output)
         })
     }
@@ -1156,14 +1160,22 @@ mod tests {
             b"same issued context", "text/plain", "shared.txt", &original,
         ).await?;
         let before = original.live_allocation_bytes();
-        let (bytes, custody) = reader.read_with_native_work(&staged.0, 65_536, &original)?.await?;
-        assert_eq!(bytes, b"same issued context");
-        assert!(same_work(custody.work(), &original));
-        assert!(custody.bytes() >= bytes.capacity() as u64);
-        assert_eq!(original.live_allocation_bytes(), before + custody.bytes());
+        let reads = original.receipt().backend_read_operations;
+        let bytes = reader.read_with_native_work(&staged.0, 65_536, &original)?.await?;
+        assert!(original.receipt().backend_read_operations > reads);
+        assert_eq!(bytes.as_ref(), b"same issued context");
+        assert!(bytes.matches_meter(&original.runtime_meter_owner()));
+        let held = original.live_allocation_bytes() - before;
+        assert!(held > 0);
+        let physical = original.receipt();
+        let shared_bytes = bytes.clone();
         drop(bytes);
-        drop(custody);
+        assert_eq!(shared_bytes.as_ref(), b"same issued context");
+        assert!(shared_bytes.matches_meter(&original.runtime_meter_owner()));
+        assert_eq!(original.live_allocation_bytes(), before + held);
+        drop(shared_bytes);
         assert_eq!(original.live_allocation_bytes(), before);
+        assert_eq!(original.receipt(), physical);
         reader.verify_with_native_work(&staged.0, 65_536, &original)?.await?;
 
         let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);

@@ -459,7 +459,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 Some(&dirty.generation),
                 &[WorkspaceMutation::PutFile {
                     path: "/scratch.txt".into(),
-                    bytes: b"unselected private state".to_vec(),
+                    bytes: b"unselected private state".to_vec().into(),
                 }],
                 &IdempotencyKey::new("dirty-private-write")?,
             )
@@ -1450,7 +1450,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 Some(&forked.generation),
                 &[WorkspaceMutation::PutFile {
                     path: "/marker.txt".into(),
-                    bytes: text.into_bytes(),
+                    bytes: text.into_bytes().into(),
                 }],
                 &IdempotencyKey::new(format!("project-write-{level}"))?,
             )
@@ -1806,7 +1806,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             Some(&fork.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/shared.txt".into(),
-                bytes: format!("sibling {index}").into_bytes(),
+                bytes: format!("sibling {index}").into_bytes().into(),
             }],
             &IdempotencyKey::new(format!("wide-write-{index}"))?,
         )

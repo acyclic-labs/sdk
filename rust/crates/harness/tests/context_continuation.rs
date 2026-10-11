@@ -106,8 +106,8 @@ impl ContentResidencyVerifier for StoredContent {
         Box::pin(async move { file.descriptor().verify(&self.0.read(file).await?) })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
-        Box::pin(async move { self.0.read(file).await })
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+        Box::pin(async move { self.0.read(file).await.map(Into::into) })
     }
 }
 
@@ -1409,13 +1409,13 @@ impl ContentResidencyVerifier for SnapshotReader {
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if self.missing.load(Ordering::SeqCst) {
                 return Err(Error::NotFound("snapshot source unavailable".into()));
             }
-            self.storage.read(file).await
+            self.storage.read(file).await.map(Into::into)
         })
     }
 }
@@ -1834,7 +1834,7 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media_type)
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.inner.load(file)
     }
     fn verify_input_file<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {

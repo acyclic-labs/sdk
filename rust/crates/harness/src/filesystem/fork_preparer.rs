@@ -9,6 +9,15 @@
 //! created-volume IO; each resulting handle reauthenticates on every use.
 //! Ordinary preparation attempts aggregate measured Filesystem counter receipts
 //! under their admitted finite work/byte envelope, including failed boundaries.
+//! Native task preparation borrows the immutable admitted request and invokes
+//! this same journal/capture engine on its original owner-bound ledger. Its
+//! `(ForkReport, NativeAllocation)` result retains the actual funded copies
+//! beyond the provider/request lifetime; drop report data before that guard.
+//! Read-only recovery observes the actual protected allocation claim for every
+//! fork role using a genuine immutable admission witness and issued READ query.
+//! Its opaque receipt moves the funded original request and decoded claim with
+//! original custody last; absence never falls back to process intents or a
+//! current Started fence, and observation cannot create or publish resources.
 
 use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error, workspace_ref};
 use crate::contract::capability;
@@ -27,9 +36,9 @@ use crate::{
     runtime::RuntimeScope,
     store::{HistoryCursor, HistoryReader},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, WorkCounters};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, StreamProvider};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
 
@@ -78,6 +87,64 @@ struct AllocationClaim {
     role: ForkAllocationRole,
 }
 
+/// A read-only observation of the actual protected fork allocation journal.
+/// Only the authenticated witness observer constructs this receipt. Original
+/// fences remain crate-private data, never a public authority constructor.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct OriginalForkAllocationClaim {
+    claim: AllocationClaim,
+    request: crate::resource_preparation::ResourcePreparationRequest,
+    // All decoded origin/request-resource fields drop before their original guard.
+    custody: acyclic_fs::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl OriginalForkAllocationClaim {
+    pub(crate) fn origin(&self) -> &ResourceCreationOrigin {
+        self.claim.task_origin.as_ref().expect("authenticated fork claim retains its original task")
+    }
+
+    pub(crate) const fn operation_id(&self) -> OperationId { self.claim.operation_id }
+
+    pub(crate) fn volume(&self) -> &VolumeRef { &self.claim.volume }
+
+    pub(crate) fn request(&self) -> &crate::resource_preparation::ResourcePreparationRequest {
+        &self.request
+    }
+
+    pub(crate) const fn preparation_digest(&self) -> &[u8; 32] {
+        &self.claim.preparation_digest
+    }
+
+    pub(crate) fn matches_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
+        self.custody.matches_work(work)
+    }
+
+    pub(crate) fn into_request(
+        self,
+    ) -> Result<(crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation)> {
+        let released = bounded_io::UploadRecord::logical_owned_bytes(&self.claim)?;
+        let Self { claim, request, mut custody } = self;
+        // The record decoder retained these known deep fields, not a second
+        // receipt allocation. Preserve the request's actual original custody.
+        drop(claim);
+        if let Err(cause) = custody.release(released) {
+            drop(request);
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        Ok((request, custody))
+    }
+
+    pub(crate) fn into_native_error(
+        self, cause: acyclic_fs::NativeTreeMaterializationError,
+    ) -> Error {
+        let Self { claim, request, custody } = self;
+        drop(claim);
+        drop(request);
+        Error::NativeWork { cause, custody: Some(custody) }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SeedBinding {
@@ -110,6 +177,11 @@ impl bounded_io::UploadRecord for AllocationClaim {
                 bytes = bytes.checked_add(length as u64)
                     .ok_or_else(|| Error::Invalid("allocation origin ownership overflows".into()))?;
             }
+            for grant in origin.source_grants.iter() {
+                bytes = bytes.checked_add(std::mem::size_of::<String>() as u64)
+                    .and_then(|bytes| bytes.checked_add(grant.len() as u64))
+                    .ok_or_else(|| Error::Invalid("allocation source grant ownership overflows".into()))?;
+            }
         }
         Ok(bytes)
     }
@@ -130,6 +202,23 @@ struct CaptureResult {
     capture: Capture,
 }
 
+macro_rules! preparation_journal_records {
+    ($($record:ty),+ $(,)?) => {$(
+        impl bounded_io::PreparationRecord for $record {
+            fn maximum_slot_bytes() -> u64 { bounded_io::preparation_slot_bytes::<Self>() }
+            fn diagnostic_label_bytes() -> u64 {
+                crate::contract::preparation_serde_diagnostic_label_bytes()
+            }
+        }
+    )+};
+}
+preparation_journal_records!(AllocationClaim, SeedBinding, CaptureAttempt, CaptureResult);
+
+#[derive(Serialize)]
+struct CaptureResultRef<'a> {
+    selection: &'a ForkSelection,
+    capture: &'a Capture,
+}
 /// Idempotent local capture of an exact Stream-backed parent snapshot and its
 /// Filesystem project/private resources. Other providers remain explicit
 /// unsupported captures; no cross-provider transaction is implied.
@@ -217,6 +306,8 @@ struct PreparationAttempt<'a, A, O> {
     preparer: &'a FilesystemForkPreparer<A, O>,
     io: Option<PreparationIo>,
     task_preparation: Option<&'a TaskResourcePreparation>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_creation_guard: Option<Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
 }
 
 impl<A, O> std::ops::Deref for PreparationAttempt<'_, A, O> {
@@ -742,6 +833,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn check_request_with_native_work(&self, request: &ForkRequest, io: &PreparationIo) -> Result<()> {
+        self.check_request_with_native_task(request, io, self.task_preparation.as_deref())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn check_request_with_native_task(
+        &self, request: &ForkRequest, io: &PreparationIo,
+        task: Option<&TaskResourcePreparation>,
+    ) -> Result<()> {
         let work = io.original_native_work().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid, reason: "fork projection lacks its original native ledger",
         })?;
@@ -777,11 +876,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 }
                 ResourceRevision::Project { volume, generation } => {
                     if let Some(authorization) = &request.authorized_source {
-                        let handle = self.task_preparation.as_ref().and_then(|task| task.project_source())
+                        let handle = task.and_then(TaskResourcePreparation::project_source)
                             .or(self.project_source.as_ref())
                             .ok_or(reject(crate::wire::ErrorCode::Unauthorized, "fork source has no sealed project read"))?;
                         if handle.authorization() != authorization {
                             return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork source differs from its sealed project read"));
+                        }
+                        if authorization.source_task != authorization.caller_task
+                            && (request.preparation.inherited_through_sequence != 0
+                                || request.preparation.summary.is_some())
+                        {
+                            return Err(reject(crate::wire::ErrorCode::Unsupported,
+                                "foreign workspace source cannot inherit conversation history"));
                         }
                         handle.require_selection_with_native_work(request.operation_id, authorization.source_task,
                             volume, generation, authorization.native_snapshot.as_ref(), work)?;
@@ -801,8 +907,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 _ => {}
             }
         }
-        if let Some(task) = &self.task_preparation {
+        if let Some(task) = task {
             let bound = task.request();
+            if task.origin().intended_child != bound.child.operation_id
+                || bound.child.parent != Some(task.origin().parent_task)
+                || task.grants() != &task.origin().source_grants
+            {
+                return Err(reject(crate::wire::ErrorCode::Unauthorized,
+                    "fork preparation differs from its genuine immutable owner admission"));
+            }
+            if let Some(original) = self.task_preparation.as_deref() {
+                let prior = original.origin();
+                let current = task.origin();
+                if original.request() != bound || prior.owner != current.owner
+                    || prior.parent_task != current.parent_task
+                    || prior.preparation_task != current.preparation_task
+                    || prior.intended_child != current.intended_child
+                    || prior.admission_digest != current.admission_digest
+                    || prior.request_digest != current.request_digest
+                    || prior.source_grants != current.source_grants
+                {
+                    return Err(reject(crate::wire::ErrorCode::Unauthorized,
+                        "fork preparer belongs to another genuine preparation task"));
+                }
+            }
             if bound.provider != self.host.provider || bound.creation_grant != capability::FORK_PUBLISH
                 || bound.read_authorization != request.authorized_source
                 || request.preparation.maximum_inherited_bytes > bound.maximum_bytes
@@ -812,10 +940,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             }
             let request_hold;
             let encoded = io.encode_json(request, bound.maximum_bytes, true)?;
-            request_hold = io.guard_owned(encoded.capacity() as u64)?;
+            request_hold = io.guard_bytes(&encoded)?;
             let payload_hold;
             let payload = io.encode_json(&bound.payload, bound.maximum_bytes, true)?;
-            payload_hold = io.guard_owned(payload.capacity() as u64)?;
+            payload_hold = io.guard_bytes(&payload)?;
             if encoded != payload {
                 return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork request differs from its admitted preparation"));
             }
@@ -906,6 +1034,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             self.resolver.as_ref(), io)?.await.map(Some)
     }
 
+    pub(super) async fn prepare_bound_summary(
+        &self, request: &ForkRequest, io: Option<&super::PreparationIo>,
+    ) -> Result<Option<PreparedSummaryFork>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+            return self.prepare_bound_summary_with_native_work(request, io).await;
+        }
+        let Some(selection) = &request.preparation.summary else { return Ok(None) };
+        let bound = self.summary.as_ref().ok_or_else(|| Error::Unsupported(
+            "summary fork owner-bound checkpoint provider is not installed".into()))?;
+        if selection != &bound.selection {
+            return Err(Error::Conflict("summary fork request differs from its original capture".into()));
+        }
+        bound.source.prepare(&self.parent, super::summary_fork::clone_selection(selection, io)?,
+            bound.journal.as_ref(), self.resolver.as_ref(), io).await.map(Some)
+    }
+
     fn attempt(&self) -> Result<PreparationAttempt<'_, A, O>> {
         self.attempt_with_preparation(self.task_preparation.as_deref())
     }
@@ -920,7 +1065,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             if let Some(task) = task {
                 io.encode(task.request(), task.request().maximum_bytes)?;
             }
-            return Ok(PreparationAttempt { preparer: self, io: Some(io), task_preparation: task });
+            return Ok(PreparationAttempt { preparer: self, io: Some(io), task_preparation: task,
+                native_creation_guard: None });
         }
         let io = task.map(|task| {
             let cancellation = task.cancellation().ok_or_else(|| Error::Unauthorized(
@@ -930,7 +1076,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         if let (Some(io), Some(task)) = (&io, task) {
             io.encode(task.request(), task.request().maximum_bytes)?;
         }
-        Ok(PreparationAttempt { preparer: self, io, task_preparation: task })
+        Ok(PreparationAttempt { preparer: self, io, task_preparation: task,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_creation_guard: None })
     }
 
     /// Executes the existing exact capture under one authenticated preparation
@@ -950,6 +1098,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         }
         self.attempt_with_preparation(Some(preparation))?.prepare_inner(request).await
     }
+
+    /// Borrows the exact admitted request and genuine current preparation owner.
+    /// All returned report buffers carry the original allocation ledger; the
+    /// report must be dropped before its accompanying custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prepare_for_task_with_native_work<'a>(
+        &'a self, preparation: &'a Arc<TaskResourcePreparation>, request: &'a ForkRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ForkReport, acyclic_fs::NativeAllocation)>> {
+        self.require_native_projection_work(work)?;
+        let mut attempt = self.attempt_with_preparation(Some(preparation.as_ref()))?;
+        self.check_request_with_native_task(request,
+            attempt.io.as_ref().expect("original native preparer owns its IO"), Some(preparation.as_ref()))?;
+        attempt.native_creation_guard = Some(preparation.owned_creation_guard_with_native_work(work)?);
+        crate::NativeFutureBundle::new(work, || async move {
+            preparation.verify_creation_with_native_work(work)?.await?;
+            let io = attempt.io.as_ref().expect("original native preparer owns its IO");
+            io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
+            let owned = request.clone_with_work(&mut Some(&mut io.history_io()))?;
+            let report = attempt.prepare_checked_inner(owned).await?;
+            let retained = io.owned_bytes()?;
+            let custody = io.take_native_custody(retained)?;
+            Ok((report, custody))
+        })
+    }
+
+    /// Passively observes the exact retained preparation report under the
+    /// genuine original settlement owner. This never creates a journal,
+    /// restarts captures, or materializes inherited/summary content.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reconcile_for_task_with_native_work<'a>(
+        &'a self, preparation: &'a Arc<TaskResourcePreparation>, request: &'a ForkRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ForkReport>, acyclic_fs::NativeAllocation)>> {
+        self.require_native_projection_work(work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            preparation.verify_reconciliation_with_native_work(work)?.await?;
+            let attempt = self.attempt_with_preparation(Some(preparation.as_ref()))?;
+            let io = attempt.io.as_ref().expect("original native preparer owns its IO");
+            self.check_request_with_native_task(request, io, Some(preparation.as_ref()))?;
+            let journal = attempt.journal_ref(request)?;
+            let report = match bounded_io::resolve(&self.host, &journal, Some(io)).await {
+                Ok(_) => {
+                    if attempt.read_claim(&journal, request).await? {
+                        let report = attempt.read_report(&journal, request).await?;
+                        if report.is_some() { attempt.verify_task_allocations(request).await?; }
+                        report
+                    } else { None }
+                }
+                Err(error) if journal_absent(&error) => None,
+                Err(error) => return Err(error),
+            };
+            preparation.verify_reconciliation_with_native_work(work)?.await?;
+            let retained = io.owned_bytes()?;
+            let custody = io.take_native_custody(retained)?;
+            Ok((report, custody))
+        })
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
@@ -960,8 +1166,119 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         })
     }
 
+    fn clone_authority(&self, value: &Authority) -> Result<Authority> {
+        use crate::store::history::HistoryIo as _;
+        self.io.as_ref().map_or_else(|| Ok(value.clone()),
+            |io| io.history_io().clone_authority(value))
+    }
 
-    fn encode<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<Vec<u8>> {
+    fn clone_volume(&self, value: &VolumeRef) -> Result<VolumeRef> {
+        self.io.as_ref().map_or_else(|| Ok(value.clone()),
+            |io| value.clone_with_work(&mut Some(&mut io.history_io())))
+    }
+
+    fn clone_generation(&self, value: &crate::resources::GenerationRef) -> Result<crate::resources::GenerationRef> {
+        self.io.as_ref().map_or_else(|| Ok(value.clone()), |io| value.clone_with_io(io))
+    }
+
+    fn clone_revision(&self, value: &ResourceRevision) -> Result<ResourceRevision> {
+        self.io.as_ref().map_or_else(|| Ok(value.clone()),
+            |io| value.clone_with_work(&mut Some(&mut io.history_io())))
+    }
+
+    fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
+        let mut values = bounded_io::vector(paths.len(), self.io.as_ref())?;
+        for path in paths { values.push(bounded_io::clone_text(path, self.io.as_ref())?); }
+        Ok(values)
+    }
+
+    fn clone_origin(&self, origin: &ResourceCreationOrigin) -> Result<ResourceCreationOrigin> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = self.io.as_ref().filter(|io| io.original_native_work().is_some()) {
+            let (source_grants, custody) = origin.source_grants
+                .clone_with_native_work(io.original_native_work().expect("native IO"))?;
+            io.absorb_native_custody(custody)?;
+            return Ok(ResourceCreationOrigin {
+                owner: self.clone_authority(&origin.owner)?,
+                parent_task: origin.parent_task, preparation_task: origin.preparation_task,
+                intended_child: origin.intended_child, admission_digest: origin.admission_digest,
+                source_grants, request_digest: origin.request_digest,
+                creation_fence: crate::scheduler::LeaseFence {
+                    reservation_id: bounded_io::clone_text(&origin.creation_fence.reservation_id, Some(io))?,
+                    placement: bounded_io::clone_text(&origin.creation_fence.placement, Some(io))?,
+                },
+            });
+        }
+        Ok(origin.clone())
+    }
+
+    fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
+        self.io.as_ref().map_or_else(
+            || ContentGrant::verify(&self.verifier, &self.scope, volume, VolumeOperation::Read),
+            |io| ContentGrant::verify_with_io(&self.verifier, &self.scope, volume, VolumeOperation::Read, io))
+    }
+
+    fn key(&self, value: std::fmt::Arguments<'_>) -> Result<IdempotencyKey> {
+        IdempotencyKey::new(bounded_io::format_text(value, self.io.as_ref())?)
+    }
+
+    fn reserve<T>(&self, values: &mut Vec<T>, capacity: usize) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = self.io.as_ref().filter(|io| io.original_native_work().is_some()) {
+            return native_projection_reserve(values, capacity, io);
+        }
+        if capacity > values.capacity() {
+            values.try_reserve_exact(capacity - values.len()).map_err(Error::Allocation)?;
+        }
+        Ok(())
+    }
+
+    fn reference_selection(
+        &self, selected: &mut BTreeSet<(String, crate::AgentId)>,
+        file: &crate::conversation::FileRef, reader: crate::AgentId,
+    ) -> Result<bool> {
+        let key = bounded_io::reference_key(file, self.io.as_ref())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = self.io.as_ref().filter(|io| io.original_native_work().is_some()) {
+            return native_reference_selection(selected, key, reader, io);
+        }
+        Ok(selected.insert((key, reader)))
+    }
+
+    fn reference_donor(&self, grants: &crate::Capabilities, reference: &ReferenceGrant) -> Result<()> {
+        let Some(io) = &self.io else { return require_reference_donor(grants, reference) };
+        if crate::runtime::read_granted_with_work(grants, &reference.file, &mut Some(&mut io.history_io()))?
+        { return Ok(()) }
+        if let Some(manifest) = &reference.attachment_manifest
+            && crate::runtime::read_granted_with_work(grants, manifest, &mut Some(&mut io.history_io()))?
+        { return Ok(()) }
+        Err(bounded_io::unauthorized(Some(io), "preparation task cannot delegate an inherited reference it cannot read"))
+    }
+
+    fn failure(&self, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.io.as_ref().is_some_and(PreparationIo::uses_native_work) {
+            return Error::NativeBoundary { code, reason };
+        }
+        match code {
+            crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+            crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+            crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+            crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
+            _ => Error::Invalid(reason.into()),
+        }
+    }
+
+    fn digest(&self, bytes: &[u8]) -> Result<blake3::Hash> {
+        let hash = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::UNCHARGED };
+        if let Some(io) = &self.io { io.preflight(hash)?; }
+        let digest = blake3::hash(bytes);
+        if let Some(io) = &self.io { io.charge(hash)?; }
+        Ok(digest)
+    }
+
+
+    fn encode<T: Serialize>(&self, value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
         match &self.io {
             Some(io) => io.encode(value, maximum_bytes),
             None => encode_record(value, maximum_bytes),
@@ -1020,20 +1337,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         generation: &crate::resources::GenerationRef,
     ) -> Result<std::borrow::Cow<'a, ContentGrant>> {
         let Some(authorization) = &request.authorized_source else {
-            return ContentGrant::verify(&self.verifier, &self.scope, volume, VolumeOperation::Read)
-                .map(std::borrow::Cow::Owned);
+            return self.read_grant(volume).map(std::borrow::Cow::Owned);
         };
         let handle = match self.task_preparation {
             Some(preparation) => preparation.project_source(),
             None => self.project_source.as_ref(),
-        }.ok_or_else(|| Error::Unauthorized("fork source descriptor has no sealed project read".into()))?;
+        }.ok_or_else(|| self.failure(crate::wire::ErrorCode::Unauthorized, "fork source descriptor has no sealed project read"))?;
         if handle.authorization() != authorization {
-            return Err(Error::Unauthorized("fork source descriptor differs from its sealed project read".into()));
+            return Err(self.failure(crate::wire::ErrorCode::Unauthorized, "fork source descriptor differs from its sealed project read"));
         }
         if authorization.source_task != authorization.caller_task
             && (request.preparation.inherited_through_sequence != 0 || request.preparation.summary.is_some())
         {
-            return Err(Error::Unsupported("foreign workspace source cannot inherit conversation history".into()));
+            return Err(self.failure(crate::wire::ErrorCode::Unsupported, "foreign workspace source cannot inherit conversation history"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = self.io.as_ref().and_then(PreparationIo::original_native_work) {
+            handle.require_selection_with_native_work(request.operation_id, authorization.source_task,
+                volume, generation, authorization.native_snapshot.as_ref(), work)?;
+            return Ok(std::borrow::Cow::Borrowed(handle.grant()));
         }
         handle.require_selection(request.operation_id, authorization.source_task, volume, generation,
             authorization.native_snapshot.as_ref())?;
@@ -1043,6 +1365,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
 
     async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
         if let Some(preparation) = &self.task_preparation {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.io.as_ref().and_then(PreparationIo::original_native_work) {
+                return if settlement {
+                    preparation.verify_reconciliation_with_native_work(work)?.await
+                } else {
+                    preparation.verify_creation_with_native_work(work)?.await
+                };
+            }
             if settlement {
                 preparation.verify_reconciliation().await?;
             } else {
@@ -1056,31 +1386,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let Some(preparation) = &self.task_preparation else {
             return Ok(());
         };
-        let digest = *blake3::hash(&self.encode(request, self.journal_limit(MAX_REQUEST_BYTES))?).as_bytes();
+        let encoded_hold;
+        let encoded = self.encode(request, self.journal_limit(MAX_REQUEST_BYTES))?;
+        encoded_hold = self.io.as_ref().map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
+        let digest = *self.digest(&encoded)?.as_bytes();
+        drop(encoded);
+        drop(encoded_hold);
         for (volume, role) in creation_volumes(request) {
-            let journal = allocation_ref(self.host.provider.clone(), volume)?;
+            let journal = allocation_ref_io(&self.host.provider, volume, self.io.as_ref())?;
             let retained = read_record_bounded::<A, O, AllocationClaim>(&self.host, &journal, "/claim.json", self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())
             .await?
-            .ok_or_else(|| Error::Unauthorized("task-bound allocation is missing".into()))?;
+            .ok_or_else(|| self.failure(crate::wire::ErrorCode::Unauthorized, "task-bound allocation is missing"))?;
             let expected = AllocationClaim {
                 operation_id: request.operation_id,
                 preparation_digest: digest,
-                task_origin: Some(preparation.origin().clone()),
-                parent: request.parent.clone(),
-                child: request.child.clone(),
-                volume: volume.clone(),
+                task_origin: Some(self.clone_origin(preparation.origin())?),
+                parent: self.clone_authority(&request.parent)?,
+                child: self.clone_authority(&request.child)?,
+                volume: self.clone_volume(volume)?,
                 role,
             };
             if !same_allocation_claim(&retained, &expected) {
-                return Err(Error::Unauthorized(
-                    "allocation belongs to another preparation task".into(),
-                ));
+                return Err(self.failure(crate::wire::ErrorCode::Unauthorized, "allocation belongs to another preparation task"));
             }
         }
         Ok(())
     }
 
     fn authorize_request(&self, request: &ForkRequest) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = self.io.as_ref().filter(|io| io.original_native_work().is_some()) {
+            return self.preparer.check_request_with_native_task(request, io, self.task_preparation);
+        }
         request.validate()?;
         self.validate_task_request(request)?;
         if !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
@@ -1139,6 +1476,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 
     fn check_request(&self, request: &ForkRequest) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.io.as_ref().is_some_and(PreparationIo::uses_native_work) {
+            return self.authorize_request(request);
+        }
         self.authorize_request(request)?;
         if let Some(history) = &self.history {
             if history.through_sequence() != request.preparation.inherited_through_sequence {
@@ -1174,10 +1515,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 
     fn journal_ref(&self, request: &ForkRequest) -> Result<WorkspaceRef> {
-        workspace_ref(
-            self.host.provider.clone(),
-            &format!("harness-fork-preparation-{}", request.operation_id),
-        )
+        let name = bounded_io::format_text(
+            format_args!("harness-fork-preparation-{}", request.operation_id), self.io.as_ref())?;
+        match &self.io {
+            Some(io) => WorkspaceRef::new(self.host.provider.clone_with_io(io)?, name.into_bytes(), None),
+            None => workspace_ref(self.host.provider.clone(), &name),
+        }
     }
 
     async fn read_claim(&self, journal: &WorkspaceRef, request: &ForkRequest) -> Result<bool> {
@@ -1187,22 +1530,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     async fn claim(&self, request: &ForkRequest) -> Result<WorkspaceRef> {
         let journal = self.journal_ref(request)?;
         let name = std::str::from_utf8(journal.as_resource().key())
-            .map_err(|_| Error::Invalid("fork journal name is not UTF-8".into()))?;
-        let creation_key = IdempotencyKey::new(format!("fork:{}:journal", request.operation_id))?;
-        bounded_io::create(&self.host, name, &creation_key, self.io.as_ref()).await?;
+            .map_err(|_| self.failure(crate::wire::ErrorCode::Invalid, "fork journal name is not UTF-8"))?;
+        let creation_key = self.key(format_args!("fork:{}:journal", request.operation_id))?;
+        bounded_io::create_guarded(&self.host, name, &creation_key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
+        ).await?;
         if self.read_claim(&journal, request).await? {
             return Ok(journal);
         }
         let bytes = self.encode(request, self.journal_limit(MAX_REQUEST_BYTES))?;
         let observed = bounded_io::resolve(&self.host, &journal, self.io.as_ref()).await?;
-        let key = IdempotencyKey::new(format!("fork:{}:claim", request.operation_id))?;
-        match bounded_io::apply(&self.host, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-            path: "/request.json".into(),
+        let key = self.key(format_args!("fork:{}:claim", request.operation_id))?;
+        match bounded_io::apply_guarded(&self.host, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+            path: bounded_io::clone_text("/request.json", self.io.as_ref())?,
             bytes,
-        }], &key, self.io.as_ref())
+        }], &key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
+        )
             .await
         {
-            Ok(_) | Err(Error::Conflict(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
             Err(error) => return Err(error),
         }
         if !self.read_claim(&journal, request).await? {
@@ -1211,18 +1561,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         Ok(journal)
     }
 
-    pub(super) async fn prepare_bound_summary(
-        &self, request: &ForkRequest, io: Option<&super::PreparationIo>,
-    ) -> Result<Option<PreparedSummaryFork>> {
-        let Some(selection) = &request.preparation.summary else { return Ok(None) };
-        let bound = self.summary.as_ref().ok_or_else(|| Error::Unsupported(
-            "summary fork owner-bound checkpoint provider is not installed".into()))?;
-        if selection != &bound.selection {
-            return Err(Error::Conflict("summary fork request differs from its original capture".into()));
-        }
-        bound.source.prepare(&self.parent, super::summary_fork::clone_selection(selection, io)?,
-            bound.journal.as_ref(), self.resolver.as_ref(), io).await.map(Some)
-    }
 
     async fn read_report(
         &self,
@@ -1239,21 +1577,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     ) -> Result<ForkReport> {
         let bytes = self.encode(report, self.journal_limit(MAX_REPORT_BYTES))?;
         let observed = bounded_io::resolve(&self.host, journal, self.io.as_ref()).await?;
-        let key = IdempotencyKey::new(format!("fork:{}:report", report.request.operation_id))?;
-        match bounded_io::apply(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-            path: "/report.json".into(),
+        let key = self.key(format_args!("fork:{}:report", report.request.operation_id))?;
+        match bounded_io::apply_guarded(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+            path: bounded_io::clone_text("/report.json", self.io.as_ref())?,
             bytes,
-        }], &key, self.io.as_ref())
+        }], &key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
+        )
             .await
         {
-            Ok(_) | Err(Error::Conflict(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
             Err(error) => return Err(error),
         }
         match self.read_report(journal, &report.request).await? {
             Some(committed) if committed == *report => Ok(committed),
-            Some(_) => Err(Error::Conflict(
-                "fork operation has a different committed report".into(),
-            )),
+            Some(_) => Err(self.failure(crate::wire::ErrorCode::Conflict, "fork operation has a different committed report")),
             None => Err(Error::Indeterminate(report.request.operation_id)),
         }
     }
@@ -1265,27 +1605,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         index: usize,
         selection: &ForkSelection,
     ) -> Result<Option<Capture>> {
-        let path = format!("/capture-{index}-result.json");
+        let path = bounded_io::format_text(format_args!("/capture-{index}-result.json"), self.io.as_ref())?;
         let result =
             read_record_bounded::<A, O, CaptureResult>(&self.host, journal, &path, self.journal_limit(MAX_CAPTURE_BYTES), self.io.as_ref())
                 .await?;
         match result {
             Some(result) if result.selection == *selection => {
-                let attempt_path = format!("/capture-{index}-attempt.json");
+                let attempt_path = bounded_io::format_text(format_args!("/capture-{index}-attempt.json"), self.io.as_ref())?;
                 let attempt = read_record_bounded::<A, O, CaptureAttempt>(&self.host, journal, &attempt_path, self.journal_limit(MAX_CAPTURE_BYTES), self.io.as_ref())
                 .await?
-                .ok_or_else(|| Error::Storage("fork capture result has no durable start".into()))?;
+                .ok_or_else(|| self.failure(crate::wire::ErrorCode::Storage, "fork capture result has no durable start"))?;
                 if attempt.operation_id != request.operation_id || attempt.selection != *selection {
-                    return Err(Error::Conflict(
-                        "fork capture result has another start identity".into(),
-                    ));
+                    return Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture result has another start identity"));
                 }
                 validate_capture(selection, &result.capture)?;
                 Ok(Some(result.capture))
             }
-            Some(_) => Err(Error::Conflict(
-                "fork capture result belongs to another selection".into(),
-            )),
+            Some(_) => Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture result belongs to another selection")),
             None => Ok(None),
         }
     }
@@ -1300,35 +1636,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         index: usize,
         selection: &ForkSelection,
     ) -> Result<bool> {
-        let path = format!("/capture-{index}-attempt.json");
+        let path = bounded_io::format_text(format_args!("/capture-{index}-attempt.json"), self.io.as_ref())?;
         if let Some(prior) =
             read_record_bounded::<A, O, CaptureAttempt>(&self.host, journal, &path, self.journal_limit(MAX_CAPTURE_BYTES), self.io.as_ref())
                 .await?
         {
             if prior.operation_id != request.operation_id || prior.selection != *selection {
-                return Err(Error::Conflict(
-                    "fork capture attempt belongs to another selection".into(),
-                ));
+                return Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture attempt belongs to another selection"));
             }
             return Ok(false);
         }
         let attempt = CaptureAttempt {
             operation_id: request.operation_id,
-            selection: selection.clone(),
+            selection: ForkSelection { required: selection.required, revision: self.clone_revision(&selection.revision)? },
             attempt: Uuid::new_v4(),
         };
         let observed = bounded_io::resolve(&self.host, journal, self.io.as_ref()).await?;
-        let key = IdempotencyKey::new(format!(
-            "fork:{}:capture-attempt:{index}:{}",
-            request.operation_id, attempt.attempt,
-        ))?;
-        match bounded_io::apply(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-            path: path.clone(),
+        let key = self.key(format_args!("fork:{}:capture-attempt:{index}:{}", request.operation_id, attempt.attempt))?;
+        match bounded_io::apply_guarded(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+            path: bounded_io::clone_text(&path, self.io.as_ref())?,
             bytes: self.encode(&attempt, self.journal_limit(MAX_CAPTURE_BYTES))?,
-        }], &key, self.io.as_ref())
+        }], &key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
+        )
             .await
         {
-            Ok(_) | Err(Error::Conflict(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
             Err(error) => return Err(error),
         }
         match read_record_bounded::<A, O, CaptureAttempt>(&self.host, journal, &path, self.journal_limit(MAX_CAPTURE_BYTES), self.io.as_ref())
@@ -1340,9 +1675,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             {
                 Ok(false)
             }
-            Some(_) => Err(Error::Conflict(
-                "fork capture attempt belongs to another selection".into(),
-            )),
+            Some(_) => Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture attempt belongs to another selection")),
             None => Err(Error::Indeterminate(request.operation_id)),
         }
     }
@@ -1363,27 +1696,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             return if prior == capture {
                 Ok(prior)
             } else {
-                Err(Error::Conflict(
-                    "fork capture has another committed result".into(),
-                ))
+                Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture has another committed result"))
             };
         }
-        let path = format!("/capture-{index}-result.json");
+        let path = bounded_io::format_text(format_args!("/capture-{index}-result.json"), self.io.as_ref())?;
         let observed = bounded_io::resolve(&self.host, journal, self.io.as_ref()).await?;
-        let key = IdempotencyKey::new(format!(
-            "fork:{}:capture-result:{index}",
-            request.operation_id,
-        ))?;
-        match bounded_io::apply(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+        let key = self.key(format_args!("fork:{}:capture-result:{index}", request.operation_id))?;
+        match bounded_io::apply_guarded(&self.host, journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
             path,
             bytes: self.encode(&CaptureResult {
                 selection: selection.clone(),
                 capture: capture.clone(),
             }, self.journal_limit(MAX_CAPTURE_BYTES))?,
-        }], &key, self.io.as_ref())
+        }], &key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
+        )
             .await
         {
-            Ok(_) | Err(Error::Conflict(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
             Err(error) => return Err(error),
         }
         match self
@@ -1391,11 +1723,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             .await?
         {
             Some(committed) if committed == capture => Ok(committed),
-            Some(_) => Err(Error::Conflict(
-                "fork capture has another committed result".into(),
-            )),
+            Some(_) => Err(self.failure(crate::wire::ErrorCode::Conflict, "fork capture has another committed result")),
             None => Err(Error::Indeterminate(request.operation_id)),
         }
+    }
+
+    async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
+        self.check_request(&request)?;
+        self.prepare_checked_inner(request).await
     }
 
     #[allow(
@@ -1403,15 +1738,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         clippy::cognitive_complexity,
         reason = "one journaled fork preparation must bind each side effect to the same request"
     )]
-    async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
-        self.check_request(&request)?;
+    async fn prepare_checked_inner(&self, request: ForkRequest) -> Result<ForkReport> {
         if request.authorized_source.is_some() && self.task_preparation.is_none() {
-            return Err(Error::Unauthorized("authorized workspace capture requires its original preparation lease".into()));
+            return Err(self.failure(crate::wire::ErrorCode::Unauthorized, "authorized workspace capture requires its original preparation lease"));
         }
         self.verify_task_lease(false).await?;
         let summary_before = self.io.as_ref().map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let _summary_hold;
-        let summary_proof = self.preparer.prepare_bound_summary(&request, self.io.as_ref()).await?;
+        let summary_proof = self.prepare_bound_summary(&request, self.io.as_ref()).await?;
         _summary_hold = self.io.as_ref().map(|io| io.guard_owned(io.owned_bytes()? - summary_before)).transpose()?;
         let journal = self.claim(&request).await?;
         if let Some(report) = self.read_report(&journal, &request).await? {
@@ -1425,27 +1759,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 ResourceRevision::Project { volume, generation } => Some((volume, generation)),
                 _ => None,
             })
-            .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
+            .ok_or_else(|| self.failure(crate::wire::ErrorCode::Invalid, "fork has no project selection"))?;
         let request_bytes = self.encode(&request, self.journal_limit(MAX_REQUEST_BYTES))?;
-        let request_digest = blake3::hash(&request_bytes);
+        let request_digest = self.digest(&request_bytes)?;
         for (volume, role) in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.host
                 .claim_fork_allocation_bounded(AllocationClaim {
                     operation_id: request.operation_id,
                     preparation_digest: *request_digest.as_bytes(),
-                    task_origin: self
-                        .task_preparation
-                        .as_ref()
-                        .map(|task| task.origin().clone()),
-                    parent: request.parent.clone(),
-                    child: request.child.clone(),
-                    volume: volume.clone(),
+                    task_origin: self.task_preparation.map(|task| self.clone_origin(task.origin())).transpose()?,
+                    parent: self.clone_authority(&request.parent)?,
+                    child: self.clone_authority(&request.child)?,
+                    volume: self.clone_volume(volume)?,
                     role,
-                }, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())
+                }, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref(), self.task_preparation,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.native_creation_guard.as_ref(),
+                )
                 .await?;
         }
-        let private = request.preparation.child_private_volume.clone();
+        let private = self.clone_volume(&request.preparation.child_private_volume)?;
         let (source_private, private_generation, paths) = request
             .selections
             .iter()
@@ -1461,44 +1795,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     None
                 }
             })
-            .ok_or_else(|| Error::Invalid("fork has no parent scratch selection".into()))?;
-        let private_key = IdempotencyKey::new(format!(
-            "fork:{}:{request_digest}:scratch",
-            request.operation_id
-        ))?;
-        let private_grant = ContentGrant::verify(
-            &self.verifier, &self.scope, source_private, VolumeOperation::Read,
-        )?;
+            .ok_or_else(|| self.failure(crate::wire::ErrorCode::Invalid, "fork has no parent scratch selection"))?;
+        let private_key = self.key(format_args!("fork:{}:{request_digest}:scratch", request.operation_id))?;
+        let private_grant = self.read_grant(source_private)?;
         let project_grant = self.project_read_grant(&request, source_project, source_generation)?;
         self.verify_task_lease(false).await?;
-        let private_observation = bounded_io::fork(
+        let private_observation = bounded_io::fork_guarded(
             &self.host, source_private, &private_grant, private_generation, &private,
-            Some(paths.clone()), &private_key, self.io.as_ref(),
+            Some(self.clone_paths(paths)?), &private_key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
         ).await?;
-        let controller = ParentProjectController::new(
-            &self.host,
-            &self.parent,
-            &self.verifier,
-            &self.scope,
-            self.project.clone(),
-        )?;
-        let project_key = project_creation_key(request.operation_id, request_digest)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let controller = if let Some(work) = self.io.as_ref().and_then(PreparationIo::original_native_work) {
+            ParentProjectController::new_with_native_work(&self.host, &self.parent,
+                &self.verifier, &self.scope, &self.project, work)?
+        } else {
+            ParentProjectController::new(&self.host, &self.parent, &self.verifier,
+                &self.scope, self.project.clone())?
+        };
+        #[cfg(target_arch = "wasm32")]
+        let controller = ParentProjectController::new(&self.host, &self.parent,
+            &self.verifier, &self.scope, self.project.clone())?;
+        let project_key = IdempotencyKey::new(bounded_io::format_text(
+            format_args!("fork:{}:{request_digest}:project", request.operation_id), self.io.as_ref())?)?;
         self.verify_task_lease(false).await?;
-        if request.authorized_source.is_none() {
-            controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
-        }
-        let child_project = bounded_io::fork(
+        // The same authenticated original source-read was required above;
+        // do not rebuild an ordinary grant or substitute provider-root scope.
+        let child_project = bounded_io::fork_guarded(
             &self.host, source_project, &project_grant, source_generation,
-            &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(),
+            &request.preparation.child_project_volume, None, &project_key, self.io.as_ref(), self.task_preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.native_creation_guard.as_ref(),
         ).await?;
         let (child_result_volume, child_result_generation) = if let Some(volume) = &request.preparation.child_result_volume {
             self.verify_task_lease(false).await?;
-            let key = IdempotencyKey::new(format!("fork:{}:{request_digest}:result",request.operation_id))?;
-            let result = bounded_io::fork(
+            let key = self.key(format_args!("fork:{}:{request_digest}:result",request.operation_id))?;
+            let result = bounded_io::fork_guarded(
                 &self.host, source_private, &private_grant, private_generation, volume,
-                Some(Vec::new()), &key, self.io.as_ref(),
+                Some(Vec::new()), &key, self.io.as_ref(), self.task_preparation,
+                #[cfg(not(target_arch = "wasm32"))]
+                self.native_creation_guard.as_ref(),
             ).await?;
-            (Some(volume.clone()), Some(result.generation))
+            (Some(self.clone_volume(volume)?), Some(result.generation))
         } else { (None,None) };
         let (
             mut child_private_generation,
@@ -1507,18 +1846,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             attachment_manifests,
         ) = if request.preparation.inherited_through_sequence == 0 {
             (
-                private_observation.generation.clone(),
+                self.clone_generation(&private_observation.generation)?,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )
         } else {
-            let context_key = IdempotencyKey::new(format!(
-                "fork:{}:{request_digest}:context",
-                request.operation_id
-            ))?;
+            let context_key = self.key(format_args!("fork:{}:{request_digest}:context", request.operation_id))?;
             let continuation_keys = if request.preparation.summary.is_some() {
-                super::summary_fork::summary_keys(&context_key, None)?.to_vec()
+                let keys = super::summary_fork::summary_keys(&context_key, self.io.as_ref())?;
+                let mut values = bounded_io::vector(keys.len(), self.io.as_ref())?;
+                values.extend(keys);
+                values
             } else {
                 Vec::new()
             };
@@ -1531,7 +1870,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     &request.attached_agents,
                     request.preparation.inherited_through_sequence,
                     usize::try_from(request.preparation.maximum_inherited_messages)
-                        .map_err(|_| Error::Invalid("fork message bound is too large".into()))?,
+                        .map_err(|_| self.failure(crate::wire::ErrorCode::Invalid, "fork message bound is too large"))?,
                     request.preparation.maximum_inherited_bytes,
                     request.preparation.maximum_inherited_references as usize,
                     self.resolver.as_ref(),
@@ -1539,48 +1878,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     &continuation_keys,
                     self.history.as_ref().map(PreparedForkHistory::conversation),
                     self.io.as_ref(),
+                    self.task_preparation,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
             (
                 inherited.generation,
-                vec![inherited.file],
+                {
+                    let mut files = bounded_io::vector(1, self.io.as_ref())?;
+                    files.push(inherited.file);
+                    files
+                },
                 inherited.reference_grants,
                 inherited.attachment_manifests,
             )
         };
         let summary = if request.preparation.summary.is_some() {
             let bound = self.summary.as_ref().ok_or_else(|| {
-                Error::Unsupported("summary fork provider is not installed".into())
+                self.failure(crate::wire::ErrorCode::Unsupported, "summary fork provider is not installed")
             })?;
-            let prepared = summary_proof.as_ref().ok_or_else(|| Error::Storage(
-                "summary source proof is missing".into()))?;
-            let key = IdempotencyKey::new(format!(
-                "fork:{}:{request_digest}:context",
-                request.operation_id
-            ))?;
+            let prepared = summary_proof.as_ref().ok_or_else(||
+                self.failure(crate::wire::ErrorCode::Storage, "summary source proof is missing"))?;
+            let key = self.key(format_args!("fork:{}:{request_digest}:context", request.operation_id))?;
             let prefix = inherited_context
                 .first()
-                .ok_or_else(|| Error::Invalid("summary fork omitted its logical prefix".into()))?;
+                .ok_or_else(|| self.failure(crate::wire::ErrorCode::Invalid, "summary fork omitted its logical prefix"))?;
             // Count the exact additional reader grants before either Summary
             // publication phase. Reuse original prefix grants when identical.
             let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
-            let mut planned_grants = reference_grants
-                .iter()
-                .map(|grant| Ok((grant.capability()?, grant.reader)))
-                .collect::<Result<BTreeSet<_>>>()?;
+            let mut planned_grants = BTreeSet::new();
+            for grant in &reference_grants {
+                self.reference_selection(&mut planned_grants, &grant.file, grant.reader)?;
+            }
             for reader in
                 std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
             {
                 for file in summary_references.values() {
                     if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
-                        planned_grants.insert((file.read_capability()?, reader));
+                        self.reference_selection(&mut planned_grants, file, reader)?;
                     }
                 }
             }
             if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
-                return Err(Error::Invalid(
-                    "summary fork reader grants exceed capture allowance".into(),
-                ));
+                return Err(self.failure(crate::wire::ErrorCode::Invalid, "summary fork reader grants exceed capture allowance"));
             }
             let (capture, generation) = controller
                 .materialize_summary_context(
@@ -1595,83 +1936,95 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                     &key,
                     self.resolver.as_ref(),
                     self.io.as_ref(),
+                    self.task_preparation,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
-            let mut granted = reference_grants
-                .iter()
-                .map(|grant| Ok((grant.capability()?, grant.reader)))
-                .collect::<Result<BTreeSet<_>>>()?;
+            let mut granted = BTreeSet::new();
+            for grant in &reference_grants {
+                self.reference_selection(&mut granted, &grant.file, grant.reader)?;
+            }
+            let maximum_grants = reference_grants.len().checked_add(capture.references.len()
+                .checked_mul(request.attached_agents.len() + 1)
+                .ok_or_else(|| bounded_io::invalid(self.io.as_ref(), "summary readers overflow"))?)
+                .ok_or_else(|| bounded_io::invalid(self.io.as_ref(), "summary grants overflow"))?;
+            self.reserve(&mut reference_grants, maximum_grants)?;
             for reader in
                 std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
             {
                 for file in &capture.references {
                     if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader)
-                        && granted.insert((file.read_capability()?, reader))
+                        && self.reference_selection(&mut granted, file, reader)?
                     {
                         reference_grants.push(ReferenceGrant {
-                            file: file.clone(),
+                            file: bounded_io::clone_file(file, self.io.as_ref())?,
                             reader,
                             attachment_manifest: None,
                         });
                     }
                 }
             }
-            inherited_context.extend(capture.inherited_files().cloned());
+            let capacity = inherited_context.len().checked_add(capture.inherited_files().count())
+                .ok_or_else(|| bounded_io::invalid(self.io.as_ref(), "summary context count overflows"))?;
+            self.reserve(&mut inherited_context, capacity)?;
+            for file in capture.inherited_files() {
+                inherited_context.push(bounded_io::clone_file(file, self.io.as_ref())?);
+            }
             child_private_generation = generation;
             Some(capture)
         } else {
             None
         };
-        let mut captures = Vec::with_capacity(request.selections.len());
-        let mut shared_grants = Vec::new();
+        let mut captures = bounded_io::vector(request.selections.len(), self.io.as_ref())?;
+        let shared_count = request.selections.iter().filter(|selection|
+            matches!(&selection.revision, ResourceRevision::SharedVolume(volume) if volume.provider() == &self.host.provider))
+            .count().checked_mul(request.attached_agents.len() + 1)
+            .ok_or_else(|| bounded_io::invalid(self.io.as_ref(), "shared reader count overflows"))?;
+        let mut shared_grants = bounded_io::vector(shared_count, self.io.as_ref())?;
         for (index, selection) in request.selections.iter().enumerate() {
             self.verify_task_lease(false).await?;
             let capture = match &selection.revision {
                 ResourceRevision::History(_) => Capture::Captured(CapturedResource {
-                    source: selection.revision.clone(),
-                    revision: selection.revision.clone(),
+                    source: self.clone_revision(&selection.revision)?,
+                    revision: self.clone_revision(&selection.revision)?,
                 }),
                 ResourceRevision::Project { .. } => Capture::Captured(CapturedResource {
-                    source: selection.revision.clone(),
+                    source: self.clone_revision(&selection.revision)?,
                     revision: ResourceRevision::Project {
-                        volume: request.preparation.child_project_volume.clone(),
-                        generation: child_project.generation.clone(),
+                        volume: self.clone_volume(&request.preparation.child_project_volume)?,
+                        generation: self.clone_generation(&child_project.generation)?,
                     },
                 }),
                 ResourceRevision::PrivateVolume { paths, .. } => {
                     Capture::Captured(CapturedResource {
-                        source: selection.revision.clone(),
+                        source: self.clone_revision(&selection.revision)?,
                         revision: ResourceRevision::PrivateVolume {
-                            volume: private.clone(),
-                            generation: private_observation.generation.clone(),
-                            paths: paths.clone(),
+                            volume: self.clone_volume(&private)?,
+                            generation: self.clone_generation(&private_observation.generation)?,
+                            paths: self.clone_paths(paths)?,
                         },
                     })
                 }
                 ResourceRevision::SharedVolume(volume)
                     if volume.provider() == &self.host.provider =>
                 {
-                    ContentGrant::verify(
-                        &self.verifier,
-                        &self.scope,
-                        volume,
-                        VolumeOperation::Read,
-                    )?;
-                    let reference =
-                        workspace_ref(self.host.provider.clone(), &volume.storage_name()?)?;
+                    self.read_grant(volume)?;
+                    let reference = bounded_io::content_workspace(&self.host.provider, volume, self.io.as_ref())?;
                     bounded_io::resolve(&self.host, &reference, self.io.as_ref()).await?;
                     for reader in std::iter::once(request.child_agent)
                         .chain(request.attached_agents.iter().copied())
                     {
+                        bounded_io::item(self.io.as_ref(), std::mem::size_of::<VolumeOperation>() as u64)?;
                         shared_grants.push(SharedGrant {
-                            volume: volume.clone(),
+                            volume: self.clone_volume(volume)?,
                             child_agent: reader,
                             operations: BTreeSet::from([VolumeOperation::Read]),
                         });
                     }
                     Capture::Captured(CapturedResource {
-                        source: selection.revision.clone(),
-                        revision: selection.revision.clone(),
+                        source: self.clone_revision(&selection.revision)?,
+                        revision: self.clone_revision(&selection.revision)?,
                     })
                 }
                 _ => {
@@ -1704,7 +2057,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                             .await?
                         }
                     } else {
-                        Capture::Unsupported("resource capture provider is not installed".into())
+                        Capture::Unsupported(bounded_io::clone_text("resource capture provider is not installed", self.io.as_ref())?)
                     }
                 }
             };
@@ -1714,7 +2067,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let mut report = ForkReport {
             request,
             captures,
-            child_private_volume: private.clone(),
+            child_private_volume: private,
             child_private_generation,
             child_result_volume,
             child_result_generation,
@@ -1726,16 +2079,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             history_witness: None,
             attachment_manifests,
         };
-        report.validate()?;
+        if let Some(io) = &self.io {
+            report.validate_with_work(&mut Some(&mut io.history_io()))?;
+        } else {
+            report.validate()?;
+        }
         if let Some(preparation) = &self.task_preparation {
             for grant in &report.reference_grants {
-                require_reference_donor(preparation.grants(), grant)?;
+                self.reference_donor(preparation.grants(), grant)?;
                 if grant.reader == report.request.child_agent
-                    && !preparation.request().child.grants.contains(&grant.capability()?)
+                    && !{
+                        let key = bounded_io::reference_key(&grant.file, self.io.as_ref())?;
+                        preparation.request().child.grants.contains(&key)
+                    }
                 {
-                    return Err(Error::Unauthorized(
-                        "prepared child omitted an exact inherited-file read grant".into(),
-                    ));
+                    return Err(self.failure(crate::wire::ErrorCode::Unauthorized, "prepared child omitted an exact inherited-file read grant"));
                 }
             }
         }
@@ -1751,13 +2109,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         if required_captures_ready {
             self.verify_task_lease(false).await?;
             let mut seed = if let Some(io) = &self.io {
-                let encoded_hold;
-                let encoded = io.encode_json(&report, self.journal_limit(MAX_REQUEST_BYTES), true)?;
-                encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-                let copied: ForkReport = io.decode_json(&encoded)?;
-                drop(encoded);
-                drop(encoded_hold);
-                copied.into_seed()?
+                let mut observer = io.history_io();
+                report.clone_with_work(&mut Some(&mut observer))?
+                    .into_seed_with_work(&mut Some(&mut observer))?
             } else {
                 report.clone().into_seed()?
             };
@@ -1770,7 +2124,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
                 }
                 report.history_witness = seed.history_witness;
             }
-            self.host.bind_fork_seed_bounded(&seed, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref()).await?;
+            self.host.bind_fork_seed_bounded(&seed, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref(), self.task_preparation,
+                #[cfg(not(target_arch = "wasm32"))]
+                self.native_creation_guard.as_ref(),
+            ).await?;
         }
         self.verify_task_lease(false).await?;
         self.commit_report(&journal, &report).await
@@ -1906,6 +2263,108 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         self.bind_fork_seed(seed).await
     }
 
+    /// Reads the original protected claim through the same bounded codec as
+    /// publication verification. A qualified current READ query and genuine
+    /// immutable admission witness are required before any claim-provider IO.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn observe_original_fork_allocation_claim_with_native_work<'a, P: StreamProvider>(
+        &'a self,
+        witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
+        query: &'a Arc<crate::runtime::NativeTaskContext>,
+        admitted: &'a crate::resource_preparation::ResourcePreparationRequest,
+        volume: &'a VolumeRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, Option<OriginalForkAllocationClaim>>> {
+        // The witness producer statically authenticates the actual issued query
+        // before constructing its funded decoder future; no UUID grants a read.
+        let original = witness.original_preparation_request_with_native_work(query, work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let (request, request_custody) = original.await?;
+            io.absorb_native_custody(request_custody)?;
+            let reject = |reason| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized, reason,
+            };
+            if &request != admitted || request.provider != self.provider
+                || request.creation_grant != capability::FORK_PUBLISH
+            {
+                return Err(reject("fork claim request differs from its original witnessed admission"));
+            }
+            request.validate_with_work(&mut Some(&mut io.history_io()))?;
+            let fork = io.value_decode_preparation::<ForkRequest>(
+                &request.payload, crate::wire::ErrorCode::Invalid,
+            )?;
+            fork.validate_with_work(&mut Some(&mut io.history_io()))?;
+            if fork.authorized_source != request.read_authorization
+                || request.resources.len() != creation_volumes(&fork).count()
+                || fork.preparation.maximum_inherited_bytes > request.maximum_bytes
+            {
+                return Err(reject("fork claim source or resources differ from their immutable request"));
+            }
+            let role = creation_volumes(&fork).find_map(|(selected, role)|
+                (selected == volume).then_some(role))
+                .ok_or_else(|| reject("fork claim volume is outside the witnessed request"))?;
+            for (resource, (selected, _)) in request.resources.iter().zip(creation_volumes(&fork)) {
+                if selected.provider() != &self.provider {
+                    return Err(reject("fork claim resource belongs to another original provider"));
+                }
+                let before = io.owned_bytes()?;
+                let resource_hold;
+                let actual = bounded_io::content_workspace(&self.provider, selected, Some(&io))?.into_resource();
+                resource_hold = io.guard_owned(io.owned_bytes()? - before)?;
+                if resource != &actual {
+                    return Err(reject("fork claim resources differ from their original exact identities"));
+                }
+                drop(actual);
+                drop(resource_hold);
+            }
+            let request_digest = crate::contract::canonical_json_digest_with_work(
+                &request, request.maximum_bytes, &mut Some(&mut io.history_io()),
+            )?;
+            let encoded_hold;
+            let encoded = io.encode(&*fork, MAX_REQUEST_BYTES.min(request.maximum_bytes))?;
+            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+            let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..WorkCounters::UNCHARGED };
+            io.preflight(hash)?;
+            let preparation_digest = *blake3::hash(&encoded).as_bytes();
+            io.charge(hash)?;
+            drop(encoded);
+            drop(encoded_hold);
+
+            let journal_hold;
+            let before = io.owned_bytes()?;
+            let journal = allocation_ref_io(&self.provider, volume, Some(&io))?;
+            journal_hold = io.guard_owned(io.owned_bytes()? - before)?;
+            witness.verify_query_with_native_work(query, work).await?;
+            let claim = read_original_fork_claim_record_io(
+                self, &journal, MAX_REQUEST_BYTES.min(request.maximum_bytes), Some(&io),
+            ).await?;
+            // Missing means authenticated absence, never a new allocation or a
+            // search through a native-process intent or current Started record.
+            witness.verify_query_with_native_work(query, work).await?;
+            let Some(claim) = claim else { return Ok(None) };
+            let origin = claim.task_origin.as_ref()
+                .ok_or_else(|| reject("fork claim has no genuine original preparation origin"))?;
+            witness.verify_preparation_origin_with_native_work(query, &request, origin, work)?;
+            if claim.operation_id != fork.operation_id || claim.parent != fork.parent
+                || claim.child != fork.child || claim.volume != *volume || claim.role != role
+                || claim.preparation_digest != preparation_digest
+                || origin.request_digest != request_digest
+                || origin.preparation_task != witness.task()
+                || origin.intended_child != request.child.operation_id
+                || request.child.parent != Some(origin.parent_task)
+            {
+                return Err(reject("fork claim differs from its complete original witnessed request"));
+            }
+            drop(journal);
+            drop(journal_hold);
+            drop(fork);
+            let retained = io.owned_bytes()?;
+            let custody = io.take_native_custody(retained)?;
+            Ok(Some(OriginalForkAllocationClaim { claim, request, custody }))
+        })
+    }
+
     pub(crate) async fn verify_fork_allocation(
         &self,
         seed: &ForkSeed,
@@ -1927,15 +2386,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .ok_or_else(|| Error::Invalid("allocation journal ownership overflows".into())))?;
             io.guard_owned(bytes)
         }).transpose()?;
-        let claim = read_record_decoded_bounded::<A,O,AllocationClaim>(
-            self,&journal,"/claim.json",MAX_REQUEST_BYTES,io,
-            |bytes, io| match io {
-                Some(io) => io.decode_json(bytes),
-                None => crate::contract::json_from_slice(bytes)
-                    .map_err(|error| Error::Invalid(format!("fork allocation is invalid: {error}"))),
-            },
-        )
-            .await?
+        let claim = read_original_fork_claim_record_io(
+            self, &journal, MAX_REQUEST_BYTES, io,
+        ).await?
             .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
         let validation = (|| {
         if claim.operation_id != seed.operation_id
@@ -1977,48 +2430,69 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     async fn bind_fork_seed(&self, seed: &ForkSeed) -> Result<()> {
-        self.bind_fork_seed_bounded(seed, MAX_REQUEST_BYTES, None).await
+        self.bind_fork_seed_bounded(seed, MAX_REQUEST_BYTES, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        ).await
     }
 
-    async fn bind_fork_seed_bounded(&self, seed: &ForkSeed, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+    async fn bind_fork_seed_bounded(
+        &self, seed: &ForkSeed, maximum_bytes: u64, io: Option<&PreparationIo>,
+        preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            native_creation_guard.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native seed binding requires its original issued creation guard",
+            })?.verify_creation_with_native_work(work)?.await?;
+        }
         let binding = seed_binding_bounded(seed, io)?;
         for (volume, role) in seed_creation_volumes(seed)? {
-            let journal = allocation_ref(self.provider.clone(), volume)?;
+            let journal = allocation_ref_io(&self.provider, volume, io)?;
             let claim =
                 read_record_bounded::<A, O, AllocationClaim>(self, &journal, "/claim.json", maximum_bytes, io)
                     .await?
-                    .ok_or_else(|| {
-                        Error::Unauthorized("fork child volume was not allocated".into())
-                    })?;
+                    .ok_or_else(|| bounded_io::unauthorized(
+                        io, "fork child volume was not allocated",
+                    ))?;
             if claim.operation_id != seed.operation_id
                 || claim.parent != seed.parent
                 || claim.child != seed.child
                 || claim.volume != *volume
                 || claim.role != role
             {
-                return Err(Error::Conflict(
-                    "fork child volume belongs to another preparation".into(),
+                return Err(bounded_io::conflict(
+                    io, "fork child volume belongs to another preparation",
                 ));
             }
             match read_record_bounded::<A, O, SeedBinding>(self, &journal, "/seed.json", maximum_bytes, io).await? {
                 Some(prior) if prior == binding => continue,
-                Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
+                Some(_) => return Err(bounded_io::conflict(io, "fork allocation has another seed")),
                 None => {}
             }
             let observed = bounded_io::resolve(self, &journal, io).await?;
-            let key = IdempotencyKey::new(format!("fork:{}:seed", seed.operation_id))?;
-            match bounded_io::apply(self, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-                path: "/seed.json".into(),
+            let key = IdempotencyKey::new(bounded_io::format_text(
+                format_args!("fork:{}:seed", seed.operation_id), io,
+            )?)?;
+            match bounded_io::apply_guarded(self, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+                path: bounded_io::clone_text("/seed.json", io)?,
                 bytes: encode_bounded(&binding, maximum_bytes, io)?,
-            }], &key, io)
+            }], &key, io, preparation,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_creation_guard,
+            )
                 .await
             {
-                Ok(_) | Err(Error::Conflict(_)) => {}
+                Ok(_) => {}
+                Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
                 Err(error) => return Err(error),
             }
             match read_record_bounded::<A, O, SeedBinding>(self, &journal, "/seed.json", maximum_bytes, io).await? {
                 Some(prior) if prior == binding => {}
-                Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
+                Some(_) => return Err(bounded_io::conflict(io, "fork allocation has another seed")),
                 None => return Err(Error::Indeterminate(seed.operation_id)),
             }
         }
@@ -2026,46 +2500,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     async fn claim_fork_allocation(&self, claim: AllocationClaim) -> Result<()> {
-        self.claim_fork_allocation_bounded(claim, MAX_REQUEST_BYTES, None).await
+        self.claim_fork_allocation_bounded(claim, MAX_REQUEST_BYTES, None, None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        ).await
     }
 
-    async fn claim_fork_allocation_bounded(&self, claim: AllocationClaim, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+    async fn claim_fork_allocation_bounded(
+        &self, claim: AllocationClaim, maximum_bytes: u64, io: Option<&PreparationIo>,
+        preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_creation_guard: Option<&std::sync::Arc<crate::resource_preparation::NativeResourcePreparationCreationGuard>>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            native_creation_guard.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native allocation claim requires its original issued creation guard",
+            })?.verify_creation_with_native_work(work)?.await?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            claim.volume.validate_with_native_work(work)?;
+        } else {
+            claim.volume.validate()?;
+        }
+        #[cfg(target_arch = "wasm32")]
         claim.volume.validate()?;
         if claim.volume.provider() != &self.provider {
-            return Err(Error::Invalid(
-                "fork allocation belongs to another Filesystem provider".into(),
+            return Err(bounded_io::invalid(
+                io, "fork allocation belongs to another Filesystem provider",
             ));
         }
-        let journal = allocation_ref(self.provider.clone(), &claim.volume)?;
+        let journal = allocation_ref_io(&self.provider, &claim.volume, io)?;
         let name = std::str::from_utf8(journal.as_resource().key())
-            .map_err(|_| Error::Invalid("allocation journal name is not UTF-8".into()))?;
-        let creation_key = IdempotencyKey::new(format!("fork:{}:allocation-journal", claim.operation_id))?;
-        bounded_io::create(self, name, &creation_key, io).await?;
+            .map_err(|_| bounded_io::invalid(io, "allocation journal name is not UTF-8"))?;
+        let creation_key = IdempotencyKey::new(bounded_io::format_text(
+            format_args!("fork:{}:allocation-journal", claim.operation_id), io,
+        )?)?;
+        bounded_io::create_guarded(self, name, &creation_key, io, preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_creation_guard,
+        ).await?;
         match read_record_bounded::<A, O, AllocationClaim>(self, &journal, "/claim.json", maximum_bytes, io).await? {
             Some(prior) if same_allocation_claim(&prior, &claim) => return Ok(()),
             Some(_) => {
-                return Err(Error::Conflict(
-                    "fork child volume is already allocated".into(),
+                return Err(bounded_io::conflict(
+                    io, "fork child volume is already allocated",
                 ));
             }
             None => {}
         }
         let observed = bounded_io::resolve(self, &journal, io).await?;
-        let key = IdempotencyKey::new(format!("fork:{}:allocation", claim.operation_id))?;
-        match bounded_io::apply(self, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(),
+        let key = IdempotencyKey::new(bounded_io::format_text(
+            format_args!("fork:{}:allocation", claim.operation_id), io,
+        )?)?;
+        match bounded_io::apply_guarded(self, &journal, Some(&observed.generation), &[WorkspaceMutation::PutFile {
+            path: bounded_io::clone_text("/claim.json", io)?,
             bytes: encode_bounded(&claim, maximum_bytes, io)?,
-        }], &key, io)
+        }], &key, io, preparation,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_creation_guard,
+        )
             .await
         {
-            Ok(_) | Err(Error::Conflict(_)) => {}
+            Ok(_) => {}
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {}
             Err(error) => return Err(error),
         }
         match read_record_bounded::<A, O, AllocationClaim>(self, &journal, "/claim.json", maximum_bytes, io).await? {
             Some(prior) if same_allocation_claim(&prior, &claim) => Ok(()),
-            Some(_) => Err(Error::Conflict(
-                "fork child volume is already allocated".into(),
-            )),
+            Some(_) => Err(bounded_io::conflict(io, "fork child volume is already allocated")),
             None => Err(Error::Indeterminate(claim.operation_id)),
         }
     }
@@ -2087,7 +2592,8 @@ fn same_allocation_claim(retained: &AllocationClaim, requested: &AllocationClaim
                 && prior.preparation_task == current.preparation_task
                 && prior.intended_child == current.intended_child
                 && prior.admission_digest == current.admission_digest
-                && prior.request_digest == current.request_digest,
+                && prior.request_digest == current.request_digest
+                && prior.source_grants == current.source_grants,
         _ => false,
     }
 }
@@ -2237,10 +2743,14 @@ fn seed_binding(seed: &ForkSeed) -> Result<SeedBinding> {
 }
 
 fn seed_binding_bounded(seed: &ForkSeed, io: Option<&PreparationIo>) -> Result<SeedBinding> {
-    seed.validate()?;
+    if let Some(io) = io {
+        seed.validate_with_work(&mut Some(&mut io.history_io()))?;
+    } else {
+        seed.validate()?;
+    }
     let encoded_hold;
     let encoded = encode_bounded(seed,MAX_REPORT_BYTES,io)?;
-    encoded_hold = io.map(|io| io.guard_owned(encoded.len() as u64)).transpose()?;
+    encoded_hold = io.map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
     let hash = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
     if let Some(io) = io { io.preflight(hash)?; }
     let digest = *blake3::hash(&encoded).as_bytes();
@@ -2250,7 +2760,7 @@ fn seed_binding_bounded(seed: &ForkSeed, io: Option<&PreparationIo>) -> Result<S
     Ok(SeedBinding {digest})
 }
 
-fn encode_bounded<T: Serialize>(value: &T, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Vec<u8>> {
+fn encode_bounded<T: Serialize>(value: &T, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<acyclic_stream::OwnedBytes> {
     match io {
         Some(io) => io.encode(value, maximum_bytes),
         None => encode_record(value, maximum_bytes),
@@ -2263,7 +2773,7 @@ async fn read_request_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<bool> {
     match read_record_bounded::<A, O, ForkRequest>(host, journal, "/request.json", maximum_bytes, io).await? {
         Some(claim) if claim == *request => Ok(true),
-        Some(_) => Err(Error::Conflict("fork operation is claimed by another request".into())),
+        Some(_) => Err(bounded_io::conflict(io, "fork operation is claimed by another request")),
         None => Ok(false),
     }
 }
@@ -2273,9 +2783,13 @@ async fn read_preparation_report<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<Option<ForkReport>> {
     let report = read_record_bounded::<A, O, ForkReport>(host, journal, "/report.json", maximum_bytes, io).await?;
     if let Some(report) = &report {
-        report.validate()?;
+        if let Some(io) = io {
+            report.validate_with_work(&mut Some(&mut io.history_io()))?;
+        } else {
+            report.validate()?;
+        }
         if report.request != *request {
-            return Err(Error::Conflict("fork report does not match its claimed request".into()));
+            return Err(bounded_io::conflict(io, "fork report does not match its claimed request"));
         }
     }
     Ok(report)
@@ -2318,7 +2832,7 @@ where
             this.verify_task_lease(true).await?;
             let summary_before = this.io.as_ref().map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
             let _summary_hold;
-            let _summary_proof = this.preparer.prepare_bound_summary(&request, this.io.as_ref()).await?;
+            let _summary_proof = this.prepare_bound_summary(&request, this.io.as_ref()).await?;
             _summary_hold = this.io.as_ref().map(|io| io.guard_owned(io.owned_bytes()? - summary_before)).transpose()?;
             let journal = this.journal_ref(&request)?;
             match bounded_io::resolve(&this.host, &journal, this.io.as_ref()).await {
@@ -2338,11 +2852,8 @@ where
     }
 }
 
-fn project_creation_key(operation: OperationId, request_digest: blake3::Hash) -> Result<IdempotencyKey> {
-    IdempotencyKey::new(format!("fork:{operation}:{request_digest}:project"))
-}
 
-fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<Vec<u8>> {
+fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
     struct BoundedRecord {
         bytes: Vec<u8>,
         maximum: u64,
@@ -2361,10 +2872,10 @@ fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<Vec<u8>>
     }
     let mut record = BoundedRecord { bytes: Vec::new(), maximum: maximum_bytes };
     serde_json::to_writer(&mut record, value).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(record.bytes)
+    Ok(record.bytes.into())
 }
 
-async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: DeserializeOwned>(
+async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: bounded_io::PreparationRecord>(
     host: &FilesystemHost<A, O>,
     journal: &WorkspaceRef,
     path: &str,
@@ -2373,31 +2884,58 @@ async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Deserialize
     read_record_bounded(host, journal, path, maximum_bytes, None).await
 }
 
-async fn read_record_bounded<A: AsyncAuthorityStore, O: AsyncObjectStore, T: DeserializeOwned>(
+async fn read_original_fork_claim_record_io<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    host: &FilesystemHost<A, O>, journal: &WorkspaceRef, maximum_bytes: u64,
+    io: Option<&PreparationIo>,
+) -> Result<Option<AllocationClaim>> {
+    read_record_decoded_bounded(host, journal, "/claim.json", maximum_bytes, io,
+        |bytes, io| match io {
+            Some(io) => io.decode_json(bytes),
+            None => crate::contract::json_from_slice(bytes)
+                .map_err(|error| Error::Invalid(format!("fork allocation is invalid: {error}"))),
+        },
+    ).await
+}
+
+async fn read_record_bounded<A: AsyncAuthorityStore, O: AsyncObjectStore, T: bounded_io::PreparationRecord>(
     host: &FilesystemHost<A, O>, journal: &WorkspaceRef, path: &str, maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<Option<T>> {
-    read_record_decoded_bounded(host,journal,path,maximum_bytes,io, |bytes,_|
+    read_record_decoded_bounded(host,journal,path,maximum_bytes,io, |bytes,io| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+            return Ok(io.decode_preparation::<T>(bytes)?.into_retained());
+        }
         crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}"))),
-    ).await
+            .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}")))
+    }).await
 }
 
 async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: AsyncObjectStore,T>(
     host: &FilesystemHost<A,O>, journal: &WorkspaceRef, path: &str, maximum_bytes:u64,
     io: Option<&PreparationIo>,
-    decode: impl FnOnce(&[u8], Option<&PreparationIo>)->Result<T>,
+    decode: impl FnOnce(&acyclic_stream::OwnedBytes, Option<&PreparationIo>)->Result<T>,
 ) -> Result<Option<T>> {
+    let raw;
     match bounded_io::read(host, journal, path, maximum_bytes, io).await {
         Ok(bytes) => {
-            let raw = io.map(|io| io.reserve_decode(bytes.len() as u64)).transpose()?;
+            raw = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             let value = decode(&bytes,io);
             drop(bytes);
             drop(raw);
             value.map(Some)
         }
-        Err(Error::NotFound(_)) => Ok(None),
+        Err(error) if journal_absent(&error) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+fn journal_absent(error: &Error) -> bool {
+    match error {
+        Error::NotFound(_) => true,
+        #[cfg(not(target_arch = "wasm32"))]
+        Error::NativeWorkspace { source: acyclic_fs::WorkspaceError::NotFound, .. } => true,
+        _ => false,
     }
 }
 
@@ -2410,7 +2948,7 @@ mod task_origin_tests {
 
     #[test]
     fn record_encoder_stops_at_the_admitted_byte_boundary() -> Result<()> {
-        assert_eq!(encode_record(&"x", 3)?, b"\"x\"");
+        assert_eq!(encode_record(&"x", 3)?.as_ref(), b"\"x\"");
         assert!(matches!(encode_record(&"x", 2), Err(Error::Invalid(_))));
         assert!(matches!(encode_record(&[0_u8; 64], 8), Err(Error::Invalid(_))));
         Ok(())
@@ -2440,7 +2978,7 @@ mod task_origin_tests {
             preparation_task: TaskId::from_bytes([73; 16]),
             intended_child: OperationId::from_bytes([74; 16]),
             admission_digest: [75; 32],
-            source_grants: crate::Capabilities::new([] as [&str; 0]),
+            source_grants: crate::Capabilities::new(["file:read:original-source"]),
             request_digest: [76; 32],
             creation_fence: crate::scheduler::LeaseFence {
                 reservation_id: "original".into(),
@@ -2493,6 +3031,56 @@ mod task_origin_tests {
         )?;
         assert!(denied.decode_json::<AllocationClaim>(&bytes).is_err());
         assert_eq!(denied.owned_bytes()?,0);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let native_budget = acyclic_fs::WorkBudget {
+                backend_read_operations: 65_536, backend_write_operations: 65_536,
+                authority_records_read: 65_536, authority_bytes_read: 16_777_216,
+                source_bytes_read: 16_777_216, object_bytes_read: 16_777_216,
+                allocation_operations: 65_536, peak_allocation_bytes: 16_777_216,
+                bytes_encoded: 16_777_216, bytes_copied: 16_777_216,
+                bytes_hashed: 16_777_216, items_examined: 65_536,
+                ..Default::default()
+            };
+            let native = acyclic_fs::NativeMaterializationWork::new(native_budget, &cancellation)
+                .expect("original production journal ledger");
+            let baseline = native.live_allocation_bytes();
+            let native_io = PreparationIo::from_native_work(&native)?;
+            // Read the real retained journal on the original Filesystem engine.
+            // Cold read work is a lower bound, never an exact reconstructed bill.
+            let decoded = read_original_fork_claim_record_io(
+                &host, &journal, 65_536, Some(&native_io)).await?
+                .expect("original retained allocation");
+            assert_eq!(decoded, claim);
+            let held = native_io.owned_bytes()?;
+            let custody = native_io.into_native_custody(held)?;
+            assert!(custody.matches_work(&native));
+            assert!(custody.bytes() >= bounded_io::UploadRecord::logical_owned_bytes(&decoded)?);
+            assert!(native.receipt().source_bytes_read > 0);
+            assert_eq!(decoded.task_origin.as_ref().expect("original task origin").source_grants,
+                claim.task_origin.as_ref().expect("original donor").source_grants);
+            drop(decoded);
+            drop(custody);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+
+            for cancelled in [false, true] {
+                let token = acyclic_fs::CancellationToken::new();
+                let denied_budget = if cancelled { native_budget } else {
+                    acyclic_fs::WorkBudget { peak_allocation_bytes:
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes(), ..native_budget }
+                };
+                let denied_native = acyclic_fs::NativeMaterializationWork::new(denied_budget, &token)
+                    .expect("original denied decode ledger");
+                let denied_io = PreparationIo::from_native_work(&denied_native)?;
+                let prefix = denied_native.receipt();
+                if cancelled { token.cancel(); }
+                assert!(matches!(denied_io.decode_json::<AllocationClaim>(&bytes),
+                    Err(Error::NativeWork { .. })));
+                assert_eq!(denied_native.receipt().allocation_operations, prefix.allocation_operations);
+                assert_eq!(denied_native.receipt().bytes_copied, prefix.bytes_copied);
+                assert_eq!(denied_io.owned_bytes()?, 0);
+            }
+        }
         let mut malformed: serde_json::Value = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         malformed.as_object_mut().ok_or_else(|| Error::Invalid("claim object".into()))?
@@ -2507,7 +3095,7 @@ mod task_origin_tests {
             assert!(matches!(host.claim_fork_allocation(changed).await,
                 Err(Error::Conflict(_))));
         }
-        for field in 0..6 {
+        for field in 0..7 {
             let mut changed = claim.clone();
             let origin = changed
                 .task_origin
@@ -2519,7 +3107,8 @@ mod task_origin_tests {
                 2 => origin.preparation_task = TaskId::from_bytes([80; 16]),
                 3 => origin.intended_child = OperationId::from_bytes([81; 16]),
                 4 => origin.admission_digest = [82; 32],
-                _ => origin.request_digest = [83; 32],
+                5 => origin.request_digest = [83; 32],
+                _ => origin.source_grants = crate::Capabilities::new(["file:read:foreign-source"]),
             }
             assert!(matches!(
                 host.claim_fork_allocation(changed).await,

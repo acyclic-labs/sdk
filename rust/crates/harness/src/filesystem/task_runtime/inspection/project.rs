@@ -190,7 +190,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(())
     }
 
-    async fn file_bytes(&self, file: &FileRef) -> Result<Vec<u8>> {
+    async fn file_bytes(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
         self.guard().await?;
         let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
@@ -201,7 +201,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         result
     }
 
-    pub(super) async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub(super) async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
         self.guard().await?;
         let _serial = self.serial.lock().await;
@@ -213,15 +213,16 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.file(after)?;
         self.guard().await?;
         let _serial = self.serial.lock().await;
+        let _before_hold;
         let before_bytes = self.file_bytes(before).await?;
-        self.io.retain_owned(before_bytes.len() as u64)?;
-        let _before_hold = self.io.guard_owned(before_bytes.len() as u64)?;
+        self.io.retain_owned(before_bytes.retained_capacity().unwrap_or(0) as u64)?;
+        _before_hold = self.io.guard_bytes(&before_bytes)?;
         let after_bytes = self.file_bytes(after).await?;
         Ok(before_bytes != after_bytes)
     }
 
     pub(super) async fn read_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
-        generation: &GenerationRef) -> Result<(FileRef, Vec<u8>)> {
+        generation: &GenerationRef) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.path(volume, prefix, path, generation)?;
         crate::conversation::validate_content_path(path)?;
         if self.authorization().native_snapshot.is_some() {
@@ -239,8 +240,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let bytes = self.io.receive(result);
         self.guard().await?;
         let bytes = bytes?;
-        self.io.retain_owned(bytes.len() as u64)?;
-        let _bytes_hold = self.io.guard_owned(bytes.len() as u64)?;
+        self.io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
         let metadata_path = bounded_io::content_metadata_path(path, &self.io)?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         self.guard().await?;
@@ -278,10 +278,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
         let reference = bounded_io::file_ref(volume, path, &version, descriptor, display_name, Some(&self.io))?;
         self.file(&reference)?;
-        self.io.claim(bytes.len() as u64)?;
-        self.io.allocation_attempt(bytes.len() as u64)?;
-        self.io.charge(WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::default() })?;
-        Ok((reference, bytes.to_vec()))
+        Ok((reference, bytes))
     }
 
     pub(super) async fn list(&self, volume: &VolumeRef, prefix: &str, path: &str,
@@ -438,9 +435,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Reads the immutable selected native source on its original caller ledger.
-    /// The SDK's intrinsic byte carrier keeps its genuine source-data custody
-    /// inseparable through the last alias; no payload guard is extracted,
-    /// absorbed into another work view or charged a second time.
+    /// The intrinsic SDK carrier keeps its original source-data custody through
+    /// the last alias; it is never extracted, absorbed or charged again.
+    /// Request metadata drops before completion; no new allowance is derived
+    /// from a measured receipt.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_native_path_with_native_work<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
@@ -700,7 +698,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub async fn read_native_path<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, maximum_bytes: u64, budget: WorkBudget,
-    ) -> acyclic_fs::MeasuredResult<OperationReceipt<bytes::Bytes>, Error>
+    ) -> acyclic_fs::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>
     where D: DemandSource + 'static, S: LazyWorkspaceStore {
         let reader = self.selected_reader().map_err(OperationFailure::before_work)?;
         reader.native_binding(lazy, frozen, path).map_err(OperationFailure::before_work)?;
@@ -720,7 +718,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub async fn read_native_link<D, S>(
         &self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
         path: &str, budget: WorkBudget,
-    ) -> acyclic_fs::MeasuredResult<OperationReceipt<bytes::Bytes>, Error>
+    ) -> acyclic_fs::MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>
     where D: DemandSource + 'static, S: LazyWorkspaceStore {
         let reader = self.selected_reader().map_err(OperationFailure::before_work)?;
         reader.native_binding(lazy, frozen, path).map_err(OperationFailure::before_work)?;

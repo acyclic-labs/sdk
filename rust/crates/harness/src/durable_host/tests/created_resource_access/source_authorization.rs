@@ -295,7 +295,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let (selected_file, selected_bytes) = inspected.read_path(&project, "", "selected.txt", &generation).await?;
     assert_eq!(selected_bytes, b"frozen selected");
     assert!(matches!(context.read_file(&selected_file).await, Err(Error::Unauthorized(_))));
-    assert_eq!(inspected.read_file(&selected_file).await?, b"frozen selected");
+    assert_eq!(inspected.read_file(&selected_file).await?.as_ref(), b"frozen selected".as_ref());
     assert!(!inspected.diff(&selected_file, &selected_file).await?);
     let page = inspected.list(&project, "", "", &generation, None, 1).await?;
     assert_eq!(page.entries.len(), 1);
@@ -469,7 +469,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         .await?.authorization(), handle.authorization());
     let recovered_inspection = runtime.inspect_project_source(&recovered_context, recovered_owner.clone(),
         handle.clone(), operation, child, &snapshot, budget).await?;
-    assert_eq!(recovered_inspection.read_file(&selected_file).await?, b"frozen selected");
+    assert_eq!(recovered_inspection.read_file(&selected_file).await?.as_ref(), b"frozen selected".as_ref());
     let mut forged_intent = handle.authorization().clone();
     forged_intent.operation_id = OperationId::from_bytes([133;16]);
     assert!(recovered_owner.restore_project_source_authorization(&recovered_context, &forged_intent).await.is_err());

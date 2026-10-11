@@ -63,7 +63,7 @@ grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.22.1"
 blake3.workspace = true
 bytes.workspace = true

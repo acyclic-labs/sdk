@@ -10,8 +10,9 @@ use acyclic_harness::{
     tool::ToolDefinition,
 };
 use serde_json::json;
-fn text(bytes: Vec<u8>) -> Result<String> {
-    String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))
+fn text(bytes: &[u8]) -> Result<String> {
+    std::str::from_utf8(bytes).map(str::to_owned)
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
 fn main() -> Result<()> {
     let request = ModelRequest {
@@ -54,8 +55,8 @@ fn main() -> Result<()> {
     println!(
         "{}",
         json!({
-            "request": text(prepared.bytes().to_vec())?,
-            "prefix": text(ModelPrefix::select(&prepared, None)?.canonical_bytes()?)?,
+            "request": text(prepared.bytes())?,
+            "prefix": text(ModelPrefix::select(&prepared, None)?.canonical_bytes()?.as_ref())?,
         })
     );
     Ok(())

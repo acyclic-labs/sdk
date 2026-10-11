@@ -2181,7 +2181,7 @@ async fn retained_payload_with_native_work(
     }
     let bytes = context.read_file_with_native_work(file, work).await?;
     let io = super::PreparationIo::from_native_work(work)?;
-    let value = io.decode_preparation::<Value>(&bytes.0)?.into_native_parts()?;
+    let value = io.decode_preparation::<Value>(&bytes)?.into_native_parts()?;
     drop(bytes);
     Ok(value)
 }
@@ -2193,7 +2193,7 @@ async fn stage(context: &ToolContext, operation: OperationId, label: &str, value
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)
 }
-async fn read(context: &TaskContext, file: &FileRef, maximum: u64, cancellation: &CancellationToken) -> Result<Vec<u8>> {
+async fn read(context: &TaskContext, file: &FileRef, maximum: u64, cancellation: &CancellationToken) -> Result<acyclic_stream::OwnedBytes> {
     context.read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
         .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
@@ -2302,7 +2302,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
             return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid,
                 "child immutable message pointer is invalid"));
         }
-        let input: Value = recursive_decode_bytes(&bytes.bytes, io)?;
+        let input: Value = recursive_decode_bytes(&bytes, io)?;
         if input.pointer(pointer).and_then(Value::as_str) != Some(arguments.msg.as_str()) {
             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                 "child producer immutable message differs from original fork msg"));
@@ -2313,7 +2313,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid,
             "non-model child input requires an explicit immutable message pointer"));
     }
-    let model: super::ModelTaskCommand = recursive_decode_bytes(&bytes.bytes, io)?;
+    let model: super::ModelTaskCommand = recursive_decode_bytes(&bytes, io)?;
     if !matches!(&model.input, crate::model::ModelContent::Text(message) if message == &arguments.msg) {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
             "child initial model message differs from original fork msg"));
@@ -2342,27 +2342,17 @@ fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-struct RecursiveReadBytes {
-    bytes: Vec<u8>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _native_custody: Option<acyclic_fs::NativeAllocation>,
-}
 
 async fn recursive_read_bytes(context: &ToolContext, file: &FileRef, limits: ForkPreparationLimits,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
-) -> Result<RecursiveReadBytes> {
+) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.and_then(|io| io.original_native_work()) {
-        let (bytes, custody) = context.read_file_with_native_work(file, work).await?;
-        return Ok(RecursiveReadBytes { bytes, _native_custody: Some(custody) });
+        return context.read_file_with_native_work(file, work).await;
     }
     let _ = io;
-    let bytes = context.read_file_measured(file, finite_budget(limits.work, limits.bytes), cancellation)
-        .await.map_err(|failure| failure.error)?.value;
-    Ok(RecursiveReadBytes { bytes,
-        #[cfg(not(target_arch = "wasm32"))]
-        _native_custody: None,
-    })
+    context.read_file_measured(file, finite_budget(limits.work, limits.bytes), cancellation)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 fn validate_merge_binding<P, A, O>(context: &ToolContext, source_task: TaskId,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()>

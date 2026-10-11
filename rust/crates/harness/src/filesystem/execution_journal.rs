@@ -196,7 +196,7 @@ impl ExecutionSummary {
             Some(io) => {
                 let encoded_hold;
                 let encoded = io.encode_json(&record.event, io.remaining()?.bytes_encoded, true)?;
-                encoded_hold = io.guard_owned(encoded.len() as u64)?;
+                encoded_hold = io.guard_bytes(&encoded)?;
                 let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
                 io.preflight(work)?;
                 let digest = *blake3::hash(&encoded).as_bytes();
@@ -769,8 +769,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let bytes = match io {
             Some(io) => {
                 let encoded = io.encode_json(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-                body_hold = Some(io.guard_owned(encoded.capacity() as u64)?);
-                Bytes::from(encoded)
+                body_hold = io.guard_bytes(&encoded)?;
+                encoded
             }
             None => {
                 body_hold = None;
@@ -778,7 +778,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
                     return Err(Error::Invalid("execution journal observation exceeds Stream limit".into()));
                 }
-                Bytes::from(encoded)
+                encoded.into()
             }
         };
         let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
@@ -799,7 +799,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             Some(io) => {
                 let hold;
                 let encoded = io.encode_json(event, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-                hold = io.guard_owned(encoded.capacity() as u64)?;
+                hold = io.guard_bytes(&encoded)?;
                 let hashing = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
                 io.preflight(hashing)?; io.charge(hashing)?;
                 let digest = *blake3::hash(&encoded).as_bytes();
@@ -1009,10 +1009,10 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 Some(io) => {
                     let _actual_hold;
                     let actual = io.encode_json(source, limits.render_bytes, true)?;
-                    _actual_hold = io.guard_owned(actual.len() as u64)?;
+                    _actual_hold = io.guard_bytes(&actual)?;
                     let _expected_hold;
                     let expected = io.encode_json(&expected, limits.render_bytes, true)?;
-                    _expected_hold = io.guard_owned(expected.len() as u64)?;
+                    _expected_hold = io.guard_bytes(&expected)?;
                     io.check_cancellation()?;
                     actual == expected
                 }
@@ -1097,8 +1097,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("matched original native work");
-                    let (bytes, custody) = self.load_with_native_work(&summary.output, work)?.await?;
-                    io.absorb_native_custody(custody)?;
+                    let bytes = self.load_with_native_work(&summary.output, work)?.await?;
+                    if !bytes.matches_meter(&work.runtime_meter_owner()) {
+                        return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
+                            "canonical summary returned unowned or foreign native bytes"));
+                    }
                     bytes
                 }
                 Some(io) => io.receive_content(self.load_measured(
@@ -1106,7 +1109,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 None => self.load(&summary.output).await?,
             };
             if let Some(io) = io { io.check_cancellation()?; }
-            let matches = bytes == output.as_bytes();
+            let matches = bytes.as_ref() == output.as_bytes();
             if !matches {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary output differs from admitted observations"));
@@ -1119,7 +1122,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
 
     async fn append_local_with_io(
         &self, operation_id: OperationId, tail: u64, key: StreamKey,
-        bytes: Bytes, retry_digest: &str, event: &ExecutionEvent,
+        bytes: acyclic_stream::OwnedBytes, retry_digest: &str, event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool>
     where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
@@ -1996,8 +1999,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 ContentGrant::verify_original_volume_with_io(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
                 native_bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, io).await?;
-                _bytes_hold = Some(io.guard_owned(native_bytes.capacity() as u64)?);
-                native_bytes.as_slice()
+                _bytes_hold = io.guard_bytes(&native_bytes)?;
+                native_bytes.as_ref()
             } else {
                 _bytes_hold = None;
                 let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
@@ -2035,7 +2038,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         let parsed = io.decode_preparation::<ModelEvent>(&bytes)?;
                         let _canonical_hold;
                         let canonical = io.encode_json(&parsed.value, self.maximum_payload_bytes, true)?;
-                        _canonical_hold = io.guard_owned(canonical.capacity() as u64)?;
+                        _canonical_hold = io.guard_bytes(&canonical)?;
                         if canonical != bytes {
                             return Err(Self::journal_read_boundary(Some(io), crate::wire::ErrorCode::Storage,
                                 "execution journal JSON is not canonical"));
@@ -2364,7 +2367,9 @@ where
             }
             ContentGrant::verify_original_volume_with_io(
                 &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, &io)?;
-            self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(&io)).await
+            let bytes = self.host.read_pinned_owned_io(reference, self.maximum_payload_bytes, &io).await?;
+            drop(io);
+            Ok(bytes)
         })
     }
 
@@ -2514,7 +2519,7 @@ where
         })
     }
 
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
         traced(span, async move {
             if reference.volume() != &self.volume {
@@ -2533,14 +2538,14 @@ where
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
             crate::obs::obs_record!("bytes" = bytes.len());
-            Ok(bytes.to_vec())
+            Ok(bytes)
         })
     }
 
     fn load_measured<'a>(
         &'a self, reference: &'a FileRef, budget: acyclic_fs::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async move {
             let io = super::PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
@@ -3048,10 +3053,10 @@ fn verify_summary_prefix_with_io(
             Some(io) => {
                 let _actual_hold;
                 let actual = io.encode_json(&actual, limits.render_bytes, true)?;
-                _actual_hold = io.guard_owned(actual.len() as u64)?;
+                _actual_hold = io.guard_bytes(&actual)?;
                 let _expected_hold;
                 let expected = io.encode_json(&expected_prefix, limits.render_bytes, true)?;
-                _expected_hold = io.guard_owned(expected.len() as u64)?;
+                _expected_hold = io.guard_bytes(&expected)?;
                 io.check_cancellation()?;
                 actual == expected
             }

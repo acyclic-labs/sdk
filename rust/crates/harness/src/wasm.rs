@@ -863,10 +863,10 @@ impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
             file.descriptor().verify(&self.files.bytes(file)?)
         })
     }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
-            self.files.bytes(file)
+            self.files.bytes(file).map(acyclic_stream::OwnedBytes::from)
         })
     }
 }
@@ -927,8 +927,8 @@ impl AttachmentListResolver for WasmProjectionResolver {
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<Vec<u8>>> {
-        Box::pin(async move { self.bytes(file) })
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<acyclic_stream::OwnedBytes>> {
+        Box::pin(async move { self.bytes(file).map(acyclic_stream::OwnedBytes::from) })
     }
 }
 
@@ -2766,7 +2766,7 @@ pub fn encode_model_prefix(
     parent: JsValue,
     parent_request: Option<Vec<u8>>,
     limits: JsValue,
-) -> Result<Vec<u8>, JsValue> {
+) -> Result<js_sys::Uint8Array, JsValue> {
     let limits: Limits = from_js(limits)?;
     let prepare = |bytes: &[u8]| crate::model::PreparedModelRequest::decode(bytes, limits);
     let request = prepare(&request).map_err(js_error)?;
@@ -2787,6 +2787,7 @@ pub fn encode_model_prefix(
     };
     crate::model::ModelPrefix::select(&request, selected)
         .and_then(|prefix| prefix.canonical_bytes())
+        .map(|bytes| js_sys::Uint8Array::from(bytes.as_ref()))
         .map_err(js_error)
 }
 

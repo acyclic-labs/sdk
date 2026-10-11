@@ -158,7 +158,7 @@ async fn authenticated_output_selection_preserves_child_authority_and_rejects_ro
     let file = selected.stage_file(OperationId::from_bytes([207;16]), "selected/output.txt",
         b"original child destination", "text/plain", "output.txt").await?;
     assert_eq!(file.volume(), &created.private);
-    assert_eq!(selected.read_file(&file).await?, b"original child destination");
+    assert_eq!(selected.read_file(&file).await?.as_ref(), b"original child destination".as_ref());
     assert_eq!(context.scope().grants(), &original_grants);
     Ok(())
 }

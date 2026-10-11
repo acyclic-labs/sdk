@@ -557,7 +557,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
             storage.host.read_pinned(copy, 262_144).await?.as_ref(),
-            storage.journal.load(original).await?
+            storage.journal.load(original).await?.as_ref()
         );
     }
     let seed = report.into_seed()?;

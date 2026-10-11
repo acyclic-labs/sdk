@@ -157,7 +157,7 @@ impl ExecutionJournal for TerminalCasLoser {
         self.inner.stage(operation, key, bytes, media_type)
     }
 
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.inner.load(file)
     }
 
@@ -252,7 +252,7 @@ impl ExecutionJournal for CompletedDescriptorSpy {
     ) -> BoxFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media)
     }
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         if self.completed.iter().any(|original| {
             original.volume() == reference.volume()
                 && original.path() == reference.path()
@@ -1051,7 +1051,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
             )
             .await?;
         assert_eq!(replacement.path(), staged.path());
-        assert_eq!(journal.load(&staged).await?, b"original payload");
+        assert_eq!(journal.load(&staged).await?.as_ref(), b"original payload");
     }
     assert_eq!(
         journal

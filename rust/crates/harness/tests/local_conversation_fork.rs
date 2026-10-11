@@ -271,7 +271,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             Some(&child_head.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/child.txt".into(),
-                bytes: b"child project".to_vec(),
+                bytes: b"child project".to_vec().into(),
             }],
             &IdempotencyKey::new("child-project-write")?,
         )

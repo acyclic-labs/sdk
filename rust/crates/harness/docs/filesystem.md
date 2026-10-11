@@ -542,11 +542,13 @@ trusted host's configured lazy workspace and exact frozen SDK snapshot. It
 revalidates the original owner and sealed source authorization at SDK boundaries
 and compares the snapshot's canonical proof under that same observer. Its
 `OwnedBytes` result moves the SDK's actual intrinsic carrier without extracting
-or rewrapping its source-data custody. Consumers borrow `as_slice()` while the
-carrier remains alive through owner checks and response encoding, then drop the
-whole carrier; they never charge or absorb source data a second time. Source
-selection checks allow only the original caller ledger family and preserve the
-source's independently held resource custody. Native
+or rewrapping its source-data custody. Ownership survives the last clone or
+slice, including empty slices. Request and read metadata drop before the
+byte-only result returns. Consumers borrow the carrier through owner checks
+and response encoding, then drop it; they never charge or absorb source data
+a second time. Source selection checks allow only the original caller ledger
+family and preserve the source's independently held resource custody. Only
+actual metadata-bearing results return a separate metadata guard. Native
 work/cancellation causes and source failures move into their typed Harness error
 carriers with existing custody, without formatting a new diagnostic after denial.
 `read_native_link_with_native_work` uses that same guarded source operation and

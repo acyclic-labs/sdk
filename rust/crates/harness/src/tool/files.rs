@@ -204,8 +204,9 @@ impl FileTool {
             Self::Read => {
                 let input: ReadFileInput = decode(&invocation.arguments)?;
                 let bytes = task.read_file(&input.file).await?;
-                let text = String::from_utf8(bytes)
-                    .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?;
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?
+                    .to_owned();
                 Value::String(text)
             }
             Self::Write => {

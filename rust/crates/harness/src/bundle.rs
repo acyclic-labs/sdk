@@ -802,7 +802,7 @@ mod tests {
         fn load<'a>(
             &'a self,
             _: &'a crate::conversation::FileRef,
-        ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
         }
         fn open_interaction<'a>(
@@ -869,7 +869,7 @@ mod tests {
         fn load<'a>(
             &'a self,
             file: &'a crate::conversation::FileRef,
-        ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             UnusedJournal.load(file)
         }
 

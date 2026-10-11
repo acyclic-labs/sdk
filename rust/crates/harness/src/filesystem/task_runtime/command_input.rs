@@ -87,10 +87,8 @@ impl CommandDispatch {
         if let Self::Ready { custody: Some(guard), .. } = self {
             let io = super::super::fork_preparer::bounded_io::PreparationIo::from_native_work(guard.work())?;
             let bytes = io.encode_json(&envelope, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-            let encoded_custody = io.into_native_custody(bytes.capacity() as u64)?;
             let within = bytes.len() as u64 <= maximum_bytes;
             drop(bytes);
-            drop(encoded_custody);
             return Ok(within);
         }
         let bytes = crate::contract::canonical_json_bytes_bounded(&envelope,

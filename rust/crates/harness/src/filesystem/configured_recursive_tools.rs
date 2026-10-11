@@ -1434,8 +1434,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     snapshot: pinned.0.reducer().snapshot_native(1, work)?,
                     request, caller: caller.task, arguments: crate::executor::clone_preparation(arguments, Some(&io))?,
                 };
+                let bytes_guard;
                 let bytes = io.encode_json(&capture, context.effective_scope().limits().file_bytes, false)?;
-                let bytes_guard = io.guard_owned(bytes.capacity() as u64)?;
+                bytes_guard = io.guard_bytes(&bytes)?;
                 let mut path = String::new();
                 {
                     let mut history = io.history_io();
@@ -1548,8 +1549,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = resolver.read_with_native_work(checkpoint, task_context.scope().limits().file_bytes, work)?.await?;
-            let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref())?.into_retained();
+            let retained = context.read_file_with_native_work(checkpoint, work).await?;
+            let capture = io.decode_preparation::<SourceCheckpoint>(&retained)?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native preparation checkpoint changed original caller or request" });

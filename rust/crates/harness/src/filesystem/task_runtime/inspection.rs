@@ -63,7 +63,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     /// Reads one exact immutable file under the CALLER's retained authority.
-    pub async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         match &self.reader {
             SourceReader::Caller(reader) => reader.read_file(file).await,
             SourceReader::Project(reader) => reader.read_file(file).await,
@@ -93,7 +93,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub async fn read_path(
         &self, volume: &VolumeRef, granted_prefix: &str, path: &str,
         generation: &GenerationRef,
-    ) -> Result<(FileRef, Vec<u8>)> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         match &self.reader {
             SourceReader::Caller(reader) => reader.read_private_path(volume, granted_prefix, path, Some(generation)).await,
             SourceReader::Project(reader) => reader.read_path(volume, granted_prefix, path, generation).await,

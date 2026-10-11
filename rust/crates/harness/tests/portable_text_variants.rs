@@ -39,14 +39,16 @@ impl ContentResidencyVerifier for ReaderSpy {
     fn verify<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move { self.inner.verify(file).await })
     }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            let mut bytes = self.inner.read(file).await?;
-            if self.corrupt.load(Ordering::SeqCst)
-                && let Some(first) = bytes.first_mut()
-            {
-                *first ^= 1;
+            let bytes = self.inner.read(file).await?;
+            if self.corrupt.load(Ordering::SeqCst) {
+                let mut corrupted = bytes.as_ref().to_vec();
+                if let Some(first) = corrupted.first_mut() {
+                    *first ^= 1;
+                }
+                return Ok(corrupted.into());
             }
             Ok(bytes)
         })
@@ -255,11 +257,11 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 )
                 .await?;
             assert_eq!(
-                context.read_file(&edited.file).await?,
+                context.read_file(&edited.file).await?.as_ref(),
                 "alpha\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(
-                context.read_file(&written.file).await?,
+                context.read_file(&written.file).await?.as_ref(),
                 "alpha\r\n🦀 omega\r\n".as_bytes()
             );
             let patched = context
@@ -272,11 +274,11 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 )
                 .await?;
             assert_eq!(
-                context.read_file(&patched.file).await?,
+                context.read_file(&patched.file).await?.as_ref(),
                 "beta\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(
-                context.read_file(&edited.file).await?,
+                context.read_file(&edited.file).await?.as_ref(),
                 "alpha\r\n🦀 done\r\n".as_bytes()
             );
             let workspace = acyclic_harness::filesystem::workspace_ref(
@@ -323,7 +325,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 Err(Error::Unauthorized(_))
             ));
             assert_eq!(
-                context.read_file(&patched.file).await?,
+                context.read_file(&patched.file).await?.as_ref(),
                 "beta\r\n🦀 done\r\n".as_bytes()
             );
             assert_eq!(

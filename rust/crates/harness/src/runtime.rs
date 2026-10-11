@@ -7285,7 +7285,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<InboxItem>>>;
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
-    ) -> BoxFuture<'a, Result<Vec<u8>>>;
+    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
 
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -7321,7 +7321,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         _receive_operation: OperationId,
         _item: &'a InboxItem,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "owned mailbox has no original native-ledger received parcel reader",
@@ -7883,7 +7883,7 @@ impl TaskContext {
     /// Reads one immutable file through the owner's authenticated provider.
     /// A ref alone does not grant access; the effective task scope must retain
     /// a whole-volume, exact-file, or bounded-directory read capability.
-    pub async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(self.content_binding(Some(file.volume())), file)
             .await
     }
@@ -7917,11 +7917,11 @@ impl TaskContext {
     }
 
     /// Reads through the original bound provider on the caller's native ledger.
-    /// Keep the returned allocation alive until after dropping the owned bytes.
+    /// Returned bytes retain their actual original allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn read_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<u8>,acyclic_fs::NativeAllocation)> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
             // The issued scope and FileRef are closed, already validated data.
@@ -7945,19 +7945,17 @@ impl TaskContext {
             let output = reader.read_with_native_work(
                 file,self.scope.limits.file_bytes,work,
             )?.await?;
-            if !output.1.matches_work(work)
-                || output.1.bytes() < output.0.capacity() as u64
-            {
+            if !output.matches_meter(&work.runtime_meter_owner()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "content reader returned unowned or foreign native bytes" });
             }
-            if file.descriptor().byte_length() != output.0.len() as u64 {
+            if file.descriptor().byte_length() != output.len() as u64 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
                     reason: "content reader returned another file length" });
             }
-            let hash = acyclic_fs::WorkCounters {bytes_hashed:output.0.len() as u64,..Default::default()};
+            let hash = acyclic_fs::WorkCounters {bytes_hashed:output.len() as u64,..Default::default()};
             io.preflight(hash)?;
-            let verified = file.descriptor().verify(&output.0);
+            let verified = file.descriptor().verify(&output);
             io.charge(hash)?;
             verified?;
             Ok(output)
@@ -7983,7 +7981,7 @@ impl TaskContext {
 
     /// Resolves an immutable artifact without coupling its provider to the
     /// workspace/content binding. The same owner-mediated grant is required.
-    pub async fn read_artifact(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read_artifact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.read_bound_file(
             self.scope.created_content(Some(file.volume())).or(self.harness.artifacts.as_ref()), file,
         )
@@ -8052,7 +8050,7 @@ impl TaskContext {
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, Vec<u8>)> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.require_private_directory(volume, granted_prefix, path)?;
         if path.is_empty() {
             return Err(Error::Invalid("private file path is empty".into()));
@@ -8104,7 +8102,7 @@ impl TaskContext {
         &self,
         binding: Option<&ContentBindings>,
         file: &FileRef,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         file.validate()?;
         self.scope.limits.validate_file(file)?;
         if !read_granted(&self.scope.grants, file)? {
@@ -8239,7 +8237,7 @@ impl TaskContext {
     pub async fn read_file_measured(
         &self, file: &FileRef, budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error> {
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error> {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
@@ -8256,7 +8254,7 @@ impl TaskContext {
             };
             let bytes = io.receive_content(reader.read_measured(file, self.scope.limits.file_bytes,
                 io.remaining()?, cancellation).await)?;
-            io.retain_owned(bytes.capacity() as u64)?;
+            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
             let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
             io.preflight(hash)?;
             let verified = file.descriptor().verify(&bytes);
@@ -9218,7 +9216,7 @@ impl TaskContext {
     /// command. This transports bytes; it does not grant donor file access.
     pub async fn read_received_mail(
         &self, receive_operation: OperationId, item: &InboxItem,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("parcel read requires a retained mailbox owner".into()))?;
         mailbox.validate_scope(&self.scope)?;
@@ -9268,7 +9266,7 @@ impl TaskContext {
         receive_operation: OperationId,
         item: &'a InboxItem,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         self.native_mailbox(work)?.read_received_with_native_work(receive_operation, item, work)
     }
 

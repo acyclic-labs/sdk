@@ -724,7 +724,7 @@ where
                 if native_work.is_none() {
                     let _metadata;
                     let metadata = io.encode_json(reference, io.remaining()?.bytes_encoded, false)?;
-                    _metadata = io.guard_owned(metadata.len() as u64)?;
+                    _metadata = io.guard_bytes(&metadata)?;
                     reference.validate()?;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1083,9 +1083,9 @@ where
         let _bytes;
         let bytes = match io {
             Some(io) => io.encode_json(admission, self.maximum_payload_bytes, false)?,
-            None => serde_json::to_vec(admission).map_err(|error| Error::Invalid(error.to_string()))?,
+            None => serde_json::to_vec(admission).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
-        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         if bytes.len() as u64 > self.maximum_payload_bytes {
             return Err(Error::Invalid("workflow admission exceeds private-file limit".into()));
         }
@@ -1166,9 +1166,9 @@ where
         let _bytes;
         let bytes = match io {
             Some(io) => io.encode_json(record, self.maximum_payload_bytes, false)?,
-            None => serde_json::to_vec(record).map_err(|error| Error::Invalid(error.to_string()))?,
+            None => serde_json::to_vec(record).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
-        _bytes = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         if bytes.len() as u64 > self.maximum_payload_bytes {
             return Err(Error::Invalid("workflow transition exceeds private-file limit".into()));
         }
@@ -1238,10 +1238,10 @@ where
         // existence predicate. Both complete DTO traversals are admitted.
         let _expected_hold;
         let expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
-        _expected_hold = io.guard_owned(expected.len() as u64)?;
+        _expected_hold = io.guard_bytes(&expected)?;
         let _actual_hold;
         let actual = io.encode_json(&existing, self.maximum_payload_bytes, false)?;
-        _actual_hold = io.guard_owned(actual.len() as u64)?;
+        _actual_hold = io.guard_bytes(&actual)?;
         if existing != *record {
             return Err(Error::Conflict("workflow operation identity reused".into()));
         }
@@ -1331,12 +1331,9 @@ where
         let bytes = match io {
             Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
             None => serde_json::to_vec(&reference)
-                .map_err(|error| Error::Invalid(error.to_string()))?,
+                .map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
-        let (bytes, retained) = freeze_retained_bytes(bytes, io)?;
-        _bytes = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid(
                 "workflow reference exceeds Stream limit".into(),
@@ -1492,12 +1489,9 @@ where
         let _bytes;
         let bytes = match io {
             Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
-            None => serde_json::to_vec(&reference).map_err(|error| Error::Invalid(error.to_string()))?,
+            None => serde_json::to_vec(&reference).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
-        let (bytes, retained) = freeze_retained_bytes(bytes, io)?;
-        _bytes = if retained == 0 { None } else {
-            io.map(|io| io.guard_owned(retained)).transpose()?
-        };
+        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid("workflow admission reference exceeds Stream limit".into()));
         }

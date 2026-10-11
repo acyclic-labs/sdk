@@ -613,7 +613,7 @@ async fn source_selection_small_state_model_preserves_original_history_and_scrat
     let initial = host.create_volume(&source).await?;
     let next_generation = host.apply(&initial.workspace, Some(&initial.generation),
         &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
-            path: "/selected.txt".into(), bytes: b"next".to_vec(),
+            path: "/selected.txt".into(), bytes: b"next".to_vec().into(),
         }], &IdempotencyKey::new("selection-next-generation")?).await?;
     let parent = Authority { kind: AggregateKind::Conversation, id: "model-parent".into() };
     let history = ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(

@@ -5896,11 +5896,11 @@ mod tests {
         fn read<'a>(
             &'a self,
             reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>>
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
         {
             Box::pin(async move {
                 reference.descriptor().verify(b"null")?;
-                Ok(b"null".to_vec())
+                Ok(b"null".to_vec().into())
             })
         }
     }

@@ -895,6 +895,7 @@ impl CompositeForkVerifier {
                     owned.release(capacity)?;
                 }
             }
+
         }
         Ok(())
     }
@@ -1398,6 +1399,7 @@ impl ForkSeedVerifier for ContentForkVerifier {
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let (bytes, _retained) = self.read_manifest_with_work(manifest, &mut Some(&mut io)).await?;
             // The native carrier itself retains original byte custody.
+            drop(io);
             Ok(bytes)
         })
     }

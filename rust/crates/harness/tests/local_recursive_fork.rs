@@ -997,7 +997,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 Some(&child_observation.generation),
                 &[WorkspaceMutation::PutFile {
                     path: format!("/level-{level}.txt"),
-                    bytes: format!("project child {level}").into_bytes(),
+                    bytes: format!("project child {level}").into_bytes().into(),
                 }],
                 &IdempotencyKey::new(format!("project-write-{level}"))?,
             )

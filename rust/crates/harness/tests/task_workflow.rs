@@ -130,7 +130,7 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?, b"hello");
+            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
             self.executed.fetch_add(1, Ordering::SeqCst);
             Err(Error::Storage("lost tool result".into()))
         })
@@ -162,7 +162,7 @@ impl ToolExecutor for InterruptedTool {
                     .ok_or_else(|| Error::Invalid("missing file".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(context.task().read_file(&file).await?, b"hello");
+            assert_eq!(context.task().read_file(&file).await?.as_ref(), b"hello");
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             Ok(Some(ToolResult {
                 value: json!("tool-restored"),
@@ -1803,7 +1803,7 @@ async fn worker_restart_with_options(
             let Some(acyclic_harness::Outcome::Succeeded(result)) = &retained.outcome else {
                 return Err(Error::Invalid("missing result".into()));
             };
-            assert_eq!(reader.read(result).await?, b"7");
+            assert_eq!(reader.read(result).await?.as_ref(), b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             if with_command {
                 if matches!(
@@ -1908,7 +1908,7 @@ async fn worker_restart_with_options(
             let first = inbox
                 .first()
                 .ok_or_else(|| Error::NotFound("committed mail item".into()))?;
-            assert_eq!(reader.read(&first.payload).await?, b"7");
+            assert_eq!(reader.read(&first.payload).await?.as_ref(), b"7");
             if with_mail_send {
                 assert!(
                     runtime

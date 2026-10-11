@@ -341,7 +341,7 @@ impl LocalListFilesTool {
         let io = super::PreparationIo::from_native_work(work)?;
         let encoded_hold;
         let encoded = io.encode_json(invocation, io.remaining()?.bytes_encoded, true)?;
-        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        encoded_hold = io.guard_bytes(&encoded)?;
         let charge = acyclic_fs::WorkCounters {
             bytes_hashed: encoded.len() as u64,
             ..Default::default()
@@ -1085,14 +1085,14 @@ impl MemoryHarnessStorage {
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
-    pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         if let Ok(bytes) = self
             .memory_store
             .lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
             .read(file)
         {
-            return Ok(bytes);
+            return Ok(bytes.into());
         }
         self.content_verifier.read(file).await
     }
@@ -1151,7 +1151,7 @@ impl MemoryHarnessStorage {
     }
 
     /// Resolves a pinned reference under an owner-issued signed read scope.
-    pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.delegated_reader(scope)?.read(file).await
     }
 
@@ -1197,7 +1197,7 @@ impl MemoryHarnessStorage {
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, Vec<u8>)> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let resolved = self
             .delegated_reader(scope)?
             .read_private_path(&self.volume, granted_prefix, path, expected_generation)
@@ -1216,7 +1216,7 @@ impl MemoryHarnessStorage {
         match shared {
             Ok(reference) if reference == resolved.0 => {
                 let bytes = core.read(&reference)?;
-                Ok((reference, bytes))
+                Ok((reference, bytes.into()))
             }
             _ => Ok(resolved),
         }
@@ -1628,6 +1628,7 @@ mod tests {
         let io = super::super::PreparationIo::from_native_work(&work)?;
         let bytes = io.encode_json(&serde_json::Value::Null, 1024, true)?;
         let held = io.owned_bytes()?;
+        let live_held = work.live_allocation_bytes() - baseline;
         let error = match io.into_native_custody(held + 1) {
             Err(error) => error,
             Ok(_) => panic!("unadmitted extra custody must fail"),
@@ -1638,8 +1639,11 @@ mod tests {
         assert!(matches!(&failure.1, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: Some(_),
         }));
-        assert_eq!(work.live_allocation_bytes(), baseline + held);
+        assert_eq!(work.live_allocation_bytes(), baseline + live_held);
+        let empty_alias = failure.0.slice(0..0);
         drop(failure);
+        assert!(work.live_allocation_bytes() > baseline);
+        drop(empty_alias);
         assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
@@ -1657,14 +1661,16 @@ mod tests {
         let producer_baseline = producing.live_allocation_bytes();
         let producer_io = super::super::PreparationIo::from_native_work(&producing)?;
         let bytes = producer_io.encode_json(&serde_json::Value::Null, 1024, true)?;
-        let incoming = producer_io.into_native_custody(bytes.capacity() as u64)?;
-        let held = incoming.bytes();
+        drop(producer_io);
+        let (metadata, incoming) = producing.display("source carrier metadata")
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let held = producing.live_allocation_bytes() - producer_baseline;
         let error = match receiver_io.absorb_native_custody(incoming) {
             Err(error) => error,
             Ok(()) => panic!("distinct original allocation ledgers must not merge"),
         };
-        let failure = (bytes, error);
-        assert!(matches!(&failure.1, Error::NativeWork {
+        let failure = (bytes, metadata, error);
+        assert!(matches!(&failure.2, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: Some(_),
         }));
         assert_eq!(receiving.live_allocation_bytes(), receiver_baseline);
@@ -2261,8 +2267,8 @@ mod tests {
                 let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
                 let user = task.stage_file(OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
                 assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
-                assert_eq!(task.read_file(&file).await?, b"saved text");
-                assert_eq!(task.read_file(&user).await?, b"later user edit");
+                assert_eq!(task.read_file(&file).await?.as_ref(), b"saved text".as_ref());
+                assert_eq!(task.read_file(&user).await?.as_ref(), b"later user edit".as_ref());
                 for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
                     let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
                     assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
@@ -2643,7 +2649,7 @@ mod tests {
         let (from_directory, body) = storage
             .read_delegated_path(&directory, "input", "input/note.txt", Some(&generation))
             .await?;
-        assert_eq!(body, b"private attachment body");
+        assert_eq!(body.as_ref(), b"private attachment body");
         assert_eq!(from_directory.path(), attachment.path());
         assert!(
             storage

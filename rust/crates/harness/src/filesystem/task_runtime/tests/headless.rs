@@ -66,7 +66,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     assert_eq!(bytes, b"old");
     assert!(owner.diff(&old, &current).await?);
     assert!(!owner.diff(&old, &old).await?);
-    assert_eq!(owner.read_file(&scratch).await?, b"scratch");
+    assert_eq!(owner.read_file(&scratch).await?.as_ref(), b"scratch".as_ref());
     assert!(owner.list(&project, "src", "src", &old_generation, None, 0).await.is_err());
     assert!(owner.list(&project, "src", "src", &old_generation, Some("a/b"), 1).await.is_err());
     assert!(owner.read_path(&project, "src", ".system/hidden", &old_generation).await.is_err());

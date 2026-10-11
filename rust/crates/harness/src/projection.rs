@@ -1462,10 +1462,12 @@ async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
     // The ordinary provider's opaque frame/backend are outside the native
-    // envelope. Its admitted raw payload and the SDK's actual bounded parser
-    // still use this original owned IO, rather than a second allowance.
-    let _source_hold = io.reserve_decode(file.descriptor().byte_length())?;
+    // envelope. Retain only a known capacity of the actual source allocation
+    // while the original owned IO funds the bounded parser.
+    let _source_hold;
     let bytes = resolver.read(file).await?;
+    _source_hold = bytes.retained_capacity()
+        .map(|capacity| io.reserve_decode(capacity as u64)).transpose()?;
     if bytes.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }

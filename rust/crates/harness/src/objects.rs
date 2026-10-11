@@ -135,13 +135,13 @@ impl ObjectContentStore {
         Ok(key)
     }
 
-    async fn read_exact(&self, file: &FileRef) -> Result<Vec<u8>> {
+    async fn read_exact(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         let grant = ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
         grant.require_file_read(file)?;
         self.read_content(file).await
     }
 
-    async fn read_content(&self, file: &FileRef) -> Result<Vec<u8>> {
+    async fn read_content(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         file.validate()?;
         if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
             return Err(Error::Unauthorized(
@@ -168,8 +168,8 @@ impl ObjectContentStore {
             .await
             .map_err(storage)?;
         let info = read
-            .header
-            .object
+            .header()
+            .object.as_ref()
             .ok_or_else(|| Error::Storage("Objects returned no content metadata".into()))?;
         if info.size != file.descriptor().byte_length()
             || info.metadata.as_ref().is_none_or(|metadata| {
@@ -184,8 +184,8 @@ impl ObjectContentStore {
                 "Objects returned another file length or metadata".into(),
             ));
         }
-        file.descriptor().verify(&read.body)?;
-        Ok(read.body.to_vec())
+        file.descriptor().verify(read.body())?;
+        Ok(read.into_body())
     }
 
     async fn pin_upload(
@@ -501,7 +501,7 @@ impl ForkSeedVerifier for ObjectContentStore {
     }
 
     fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.read_exact(manifest).await.map(acyclic_stream::OwnedBytes::from) })
+        Box::pin(async move { self.read_exact(manifest).await })
     }
 
     fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
@@ -610,7 +610,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
         Box::pin(async move { self.read_exact(reference).await.map(|_| ()) })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move { self.read_exact(reference).await })
     }
 
@@ -739,7 +739,7 @@ mod tests {
                 .await?,
             file
         );
-        assert_eq!(owner_store.read(&file).await?.as_slice(), b"owner bytes");
+        assert_eq!(owner_store.read(&file).await?.as_ref(), b"owner bytes");
         let duplicate = owner_store
             .stage(
                 OperationId::from_bytes([42; 16]),
@@ -970,7 +970,7 @@ mod tests {
             4_096,
         )
         .await?;
-        assert_eq!(attached.read(&file).await?.as_slice(), b"owner bytes");
+        assert_eq!(attached.read(&file).await?.as_ref(), b"owner bytes");
         assert!(attached.bindings().writer.is_none());
         assert!(
             attached
@@ -1079,9 +1079,9 @@ mod tests {
             )
             .await?;
         assert_ne!(replacement.version(), file.version());
-        assert_eq!(owner_store.read(&file).await?.as_slice(), b"owner bytes");
+        assert_eq!(owner_store.read(&file).await?.as_ref(), b"owner bytes");
         assert_eq!(
-            owner_store.read(&replacement).await?.as_slice(),
+            owner_store.read(&replacement).await?.as_ref(),
             b"replacement bytes"
         );
         let replacement_artifact = owner_store.artifact_ref(&replacement)?;
@@ -1247,10 +1247,10 @@ mod tests {
         let resolver = ObjectContentMountResolver::new(vec![attached_a, attached_b])?;
         let (grant_a, reader_a) = resolver.mount(&file_a).await?;
         grant_a.require_file_read(&file_a)?;
-        assert_eq!(reader_a.read(&file_a).await?.as_slice(), b"bucket a");
+        assert_eq!(reader_a.read(&file_a).await?.as_ref(), b"bucket a");
         let (grant_b, reader_b) = resolver.mount(&file_b).await?;
         grant_b.require_file_read(&file_b)?;
-        assert_eq!(reader_b.read(&file_b).await?.as_slice(), b"bucket b");
+        assert_eq!(reader_b.read(&file_b).await?.as_ref(), b"bucket b");
 
         let no_grant =
             issuer.root_for_agent(attached, "no-grant", Capabilities::new([] as [String; 0]));

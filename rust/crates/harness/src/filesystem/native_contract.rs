@@ -313,8 +313,9 @@ impl NativeProcessRequest {
     ) -> Result<[u8; 32]> {
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else { return crate::contract::canonical_json_digest(&value); };
+        let guard;
         let encoded = io.encode_json(&value, io.remaining()?.bytes_encoded, true)?;
-        let guard = io.guard_owned(encoded.capacity() as u64)?;
+        guard = io.guard_bytes(&encoded)?;
         io.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() })?;
         let digest = *blake3::hash(&encoded).as_bytes();
         drop(encoded);

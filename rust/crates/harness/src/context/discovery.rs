@@ -211,7 +211,7 @@ impl PinnedContextPath {
     }
 
     /// Loads a body through the ordinary authorized pinned read, checking provider output.
-    pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, Vec<u8>)> {
+    pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate()?;
         let (file, bytes) = reader
             .read_private_path(

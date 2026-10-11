@@ -3297,7 +3297,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: crate::scheduler::LeaseFence,
         receive_operation: OperationId,
         item: &InboxItem,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let owner = self.journal_owner(receiver, fence.clone()).await?;
         owner.verify(true).await?;
         if item.task_id != receiver || item.sequence == 0 {
@@ -5444,6 +5444,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let canonical = crate::store::history::canonical_bytes_with_work(
             &value, reference.descriptor().byte_length(), custody.work(),
         )?;
+
         let canonical_capacity = canonical.capacity() as u64;
         custody.adopt(canonical_capacity)?;
         let differs = canonical.as_slice() != bytes.as_ref();
@@ -6074,7 +6075,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// This does not install a donor reader or grant in the recipient scope.
     async fn read_mail_source(
         &self, admission: &TaskAdmissionRecord, payload: &FileRef,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<acyclic_stream::OwnedBytes> {
         payload.validate()?;
         admission.limits.validate_file(payload)?;
         if !read_granted(&admission.grants, payload)? {
@@ -8012,7 +8013,7 @@ pub(crate) mod tests {
             })
         }
 
-        fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             Box::pin(async move {
                 if reference.volume() != &self.volume {
                     return Err(Error::Unauthorized(
@@ -8027,7 +8028,7 @@ pub(crate) mod tests {
                     .cloned()
                     .ok_or_else(|| Error::NotFound("payload".into()))?;
                 reference.descriptor().verify(&bytes)?;
-                Ok(bytes)
+                Ok(bytes.into())
             })
         }
     }

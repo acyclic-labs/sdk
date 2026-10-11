@@ -630,14 +630,14 @@ impl ExecutionJournal for Journal {
         .boxed()
     }
 
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         async move {
             self.staged
                 .lock()
                 .map_err(poisoned)?
                 .values()
                 .find(|(stored, _)| stored == reference)
-                .map(|(_, bytes)| bytes.clone())
+                .map(|(_, bytes)| acyclic_stream::OwnedBytes::from(bytes.clone()))
                 .ok_or_else(|| Error::NotFound("journal content is missing".into()))
         }
         .boxed()

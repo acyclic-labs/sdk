@@ -1606,7 +1606,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _path: &'a str,
         _generation: &'a GenerationRef,
         _maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<Vec<u8>>> {
+    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "bounded prefix reads are unavailable".into(),
@@ -1618,7 +1618,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>>;
 
     /// Reads exact verified bytes for schema validation at an admission boundary.
-    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "content byte resolution is unavailable".into(),
@@ -1642,7 +1642,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     fn read_measured<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
         _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async {
             Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
                 "finite content resolution is unavailable".into(),
@@ -1650,7 +1650,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Reads on the caller's original native ledger and transfers live custody.
+    /// Reads on the original native ledger; returned bytes own their live custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn read_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
@@ -1730,9 +1730,11 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
                 if reference.descriptor().byte_length() > maximum_bytes {
                     return Err(Error::Invalid("content exceeds selected byte allowance".into()));
                 }
+                let bytes_hold;
                 let bytes = io.receive_content(self.read_measured(reference, maximum_bytes,
                     io.remaining()?, cancellation).await)?;
-                io.retain_owned(bytes.capacity() as u64)?;
+                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+                bytes_hold = io.guard_bytes(&bytes)?;
                 reference.descriptor().verify_with_io(&bytes, Some(&io))
             }.await;
             match result {
@@ -1752,9 +1754,11 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
+                let bytes_hold;
                 let bytes = io.receive_content(self.read_measured(reference,
                     reference.descriptor().byte_length(), io.remaining()?, cancellation).await)?;
-                io.retain_owned(bytes.capacity() as u64)?;
+                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+                bytes_hold = io.guard_bytes(&bytes)?;
                 reference.descriptor().verify_with_io(&bytes, Some(&io))?;
                 decode_manifest_bounded(reference, &bytes, maximum_members, &io)
             }.await;
@@ -1839,7 +1843,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _granted_prefix: &'a str,
         _path: &'a str,
         _expected_generation: Option<&'a GenerationRef>,
-    ) -> ContentFuture<'a, Result<(FileRef, Vec<u8>)>> {
+    ) -> ContentFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "private path resolution is unavailable".into(),
@@ -2149,7 +2153,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     fn read_measured<'a>(
         &'a self, reference: &'a FileRef, maximum_bytes: u64,
         budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async move {
             let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
@@ -2220,7 +2224,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<Vec<u8>>> {
+    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.directory_owner(volume, granted_prefix, path)
                 .await?
@@ -2259,7 +2263,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-    ) -> BoxFuture<'a, Result<(FileRef, Vec<u8>)>> {
+    ) -> BoxFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         Box::pin(async move {
             self.directory_owner(volume, granted_prefix, path)
                 .await?
@@ -2283,7 +2287,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         Box::pin(async move { self.owner(reference).await?.verify(reference).await })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move { self.owner(reference).await?.read(reference).await })
     }
 
@@ -5966,12 +5970,12 @@ mod tests {
                     }
                 })
             }
-            fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
                 Box::pin(async move {
                     if reference != &self.file {
                         return Err(Error::NotFound("file".into()));
                     }
-                    Ok(self.bytes.clone())
+                    Ok(self.bytes.clone().into())
                 })
             }
             fn load_manifest<'a>(

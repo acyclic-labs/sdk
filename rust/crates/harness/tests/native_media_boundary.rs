@@ -71,7 +71,7 @@ impl ContentResidencyVerifier for ReaderSpy {
     fn verify<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move { file.descriptor().verify(&self.read(file).await?) })
     }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if self.missing.load(Ordering::SeqCst) {
@@ -79,12 +79,14 @@ impl ContentResidencyVerifier for ReaderSpy {
                     "original native media is unavailable".into(),
                 ));
             }
-            let mut bytes = self.inner.read(file).await?;
+            let bytes = self.inner.read(file).await?;
             if self.corrupt.load(Ordering::SeqCst) {
-                let first = bytes
+                let mut corrupted = bytes.as_ref().to_vec();
+                let first = corrupted
                     .first_mut()
                     .ok_or_else(|| Error::Invalid("fixture cannot corrupt empty body".into()))?;
                 *first ^= 1;
+                return Ok(corrupted.into());
             }
             Ok(bytes)
         })
@@ -195,8 +197,8 @@ enum CapturedPart {
 struct MediaCapture {
     file: FileRef,
     policy: NativeMediaPolicy,
-    bytes: Vec<u8>,
-    options_bytes: Option<Vec<u8>>,
+    bytes: acyclic_stream::OwnedBytes,
+    options_bytes: Option<acyclic_stream::OwnedBytes>,
     options: Option<Value>,
     measurement: Measurement,
 }
@@ -863,10 +865,11 @@ async fn exercise_live_native_boundary() -> Result<()> {
                     assert_eq!(*file, &expected.0);
                     assert_eq!(*policy, &expected.1);
                     assert_eq!(
-                        *bytes,
+                        bytes.as_ref(),
                         bodies
                             .get(index)
                             .ok_or_else(|| Error::NotFound("media body".into()))?
+                            .as_slice()
                     );
                     assert_eq!(option_bytes.as_deref(), Some(options_bytes.as_slice()));
                     assert_eq!(*options, &Some(json!({"mode":"strict","scale":2})));
@@ -1509,11 +1512,11 @@ where
         assert_eq!(converted.mask, 255);
         let original_bytes = writable.read_file(&source).await?;
         let derived_bytes = writable.read_file(&converted.derived).await?;
-        let mut expected_bytes = original_bytes.clone();
+        let mut expected_bytes = original_bytes.as_ref().to_vec();
         for pixel in expected_bytes.iter_mut().skip(8) {
             *pixel ^= 255;
         }
-        assert_eq!(derived_bytes, expected_bytes);
+        assert_eq!(derived_bytes.as_ref(), expected_bytes.as_slice());
         if let Some(retained) = &retained_conversion {
             assert_eq!(&converted, retained);
         }
@@ -1618,7 +1621,7 @@ where
                 media
                     .last()
                     .ok_or_else(|| Error::NotFound("derived capture".into()))?
-                    .bytes,
+                    .bytes.as_ref(),
                 derived_bytes
             );
             for (captured, (file, policy)) in media.iter().zip(&expected) {

@@ -45,11 +45,11 @@ async fn fixture() -> Result<Fixture> {
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
         expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
     let project_ref = workspace_ref(project.provider().clone(), &project.storage_name()?)?;
-    let base = host.apply(&project_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"base".to_vec() }], &IdempotencyKey::new("base-value")?).await?;
+    let base = host.apply(&project_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"base".to_vec().into() }], &IdempotencyKey::new("base-value")?).await?;
     let controller = ParentProjectController::new(host.as_ref(), parent.reducer(), &issuer.verifier(), &scope, project.clone())?;
     controller.fork_project(&base, &source, &IdempotencyKey::new("fork-source")?).await?;
     let source_ref = workspace_ref(source.provider().clone(), &source.storage_name()?)?;
-    let source_generation = host.apply(&source_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }], &IdempotencyKey::new("source-value")?).await?;
+    let source_generation = host.apply(&source_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec().into() }], &IdempotencyKey::new("source-value")?).await?;
     Ok(Fixture { host, parent, issuer, scope, project, source, private, source_generation })
 }
 
@@ -61,7 +61,7 @@ async fn restored_original_target_cannot_rebase_over_a_concurrent_user_write() -
     let target = fixture.host.generation_ref_id(inspected.target_head())?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     let user_generation = fixture.host.apply(&project, Some(&target), &[WorkspaceMutation::PutFile {
-        path: "/value.txt".into(), bytes: b"concurrent user".to_vec(),
+        path: "/value.txt".into(), bytes: b"concurrent user".to_vec().into(),
     }], &IdempotencyKey::new("concurrent-user-edit")?).await?;
     let restored = controller.prepare_project_import_at(&fixture.source, &fixture.source_generation, &target).await?;
     assert_eq!(restored.target_head(), inspected.target_head());

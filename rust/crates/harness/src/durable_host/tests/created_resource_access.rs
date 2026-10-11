@@ -257,12 +257,21 @@ impl ResourceCreationProvider for SandboxCreator {
     }
 }
 
+pub(crate) struct OriginalRootFilesystemBirth {
+    pub(crate) volume: VolumeRef,
+    pub(crate) operation: acyclic_fs::OperationId,
+    pub(crate) config: acyclic_fs::VolumeConfig,
+    pub(crate) initial_generation: acyclic_fs::GenerationId,
+    pub(crate) selected_generation: acyclic_fs::GenerationId,
+}
+
 pub(crate) struct CreationFixture {
     pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
     pub(crate) harness: Arc<AgentHarness>,
     pub(crate) filesystem: Arc<MemoryFilesystem>,
     pub(crate) stream: StreamClient<MemoryStream>,
     pub(crate) filesystem_provider: ProviderRef,
+    pub(crate) filesystem_creator: Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
     creator: Arc<SandboxCreator>,
     pub(crate) root_scope: RuntimeScope,
     task: crate::registry::ComponentIdentity,
@@ -271,6 +280,7 @@ pub(crate) struct CreationFixture {
     pub(crate) root: TaskId,
     pub(crate) root_lease: crate::distributed::WorkLease,
     pub(crate) worker: crate::distributed::Worker,
+    pub(crate) original_root_births: Option<[OriginalRootFilesystemBirth; 2]>,
 }
 
 impl CreationFixture {
@@ -279,14 +289,75 @@ impl CreationFixture {
     }
 
     pub(crate) async fn new_with_grants(extra: &[&str]) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::new_with_creation(extra, None).await }
+        #[cfg(target_arch = "wasm32")]
+        { Self::new_with_creation(extra).await }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn new_with_original_root_births(
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        Self::new_with_creation(&[], Some(work)).await
+    }
+
+    async fn new_with_creation(
+        extra: &[&str],
+        #[cfg(not(target_arch = "wasm32"))] bootstrap: Option<&acyclic_fs::NativeMaterializationWork>,
+    ) -> Result<Self> {
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let filesystem_provider = ProviderRef::new("created-controls", "filesystem", "2")?;
-        let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), filesystem_provider.clone())?);
+        let fs = Fs::memory();
+        let filesystem = Arc::new(FilesystemHost::new(fs.clone(), filesystem_provider.clone())?);
         let payload_volume = VolumeRef::new(
             filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
         )?;
-        filesystem.create_volume(&payload_volume).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let original_root_births = if let Some(work) = bootstrap {
+            let project = VolumeRef::new(filesystem_provider.clone(), "parent-project", VolumeClass::Project,
+                VolumeOwner::Project("created-project".into()))?;
+            let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
+            let mut births = Vec::new();
+            for (volume, operation, contents) in [
+                (project, acyclic_fs::OperationId::from_bytes([177; 16]), b"original project import".as_slice()),
+                (payload_volume.clone(), acyclic_fs::OperationId::from_bytes([178; 16]), b"original root private".as_slice()),
+            ] {
+                let name_custody;
+                let (name, custody) = volume.storage_name_with_native_work(work)?;
+                name_custody = custody;
+                let initial = fs.create_workspace_with_operation_with_native_work(
+                    &name, config, operation, work, work.cancellation(),
+                ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                let initial_generation = initial.id();
+                let workspace = workspace_ref(filesystem_provider.clone(), &name)?;
+                let initial_ref = GenerationRef::new(filesystem_provider.clone(),
+                    initial_generation.digest().into_bytes().to_vec(), None)?;
+                let selected = filesystem.apply(&workspace, Some(&initial_ref), &[WorkspaceMutation::PutFile {
+                    path: "/root.txt".into(), bytes: contents.to_vec().into(),
+                }], &IdempotencyKey::new(format!("original-root-import-{}", operation))?).await?;
+                let selected_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
+                    selected.as_resource().key().try_into().map_err(|_| Error::Invalid("fixture generation size".into()))?,
+                ));
+                assert_ne!(initial_generation, selected_generation);
+                births.push(OriginalRootFilesystemBirth {
+                    volume, operation, config, initial_generation, selected_generation,
+                });
+                drop(initial);
+                drop(name);
+                drop(name_custody);
+            }
+            Some(births.try_into().map_err(|_| Error::Invalid("fixture Root birth count".into()))?)
+        } else {
+            filesystem.create_volume(&payload_volume).await?;
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        let original_root_births = {
+            filesystem.create_volume(&payload_volume).await?;
+            None
+        };
         let authority = Authority { kind: AggregateKind::Task, id: "created-owner".into() };
         let issuer = AuthorityIssuer::new("created-owner", [80; 32], authority.clone());
         let grants = Capabilities::new([
@@ -334,6 +405,14 @@ impl CreationFixture {
             filesystem_provider: filesystem_provider.clone(), filesystem: filesystem.clone(),
             allocations: Mutex::new(BTreeMap::new()),
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        let fs_creator = if let Some(work) = bootstrap {
+            FilesystemResourceCreationProvider::new_with_native_work(filesystem.clone(), &issuer, work)?
+                .into_native_shared(work)?
+        } else {
+            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?)
+        };
+        #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?);
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
@@ -342,7 +421,7 @@ impl CreationFixture {
         )?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
         })?.with_resource_creation_provider(creator.clone())?
-            .with_resource_creation_provider(fs_creator)?);
+            .with_resource_creation_provider(fs_creator.clone())?);
         let mut bindings = Bindings::local();
         bindings.tasks = tasks;
         bindings.scope = root_scope.clone();
@@ -367,7 +446,8 @@ impl CreationFixture {
         host.start_task(&root_lease).await?;
         let stream = host.stream.clone();
         Ok(Self { host, harness, filesystem, stream, filesystem_provider, creator,
-            root_scope, task, machine, schema, root, root_lease, worker })
+            root_scope, task, machine, schema, root, root_lease, worker, original_root_births,
+            filesystem_creator: fs_creator })
     }
 
     pub(crate) fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
@@ -757,19 +837,19 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     ).await?;
     assert_eq!(file.volume(), &created.private);
     assert_ne!(file.volume(), &created.project);
-    assert_eq!(context.read_file(&file).await?, b"created private bytes");
+    assert_eq!(context.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
     let artifact = context.stage_artifact(
         OperationId::from_bytes([100; 16]), "ordinary/artifact.txt", b"created artifact bytes",
         "text/plain", "artifact.txt",
     ).await?;
     assert_eq!(artifact.volume(), &created.private);
-    assert_eq!(context.read_artifact(&artifact).await?, b"created artifact bytes");
+    assert_eq!(context.read_artifact(&artifact).await?.as_ref(), b"created artifact bytes".as_ref());
     // Publication changes the mutable head; authentication retains the original
     // immutable allocation generation, not the latest child content generation.
     let reopened = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
-    assert_eq!(reopened.read_file(&file).await?, b"created private bytes");
+    assert_eq!(reopened.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
     let read_only = reopened.scoped(Capabilities::new([read.clone()]), reopened.scope().limits())?;
-    assert_eq!(read_only.read_file(&file).await?, b"created private bytes");
+    assert_eq!(read_only.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
     assert_eq!(read_only.scope().current_created_agent()?, Some(created.seed.child_agent));
     assert_eq!(read_only.scope().current_created_authority()?, Some(&created.seed.child));
     assert!(read_only.stage_file(
@@ -807,7 +887,7 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     let inherited = fixture.harness.durable_context(
         TaskId::from_bytes([97; 16]), descendant.operation_id,
     ).await?;
-    assert_eq!(inherited.read_file(&file).await?, b"created private bytes");
+    assert_eq!(inherited.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
     assert!(!inherited.scope().grants().contains(&created.private.capability(VolumeOperation::Write)?));
     assert!(inherited.stage_file(
         OperationId::from_bytes([98; 16]), "inherited-denied.txt", b"denied",
@@ -829,7 +909,7 @@ async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> 
         OperationId::from_bytes([95; 16]), "before-corruption.txt", b"authenticated bytes",
         "text/plain", "before-corruption.txt",
     ).await?;
-    assert_eq!(context.read_file(&file).await?, b"authenticated bytes");
+    assert_eq!(context.read_file(&file).await?.as_ref(), b"authenticated bytes".as_ref());
     // Corrupt the provider's real retained claim after obtaining the context.
     // Existing handles must not keep working from a cached verification.
     let claim = workspace_ref(
@@ -970,7 +1050,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let output = commands.output.lock().await.clone()
         .ok_or_else(|| Error::NotFound("created workflow content result".into()))?;
     assert_eq!(output.volume(), &created.private);
-    assert_eq!(context.read_file(&output).await?, b"real created-volume command");
+    assert_eq!(context.read_file(&output).await?.as_ref(), b"real created-volume command".as_ref());
     assert!(!fixture.root_scope.grants().contains(&created.private.capability(VolumeOperation::Write)?));
     assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     // A terminal read uses the original authenticated owner, not an invented
@@ -1046,7 +1126,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     ).await?;
     assert_eq!(file.volume(),&created.private);
     assert_eq!(artifact.volume(),result);
-    assert_eq!(context.read_file(&artifact).await?,b"result");
+    assert_eq!(context.read_file(&artifact).await?.as_ref(), b"result".as_ref());
     assert_eq!(context.scope().current_created_agent()?,Some(created.seed.child_agent));
     let observation = fixture.host.observe_task(task).await?;
     let reservation = observation.reservation
