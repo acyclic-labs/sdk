@@ -141,6 +141,17 @@ publication lease, while inherited access preserves the original proof identity.
 Workflow command and model inputs resolve through those same owner-authenticated
 bindings. Protected workflow and execution records remain in their original
 owner-controlled storage; ordinary content refs cannot substitute for them.
+Native consumers share one SDK-issued `NativeTaskContext` for commands,
+root-provider reads, and the original-owner content verifier. Sharing consumes
+the actual context and its original metadata allocation receipt; an ordinary
+context clone or unrelated allocation cannot establish that receipt. Content
+callbacks reauthorize the original READ owner and the same sealed context
+before and after reading exact bytes. Returned native byte buffers retain
+their original allocation guard until the last consumer drops the bytes.
+Shared-slot accounting admits the known SDK value and its allocation attempt;
+it does not measure allocator overhead, RSS, or private standard-library Arc
+backing retained by weak references.
+
 `FilesystemForkPreparer::project_creation_operation` exposes the exact derived
 Filesystem creation identity for binding an already-created child to its native
 overlay. It does not authorize creation or start another fork.

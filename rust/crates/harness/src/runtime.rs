@@ -4212,14 +4212,20 @@ impl AgentHarness {
                 scope.run_limits().check_deadline()?;
                 let deadline = scope.run_limits().deadline_epoch_ms;
                 let run = handler(
-                    TaskContext { harness: runtime,
-                    task_id,
-                    durable_task: None,
-                    descendants,
-                    scope,
-                    policy_overrides: policies,
-                    owned_interactions: None,
-                    model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None },
+                    TaskContext {
+                        harness: runtime,
+                        task_id,
+                        durable_task: None,
+                        descendants,
+                        scope,
+                        policy_overrides: policies,
+                        owned_interactions: None,
+                        model_steps: Arc::new(AtomicUsize::new(0)),
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        native_metadata_source: None,
+                        owned_mailbox: None,
+                        output_content: None,
+                    },
                     input,
                 );
                 let output = match deadline {
@@ -4559,14 +4565,20 @@ impl AgentHarness {
         let scope = self.scope.resume_sealed(admitted, operation_id)?;
         let group = self.live.child(scope.concurrency_bound(self.concurrency));
         let descendants = group.child(scope.concurrency_bound(self.concurrency));
-        Ok(TaskContext { harness: Arc::clone(self),
-        task_id: operation_id,
-        durable_task: Some(task_id),
-        descendants,
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None })
+        Ok(TaskContext {
+            harness: Arc::clone(self),
+            task_id: operation_id,
+            durable_task: Some(task_id),
+            descendants,
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_source: None,
+            owned_mailbox: None,
+            output_content: None,
+        })
     }
 }
 
@@ -4675,8 +4687,13 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     ) -> BoxFuture<'a, Result<Vec<u8>>>;
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_context;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use native_context::NativeTaskContext;
+
 /// Capability-scoped context passed to live task code.
-#[derive(Clone)]
+// Cloning ordinary contexts must not duplicate a native producer receipt.
 pub struct TaskContext {
     harness: Arc<AgentHarness>,
     task_id: OperationId,
@@ -4688,6 +4705,27 @@ pub struct TaskContext {
     owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     output_content: Option<ContentBindings>,
     model_steps: Arc<AtomicUsize>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_metadata_source: Option<native_context::NativeMetadataSource>,
+}
+
+impl Clone for TaskContext {
+    fn clone(&self) -> Self {
+        Self {
+            harness: Arc::clone(&self.harness),
+            task_id: self.task_id,
+            durable_task: self.durable_task,
+            descendants: self.descendants.clone(),
+            scope: self.scope.clone(),
+            policy_overrides: self.policy_overrides.clone(),
+            owned_interactions: self.owned_interactions.clone(),
+            owned_mailbox: self.owned_mailbox.clone(),
+            output_content: self.output_content.clone(),
+            model_steps: Arc::clone(&self.model_steps),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_source: None,
+        }
+    }
 }
 
 enum ContentPublication<'a> {
@@ -4788,6 +4826,8 @@ impl TaskContext {
             ));
         }
         self.owned_interactions = Some(router);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { self.native_metadata_source = None; }
         Ok(self)
     }
 
@@ -5179,22 +5219,36 @@ impl TaskContext {
     ) -> Result<(Vec<u8>,acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
-            file.validate()?;
-            self.scope.limits.validate_file(file)?;
+            // The issued scope and FileRef are closed, already validated data.
+            if file.path().len() > self.scope.limits.path_bytes
+                || file.descriptor().byte_length() > self.scope.limits.file_bytes
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "file exceeds the issued task content limits" });
+            }
             if !read_granted_measured(&self.scope.grants,file,&io)? {
-                return Err(Error::Unauthorized("task scope cannot read this file".into()).into());
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "task scope cannot read this file" });
             }
             let reader = if let Some(reader) = self.scope.created_reference(file) {
                 reader.as_ref()
             } else {
                 self.content_binding(Some(file.volume()))
-                    .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?.reader.as_ref()
+                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                        reason: "content reader is not bound" })?.reader.as_ref()
             };
             let output = reader.read_with_native_work(
                 file,self.scope.limits.file_bytes,work,
-            ).await?;
+            )?.await?;
+            if !std::ptr::eq(output.1.work().runtime_meter(), work.runtime_meter())
+                || output.1.bytes() < output.0.capacity() as u64
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "content reader returned unowned or foreign native bytes" });
+            }
             if file.descriptor().byte_length() != output.0.len() as u64 {
-                return Err(Error::Storage("content reader returned another file length".into()).into());
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                    reason: "content reader returned another file length" });
             }
             let hash = acyclic_fs::WorkCounters {bytes_hashed:output.0.len() as u64,..Default::default()};
             io.preflight(hash)?;
@@ -5204,6 +5258,22 @@ impl TaskContext {
             Ok(output)
         }.await;
         result
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn verify_bound_file(&self, file: &FileRef) -> Result<()> {
+        drop(self.read_file(file).await?);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn verify_bound_file_with_native_work(
+        &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let (bytes, custody) = self.read_file_with_native_work(file, work).await?;
+        drop(bytes);
+        drop(custody);
+        Ok(())
     }
 
     /// Resolves an immutable artifact without coupling its provider to the
@@ -5587,7 +5657,7 @@ impl TaskContext {
             let verified = file.descriptor().verify(bytes);
             io.charge(hash)?;
             verified?;
-            content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work).await?;
+            content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work)?.await?;
             Ok(output)
         }.await;
         result
@@ -8320,14 +8390,20 @@ mod tests {
             Model::new("root", "model", "1", Value::Null)?,
             root_provider.clone(),
         )?;
-        let context = TaskContext { harness,
-        task_id: OperationId::new(),
-        durable_task: None,
-        descendants: TaskGroup::new(2),
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
+        let context = TaskContext {
+            harness,
+            task_id: OperationId::new(),
+            durable_task: None,
+            descendants: TaskGroup::new(2),
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_source: None,
+            owned_mailbox: None,
+            output_content: None,
+        };
         let message = ModelMessage {
             role: crate::model::ModelRole::User,
             content: crate::model::ModelContent::Text("hello".into()),
@@ -8500,14 +8576,20 @@ mod tests {
             None,
             Some(root_policy),
         )?;
-        let context = TaskContext { harness,
-        task_id: OperationId::new(),
-        durable_task: None,
-        descendants: TaskGroup::new(1),
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
+        let context = TaskContext {
+            harness,
+            task_id: OperationId::new(),
+            durable_task: None,
+            descendants: TaskGroup::new(1),
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_source: None,
+            owned_mailbox: None,
+            output_content: None,
+        };
         let narrowed = context.scoped_policy(child_policy)?;
         let definition = ToolDefinition {
             name: "test.echo".into(),
@@ -9627,20 +9709,26 @@ mod tests {
         };
         let task = TaskId::from_bytes([42; 16]);
         let scope = RuntimeScope::default();
-        let context = TaskContext { harness: AgentHarness::new(
-            TaskRegistry::default(),
-            ToolRegistry::new(),
-            scope.clone(),
-            1,
-            None,
-        )?,
-        task_id: OperationId::from_bytes([41; 16]),
-        durable_task: Some(task),
-        descendants: TaskGroup::new(1),
-        scope,
-        policy_overrides: Vec::new(),
-        owned_interactions: None,
-        model_steps: Arc::new(AtomicUsize::new(0)), owned_mailbox: None, output_content:None };
+        let context = TaskContext {
+            harness: AgentHarness::new(
+                TaskRegistry::default(),
+                ToolRegistry::new(),
+                scope.clone(),
+                1,
+                None,
+            )?,
+            task_id: OperationId::from_bytes([41; 16]),
+            durable_task: Some(task),
+            descendants: TaskGroup::new(1),
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_source: None,
+            owned_mailbox: None,
+            output_content: None,
+        };
         let definition = ToolDefinition {
             name: "test.echo".into(),
             revision: "1".into(),
