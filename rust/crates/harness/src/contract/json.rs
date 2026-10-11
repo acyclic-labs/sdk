@@ -999,8 +999,14 @@ pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: 
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
 ) -> Result<()> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
+    count_json_bytes_trusted(value, bounds, Some(code), charge).map(|_| ())
+}
+
+pub(super) fn count_json_bytes_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
+) -> Result<u64> {
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None,
-        bound_failure: None, native_code: Some(code), retained: 0, tree_only: true };
+        bound_failure: None, native_code, retained: 0, tree_only: true };
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(meter.root_error(error));
     }
@@ -1036,7 +1042,7 @@ pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: 
     if let Err(error) = sizing.meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(sizing.meter.root_error(error));
     }
-    Ok(())
+    Ok(sizing.scan.bytes)
 }
 
 fn value_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(

@@ -132,81 +132,63 @@ pub(crate) fn count_trusted_json_bytes_with_work<T: Serialize + ?Sized>(
     maximum: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
+    let Some(observer) = work.as_deref_mut() else {
+        return json_byte_length(value, maximum);
+    };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(observer) = work.as_deref_mut()
-        && observer.original_native_work().is_some()
-    {
-        struct Count {
-            bytes: u64,
-            overflow: bool,
-        }
-        impl std::io::Write for Count {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                match self.bytes.checked_add(bytes.len() as u64) {
-                    Some(total) => self.bytes = total,
-                    None => {
-                        self.bytes = u64::MAX;
-                        self.overflow = true;
-                    }
-                }
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-        }
-        observer.check_cancellation()?;
-        observer.admit_encoding(1)?;
-        // Audited callers use only finite SDK field serializers. Their possible
-        // diagnostics are the standard fixed Serde messages, not arbitrary
-        // user-defined Serialize errors.
-        let diagnostic = audited_serde_diagnostic_bytes(0,
-            ["EffectState", "Context", "BorrowedContext", "ContextMessages",
-                "JoinedContext", "metadata", "messages", "current_input_index",
-                "ContextAttribute", "ContextSelection", "ContextSourceValue",
-                "ContextExtent", "ContextRepresentation",
-                "provider", "guarantee", "effect_kind", "request", "request_digest",
-                "result_schema", "result_schema_digest", "status", "attempts",
-                "EffectStatus", "FileRef", "VolumeRef", "FileDescriptor",
-                "ProviderRef", "key must be a string", "number out of range"]
-                .iter().map(|label| label.len() as u64 + 4).sum())?;
-        observer.admit_owned(diagnostic)?;
-        observer.retain_owned(diagnostic)?;
-        let guard = observer.take_native_custody(diagnostic)?;
-        observer.codec_charge(JsonCodecCharge::Work {
-            bytes: 0,
-            items: 1,
-        })?;
-        let mut count = Count { bytes: 0, overflow: false };
-        let serialized = serde_json::to_writer(&mut count, value);
-        // This is the actual serializer prefix, including a genuine serializer
-        // failure; no encoded buffer or provider I/O was produced.
-        let observed = observer.encoded_bytes(count.bytes);
-        match serialized {
-            Err(source) => Err(Error::NativeEncode {
-                code: crate::wire::ErrorCode::Invalid,
-                source,
-                custody: Some(guard),
-            }),
-            Ok(()) => {
-                observed?;
-                drop(guard);
-                if count.overflow || count.bytes > maximum {
-                    Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "JSON exceeds declared byte bound",
-                    })
-                } else {
-                    Ok(count.bytes)
-                }
-            }
-        }
-    } else {
-        json_byte_length(value, maximum)
-    }
+    let native_code = observer.original_native_work().map(|_| crate::wire::ErrorCode::Invalid);
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = work;
-        json_byte_length(value, maximum)
+    let native_code = None;
+    observer.check_cancellation()?;
+    const CONTEXT_LABEL_BYTES: u64 = {
+        let labels = ["EffectState", "Context", "BorrowedContext", "ContextMessages",
+            "JoinedContext", "metadata", "messages", "current_input_index",
+            "ContextAttribute", "ContextSelection", "ContextSourceValue",
+            "ContextExtent", "ContextRepresentation",
+            "provider", "guarantee", "effect_kind", "request", "request_digest",
+            "result_schema", "result_schema_digest", "status", "attempts",
+            "EffectStatus", "FileRef", "VolumeRef", "FileDescriptor",
+            "ProviderRef", "key must be a string", "number out of range"];
+        let mut bytes = 0;
+        let mut index = 0;
+        while index < labels.len() {
+            bytes += labels[index].len() as u64 + 4;
+            index += 1;
+        }
+        bytes
+    };
+    // Closed SDK serializers only; callers admit their resident source first.
+    let diagnostic = audited_serde_diagnostic_bytes(
+        0, preparation_serde_diagnostic_label_bytes() + CONTEXT_LABEL_BYTES,
+    )?;
+    observer.admit_owned(diagnostic)?;
+    observer.retain_owned(diagnostic)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut custody = if native_code.is_some() {
+        Some(observer.take_native_custody(diagnostic)?)
+    } else {
+        None
+    };
+    let result = json::count_json_bytes_trusted(
+        value,
+        JsonBounds {
+            maximum_bytes: maximum,
+            maximum_items: u64::MAX,
+            maximum_depth: if native_code.is_some() { 256 } else { u32::MAX },
+        },
+        native_code,
+        &mut |charge| observer.codec_charge(charge),
+    );
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Err(Error::NativeEncode { code, source, custody: None }) = result {
+        return Err(Error::NativeEncode { code, source, custody: custody.take() });
     }
+    // Native custody drops unused allowance here. Ordinary operation-scoped
+    // diagnostics remain retained on failure until their original observer ends.
+    if result.is_ok() && native_code.is_none() {
+        observer.release_owned(diagnostic)?;
+    }
+    result
 }
 
 pub(crate) fn validate_effect_json_byte_bound_with_work(
