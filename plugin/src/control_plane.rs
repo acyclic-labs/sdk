@@ -333,6 +333,9 @@ pub(crate) struct ControlPlane {
     pub(crate) fail_after_watch_poll: bool,
     #[cfg(test)]
     pub(crate) fail_after_root_intent: bool,
+    /// Loaded native input stays owned until its paths and state are destroyed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_input_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 pub(crate) fn workspace_mount_root(config_root: &Path) -> PathBuf {
@@ -417,6 +420,8 @@ impl ControlPlane {
             fail_after_watch_poll: false,
             #[cfg(test)]
             fail_after_root_intent: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_input_custody: None,
         };
         control.restore_root().await?;
         control.validate_pending_spawn_paths()?;
@@ -437,6 +442,21 @@ impl ControlPlane {
             control.finalize_requested_stops(&agent_id).await?;
         }
         Ok(control)
+    }
+
+    /// Keeps the actual input guards on their original bootstrap ledger.
+    /// Rejection returns the incoming guard intact while its payload is live.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retain_original_input(
+        &mut self,
+        mut incoming: acyclic_fs::NativeAllocation,
+    ) -> Result<(), (acyclic_fs::NativeTreeMaterializationError, acyclic_fs::NativeAllocation)> {
+        if let Some(held) = self.native_input_custody.as_mut() {
+            held.absorb(&mut incoming).map_err(|cause| (cause, incoming))
+        } else {
+            self.native_input_custody = Some(incoming);
+            Ok(())
+        }
     }
 
     pub(crate) fn workspace_mount_root(&self) -> PathBuf {
