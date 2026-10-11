@@ -385,19 +385,6 @@ fn live_ids(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancellation
     Ok(Owned::from_parts(ids, held))
 }
 
-fn all_contexts(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &CancellationToken) -> Result<Owned<Vec<WorkspaceContext>>, Error> {
-    let ids = live_ids(root, log, work, cxl)?;
-    let mut held = work.claim(0)?;
-    let mut contexts = Vec::new();
-    reserve(&mut contexts, ids.as_state().len(), work, &mut held)?;
-    for id in ids.as_state() {
-        let context = load_native_context(root, log, *id, work, cxl)?.ok_or(Error::Integrity)?;
-        let context = transfer(context, work, &mut held)?;
-        contexts.push(context);
-    }
-    Ok(Owned::from_parts(contexts, held))
-}
-
 struct Bucket {
     parent: WorkspaceContextId,
     children: Vec<WorkspaceContextId>,
@@ -494,25 +481,6 @@ fn rebuild_index(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancell
         }
     }
     commit_index(root, log, Owned::from_parts(buckets, held), work, cxl)
-}
-
-fn install_index(root: &Namespace, log: &mut CoreLog, contexts: &[WorkspaceContext], work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
-    let mut held = work.claim(0)?;
-    let mut buckets = Vec::new();
-    for context in contexts {
-        check(work, cxl)?;
-        if let Some(parent) = context.parent_context_id {
-            let index = empty_bucket(&mut buckets, parent, work, &mut held)?;
-            add_child(&mut buckets[index], context.context_id, work)?;
-        }
-    }
-    commit_index(root, log, Owned::from_parts(buckets, held), work, cxl)
-}
-
-pub(super) fn list_native_contexts(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &CancellationToken) -> Result<Owned<Vec<WorkspaceContext>>, Error> {
-    let contexts = all_contexts(root, log, work, cxl)?;
-    if !index_ready(root, log, work, cxl)? { install_index(root, log, contexts.as_state(), work, cxl)?; }
-    Ok(contexts)
 }
 
 pub(super) fn compare_native_context(root: &Namespace, log: &mut CoreLog, id: WorkspaceContextId, expected: u64, replacement: Owned<WorkspaceContext>, work: &Work, cxl: &CancellationToken) -> Result<bool, Error> {
