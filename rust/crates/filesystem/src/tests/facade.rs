@@ -1,8 +1,7 @@
 use super::*;
 use acyclic_stream::OwnedBytes;
-use crate::GenerationExportManifestError;
 use crate::async_storage::poll_ready;
-use crate::kernel::{InlineFileData, LogicalName, NameEncoding, MAXIMUM_GENERATION_ROOT_BYTES, encode_tree_page};
+use crate::kernel::{InlineFileData, LogicalName, NameEncoding, MAXIMUM_GENERATION_ROOT_BYTES};
 use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
@@ -444,19 +443,6 @@ fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Erro
 
 fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
     Ok(NamespacePath::new(Vec::new(), config().limits)?)
-}
-
-fn helper_record(file_id: FileId, payload: FilePayload, kind: FileKind) -> FileRecord {
-    FileRecord {
-        file_id,
-        kind,
-        link_count: 1,
-        metadata: ObjectId {
-            kind: ObjectKind::Metadata,
-            digest: Digest::from_bytes([9; 32]),
-        },
-        payload,
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

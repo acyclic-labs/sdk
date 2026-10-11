@@ -1,10 +1,9 @@
-use crate::kernel::PathLookupError;
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod original_namespace_controls {
     use super::*;
-    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+    use crate::kernel::allocation::KernelAccounting;
 
     fn is_budget_error(error: &crate::FsError) -> bool {
         matches!(error, crate::FsError::NativeKernel(

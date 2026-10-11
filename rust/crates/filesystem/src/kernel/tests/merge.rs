@@ -1,7 +1,6 @@
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::{Digest, VolumeId};
-use crate::kernel::persistent_diff::ValueChange;
 use crate::kernel::{
     FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
     encode_tree_page, file_metadata_id, tree_page_id,

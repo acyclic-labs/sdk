@@ -3,7 +3,6 @@ use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
-use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 

@@ -1,5 +1,5 @@
 use super::*;
-use super::super::allocation::{AllocationError, AllocationLedger};
+use super::super::allocation::AllocationLedger;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,

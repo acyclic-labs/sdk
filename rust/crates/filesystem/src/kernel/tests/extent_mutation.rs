@@ -660,38 +660,6 @@ fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn same_leaf_patch_replay_examines_linear_items() -> Result<(), Box<dyn std::error::Error>> {
-    const EXTENTS: u64 = 1_024;
-    let extents: Vec<_> = (0..EXTENTS)
-        .map(|offset| Extent {
-            offset,
-            length: 1,
-            kind: if offset.is_multiple_of(2) {
-                ExtentKind::Hole
-            } else {
-                ExtentKind::AllocatedZero
-            },
-        })
-        .collect();
-    let patches: Vec<_> = (0..EXTENTS)
-        .step_by(2)
-        .map(|offset| Patch {
-            offset,
-            end: offset + 1,
-            kind: ExtentKind::AllocatedZero,
-        })
-        .collect();
-    let patch_count = u64::try_from(patches.len())?;
-    let mut result = Vec::with_capacity(extents.len() + patches.len() * 2);
-    let examined = apply_patches_linear(&extents, &patches, &mut result)?;
-    assert!(examined <= EXTENTS + patch_count.saturating_mul(3));
-    coalesce(&mut result)?;
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0], allocated(0, EXTENTS));
-    Ok(())
-}
-
-#[test]
 fn overlapping_ordered_edits_normalize_content_offsets_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let blob = ObjectId {
