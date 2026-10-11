@@ -141,9 +141,10 @@ for name in "${dependency_names[@]}"; do
 done
 cd "$work/crates"
 # libtest uses small per-case thread stacks; the normal nextest gate runs
-# each case on a process main thread. Keep large live-future fixtures in the
-# extracted-crate check within the same stack capacity.
-RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}" "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+# each case on a process main thread. Keep large live-future fixtures and the
+# Tokio worker running the native consumer within the same stack capacity.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
+"$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
 "$cargo_bin" run --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   --example approved-native-process 2>&1 | tee "$work/rust-native-consumer.log"
