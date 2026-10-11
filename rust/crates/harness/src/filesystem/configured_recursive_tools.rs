@@ -214,6 +214,14 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
     }
 }
 
+struct BoundProjectSourcePolicy {
+    issuer: AuthorityIssuer,
+    provider: Arc<dyn RootProjectSourceProvider>,
+    // LAST: installed issuer/provider data drops before its native allowance.
+    #[cfg(not(target_arch = "wasm32"))]
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
 /// Portable source factory using the runtime's actual Filesystem and Stream.
 pub struct ConfiguredRecursiveToolSource<P, A, O> {
     config: ConfiguredRecursiveToolsConfig,
@@ -221,7 +229,7 @@ pub struct ConfiguredRecursiveToolSource<P, A, O> {
     filesystem: Arc<FilesystemHost<A, O>>,
     limits: Limits,
     runtime: OnceLock<Weak<FilesystemTaskRuntime<P, A, O>>>,
-    project_policy: OnceLock<(AuthorityIssuer, Arc<dyn RootProjectSourceProvider>)>,
+    project_policy: OnceLock<BoundProjectSourcePolicy>,
 }
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -303,8 +311,38 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     /// policy. Missing approval denies foreign imports without widening callers.
     pub fn with_project_source_policy(&self, issuer: AuthorityIssuer,
         provider: Arc<dyn RootProjectSourceProvider>) -> Result<()> {
-        self.project_policy.set((issuer, provider))
+        self.project_policy.set(BoundProjectSourcePolicy { issuer, provider,
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+        })
             .map_err(|_| Error::Conflict("configured source project policy was already bound".into()))
+    }
+
+    /// Installs one genuine native policy with metadata copied from the original
+    /// held issuer, retaining its original allowance through the immutable slot.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_project_source_policy_with_native_work(
+        &self, issuer: &AuthorityIssuer, provider: Arc<dyn RootProjectSourceProvider>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        if self.project_policy.get().is_some() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "configured source project policy was already bound" });
+        }
+        if !provider.supports_native_source() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "configured Project policy has no genuine native verifier" });
+        }
+        let mut custody = work.retain_owned(std::mem::size_of::<BoundProjectSourcePolicy>() as u64)?;
+        let copied = issuer.clone_with_native_work(work)?;
+        let mut binding = BoundProjectSourcePolicy { issuer: copied.0, provider, custody: Some(copied.1) };
+        if let Some(incoming) = binding.custody.as_mut() { custody.absorb(incoming)?; }
+        binding.custody = Some(custody);
+        self.project_policy.set(binding).map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict,
+            reason: "configured source project policy was already bound",
+        })
     }
 
     /// Builds the real portable file and recursive durable tools over this source.
@@ -460,7 +498,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let selected = arguments.source.unwrap_or(caller.task);
         let source_read = if selected != caller.task {
-            let (issuer, provider) = self.project_policy.get().ok_or_else(|| Error::Unauthorized(
+            let BoundProjectSourcePolicy { issuer, provider, .. } = self.project_policy.get().ok_or_else(|| Error::Unauthorized(
                 "foreign project selection lacks an explicitly configured RootService approval policy".into()))?;
             let chosen = self.caller(selected)?;
             if let Some(native) = &chosen.native_snapshot {
@@ -614,7 +652,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
             && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
-            let (issuer, provider) = self.project_policy.get().ok_or_else(||
+            let BoundProjectSourcePolicy { issuer, provider, .. } = self.project_policy.get().ok_or_else(||
                 Error::Unauthorized("foreign merge lacks an explicit RootService Project policy".into()))?;
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
                 .with_invocation_cancellation(cancellation));
@@ -724,6 +762,23 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 #[cfg(not(target_arch = "wasm32"))]
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    fn require_native_policy(
+        &self, custody: Option<&acyclic_fs::NativeAllocation>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        let custody = custody.ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native Project policy requires originally funded installed metadata",
+        })?;
+        if !custody.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native Project policy belongs to another original ledger" });
+        }
+        custody.work().remaining()?;
+        Ok(())
+    }
+
     fn native_runtime(&self) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
         self.runtime.get().and_then(Weak::upgrade).ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
@@ -1100,10 +1155,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected_task = arguments.source.unwrap_or(caller.task);
         let selected = if selected_task != caller.task {
-            let (issuer, policy) = self.project_policy.get().ok_or(Error::NativeBoundary {
+            let BoundProjectSourcePolicy { issuer, provider: policy, custody } = self.project_policy.get().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "foreign native Project selection has no configured original Root policy",
             })?;
+            self.require_native_policy(custody.as_ref(), work)?;
             let chosen = self.native_caller(selected_task, work)?;
             let chosen_workspace = super::fork_preparer::bounded_io::content_workspace(
                 chosen.project.provider(), &chosen.project, Some(&io),
@@ -1252,10 +1308,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "retained ambient merge no longer has original Project read authority" });
             } else {
-                let (issuer, policy) = self.project_policy.get().ok_or(Error::NativeBoundary {
+                let BoundProjectSourcePolicy { issuer, provider: policy, custody } = self.project_policy.get().ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "foreign native merge has no original RootService Project policy",
                 })?;
+                self.require_native_policy(custody.as_ref(), work)?;
                 let snapshot = ProjectSourceSnapshot {
                     project: {
                         let mut history = io.history_io();
@@ -1530,7 +1587,8 @@ impl<P, A, O> RecursiveDefaultToolSource<P, A, O> for ConfiguredRecursiveToolSou
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_source(&self) -> bool {
-        self.project_policy.get().is_none_or(|(_, provider)| provider.supports_native_source())
+        self.project_policy.get().is_none_or(|binding|
+            binding.custody.is_some() && binding.provider.supports_native_source())
     }
 
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,

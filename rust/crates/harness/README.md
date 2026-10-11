@@ -410,6 +410,12 @@ configured native Root policy before sealing an operation-specific selection.
 retained original selection and task owner without reading a newer head or
 issuing replacement authority. Both return a funded future before allocation
 and keep the opaque read handle's produced metadata under its original ledger.
+`ConfiguredRecursiveToolSource::with_project_source_policy_with_native_work`
+installs that policy in the existing immutable slot, borrowing the original held
+issuer and physically copying only its metadata on the original ledger. Slot
+custody outlives the issuer and provider. Native selection rejects another ledger
+or ordinary unfunded installation; no new issuer, source registry or caller grant
+is created.
 The crate-private native source-loan verifier retains that same opaque handle and
 original caller owner. It checks READ, exact source/project/pinned generation and
 the current owner before and after SDK work. A pre-freeze `None` grants no future
