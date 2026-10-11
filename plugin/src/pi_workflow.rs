@@ -150,7 +150,7 @@ impl<'a> PiWorkflowHost<'a> {
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task), work,
+            owner.policy().root_task, pi_root_inputs::preparation_operation_with_native_work(owner.policy().root_task, work)?, work,
         )?;
         provider.observe_allocation_with_native_work(
             acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), work,
@@ -361,7 +361,7 @@ impl<'a> PiWorkflowHost<'a> {
         let owner = pi_owner::PiOwnerConfig::load(self.directory)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
-            && command.operation_id == pi_root_inputs::preparation_operation(task)
+            && command.operation_id == pi_root_inputs::preparation_operation_with_native_work(task, work)?
         {
             let effects = self.root_effects(
                 Arc::clone(&context), &fence, &command, &payload, owner, work,
