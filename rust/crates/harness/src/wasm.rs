@@ -231,9 +231,7 @@ struct WasmTaskAdmissionInput {
     execution: Option<crate::runtime::ExecutionPlacement>,
 }
 
-/// Tsify declarations for the provider-neutral model values.  These wrappers
-/// deliberately mirror the serde model DTOs instead of maintaining a second
-/// TypeScript-owned wire union.
+/// Tsify declarations for the provider-neutral model values.
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
@@ -386,9 +384,7 @@ struct WasmModelMessageWire {
     content: WasmModelContent,
 }
 
-/// Public model-message input used by the runtime validator.  The content
-/// input intentionally reuses the generated camelCase facade type while the
-/// Rust parser below still consumes the canonical `ModelMessage` DTO.
+/// Public model-message input used by the runtime validator.
 #[allow(
     dead_code,
     reason = "the struct exists to emit the generated TypeScript input type"
@@ -510,10 +506,6 @@ struct WasmBatchAdmissionInput {
 }
 
 /// Complete public durable batch admission returned by the Rust projection.
-/// The outer request uses the SDK's camelCase host shape while `canonical` and
-/// each member retain the exact Rust-owned v2 wire envelopes. Keeping this
-/// projection together prevents TypeScript callers from accidentally changing
-/// the member list, digest, or implementation identity independently.
 #[derive(Serialize)]
 struct WasmBatchAdmissionRequest {
     contract: &'static str,
@@ -541,10 +533,6 @@ struct WasmGroupPolicy {
 }
 
 /// Public Rust projection for the immutable workflow admission envelope.
-///
-/// The validator still consumes the canonical `WorkflowAdmission`; this DTO
-/// only gives the generated TypeScript surface the exact serde shape and
-/// bigint treatment used by the Rust value.
 #[derive(Clone, Debug, Serialize, Tsify)]
 #[tsify(large_number_types_as_bigints)]
 pub struct WasmWorkflowAdmissionWire {
@@ -603,10 +591,6 @@ fn wasm_run_limits(input: WasmTaskRunLimitsInput) -> Result<TaskRunLimits, crate
     })
 }
 
-// These wire declarations are emitted from the same Rust WASM module as the
-// admission constructors.  The input declarations above are Tsify-derived;
-// these output declarations keep the canonical serde projection typed without
-// reintroducing a second TypeScript-owned contract.
 #[wasm_bindgen(typescript_custom_section)]
 const ADMISSION_WIRE_TYPES: &'static str = r#"
 export interface WasmMachineIdentityWire {
@@ -796,9 +780,6 @@ export interface WasmTurnPreparation {
 }
 "#;
 
-// JSON aliases and validator limits are the only model declarations that are
-// not emitted directly by Tsify. The DTOs above own the generated Rust wire
-// types; these aliases describe the public camelCase input view.
 #[wasm_bindgen(typescript_custom_section)]
 const MODEL_TYPES: &'static str = r#"
 export type WasmModelJsonValue =
@@ -843,9 +824,7 @@ type WasmModelCamelEvent<Event extends WasmModelEvent> =
 export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
 "#;
 
-/// Exact bytes captured by the owner-facing TypeScript adapter before Rust
-/// performs the canonical projection.  The map key is the canonical JSON
-/// spelling of a `FileRef`; bytes are never resolved by path or display name.
+/// Exact bytes captured by the owner-facing TypeScript adapter before Rust performs the canonical projection.
 struct WasmProjectionResolver {
     files: std::collections::HashMap<String, Vec<u8>>,
 }
@@ -977,9 +956,7 @@ pub fn task_identity_digest_wasm(
     .map_err(js_error)
 }
 
-/// Derives the exact task and machine identities retained by durable
-/// admission. The digest envelope and resumable machine pin are shared with
-/// native Rust registration.
+/// Derives the exact task and machine identities retained by durable admission.
 #[wasm_bindgen(
     js_name = taskAdmissionIdentities,
     unchecked_return_type = "WasmTaskAdmissionIdentities"
@@ -1001,9 +978,6 @@ pub fn task_admission_identities_wasm(
 }
 
 /// Validates the exact task dependency graph used by the TypeScript builder.
-/// The input is a contract projection only; no executable task handlers cross
-/// the WASM boundary and Rust owns graph traversal, revision matching, grants,
-/// and extension requirement admission.
 #[wasm_bindgen(js_name = validateTaskRequirements)]
 pub fn validate_task_requirements_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmTaskDependencyInput")] value: JsValue,
@@ -1056,8 +1030,6 @@ pub fn validate_task_requirements_wasm(
 }
 
 /// Builds and validates the complete owner-retained task admission envelope.
-/// TypeScript supplies public values, while Rust owns identity derivation,
-/// schema/value validation, limits, authority, and execution binding.
 #[wasm_bindgen(js_name = admitTask, unchecked_return_type = "WasmTaskAdmissionWire")]
 pub fn admit_task_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionInput")] value: JsValue,
@@ -1111,9 +1083,7 @@ fn durable_batch_request_from_input(
     .map_err(js_error)
 }
 
-/// Builds and validates the complete immutable batch request before any
-/// member admission. Inputs, task identity, limits, policy, and route are
-/// projected by the same Rust constructor used by native hosts.
+/// Builds and validates the complete immutable batch request before any member admission.
 #[wasm_bindgen(js_name = admitBatch, unchecked_return_type = "WasmDurableBatchWire")]
 pub fn admit_batch_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
@@ -1123,9 +1093,7 @@ pub fn admit_batch_wasm(
     to_js_admitted(&request.canonical_value())
 }
 
-/// Builds the complete SDK-facing durable batch request in one Rust-owned
-/// projection. Member envelopes, policy, implementation digest, canonical
-/// manifest, and request digest all derive from the same validated request.
+/// Builds the complete SDK-facing durable batch request in one Rust-owned projection.
 #[wasm_bindgen(
     js_name = admitBatchRequest,
     unchecked_return_type = "WasmBatchAdmissionRequest"
@@ -1166,8 +1134,7 @@ pub fn admit_batch_request_wasm(
     to_js_admitted(&projection)
 }
 
-/// Derives a stable child operation/message identity from one admitted operation
-/// and a local role label without duplicating UUID bit manipulation in hosts.
+/// Derives a stable child operation/message identity from one admitted operation and a local role label without duplicating UUID bit manipulation in hosts.
 #[wasm_bindgen(js_name = deriveOperationUuid)]
 pub fn derive_operation_uuid(operation: &str, label: &str) -> Result<String, JsValue> {
     uuid::Uuid::parse_str(operation).map_err(|error| JsValue::from_str(&error.to_string()))?;
@@ -1188,8 +1155,6 @@ pub fn derive_operation_uuid(operation: &str, label: &str) -> Result<String, JsV
 }
 
 /// Uses one half of a canonical action digest as a stable local identity.
-/// The digest is already SHA-256; the two halves separate approval operations
-/// from their interaction tickets without a second hashing convention.
 #[wasm_bindgen(js_name = uuidFromDigestHalf)]
 pub fn uuid_from_digest_half(digest: &[u8], second: bool) -> Result<String, JsValue> {
     if digest.len() != 32 {
@@ -1209,8 +1174,7 @@ pub fn uuid_from_digest_half(digest: &[u8], second: bool) -> Result<String, JsVa
     Ok(identity.to_string())
 }
 
-/// Parses canonical JSON without passing full-width integer literals through
-/// JavaScript Number. Large serde integers are returned as `BigInt`.
+/// Parses canonical JSON without passing full-width integer literals through JavaScript Number.
 #[wasm_bindgen(js_name = decodeCanonicalJson)]
 pub fn decode_canonical_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let value = parse_json_bytes(bytes)?;
@@ -1221,9 +1185,7 @@ pub fn decode_canonical_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&value)
 }
 
-/// Parses external JSON with exact integers but without demanding canonical
-/// key order or whitespace. Callers must still apply their schema and numeric
-/// range policy before presenting model-authored values to an executor.
+/// Parses external JSON with exact integers but without demanding canonical key order or whitespace.
 #[wasm_bindgen(js_name = decodeJson)]
 pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&parse_json_bytes(bytes)?)
@@ -1242,9 +1204,7 @@ fn parse_json_bytes(bytes: &[u8]) -> Result<serde_json::Value, JsValue> {
     crate::contract::json_from_slice(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-// serde_json without arbitrary_precision promotes an integer literal outside
-// i64/u64 to f64. Reject it before parsing so the JS boundary never presents
-// rounded integer data as a successful read.
+// serde_json without arbitrary_precision promotes an integer literal outside i64/u64 to f64.
 fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
     let mut offset = 0;
     let mut quoted = false;
@@ -1293,9 +1253,7 @@ fn reject_out_of_range_integer_tokens(bytes: &[u8]) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Serializes a plain JavaScript data value through Rust's canonical JSON
-/// representation. Unsafe integer Numbers are rejected before conversion;
-/// callers must supply `BigInt` for exact full-width identities and counters.
+/// Serializes a plain JavaScript data value through Rust's canonical JSON representation.
 #[wasm_bindgen(js_name = encodeCanonicalJson)]
 pub fn encode_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
     let value = js_json_value(&value)?;
@@ -1316,8 +1274,7 @@ pub fn digest_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
         .to_vec())
 }
 
-/// Binds the exact native request without rounding its filesystem work counters
-/// through JavaScript numbers. This performs no native dispatch or path lookup.
+/// Binds the exact native request without rounding its filesystem work counters through JavaScript numbers.
 #[cfg(feature = "filesystem")]
 #[wasm_bindgen(js_name = nativeProcessApprovalDigest)]
 pub fn native_process_approval_digest(
@@ -1347,8 +1304,7 @@ pub fn validate_conversation_message_id(value: &str) -> Result<String, JsValue> 
     Ok(id.to_string())
 }
 
-/// Parses one public Harness identity with the canonical Rust contract and
-/// returns its normalized UUID spelling for a branded TypeScript facade.
+/// Parses one public Harness identity with the canonical Rust contract and returns its normalized UUID spelling for a branded TypeScript facade.
 #[wasm_bindgen(js_name = validateIdentity)]
 pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
     let normalized = match kind {
@@ -1374,9 +1330,7 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
     Ok(normalized)
 }
 
-/// Validates one aggregate identity with the same path-segment policy used by
-/// every Rust stream access. The returned spelling is unchanged so hosts can
-/// retain their branded string facade without reimplementing the policy.
+/// Validates one aggregate identity with the same path-segment policy used by every Rust stream access.
 #[wasm_bindgen(js_name = validateAuthorityPathSegment)]
 pub fn validate_authority_path_segment(
     #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
@@ -1389,8 +1343,7 @@ pub fn validate_authority_path_segment(
     authority.stream_path().map(|_| value).map_err(js_error)
 }
 
-/// Validates one component name with the canonical Rust byte and character
-/// policy. The field-specific error text remains a thin TypeScript concern.
+/// Validates one component name with the canonical Rust byte and character policy.
 #[wasm_bindgen(js_name = validateComponentLabel)]
 pub fn validate_component_label(
     #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
@@ -1596,7 +1549,6 @@ fn conversation_page_data(
 }
 
 /// Validates and projects one immutable workflow admission through Rust.
-/// Hosts retain this detached value before any replay or dispatch begins.
 #[wasm_bindgen(js_name = validateWorkflowAdmission)]
 pub fn validate_workflow_admission(
     #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
@@ -1612,18 +1564,14 @@ pub fn validate_workflow_admission(
     .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Pure v2 contract admission shared by native and JavaScript hosts. The
-/// returned object is detached and canonically shaped by Rust serde; context
-/// supplies `Limits` for messages and the open ticket for resolutions.
+/// Pure v2 contract admission shared by native and JavaScript hosts.
 #[wasm_bindgen(js_name = validateContract)]
 #[expect(
     clippy::too_many_lines,
     reason = "one exhaustive v2 contract admission dispatch"
 )]
 pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result<JsValue, JsValue> {
-    // serde-wasm-bindgen otherwise coerces NaN/Infinity inside generic JSON
-    // fields to null before the Rust contract can reject them. Admit the
-    // complete plain value before any target-type deserialization.
+    // serde-wasm-bindgen otherwise coerces NaN/Infinity inside generic JSON fields to null before the Rust contract can reject them.
     match kind {
         "provider_ref" => {
             let value: ProviderRef = from_js(value)?;
@@ -1746,7 +1694,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "reference_grant" => {
             let value: ReferenceGrant = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "extension_record" => {
@@ -1795,8 +1743,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
     }
 }
 
-/// Validates and reprojects one owner-retained direct-child page using the
-/// same bounds and bytewise slot ordering as native Harness hosts.
+/// Validates and reprojects one owner-retained direct-child page using the same bounds and bytewise slot ordering as native Harness hosts.
 #[wasm_bindgen(
     js_name = validateTaskChildrenPage,
     unchecked_return_type = "WasmTaskChildrenPage"
@@ -1832,8 +1779,7 @@ pub fn validate_task_children_page(
     to_js(&input.page)
 }
 
-/// Applies the same JSON Schema admission used by Rust tool execution before
-/// a TypeScript facade turns an untrusted model value into a typed argument.
+/// Applies the same JSON Schema admission used by Rust tool execution before a TypeScript facade turns an untrusted model value into a typed argument.
 #[wasm_bindgen(js_name = validateToolValue)]
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
     let schema: serde_json::Value = from_js(schema)?;
@@ -1850,8 +1796,7 @@ pub fn verify_file_bytes(file: JsValue, bytes: Vec<u8>) -> Result<(), JsValue> {
     file.descriptor().verify(&bytes).map_err(js_error)
 }
 
-/// Stages a descriptor with Rust-owned SHA-256, media-type, and safe
-/// byte-length rules, projecting its bounded length as a JS Number.
+/// Stages a descriptor with Rust-owned SHA-256, media-type, and safe byte-length rules, projecting its bounded length as a JS Number.
 #[wasm_bindgen(js_name = fileDescriptor)]
 pub fn file_descriptor(bytes: &[u8], media_type: &str) -> Result<JsValue, JsValue> {
     let descriptor = FileDescriptor::from_bytes(bytes, media_type).map_err(js_error)?;
@@ -1876,9 +1821,7 @@ pub fn decode_attachment_manifest_bytes(
     to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, item_count).map_err(js_error)?)
 }
 
-/// Runs the canonical Rust conversation projection over bytes captured by the
-/// owner.  TypeScript supplies a map rather than a callback so authorization
-/// and async reads finish before this deterministic core is entered.
+/// Runs the canonical Rust conversation projection over bytes captured by the owner.
 #[wasm_bindgen(js_name = selectModelContext)]
 pub async fn select_model_context_wasm(
     conversation: JsValue,
@@ -1907,10 +1850,7 @@ pub async fn select_model_context_wasm(
     to_js(&selected)
 }
 
-/// Plans one deterministic conversation turn before any model or content
-/// callback runs.  The reducer state and payload checks are shared with the
-/// native filesystem memory host; JavaScript retains ownership of asynchronous
-/// reads and model dispatch after this plan is committed.
+/// Plans one deterministic conversation turn before any model or content callback runs.
 #[wasm_bindgen(
     js_name = prepareConversationTurn,
     unchecked_return_type = "WasmTurnPreparation"
@@ -1953,8 +1893,7 @@ pub fn prepare_conversation_turn_wasm(
     to_js(&preparation)
 }
 
-/// Validates selection order and tool linkage before the host resolves any
-/// owner-mediated file bytes.
+/// Validates selection order and tool linkage before the host resolves any owner-mediated file bytes.
 #[wasm_bindgen(js_name = validateModelContextSelection)]
 pub fn validate_model_context_selection_wasm(
     conversation: JsValue,
@@ -2146,7 +2085,6 @@ impl WasmReducer {
     }
 
     /// Authenticates an owner-issued read grant for this exact immutable file.
-    /// A caller-supplied capability string alone is never accepted as proof.
     #[wasm_bindgen(js_name = verifyContentRead)]
     pub fn verify_content_read(&self, scope: JsValue, file: JsValue) -> Result<(), JsValue> {
         let scope: Scope = from_js(scope)?;
@@ -2155,9 +2093,7 @@ impl WasmReducer {
         Ok(())
     }
 
-    /// Composes the native immutable prefix after authenticating every exact
-    /// reference against this owner's signed scope. The host captures resident
-    /// bytes before entry; supplied bytes and capability strings grant nothing.
+    /// Composes the native immutable prefix after authenticating every exact reference against this owner's signed scope.
     #[wasm_bindgen(js_name = prepareInheritedModelRequest)]
     pub async fn prepare_inherited_model_request(
         &self,
@@ -2197,8 +2133,7 @@ impl WasmReducer {
         Ok(prepared.bytes().to_vec())
     }
 
-    /// Authenticates lazy directory and named-path access against the
-    /// owner's signed, segment-bounded private-volume read grant.
+    /// Authenticates lazy directory and named-path access against the owner's signed, segment-bounded private-volume read grant.
     #[wasm_bindgen(js_name = verifyPrivateDirectoryRead)]
     pub fn verify_private_directory_read(
         &self,
@@ -2311,7 +2246,6 @@ impl WasmReducer {
     }
 
     /// Selects logical fork history against this reducer before provider preparation.
-    /// No provider, grant or model representation is chosen by this operation.
     #[wasm_bindgen(js_name = prepareForkRequest, unchecked_return_type = "ForkRequest")]
     pub fn prepare_fork_request(
         &self,
@@ -2342,9 +2276,7 @@ impl WasmReducer {
         String::from_utf8(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
-    /// Returns an immutable, bounded page of canonical conversation records.
-    /// `after_sequence` is an exclusive cursor in the message sequence, not
-    /// the potentially larger aggregate event revision.
+    /// Returns an immutable, bounded page of canonical conversation records. `after_sequence` is an exclusive cursor in the message sequence, not the potentially larger aggregate event revision.
     #[wasm_bindgen(js_name = conversationPageJson)]
     pub fn conversation_page_json(
         &self,
@@ -2356,24 +2288,21 @@ impl WasmReducer {
         String::from_utf8(bytes).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
-    /// Returns the same bounded page with Rust-owned JS integer projection:
-    /// revisions and cursors stay `BigInt`, validated file lengths become Number.
+    /// Returns the same bounded page with Rust-owned JS integer projection: revisions and cursors stay `BigInt`, validated file lengths become Number.
     #[wasm_bindgen(js_name = conversationPage)]
     pub fn conversation_page(&self, after_sequence: u64, limit: u32) -> Result<JsValue, JsValue> {
         let page = conversation_page_data(&self.reducer, after_sequence, limit)?;
         to_js_admitted(&page)
     }
 
-    /// Applies a deterministic command. Fresh extension migrations require the
-    /// native content-admission host and cannot be synthesized by this reducer.
+    /// Applies a deterministic command.
     pub fn apply(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
         let result: ApplyResult = self.reducer.apply(command).map_err(js_error)?;
         to_js(&result)
     }
 
-    /// Applies one canonical Protobuf command, excluding fresh migrations
-    /// that require executable content admission, and returns a response.
+    /// Applies one canonical Protobuf command, excluding fresh migrations that require executable content admission, and returns a response.
     #[wasm_bindgen(js_name = applyWire)]
     pub fn apply_wire(&mut self, command: Vec<u8>) -> Result<Vec<u8>, JsValue> {
         let (authority, command) = decode_command(&command).map_err(js_error)?;
@@ -2466,8 +2395,6 @@ fn key_bytes(value: Vec<u8>) -> Result<[u8; 32], JsValue> {
 
 fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue> {
     // A single traversal detaches the admitted value from getters and Proxies.
-    // Never validate the original object and then deserialize it again: a
-    // mutable accessor could return a finite number first and Infinity later.
     let value = js_json_value(&value)?;
     serde_json::from_value(value).map_err(|error| JsValue::from_str(&error.to_string()))
 }
@@ -2481,10 +2408,6 @@ fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-// Durable JSON keeps integral literals. Only admitted, ref-only contract
-// outputs pass through this projection: a validated FileDescriptor length is
-// represented as Number and every other 64-bit integer remains BigInt.
-// Generic events, snapshots, model values and extension payloads use to_js.
 fn to_js_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let js = to_js(value)?;
     let json =
@@ -2575,8 +2498,7 @@ pub fn decode_event_payload(
     to_js(&payload)
 }
 
-/// Decodes and validates a canonical Protobuf apply response using Rust-owned
-/// event, authority, scope, digest, and payload rules.
+/// Decodes and validates a canonical Protobuf apply response using Rust-owned event, authority, scope, digest, and payload rules.
 #[wasm_bindgen(js_name = decodeApplyResponse)]
 pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
     let response = crate::wire::ApplyResponse::decode(bytes.as_slice())
@@ -2606,8 +2528,7 @@ pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
     to_js(&kind)
 }
 
-/// JavaScript-facing tool definition shape. The public TypeScript facade uses
-/// camelCase names while the native definition remains `snake_case`.
+/// JavaScript-facing tool definition shape.
 #[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 struct WasmToolDefinitionInput {
@@ -2851,7 +2772,6 @@ pub fn parse_skill_metadata(
 }
 
 /// Projects a discovered revision using the native messages, placement and bounds.
-/// Discovery/body reads and their authority remain in ordinary provider bindings.
 #[wasm_bindgen(js_name = projectDiscoveredContext, unchecked_return_type = "Context")]
 pub fn project_discovered_context(
     #[wasm_bindgen(unchecked_param_type = "DiscoveredContext")] snapshot: JsValue,
@@ -2873,8 +2793,6 @@ pub fn project_discovered_context(
     context_to_js(&context)
 }
 
-// Only typed model file parts use the admitted descriptor wire representation.
-// Tool JSON may contain similar keys without being descriptors.
 fn context_to_js(context: &crate::context::Context) -> Result<JsValue, JsValue> {
     let result = to_js(context)?;
     if context.current_input_index.is_none() {
@@ -2949,8 +2867,6 @@ fn context_part_to_js(
     Ok(())
 }
 
-// Normalize only typed portable quantities. Opaque JSON and full-width original
-// admission/event identities retain their existing serialization contracts.
 fn model_file_part_to_js(
     part: &JsValue,
     file: &FileRef,
@@ -3009,7 +2925,6 @@ pub fn validate_context_selection(
 }
 
 /// Applies a host renderer's output using the same native placement and bounds.
-/// Hosts supply authorized reads; this call performs no I/O or model admission.
 #[wasm_bindgen(js_name = applyContextProjection, unchecked_return_type = "Context")]
 pub fn apply_context_projection(
     #[wasm_bindgen(unchecked_param_type = "Context")] context: JsValue,
@@ -3042,10 +2957,7 @@ pub fn validate_model_content(
     content.validate_limits(limits).map_err(js_error)
 }
 
-/// Validates a complete provider-neutral model message list with the native
-/// role, message-count, and content bounds.  Context builders and the stock
-/// TypeScript loop therefore share the same closed role set and limits as
-/// native durable execution.
+/// Validates a complete provider-neutral model message list with the native role, message-count, and content bounds.
 #[wasm_bindgen(
     js_name = validateModelMessages,
 )]
@@ -3110,9 +3022,7 @@ struct WasmModelEventAdmission {
     state: WasmModelEventAdmissionState,
 }
 
-/// Admits one provider model event with the native stream rules and returns
-/// the detached state needed for the next event. Text accounting is cumulative
-/// across model steps while event and tool-call bounds reset at each step.
+/// Admits one provider model event with the native stream rules and returns the detached state needed for the next event.
 #[wasm_bindgen(
     js_name = admitModelEvent,
     unchecked_return_type = "WasmModelEventAdmission",
@@ -3297,8 +3207,6 @@ struct WasmContentPage {
 }
 
 /// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
-/// The native filesystem provider uses the same crate-level core while
-/// retaining its signed provider-generation proof around delegated reads.
 #[wasm_bindgen]
 pub struct WasmContentStore {
     store: crate::memory_store::MemoryStore,
@@ -3306,6 +3214,7 @@ pub struct WasmContentStore {
 
 #[wasm_bindgen]
 impl WasmContentStore {
+    /// Creates a bounded content store for the supplied volume.
     #[wasm_bindgen(constructor)]
     pub fn new(
         volume: JsValue,
@@ -3354,8 +3263,7 @@ impl WasmContentStore {
         self.store.has(&file).map_err(js_error)
     }
 
-    /// Reports whether a new file at `path` would conflict with a file or
-    /// directory already retained by this provider.
+    /// Reports whether a new file at `path` would conflict with a file or directory already retained by this provider.
     #[wasm_bindgen(js_name = pathConflicts)]
     pub fn path_conflicts(&self, path: String) -> bool {
         self.store.path_conflicts(&path)

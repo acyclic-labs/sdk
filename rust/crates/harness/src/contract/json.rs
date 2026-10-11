@@ -1,6 +1,4 @@
 //! The canonical codec bounds logical data, not allocator metadata or RSS.
-//! Custom Serialize/Deserialize code is trusted application code: serde cannot
-//! prevent it allocating or looping before it calls a serializer/visitor.
 
 use super::{Error, Result};
 use serde::ser::{self, Serialize};
@@ -11,18 +9,14 @@ use value_shape::ValueInspector;
 #[cfg(test)]
 mod value_shape_tests;
 
-/// Finite admission for one JSON document. Items include map keys and duplicate
-/// values, even when canonical last-key-wins output discards an earlier value.
+/// Finite admission for one JSON document.
 #[derive(Clone, Copy, Debug)]
 pub struct JsonBounds {
     /// UTF-8 encoded/input byte limit; duplicate emitted entries count too.
     pub maximum_bytes: u64,
     /// Values and map keys visited, including replaced duplicate values.
     pub maximum_items: u64,
-    /// Zero-based nesting depth. Bounded entry points support at most 256.
-    /// Selected Value decoding includes simultaneously live ancestor containers
-    /// across nested RawValue parsers, not each parser's reset local counter or
-    /// only the final tree depth. This is not an exact Rust-stack byte bound.
+    /// Zero-based nesting depth.
     pub maximum_depth: u32,
 }
 
@@ -34,9 +28,7 @@ impl JsonBounds {
     };
 }
 
-/// SDK-audited closed Value field reachability, not an authority or an arbitrary
-/// user selector. Generic Deserialize implementations remain trusted; choose the
-/// descriptor belonging to the actual audited concrete input type.
+/// SDK-audited closed Value field reachability, not an authority or an arbitrary user selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JsonValueSchema {
     /// The closed concrete type has no serde_json::Value fields.
@@ -92,7 +84,6 @@ pub enum JsonValueSchema {
     /// Recursive receipt's externally tagged successful Value.
     RecursiveReceipt,
     /// The SDK Outcome<Value> root's externally tagged Succeeded payload only.
-    /// Failed.message, Cancelled and Indeterminate retain ordinary typed fields.
     TaskOutcome,
     /// Provider join proof statement only.
     ProjectMergeReceipt,
@@ -127,8 +118,6 @@ pub enum JsonValueSchema {
 }
 
 /// Copied data issued by an SDK source pass or borrowed resident-tree inspection.
-/// Private fields prevent manufacturing a RawValue-absence/origin assertion.
-/// This is quota data, NOT permission or an arbitrary serde heap/CPU/RSS proof.
 #[derive(Clone, Copy, Debug)]
 pub struct JsonValueShape {
     input_bytes: u64,
@@ -142,8 +131,7 @@ pub struct JsonValueShape {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShapeOrigin { Slice, OwnedConversion, BorrowedConversion }
 impl JsonValueShape {
-    /// Source bytes consumed once; for resident inspection, the owned UTF-8
-    /// payload/node lower bound instead. Neither includes virtual inspection.
+    /// Source bytes consumed once; for resident inspection, the owned UTF-8 payload/node lower bound instead.
     pub const fn input_bytes(self) -> u64 { self.input_bytes }
     /// Original lexical or resident values/map keys, including source duplicates.
     pub const fn lexical_items(self) -> u64 { self.lexical_items }
@@ -153,49 +141,37 @@ impl JsonValueShape {
     pub const fn unresolved_raw(self) -> bool { self.unresolved_raw }
 }
 
-/// Called before admitted logical storage grows and after it is freed. Keep a
-/// custody guard through the returned output's lifetime. Errors release every
-/// codec Retain after its buffers drop; separate caller-owned guards still
-/// belong to the caller. Allocator/node overhead and borrowed input are excluded.
+/// Called before admitted logical storage grows and after it is freed.
 #[derive(Clone, Copy, Debug)]
 pub enum JsonCodecCharge {
     /// Encoded-byte/item work for byte producers (including sizing passes).
-    /// Direct Value producers emit zero bytes; actual sizing CPU uses Inspect.
-    /// Zero amounts are cancellation/fence checkpoints, not fabricated work.
     Work {
         /// Encoded bytes.
         bytes: u64,
         /// Structural items.
         items: u64,
     },
-    /// Admit requested logical payload/slot storage before allocation. This is
-    /// quota growth, NOT an allocator operation or observed allocated bytes.
+    /// Admit requested logical payload/slot storage before allocation.
     Retain {
         /// Logical storage bytes, excluding opaque allocator/map node overhead.
         bytes: u64,
     },
     /// Release storage after its codec-owned buffer/tree has been freed.
-    /// This is unconditional cleanup: callbacks must accept it after cancellation
-    /// or fencing and must not use it as another work/authority checkpoint.
     Release {
         /// Previously admitted logical storage bytes.
         bytes: u64,
     },
     /// Preflight copy allowance before a potentially unnecessary allocation.
-    /// Check the original ledger without spending bytes or making a receipt.
     CopyAdmission {
         /// Bytes that the subsequent SDK buffer copy would copy.
         bytes: u64,
     },
     /// Immediately before one genuine positive SDK String/Vec try_reserve call.
-    /// Opaque map/serde allocations are not observed or invented here.
     AllocationOperation {
-        /// Full requested new capacity in bytes, not the logical growth delta
-        /// or an observation of allocator metadata/RSS.
+        /// Full requested new capacity in bytes, not the logical growth delta or an observation of allocator metadata/RSS.
         bytes: u64,
     },
-    /// Bytes about to be copied into an already-reserved buffer. Once accepted,
-    /// the copy is infallible: no intervening SDK allocation/failure/checkpoint.
+    /// Bytes about to be copied into an already-reserved buffer.
     Copy {
         /// Copied bytes.
         bytes: u64,
@@ -205,9 +181,7 @@ pub enum JsonCodecCharge {
         /// Borrowed input bytes consumed.
         bytes: u64,
     },
-    /// Actual virtual decoded bytes, resident nodes/keys or sizing-writer chunks
-    /// inspected by the SDK. Charge logical CPU items on the original ledger,
-    /// not provider reads, owned wire bytes or opaque serde visits.
+    /// Actual virtual decoded bytes, resident nodes/keys or sizing-writer chunks inspected by the SDK.
     Inspect {
         /// Actual inspection units, not a hypothetical maximum.
         items: u64,
@@ -216,15 +190,12 @@ pub enum JsonCodecCharge {
     Admission {
         /// Upper bound justified by the concrete audited schema.
         maximum_owned_bytes: u64,
-        /// SDK-issued Value shape from the original source/tree pass. Concrete
-        /// owners add its Value quota to their distinct tagged/typed ownership.
+        /// SDK-issued Value shape from the original source/tree pass.
         value_shape: JsonValueShape,
     },
 }
 
 /// Logical owned capacities of an already admitted, finite-depth Value.
-/// Excludes the root Value header and opaque map-node/allocator metadata. This
-/// pure audit neither admits traversal nor charges quota, copies, or allocation.
 pub(crate) fn owned_logical_bytes(value: &Value) -> u64 {
     match value {
         Value::String(value) => value.capacity() as u64,
@@ -236,9 +207,7 @@ pub(crate) fn owned_logical_bytes(value: &Value) -> u64 {
     }
 }
 
-// Callback interruption is inline. The first owned Root error lives in Meter;
-// creating a serde_json custom-message String/Box here would allocate AFTER
-// cancellation or quota denial. Ordinary serde errors retain their old carrier.
+// Callback interruption is inline.
 #[derive(Debug)]
 enum CodecError {
     Interrupted,
@@ -306,16 +275,8 @@ impl CodecError {
     }
 }
 
-/// Closed SDK-generated encoder/Raw-Value diagnostic allowance only. Audited
-/// against serde_json 1.0.151 ErrorCode/Display and Rust 1.98.1 TryReserveError
-/// Display; upgrades require revisiting this inventory. Custom Serialize error
-/// messages and arbitrary typed Deserialize diagnostics are NOT bounded here.
-/// This is future logical quota (zero allocation observations), not RSS or
-/// serde_json's private ErrorImpl/allocator-node footprint. Native callback
-/// interruption is inline and needs none of this allowance.
+/// Closed SDK-generated encoder/Raw-Value diagnostic allowance only.
 pub const fn sdk_json_diagnostic_bytes() -> u64 {
-    // Longest SDK/static-library label: all literal encoder/lexer labels and
-    // JSON syntax labels are shorter than this actual allocation-error text.
     const CAPACITY_ERROR: &str = concat!("memory allocation failed",
         " because the computed capacity exceeded the collection's maximum");
     const SYNTAX_ERROR: &str =
@@ -323,14 +284,9 @@ pub const fn sdk_json_diagnostic_bytes() -> u64 {
     let largest = if CAPACITY_ERROR.len() > SYNTAX_ERROR.len() {
         CAPACITY_ERROR.len() as u64
     } else { SYNTAX_ERROR.len() as u64 };
-    // Raw lex errors may cross Root Invalid's Display prefix. ErrorImpl renders
-    // at most two usize positions; supported targets have <=64-bit usize.
     let rendered = largest + "invalid request: ".len() as u64
         + " at line ".len() as u64 + " column ".len() as u64
         + 2 * (u64::MAX.ilog10() as u64 + 1);
-    // Two error-message buffers can overlap during ordinary conversions; each
-    // formatter's Vec capacity is <=2*max(length,8). Include known carrier ABI,
-    // but do not pretend to observe serde_json's hidden boxed ErrorImpl layout.
     let wrappers = std::mem::size_of::<CodecError>() as u64
         + std::mem::size_of::<serde_json::Error>() as u64
         + std::mem::size_of::<std::io::Error>() as u64
@@ -338,14 +294,7 @@ pub const fn sdk_json_diagnostic_bytes() -> u64 {
     4 * rendered + 2 * wrappers
 }
 
-/// Conservative logical quota for the CLOSED serde_json::Value parser, derived
-/// from the SDK-issued shape in the ORIGINAL source pass. No scan, parser or
-/// cloned tree occurs here. Ordinary non-Raw input retains the old slot/string
-/// policy; selected Raw sources add witnessed virtual nodes and live-buffer
-/// upper bounds. Unknown generic serde Value reachability uses an honest
-/// byte-derived Raw worst case instead of manufacturing a Raw-absence proof.
-/// Typed envelopes add their OWN tagged/typed/Box/diagnostic overlap. Opaque
-/// allocator/map-node/RSS overhead and arbitrary custom serde are excluded.
+/// Conservative logical quota for the CLOSED serde_json::Value parser, derived from the SDK-issued shape in the ORIGINAL source pass.
 pub fn json_value_decode_owned_bytes(shape: JsonValueShape) -> Result<u64> {
     value_full_bytes(shape).ok_or_else(|| shape_boundary("JSON owned bound overflow"))
 }
@@ -355,9 +304,6 @@ fn value_full_bytes(shape: JsonValueShape) -> Option<u64> {
 }
 
 /// Inspection only before an SDK's existing consuming from_value conversion.
-/// Uses actual map iterator order, with no cloned tree, serialization or source
-/// reread. The selected closed DTO owner supplies its own typed/Content/Box and
-/// dynamic diagnostic quota before invoking the original converter.
 pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &Value, bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
 ) -> Result<JsonValueShape> {
@@ -368,25 +314,13 @@ pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result
         })
 }
 
-/// NEW logical Value-container/Raw replay/scratch/static diagnostic quota for a
-/// genuine consuming Value converter, using the original SDK-issued owned shape.
-/// Resident strings MOVE and remain covered by the whole original input guard;
-/// this helper excludes those already-owned strings, not their custody lifetime.
-/// Keep that guard through the physical last use/drop of the moved DTO or source
-/// on failure. The concrete closed DTO owner separately admits its actual new
-/// String/Vec/Content/Box/typed-node and dynamic diagnostic storage BEFORE serde,
-/// and retains that additional guard through its payload/error's physical drop.
-/// This is not a generic Deserialize heap/CPU, allocator/RSS or stack sandbox.
+/// NEW logical Value-container/Raw replay/scratch/static diagnostic quota for a genuine consuming Value converter, using the original SDK-issued owned shape.
 pub fn json_owned_value_conversion_additional_bytes(shape: JsonValueShape) -> Result<u64> {
     if shape.origin != ShapeOrigin::OwnedConversion { return Err(shape_boundary("JSON conversion shape is not owned")); }
     value_storage_bytes(shape).ok_or_else(|| shape_boundary("JSON owned bound overflow"))
 }
 
-/// Pure arithmetic for an audited SDK BORROWED closed DTO. Its owner supplies
-/// the finite maximum slot from actual typed nodes plus pinned serde Content
-/// layer/cardinality proof; this is not an arbitrary T heap bound. Eight slots
-/// per admitted resident/virtual node cover that owner's declared collection
-/// growth policy. Shared Value strings/Raw/syntax allowance is included ONCE.
+/// Pure arithmetic for an audited SDK BORROWED closed DTO.
 pub(crate) fn json_typed_value_decode_owned_bytes(shape: JsonValueShape, maximum_slot_bytes: u64) -> Result<u64> {
     if shape.origin != ShapeOrigin::BorrowedConversion {
         return Err(shape_boundary("JSON typed decode shape is not borrowed"));
@@ -403,9 +337,6 @@ fn shape_nodes(shape: JsonValueShape) -> Option<u64> {
     else { shape.lexical_items.checked_add(shape.virtual_items) }
 }
 
-// Extend existing concrete Event/Snapshot quota without changing their NORMAL
-// policy or charging the same Raw buffer twice. This is arithmetic subtraction
-// of a baseline, NOT an issued Raw-absence assertion or a second source pass.
 pub(crate) fn json_value_virtual_owned_bytes(shape: JsonValueShape) -> Result<u64> {
     let mut normal = shape;
     normal.virtual_items = 0;
@@ -429,15 +360,8 @@ fn value_storage_bytes(shape: JsonValueShape) -> Option<u64> {
     let slots = nodes.checked_mul((10 * std::mem::size_of::<Value>()
         + std::mem::size_of::<(String, Value)>()) as u64)?;
     let raw = if shape.unresolved_raw {
-        // An actual input slice therefore admits at most usize::BITS layers.
-        // Each layer holds raw payload, geometric parser scratch, and a
-        // possible into_boxed_str/shrink overlap; two extra buffers cover
-        // transitions. This is conservative future quota, not an observation.
         shape.input_bytes.max(8).checked_mul(4 * (u64::from(usize::BITS) + 2))?
     } else {
-        // Sum decoded raw payload across ALL virtual frames is >= the maximum
-        // simultaneously active boxed payload. Scratch is <=2*max(len,8);
-        // include a further payload during String-to-box shrinking.
         shape.raw_bytes.checked_mul(4)
             .and_then(|bytes| shape.raw_frames.checked_mul(16).and_then(|minimum| bytes.checked_add(minimum)))
             ?
@@ -460,10 +384,7 @@ struct Meter<'a, F: FnMut(JsonCodecCharge) -> Result<()>> {
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> Drop for Meter<'_, F> {
     fn drop(&mut self) {
-        // The meter is declared before its owned tree/output, so those buffers
-        // are already freed on every error/unwind path. Release is cleanup,
-        // never a cancellation/fence checkpoint, and must be accepted by the
-        // callback even after an earlier failure. Preserve that first failure.
+        // The meter is declared before its owned tree/output, so those buffers are already freed on every error/unwind path.
         let retained = std::mem::take(&mut self.retained);
         if retained != 0 {
             let _ = (self.charge)(JsonCodecCharge::Release { bytes: retained });
@@ -498,7 +419,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
             }
         }
     }
-
 
     fn item(&mut self, depth: u32) -> JsonResult<()> {
         if depth > self.bounds.maximum_depth || self.items >= self.bounds.maximum_items {
@@ -713,8 +633,6 @@ impl<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Encode
         Ok(map)
     }
     fn collect_str<T: std::fmt::Display + ?Sized>(self, value: &T) -> JsonResult<Value> {
-        // Display has no borrowed string interface. Stream it through the same
-        // bounded string builder rather than serde's unbounded format! default.
         self.meter.item(self.depth)?;
         let mut text = BoundedText { meter: self.meter, text: String::new(), error: None };
         if std::fmt::write(&mut text, format_args!("{value}")).is_err() {
@@ -732,8 +650,6 @@ struct BoundedText<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> { meter: &'a
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::fmt::Write for BoundedText<'_, '_, F> {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
         let result = (|| {
-            // This transient formatting buffer is separate retained/work data;
-            // final escaped bytes are charged by serialize_str.
             if (self.text.len() as u64).checked_add(value.len() as u64).is_none_or(|size| size > self.meter.bounds.maximum_bytes) {
                 return Err(CodecError::Bound("JSON exceeds declared byte bound"));
             }
@@ -873,8 +789,6 @@ macro_rules! key_scalar {
     ($method:ident, $ty:ty $(, $finite:expr)?) => {
         fn $method(self, value: $ty) -> JsonResult<String> {
             $(if !($finite)(value) { return Err(CodecError::Bound("float key must be finite (got NaN or +/-inf)")); })?
-            // Same primitive formatter as serde_json's private map-key codec,
-            // but fixed stack storage avoids a pre-admission temporary map.
             struct Scalar($ty);
             impl Serialize for Scalar {
                 fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> { serializer.$method(self.0) }
@@ -930,10 +844,7 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Key<'_, '_, F>
     }
 }
 
-/// Allocates only after each logical payload/item has passed admission. A
-/// canonical tree is necessary for sorted maps and last-duplicate-key wins;
-/// streaming serde_json directly would change f32 and duplicate-key identities.
-/// Byte admission counts all emitted entries (including discarded duplicates).
+/// Allocates only after each logical payload/item has passed admission.
 pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, charge: &mut F,
 ) -> Result<Vec<u8>> {
@@ -941,9 +852,6 @@ pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCha
 }
 
 /// Trusted native carrier for the SAME bounded canonical byte encoder.
-/// Requires the same funded closed source and callback custody as the portable
-/// encoder. Genuine serde sources need their original preclaimed diagnostic
-/// guard; arbitrary custom Serialize internals/messages are not heap bounded.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
@@ -951,11 +859,7 @@ pub fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnM
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, Some(code), charge)
 }
 
-/// Native carrier for the legacy identity policy, restricted to an already
-/// paid, trusted resident Value. Uses the SAME encoder and exact IDENTITY bounds
-/// without the bounded entry points' 256-depth clamp. Legacy recursive-callstack
-/// risk remains: finite work custody is not a universal stack/RSS guarantee.
-/// Untrusted wire must pass its actual finite admission before this operation.
+/// Native carrier for the legacy identity policy, restricted to an already paid, trusted resident Value.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &Value, code: crate::wire::ErrorCode, charge: &mut F,
@@ -963,28 +867,14 @@ pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCha
     encode(value, JsonBounds::IDENTITY, Some(code), charge)
 }
 
-/// Produces the SAME canonical encoder's owned Value directly, without an
-/// encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
-/// Encoded bytes (including duplicate entries), items and depth are admitted
-/// before owned payload/slot growth. Retain/Release/Copy report logical storage,
-/// not opaque allocator/map-node operations or process RSS. Custom Serialize
-/// internals are trusted, not sandboxed. RawValue's separate Admission requires
-/// an audited caller-owned parser quota; its subsequent Retain observes the
-/// parsed tree and must adopt that quota without inventing an allocator attempt.
-/// On success keep the actual returned-tree custody until its last use; all
-/// temporary codec claims are released, and errors drop owned nodes before
-/// unconditional cleanup while preserving the first owned callback failure.
+/// Produces the SAME canonical encoder's owned Value directly, without an encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
 pub fn json_value_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, charge: &mut F,
 ) -> Result<Value> {
     value_output(value, bounds, None, charge)
 }
 
-/// Native direct tree producer using the SAME canonical Encoder. Closed SDK
-/// failures remain inline; actual serde failures move their original source
-/// without formatting. Attach the original preclaimed diagnostic allocation to
-/// NativeEncode before returning its error. Returned-tree custody is still the
-/// original caller's responsibility; custom serde internals are trusted.
+/// Native direct tree producer using the SAME canonical Encoder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_value_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
@@ -992,13 +882,7 @@ pub fn json_value_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCod
     value_output(value, bounds, Some(code), charge)
 }
 
-/// SDK-private sizing of an already bounded, audited closed source. No owned
-/// Value/wire buffer is constructed; actual emitted sizing bytes/nodes are CPU
-/// Inspect/Work items, never backend Read or owned-wire Work.bytes. The caller
-/// admits resident data BEFORE invoking serde (for Value use resident inspection
-/// with schema None first). Opaque custom Serialize code/CPU is not sandboxed,
-/// and standard serde error allocation requires the original paid diagnostic
-/// guard. This is not a deadline guarantee between opaque serde callbacks.
+/// SDK-private sizing of an already bounded, audited closed source.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
@@ -1057,9 +941,7 @@ fn value_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None,
         bound_failure: None, native_code, retained: 0, tree_only: true };
     let value = encode_value(value, &mut meter)?;
-    // Observe this actual tree once: permissive custom serializers can discard
-    // temporary keys/nodes before returning success. Their already-freed claims
-    // must not be transferred as if they were part of the returned Value.
+    // Observe this actual tree once: permissive custom serializers can discard temporary keys/nodes before returning success.
     let owned = owned_logical_bytes(&value);
     let released = meter.retained.checked_sub(owned)
         .ok_or_else(|| CodecError::Bound("JSON retention accounting differs").into_root_with_code(native_code))?;
@@ -1083,8 +965,6 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
         Err(error) => return Err(meter.root_error(error)),
     };
     if let Some(error) = meter.first_error() { return Err(error); }
-    // serde_json::Map may use insertion-order storage. Explicit sorting pins
-    // the same raw UTF-8 key ordering for all feature configurations.
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(meter.root_error(error));
     }
@@ -1096,24 +976,7 @@ pub(super) fn canonical_json_bytes_trusted<T: Serialize + ?Sized>(value: &T) -> 
     encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
 }
 
-/// Finish an SDK-owned, already canonical immutable journal template in its
-/// caller-owned prepaid output. Before the physical action, the caller must
-/// freeze and canonicalize every non-scalar field, admit the template's semantic
-/// depth (at most 256), and pay for both the resident Value and an empty output
-/// with capacity for `maximum_bytes`. That byte bound must include the full
-/// 20-digit worst case for every subsequently updated u64 scalar slot.
-///
-/// This deliberately does not validate arbitrary Value canonicality, size or
-/// depth, sort keys, clone a tree, or reserve output storage. Only in-place u64
-/// scalar edits are permitted after the pre-action admission. The callback must
-/// consume the original accepted completion-work reservation, not acquire fresh
-/// work, cancellation permission, or native admission after the action.
-///
-/// Known SDK buffers cannot grow here; opaque serde internals are not covered by
-/// a global no-allocation guarantee. The caller keeps its original diagnostic
-/// guard and attaches it to NativeEncode errors. Partial output on failure stays
-/// caller-owned and paid until cleared or dropped; no custody is adopted or
-/// released by this helper.
+/// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &Value, output: &mut Vec<u8>, maximum_bytes: u64,
@@ -1194,8 +1057,7 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     if let Err(error) = meter.release(released) {
         return Err(meter.root_error(error));
     }
-    // Transfer only the returned output reservation to the caller. Every
-    // temporary reservation has already been released after its data was freed.
+    // Transfer only the returned output reservation to the caller.
     meter.retained = 0;
     Ok(bytes)
 }
@@ -1205,10 +1067,7 @@ const LEXICAL_NESTING_ERROR: &str = "invalid JSON nesting";
 const LEXICAL_ITEM_ERROR: &str = "JSON exceeds declared structural bound";
 const LEXICAL_INCOMPLETE_ERROR: &str = "incomplete JSON document";
 
-/// Maximum ONE newly owned SDK lexical-error String payload. These paths never
-/// interpolate input, labels, line/column numbers or callback-owned diagnostics.
-/// Wrapper/allocator metadata is excluded; any caller formatting adds its own
-/// audited prefix/buffer allowance. Native callbacks forward their owned cause.
+/// Maximum ONE newly owned SDK lexical-error String payload.
 pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
     let labels = [LEXICAL_BYTE_ERROR, LEXICAL_NESTING_ERROR,
         LEXICAL_ITEM_ERROR, LEXICAL_INCOMPLETE_ERROR];
@@ -1301,8 +1160,7 @@ impl Scan {
     }
 }
 
-/// Bounds lexical tokens, including duplicate keys. Complete grammar, UTF-8 and
-/// numeric validation follows in the typed serde decoder.
+/// Bounds lexical tokens, including duplicate keys.
 pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
     admit_json_trusted(bytes, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, charge)
 }
@@ -1330,7 +1188,6 @@ fn admit_json_value_shape_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
 }
 
 /// The original source pass with a real closed SDK Value field descriptor.
-/// Callers keep their own schema/diagnostic custody and original serde decoder.
 pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
 ) -> Result<JsonValueShape> {
@@ -1339,10 +1196,7 @@ pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
     }, Some(schema), charge).map_err(AdmissionFailure::into_root)
 }
 
-/// Existing noncanonical record bytes (not identities). Serialize must be
-/// trusted and deterministic across these two passes. Neither pass constructs
-/// a Value tree; emitted bytes/items/depth are checked before owned output
-/// growth. Inconsistent second-pass serialization errors rather than reallocs.
+/// Existing noncanonical record bytes (not identities).
 pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, charge: &mut F,
 ) -> Result<Vec<u8>> {
@@ -1350,9 +1204,6 @@ pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharg
 }
 
 /// Trusted native carrier for the SAME deterministic two-pass byte writer.
-/// The closed serializer must be deterministic and already funded. Caller-owned
-/// diagnostic custody covers its audited serde errors, not arbitrary custom
-/// Serialize allocation/CPU or global allocator/RSS effects.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
@@ -1436,13 +1287,7 @@ fn bytes_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(output)
 }
 
-/// Typed decoding is NOT a generic heap admission proof. Only audited
-/// Deserialize implementations may use this boundary. The caller supplies and
-/// reserves the concrete type's maximum owned logical bytes BEFORE decoding;
-/// its schema must establish that bound from admitted bytes/items. Custom
-/// Deserialize (including ignored/flattened/custom fields) is trusted and must
-/// not allocate beyond that witness or perform unmetered external work. No
-/// allocator-node/RSS bound or arbitrary DeserializeOwned guarantee is made.
+/// Typed decoding is NOT a generic heap admission proof.
 pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
 ) -> Result<T> {
@@ -1450,9 +1295,6 @@ pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(
 }
 
 /// SDK-private portable closed-seed carrier using the SAME decode engine.
-/// Finite SDK producers provide their actual Value schema even in owned/WASM
-/// mode; legacy generic T admission keeps its separate unknown-schema policy.
-/// The concrete seed/custody obligations are identical to the native companion.
 pub(crate) fn json_from_slice_seed_bounded_trusted<'de, S, F>(
     seed: S, bytes: &'de [u8], bounds: JsonBounds, maximum_owned_bytes: u64,
     value_schema: JsonValueSchema, charge: &mut F,
@@ -1462,15 +1304,7 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
         .map_err(DecodeFailure::into_portable_root)
 }
 
-/// Native carrier for the SAME trusted concrete-schema decoder. Serde syntax
-/// and schema failures move their actual source without formatting/copying a
-/// diagnostic after admission. The caller must attach its original preclaimed
-/// diagnostic allocation to NativeDecode's custody before returning that error,
-/// and keep successful typed payload custody through its last use. No arbitrary
-/// Deserialize heap/CPU or opaque allocator/RSS guarantee is made.
-/// `code` preserves the caller's wire classification (request Invalid or
-/// persisted-record Storage) for serde failures. SDK lexical/bounds failures
-/// are inline static NativeBoundary Invalid errors, before owned error growth.
+/// Native carrier for the SAME trusted concrete-schema decoder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
@@ -1483,13 +1317,7 @@ pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F:
     })
 }
 
-/// SDK-private closed seed boundary using the SAME original lexical/serde
-/// engine. Manifest seeds enforce their member bound BEFORE next_element and
-/// growth. Original SDK work failures stay in the seed's existing owned sidecar
-/// and take precedence over its STATIC serde marker. No SDK format/to_string
-/// or diagnostic allocation is permitted after denial; serde's foreign private
-/// Message/ErrorImpl allocations remain opaque, not a zero-malloc claim. Hold
-/// the original preparse guard until partial typed payload physically drops.
+/// SDK-private closed seed boundary using the SAME original lexical/serde engine.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn json_from_slice_seed_bounded_native_trusted<'de, S, F>(
     seed: S, bytes: &'de [u8], bounds: JsonBounds, maximum_owned_bytes: u64,
@@ -1504,18 +1332,7 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
         })
 }
 
-/// Trusted BORROWED Value-to-closed-DTO boundary. Inspect the original paid
-/// tree (including selected virtual Raw inputs), then admit the concrete output
-/// BEFORE the genuine borrowed Value deserializer executes. No source clone,
-/// JSON round trip, encoded-byte charge or invented backend read occurs.
-/// The closed owner MUST audit borrowed/owned visitor acceptance equivalence
-/// and its actual new String/Vec/Content/Box/diagnostic quota; arbitrary custom
-/// Deserialize and visit_string-only visitors are explicitly unsupported.
-/// Consuming from_value callers retain their original semantics with
-/// json_from_value_owned_bounded_native_trusted and its additional-quota witness.
-/// Admission carries the SDK-issued BorrowedConversion shape. It is a concrete
-/// owner quota basis, not an actual receipt, arbitrary-T heap/CPU sandbox, or
-/// universal stack/RSS proof; borrowed source custody remains with the caller.
+/// Trusted BORROWED Value-to-closed-DTO boundary.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     source: &Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
@@ -1527,29 +1344,7 @@ pub fn json_from_value_bounded_native_trusted<T: serde::de::DeserializeOwned, F:
     T::deserialize(source).map_err(|source| Error::NativeDecode { code, source, custody: None })
 }
 
-/// Trusted CONSUMING Value-to-closed-DTO boundary. Inspect the original owned
-/// tree in its actual map order, admit its sealed OwnedConversion shape, then
-/// execute the original serde_json::from_value without a clone or JSON round
-/// trip. Admission/inspection callback root errors are returned unchanged; on
-/// any predecode failure this function physically drops its owned source before
-/// returning, while the caller still holds the whole original input guard.
-///
-/// Only an audited closed DTO may use this boundary. Its schema and trusted
-/// custom Deserialize implementations (including ignored/flattened/custom
-/// fields) must establish concrete new String/Vec/Content/Box/typed-node and
-/// diagnostic storage bounds and perform no unmetered external work. Admission
-/// must reserve that additional owner quota BEFORE serde; `maximum_owned_bytes`
-/// is the caller's bound, not an arbitrary-T heap theorem. The public
-/// json_owned_value_conversion_additional_bytes arithmetic excludes already
-/// owned resident strings that MOVE; keep the WHOLE original input guard through
-/// the moved DTO's physical last use/drop, or source/partial DTO drop on failure.
-/// Keep the additional owner guard through physical payload/error drop too.
-///
-/// Serde failures retain their real source and requested wire `code` in
-/// NativeDecode with custody None. Before returning that error, the caller must
-/// attach its original preclaimed diagnostic guard; no late claim or formatting
-/// is performed here. This trusted boundary is not a generic Deserialize heap,
-/// CPU, opaque allocator/global RSS or stack sandbox.
+/// Trusted CONSUMING Value-to-closed-DTO boundary.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_from_value_owned_bounded_native_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     source: Value, bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
@@ -1600,8 +1395,6 @@ fn decode_seed_bounded<'de, S, F>(
 where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
     let value_shape = admit_json_value_shape_inline(bytes, bounds, value_schema, charge)?;
-    // Vec scratch growth is geometric; reserve its conservative logical
-    // capacity, not just string length. Borrowed input itself is not newly owned.
     let scratch = (bytes.len() as u64).max(8).checked_mul(2)
         .ok_or(DecodeFailure::Bound("JSON scratch bound overflow"))?;
     let maximum_owned_bytes = maximum_owned_bytes.checked_add(scratch)
@@ -1637,7 +1430,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
             .ok_or_else(|| CodecError::Bound("JSON exceeds declared structural bound"))?;
         let bounds = JsonBounds { maximum_depth, maximum_items: meter.bounds.maximum_items - meter.items, ..meter.bounds };
         // Legacy convenience retains its existing trusted unbounded policy.
-        // Finite producers inspect genuine Value virtual sources before growth.
         let schema = if meter.bounds.maximum_depth == u32::MAX { None } else { Some(JsonValueSchema::Root) };
         let mut scan = Scan::with_value_schema(schema, bounds);
         scan.push_inline(value.as_bytes(), bounds, &mut |event| {
@@ -1659,8 +1451,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
             .and_then(|bytes| value_shape.input_bytes.max(8).checked_mul(4).and_then(|strings| bytes.checked_add(strings)))
             .ok_or(CodecError::Bound("JSON owned bound overflow"))?;
         meter.charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
-        // Keep serde_json::to_value(RawValue)'s existing number/grammar/recursion
-        // semantics, rather than treating its private token as an ordinary map.
         let value: Value = serde_json::from_str(value)?;
         let owned = usize::try_from(owned_logical_bytes(&value))
             .map_err(|_| CodecError::Bound("JSON owned bound overflow"))?;
@@ -2018,37 +1808,6 @@ mod tests {
             });
             assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
             assert_eq!(live, 0, "cancel schedule {stop} leaks live codec quota");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn ordinary_codec_cancellation_releases_admitted_output() -> Result<()> {
-        let value = serde_json::json!({"a": "owned output", "b": [1, 2, 3]});
-        let mut calls = 0usize;
-        json_bytes_bounded_trusted(&value, BOUNDS, &mut |event| {
-            if !matches!(event, JsonCodecCharge::Release { .. }) { calls += 1; }
-            Ok(())
-        })?;
-        for stop in 0..calls {
-            let mut seen = 0;
-            let mut live = 0u64;
-            let operation = crate::OperationId::from_bytes((stop as u128).to_le_bytes());
-            let mut error = Some(Error::Indeterminate(operation));
-            let result = json_bytes_bounded_trusted(&value, BOUNDS, &mut |event| {
-                if let JsonCodecCharge::Release { bytes } = event {
-                    live = live.checked_sub(bytes).expect("release only admitted quota");
-                    return Ok(());
-                }
-                if seen == stop {
-                    return Err(error.take().expect("codec must stop after its first failure"));
-                }
-                seen += 1;
-                if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
-                Ok(())
-            });
-            assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
-            assert_eq!(live, 0);
         }
         Ok(())
     }

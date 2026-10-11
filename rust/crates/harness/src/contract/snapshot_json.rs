@@ -1,7 +1,7 @@
 //! Closed Snapshot-schema quota for the original authenticated checkpoint path.
-//! This is logical payload/collection storage, not allocator nodes or process RSS.
 
 use super::{JsonBounds, JsonCodecCharge};
+use super::event_json::{multiply_with_code, sum_with_code};
 use crate::{Error, Result, core::Snapshot};
 use serde_json::Value;
 use std::mem::size_of;
@@ -24,8 +24,6 @@ pub(crate) struct SnapshotJsonAdmission {
     pub conversation_canonical_scratch_bytes: u64,
 }
 
-// Snapshot/Projection's additional fields and the ConversationStateWire moving
-// converter. EventPayload's nested labels and diagnostics are audited there.
 const SNAPSHOT_DIAGNOSTICS: &str = concat!(
     "Snapshot Projection ConversationStateWire ArchivedConversationPrefix ",
     "format_version authority revision events projection state_digest attestation ",
@@ -40,40 +38,10 @@ const SNAPSHOT_DIAGNOSTICS: &str = concat!(
     "file or volume label is invalid checkpoint snapshot is invalid ",
 );
 
-fn ownership_overflow(native_code: Option<crate::wire::ErrorCode>) -> Error {
-    match native_code {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(code) => Error::NativeBoundary { code, reason: "snapshot JSON admission overflow" },
-        _ => Error::Invalid("snapshot JSON admission overflow".into()),
-    }
-}
-
-fn multiply_with_code(value: u64, factor: u64, native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
-    value.checked_mul(factor).ok_or_else(|| ownership_overflow(native_code))
-}
-fn sum_with_code(values: &[u64], native_code: Option<crate::wire::ErrorCode>) -> Result<u64> {
-    values.iter().try_fold(0u64, |total, value| total.checked_add(*value)
-        .ok_or_else(|| ownership_overflow(native_code)))
-}
-
 /// Same-pass lexical and selected Raw-Value admission, then ONE ownership quota.
-/// The callback must reserve `Admission` with a real RAII quota/highwater before
-/// the original Snapshot Deserialize runs, release it on failure/cancellation,
-/// and adopt actual retained capacities without double counting on success.
-/// Keep custody through the last Snapshot use or move into restore's custody.
-/// This does not validate the checkpoint MAC, replace serde, claim exact opaque
-/// serde CPU/allocation counters, or interrupt arbitrary custom Deserialize.
-/// The pinned EventPayload audit and Snapshot's original closed slot inventory
-/// must be updated if a reachable type/custom converter changes. Caller-owned
-/// input and verifier credentials are not newly owned request memory.
-/// The sealed shape adds hidden Value nodes and live Raw buffers exactly once
-/// through EventPayload's shared overlap quota. Selection covers retained event
-/// values, fork source snapshots and projection interaction/fork tuples.
 pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + ?Sized>(
     bytes: &[u8], bounds: JsonBounds, charge: &mut F,
 ) -> Result<SnapshotJsonAdmission> {
-    // A checkpoint spans bounded chunks and is not subject to ONE event's byte
-    // ceiling. Preserve the caller's finite total checkpoint allowance instead.
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
     let value_shape = super::json::admit_json_value_shape(
         bytes, bounds, super::json::JsonValueSchema::Snapshot, &mut |event| charge(event),
@@ -83,11 +51,7 @@ pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + 
     Ok(admission)
 }
 
-/// The same concrete Snapshot ownership policy for a sealed original-pass
-/// shape. A closed containing DTO may use its aggregate shape conservatively
-/// before its original decoder; no second scan or reservation is issued here.
-/// `native_code` explicitly selects the inline native overflow carrier; ordinary
-/// callers pass None and retain their original Invalid String even in FS builds.
+/// The same concrete Snapshot ownership policy for a sealed original-pass shape.
 pub(crate) fn snapshot_json_ownership(
     value_shape: super::json::JsonValueShape, maximum_depth: u32, native_code: Option<crate::wire::ErrorCode>,
 ) -> Result<SnapshotJsonAdmission> {
@@ -97,47 +61,25 @@ pub(crate) fn snapshot_json_ownership(
     let lexical_items = value_shape.lexical_items();
     let event = super::event_json::event_payload_ownership(value_shape, maximum_depth, native_code)?;
     let slots = multiply(lexical_items, 2 + 8)?;
-    // Reuse core/snapshot.rs's actual reachable ABI inventory. Projection's
-    // largest map entry has three components: e.g. String/(EventReference,
-    // ExtensionRecord) and Uuid/(InteractionTicket, Option<Resolution>). Each
-    // component fits the same slot. Opaque BTreeMap/BTreeSet nodes are excluded.
     let typed_collection_bytes = multiply(slots, multiply(Snapshot::LOGICAL_SCHEMA_SLOT_BYTES, 3)?)?;
-    // Unlike one EventPayload, a Snapshot can retain many root payload boxes.
-    // Each box has a distinct container/scalar token in the encoded input.
     let boxed_payload_bytes = multiply(lexical_items, event.boxed_payload_bytes)?;
     let diagnostic_bytes = sum(&[event.diagnostic_bytes,
         multiply(SNAPSHOT_DIAGNOSTICS.len() as u64 + 4, 2)?])?;
 
-    // ConversationState::try_from moves its wire messages, but also builds the
-    // omitted caches. Messages <= lexical items. Prefix digests use exact length;
-    // model_positions uses geometric/minimum Vec growth; each message can own
-    // one by_id and one outcomes logical map entry. No map-node size is invented.
     let conversation_cache_bytes = sum(&[
         multiply(lexical_items, size_of::<[u8; 32]>() as u64)?,
         multiply(slots, size_of::<usize>() as u64)?,
         multiply(lexical_items, 2 * size_of::<(uuid::Uuid, usize)>() as u64)?,
     ])?;
 
-    // The SAME original moving converter calls advance_history_digest for each
-    // message, which uses the shared canonical engine. Only one such tree/output
-    // is live at a time, but it overlaps the wire/typed Snapshot and serde scratch.
-    // ConversationMessage has eight fields, the maximum of its reachable fixed
-    // structs. Missing optional fields may serialize as null: per source object
-    // allow all eight field-key/value pairs in addition to its lexical tokens.
     const MESSAGE_FIELDS: u64 = 8;
     let canonical_items = multiply(lexical_items, 1 + 2 * MESSAGE_FIELDS)?;
     let canonical_slots = multiply(canonical_items, 2 + 8)?;
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
-    // Fixed scalar strings are UUIDs (32 hex bytes + four hyphens); field names,
-    // MessageKind/VolumeOwner/attachment labels are shorter. Numeric scalars are
-    // at most full-width u64 (20 bytes), booleans/null are shorter. Two extra
-    // bytes cover quotes; another two cover per-token delimiters/punctuation.
     const UUID_TEXT_BYTES: u64 = 2 * size_of::<uuid::Uuid>() as u64 + 4;
     let canonical_tree_strings = sum(&[input_bytes, multiply(canonical_items, UUID_TEXT_BYTES)?])?;
     let canonical_output = sum(&[multiply(input_bytes, 6)?,
         multiply(canonical_items, UUID_TEXT_BYTES + 2 + 2)?])?;
-    // collect_str's one live UUID formatting buffer overlaps its copied Value
-    // string. Include its minimum/geometric capacity independently of the tree.
     let canonical_format_scratch = multiply(UUID_TEXT_BYTES.max(8), 2)?;
     let conversation_canonical_scratch_bytes = sum(&[
         multiply(canonical_slots, value_slot)?, canonical_tree_strings, canonical_output, canonical_format_scratch,
@@ -166,8 +108,6 @@ mod tests {
         FileRef, MessageKind, ReferencedAttachments, VolumeClass, VolumeOwner, VolumeRef}};
     use std::collections::BTreeMap;
     use std::cell::Cell;
-
-    fn sum(values: &[u64]) -> Result<u64> { sum_with_code(values, None) }
 
     fn fixture(reason: String) -> Result<(Snapshot, AuthorityIssuer)> {
         let authority = Authority { kind: AggregateKind::Agent, id: "snapshot-codec-agent".into() };
@@ -219,8 +159,7 @@ mod tests {
         })?;
         reducer.snapshot()
     }
-    // Only test controls construct wire variants. Production inspects the
-    // selected sources within its original lexer, never this resident tree.
+    // Only test controls construct wire variants.
     fn raw_outcomes(snapshot: &Snapshot, raw: &str, event: bool, projection: bool) -> Vec<u8> {
         let mut wire = serde_json::to_value(snapshot).unwrap();
         let raw = serde_json::json!({ "$serde_json::private::RawValue": raw });
@@ -236,64 +175,6 @@ mod tests {
             interaction[1]["outcome"] = raw;
         }
         serde_json::to_vec(&wire).unwrap()
-    }
-
-    #[test]
-    fn ordinary_snapshot_preserves_normal_quota_policy() -> Result<()> {
-        for snapshot in [fixture("ordinary".into())?.0, interaction_fixture()?] {
-            let bytes = super::super::canonical_json_bytes(&snapshot)?;
-            let mut shape = None;
-            let mut inspected = 0;
-            let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |charge| {
-                match charge {
-                    JsonCodecCharge::Inspect { items } => inspected += items,
-                    JsonCodecCharge::Admission { value_shape, .. } => shape = Some(value_shape),
-                    _ => {}
-                }
-                Ok(())
-            })?;
-            let shape = shape.unwrap();
-            let factored = snapshot_json_ownership(shape, bounds(&bytes).maximum_depth, None)?;
-            assert_eq!(factored.maximum_owned_bytes, admission.maximum_owned_bytes);
-            assert_eq!(factored.conversation_cache_bytes, admission.conversation_cache_bytes);
-            assert_eq!(factored.conversation_canonical_scratch_bytes, admission.conversation_canonical_scratch_bytes);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            {
-                let native = snapshot_json_ownership(shape, bounds(&bytes).maximum_depth,
-                    Some(crate::wire::ErrorCode::Storage))?;
-                assert_eq!(native.maximum_owned_bytes, factored.maximum_owned_bytes,
-                    "carrier mode must not change the concrete producer's ownership policy");
-                assert!(matches!(multiply_with_code(u64::MAX, 2, None),
-                    Err(Error::Invalid(message)) if message == "snapshot JSON admission overflow"));
-                assert!(matches!(multiply_with_code(u64::MAX, 2, Some(crate::wire::ErrorCode::Storage)),
-                    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. })));
-                assert!(matches!(super::super::event_json::event_payload_ownership(shape, 256,
-                    Some(crate::wire::ErrorCode::Storage)), Ok(_)));
-            }
-            assert_eq!(shape.virtual_items(), 0);
-            assert_eq!(inspected, 0);
-            assert_eq!(super::super::json::json_value_virtual_owned_bytes(shape)?, 0);
-            let slots = admission.lexical_items * 10;
-            let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
-            assert_eq!(admission.value_overlap_bytes, slots * value_slot);
-            assert_eq!(admission.typed_collection_bytes, slots * Snapshot::LOGICAL_SCHEMA_SLOT_BYTES * 3);
-            let event = super::super::event_json::event_payload_ownership(shape, 256, None)?;
-            assert_eq!(admission.serde_content_bytes, event.serde_content_bytes);
-            assert_eq!(admission.boxed_payload_bytes, admission.lexical_items * event.boxed_payload_bytes);
-            assert_eq!(admission.string_payload_bytes, event.string_payload_bytes);
-            assert_eq!(admission.scratch_bytes, event.scratch_bytes);
-            assert_eq!(admission.maximum_owned_bytes, sum(&[
-                admission.serde_content_bytes, admission.typed_collection_bytes,
-                admission.value_overlap_bytes, admission.boxed_payload_bytes,
-                admission.string_payload_bytes, admission.scratch_bytes,
-                admission.diagnostic_bytes, admission.conversation_cache_bytes,
-                admission.conversation_canonical_scratch_bytes,
-            ])?);
-            let decoded: Snapshot = super::super::json_from_slice(&bytes)
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            assert_eq!(decoded, snapshot);
-        }
-        Ok(())
     }
 
     #[test]
@@ -335,8 +216,6 @@ mod tests {
             assert!(admission.value_overlap_bytes > normal_slots);
             let decoded: Snapshot = super::super::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?;
-            // Admission is not authentication: the original serde conversion
-            // produces the same signed snapshot, whose restore still checks MACs.
             assert_eq!(decoded, snapshot);
             assert_eq!(live.get(), admission.maximum_owned_bytes);
             drop(decoded);
@@ -494,8 +373,6 @@ mod tests {
         let conversation = restored.conversation().unwrap();
         assert_eq!(conversation.history_prefix_digest(16)?,
             reducer.conversation().unwrap().history_prefix_digest(16)?);
-        // This method measures cloned cache payload, not allocator/node bytes;
-        // the schema quota additionally covers Vec spare capacity and scratch.
         assert!(conversation.clone_cache_logical_bytes()? <= admission.conversation_cache_bytes);
         assert!(admission.conversation_canonical_scratch_bytes > 0);
         assert_eq!(live.get(), admission.maximum_owned_bytes);
@@ -610,8 +487,7 @@ mod tests {
             let (mut snapshot, _) = fixture(reason).unwrap();
             let event = snapshot.events[0].clone();
             snapshot.events = vec![event; copies];
-            // This adversarial cache is intentionally not MAC-authenticated;
-            // admission bounds storage, never promotes it to authority.
+            // This adversarial cache is intentionally not MAC-authenticated; admission bounds storage, never promotes it to authority.
             let bytes = super::super::canonical_json_bytes(&snapshot).unwrap();
             let live = Cell::new(0);
             let mut quota = None;

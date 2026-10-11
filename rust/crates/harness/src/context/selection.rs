@@ -60,43 +60,43 @@ impl ContextAttribute {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.preflight_source_with_work(work)?;
-        self.validate_preflighted_with_work(work)
+        self.preflight_source(work)?;
+        self.validate_preflighted(work)
     }
 
-    fn preflight_source_with_work(
+    fn preflight_source(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if selection_has_native_work(work) {
-            self.validate_identity_with_work(work)?;
-            observe_selection_value_with_work(&self.schema, work)?;
-            observe_selection_value_with_work(&self.value, work)?;
+            self.validate_identity(work)?;
+            observe_selection_value(&self.schema, work)?;
+            observe_selection_value(&self.value, work)?;
         }
         Ok(())
     }
 
-    fn validate_identity_with_work(
+    fn validate_identity(
         &self,
         work: &Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         for label in [&self.type_name, &self.type_revision, &self.state_revision] {
             if !crate::is_valid_component_label(label) {
-                return Err(selection_boundary_with_work(work,
+                return Err(selection_boundary(work,
                     "context attribute identity is invalid"));
             }
         }
         Ok(())
     }
 
-    fn validate_preflighted_with_work(
+    fn validate_preflighted(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        crate::contract::validate_trusted_json_byte_bound_with_work(
+        crate::contract::validate_trusted_json_byte_bound(
             self, crate::model::MAX_MODEL_REQUEST_BYTES, work,
         )?;
-        self.validate_identity_with_work(work)?;
+        self.validate_identity(work)?;
         crate::contract::validate_json_schema_value_with_work(
             &self.schema, &self.value, "context attribute", work,
         )
@@ -193,10 +193,10 @@ impl ContextSelection {
             }
             match &self.source {
                 ContextSourceValue::File { file } => limits.validate_file_with_work(file, work)?,
-                ContextSourceValue::Attribute { attribute } => attribute.preflight_source_with_work(work)?,
+                ContextSourceValue::Attribute { attribute } => attribute.preflight_source(work)?,
             }
         }
-        crate::contract::validate_trusted_json_byte_bound_with_work(self, limits.render_bytes, work)?;
+        crate::contract::validate_trusted_json_byte_bound(self, limits.render_bytes, work)?;
         match &self.source {
             ContextSourceValue::File { file } => {
                 if !native {
@@ -205,14 +205,14 @@ impl ContextSelection {
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
                 {
-                    return Err(selection_boundary_with_work(work,
+                    return Err(selection_boundary(work,
                         "context span is outside pinned file"));
                 }
             }
             ContextSourceValue::Attribute { attribute } => {
-                attribute.validate_preflighted_with_work(work)?;
+                attribute.validate_preflighted(work)?;
                 if self.extent != ContextExtent::Whole {
-                    return Err(selection_boundary_with_work(work,
+                    return Err(selection_boundary(work,
                         "attributes require whole selection"));
                 }
             }
@@ -243,7 +243,7 @@ fn selection_has_native_work(
     { let _ = work; false }
 }
 
-fn selection_boundary_with_work(
+fn selection_boundary(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     reason: &'static str,
 ) -> Error {
@@ -255,9 +255,8 @@ fn selection_boundary_with_work(
     Error::Invalid(reason.into())
 }
 
-// Audit the actual borrowed SDK Value collections before counting their closed
-// DTO serialization. This produces no JSON tree, encoded buffer or source copy.
-fn observe_selection_value_with_work(
+// Audit the actual borrowed SDK Value collections before counting their closed DTO serialization.
+fn observe_selection_value(
     value: &Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -320,8 +319,6 @@ pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
     }
 
     /// Renders the same selection after funding the concrete future frame.
-    /// Implementations must use `NativeFutureBundle::new(work, || ...)` before
-    /// invoking a provider or boxing; the returned guard owns the actual messages.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn render_native<'a>(
         &'a self,
@@ -428,7 +425,7 @@ impl ContextStage for SelectionStage {
         }
         let mut source_io = crate::store::history::native_work_io(work)
             .map_err(super::native_context_work_error)?;
-        observe_selection_value_with_work(&renderer.0, &mut Some(&mut source_io))?;
+        observe_selection_value(&renderer.0, &mut Some(&mut source_io))?;
         #[derive(Serialize)]
         struct Contract<'a> {
             name: &'a str,
@@ -443,7 +440,6 @@ impl ContextStage for SelectionStage {
             ContextPlacement::Append => "append",
         };
         // Borrow the renderer's actual guarded payload until the funded copy finishes.
-        // Its independent original ledger is never rebound into the stage output.
         let contract = super::context_contract_native(&Contract {
             name: &self.name,
             selection: &self.selection,
@@ -509,7 +505,6 @@ impl ContextStage for SelectionStage {
 }
 
 /// Validates and places renderer output; shared by native stages and narrow WASM bindings.
-/// This is a projection only and grants no authority or model admission.
 pub fn apply_context_projection(
     context: Context,
     messages: Vec<ModelMessage>,
@@ -554,7 +549,7 @@ pub(crate) fn place_messages_with_io(
     context: Context, messages: Vec<ModelMessage>, placement: ContextPlacement,
     limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
-    place_context_with_io(
+    place_context(
         context, Context { messages, ..Context::default() }, placement, limits, io,
     )
 }
@@ -564,18 +559,9 @@ pub(super) fn place_context(
     contribution: Context,
     placement: ContextPlacement,
     limits: Limits,
-) -> Result<Context> {
-    place_context_with_io(context, contribution, placement, limits, None)
-}
-
-pub(super) fn place_context_with_io(
-    context: Context,
-    contribution: Context,
-    placement: ContextPlacement,
-    limits: Limits,
     io: Option<&super::ContextPreparationIo>,
 ) -> Result<Context> {
-    let marker = preflight_context_composition_with_io(&context, &contribution, placement, limits, io)?;
+    let marker = preflight_context_composition(&context, &contribution, placement, limits, io)?;
     compose_context_with_io(context, contribution, placement, marker, io)
 }
 
@@ -604,7 +590,7 @@ pub(super) fn place_context_native(
     let contribution_data = contribution.0;
     io.absorb_native_custody(context.1)?;
     io.absorb_native_custody(contribution.1)?;
-    let result = place_context_with_io(context_data, contribution_data, placement, limits, Some(&io))?;
+    let result = place_context(context_data, contribution_data, placement, limits, Some(&io))?;
     let retained = io.owned_bytes()?;
     Ok((result, io.into_native_custody(retained)?))
 }
@@ -615,7 +601,7 @@ pub(super) fn place_snapshot(
     placement: ContextPlacement,
     limits: Limits,
 ) -> Result<Context> {
-    let marker = preflight_context_composition(&context, snapshot, placement, limits)?;
+    let marker = preflight_context_composition(&context, snapshot, placement, limits, None)?;
     // Clone only after the complete message/metadata composition fits.
     compose_context_with_io(
         context,
@@ -637,7 +623,7 @@ pub(super) fn place_snapshot_native(
     let io = super::ContextPreparationIo::from_native_work(work)?;
     let context_data = context.0;
     io.absorb_native_custody(context.1)?;
-    let marker = preflight_context_composition_with_io(&context_data, snapshot, placement, limits, Some(&io))?;
+    let marker = preflight_context_composition(&context_data, snapshot, placement, limits, Some(&io))?;
     // Preflight the borrowed pinned source before funding and copying any source payload.
     let (snapshot, guard) = super::clone_context_native(snapshot, work)?;
     io.absorb_native_custody(guard)?;
@@ -666,15 +652,6 @@ impl Serialize for JoinedMetadata<'_> {
 }
 
 fn preflight_context_composition(
-    context: &Context,
-    contribution: &Context,
-    placement: ContextPlacement,
-    limits: Limits,
-) -> Result<Option<u32>> {
-    preflight_context_composition_with_io(context, contribution, placement, limits, None)
-}
-
-fn preflight_context_composition_with_io(
     context: &Context,
     contribution: &Context,
     placement: ContextPlacement,

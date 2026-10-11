@@ -37,7 +37,6 @@ mod snapshot;
 pub use snapshot::*;
 
 /// Durable output of an ordinary admitted summary model operation.
-/// The operation's execution journal retains its exact request and observations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextSummary {
@@ -54,7 +53,6 @@ pub struct ContextSummary {
 }
 
 /// Consumer-declared content that compaction must preserve verbatim.
-/// The current input is always retained, regardless of this policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -125,7 +123,6 @@ impl CompactionReference {
 }
 
 /// Ref-only canonical checkpoint envelope pinned by a committed history selection.
-/// The source selection's revision is its coverage watermark; stage output is separate.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalContextCheckpoint {
@@ -143,7 +140,6 @@ pub struct CanonicalContextCheckpoint {
 
 impl CanonicalContextCheckpoint {
     /// Checks a bounded envelope, sharing the I/O companion's policy and native scratch custody.
-    /// The owning journal must verify publication and read refs.
     pub fn validate(&self, limits: Limits) -> Result<()> {
         self.validate_with_io(limits, None)
     }
@@ -162,7 +158,6 @@ impl CanonicalContextCheckpoint {
             return Err(context_checkpoint_error(io, "canonical checkpoint coverage is invalid"));
         }
         // Validate immutable references before the bounded scratch set grows.
-        // None and Some use this same policy; native diagnostics stay static.
         for reference in [&self.source, &self.retained, &self.compaction] {
             context_checkpoint_file(limits, reference, io)?;
             if reference.volume() != self.source.volume()
@@ -201,8 +196,7 @@ impl CanonicalContextCheckpoint {
     /// Encodes one bounded envelope for the owning journal's normal content publisher.
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
         self.validate(limits)?;
-        // Count the typed envelope before canonical serialization creates its
-        // Value tree and byte buffer. Both publication and render bounds apply.
+        // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
         crate::contract::validate_json_byte_bound(
             self,
             limits.file_bytes.min(limits.render_bytes),
@@ -368,7 +362,6 @@ impl DurableContextProvider {
     }
 
     /// Installs an owner-bound writer for immutable projection payloads.
-    /// A source can reopen with only a reader; publication requires this binding.
     pub fn with_publisher(mut self, publisher: Arc<dyn ContentPublisher>) -> Result<Self> {
         publisher.volume().validate()?;
         self.publisher = Some(publisher);
@@ -499,8 +492,6 @@ impl DurableContextProvider {
     }
 
     /// Publishes one continuing projection and its exact source in a single CAS.
-    /// Neither the uncompressed source nor a projection without its provenance
-    /// becomes a visible latest revision. Exact retries reuse the same pair.
     pub async fn append_compaction(
         &self,
         expected_revision: u64,
@@ -563,9 +554,6 @@ impl DurableContextProvider {
     }
 
     /// Reads one verified page after a cursor through a captured revision.
-    /// Work and returned records are bounded by the configured page allowance,
-    /// independent of total retained history. A page beginning with compaction
-    /// reads its immediate source once in addition to the bounded page.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
@@ -729,8 +717,7 @@ impl DurableContextProvider {
             .await
     }
 
-    /// Loads one pinned revision, checking its source proof with at most two
-    /// record reads. Later publications do not change this projection.
+    /// Loads one pinned revision, checking its source proof with at most two record reads.
     pub async fn revision(&self, revision: u64) -> Result<ContextRevision> {
         self.revision_bounded(revision, self.limits).await
     }
@@ -745,7 +732,6 @@ impl DurableContextProvider {
     }
 
     /// Captures the current continuing projection and its immutable revision.
-    /// Reads at most two records, independent of retained revision count.
     pub async fn latest_revision(&self) -> Result<Option<ContextRevision>> {
         let tail = self.tail_revision().await?;
         if tail == 0 {
@@ -754,8 +740,7 @@ impl DurableContextProvider {
         self.revision(tail).await.map(Some)
     }
 
-    /// Returns the captured latest context. `latest_revision` also retains its
-    /// pin; `revisions(after, through)` provides explicit bounded archival pages.
+    /// Returns the captured latest context. `latest_revision` also retains its pin; `revisions(after, through)` provides explicit bounded archival pages.
     pub async fn latest(&self) -> Result<Context> {
         Ok(self
             .latest_revision()
@@ -917,15 +902,15 @@ impl DurableContextProvider {
                 #[cfg(feature = "filesystem")]
                 let summarized = if let Some(io) = io {
                     let mut history = io.history_io();
-                    let (copy, claim) = compaction::clone_context_prefix_with_work(
+                    let (copy, claim) = compaction::clone_context_prefix(
                         context, summary.source_messages as usize, &mut Some(&mut history))?;
                     observed_claim = claim;
                     copy
                 } else {
-                    compaction::clone_context_prefix_with_work(context, summary.source_messages as usize, &mut None)?.0
+                    compaction::clone_context_prefix(context, summary.source_messages as usize, &mut None)?.0
                 };
                 #[cfg(not(feature = "filesystem"))]
-                let summarized = compaction::clone_context_prefix_with_work(
+                let summarized = compaction::clone_context_prefix(
                     context, summary.source_messages as usize, &mut None)?.0;
                 crate::executor::preparation_digest(&summarized, io)
             })();
@@ -959,7 +944,7 @@ impl DurableContextProvider {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 let mut history = io.history_io();
-                let (context, claim) = compaction::compact_context_with_work(context, max_messages, summary, &retention,
+                let (context, claim) = compaction::compact_context(context, max_messages, summary, &retention,
                     &mut Some(&mut history))?;
                 produced_claim = claim;
                 context
@@ -972,7 +957,7 @@ impl DurableContextProvider {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 let mut history = io.history_io();
-                let (context, claim) = compaction::clone_context_with_work(context, &mut Some(&mut history))?;
+                let (context, claim) = compaction::clone_context(context, &mut Some(&mut history))?;
                 produced_claim = claim;
                 context
             } else { context.clone() }
@@ -990,8 +975,7 @@ impl DurableContextProvider {
         Ok(((compacted, reference), produced_claim))
     }
 
-    /// Native continuation of the original compaction policy; every clone is
-    /// admitted on the caller's original ledger before physical allocation.
+    /// Native continuation of the original compaction policy; every clone is admitted on the caller's original ledger before physical allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn compact_on_original_work(
         context: &Context,
@@ -1181,8 +1165,6 @@ fn mandatory_positions_with_io(
             selected.insert(position);
         }
     }
-    // A message can contain several calls/results. Close over the exchange graph
-    // so every mandatory message carries its complete paired messages as well.
     let mut pending = BTreeMap::new();
     let mut paired: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (position, message) in context.messages.iter().enumerate() {
@@ -1358,7 +1340,6 @@ pub(crate) fn validate_compaction_native(
     Ok(())
 }
 
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_projected_context_native(
     context: &Context, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
@@ -1373,7 +1354,7 @@ pub(crate) fn validate_projected_context_native(
     for file in context.metadata.values() { limits.validate_file_with_native_work(file, work)?; }
     let mut observer = crate::store::history::native_work_io(work)
         .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
-    crate::contract::validate_trusted_json_byte_bound_with_work(
+    crate::contract::validate_trusted_json_byte_bound(
         context, limits.render_bytes, &mut Some(&mut observer))?;
     Ok(())
 }
@@ -1400,7 +1381,7 @@ pub(crate) fn validate_projected_context_with_io(
         for file in context.metadata.values() {
             limits.validate_file_with_work(file, &mut observed)?;
         }
-        return crate::contract::validate_trusted_json_byte_bound_with_work(
+        return crate::contract::validate_trusted_json_byte_bound(
             context, limits.render_bytes, &mut observed);
     }
     let _ = io;
@@ -1596,8 +1577,6 @@ impl ContextSource for DurableContextProvider {
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
 pub trait ContextSource: acyclic_stream::ProviderPlatform {
     /// Resolves model-visible messages under the original admitted limits.
-    /// Implementations must bound source reads and construction before returning;
-    /// the pipeline independently validates the returned projection.
     fn load<'a>(
         &'a self,
         input: &'a ContextInput,
@@ -1971,8 +1950,7 @@ pub struct Context {
     /// Stage-owned, namespaced version-pinned metadata files.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]
     pub metadata: BTreeMap<String, FileRef>,
-    /// Position of the active turn input. Absent for standalone source projections.
-    /// Transformations must preserve this marker when they reorder or replace messages.
+    /// Position of the active turn input.
     #[cfg_attr(feature = "wasm", tsify(optional))]
     pub current_input_index: Option<u32>,
 }
@@ -2001,7 +1979,6 @@ impl Context {
 }
 
 /// A borrowed view of exactly the messages that will form a base or continuation.
-/// Preflight uses the ordinary Context wire fields before copying any payloads.
 struct ContextMessages<'a> {
     first: &'a [ModelMessage],
     user: Option<&'a ModelContent>,
@@ -2080,8 +2057,7 @@ impl BorrowedContext<'_> {
 pub struct ContextInput {
     /// Current durable turn input.
     pub input: ModelContent,
-    /// Recorded canonical selection; when present it replaces the synthesized
-    /// one-message context without changing its provenance.
+    /// Recorded canonical selection; when present it replaces the synthesized one-message context without changing its provenance.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
     /// Zero-based executor step.
@@ -2117,7 +2093,7 @@ impl ContextInput {
                             Some(file) => Some(file.clone_in_quota(&mut quota)?),
                             None => None,
                         };
-                        let (messages, claim) = compaction::clone_messages_with_work(&selected.messages, quota.work())?;
+                        let (messages, claim) = compaction::clone_messages(&selected.messages, quota.work())?;
                         quota.adopt(claim)?;
                         Ok((checkpoint, messages))
                     })();
@@ -2191,7 +2167,7 @@ fn validate_context_json_with_io<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return crate::contract::validate_trusted_json_byte_bound_with_work(
+        return crate::contract::validate_trusted_json_byte_bound(
             value, maximum, &mut Some(&mut history));
     }
     let _ = io;
@@ -2203,7 +2179,7 @@ fn validate_context_json_native<T: Serialize>(
     value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let mut observer = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
-    crate::contract::validate_trusted_json_byte_bound_with_work(value, maximum, &mut Some(&mut observer))
+    crate::contract::validate_trusted_json_byte_bound(value, maximum, &mut Some(&mut observer))
 }
 
 fn validate_context_content_with_io(
@@ -2252,7 +2228,7 @@ fn copy_context_content_with_io(content: &ModelContent, io: Option<&ContextPrepa
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return crate::model::clone_content_with_work(content, &mut Some(&mut history)).map(|(copy, _)| copy);
+        return crate::model::clone_content(content, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(content.clone())
@@ -2262,7 +2238,7 @@ fn copy_context_messages_with_io(messages: &[ModelMessage], io: Option<&ContextP
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return compaction::clone_messages_with_work(messages, &mut Some(&mut history)).map(|(copy, _)| copy);
+        return compaction::clone_messages(messages, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(messages.to_vec())
@@ -2272,7 +2248,7 @@ pub(crate) fn context_clone_with_io(context: &Context, io: Option<&ContextPrepar
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return compaction::clone_context_with_work(context, &mut Some(&mut history)).map(|(copy, _)| copy);
+        return compaction::clone_context(context, &mut Some(&mut history)).map(|(copy, _)| copy);
     }
     let _ = io;
     Ok(context.clone())
@@ -2282,7 +2258,7 @@ fn copy_context_base_messages_with_io(input: &ContextInput, io: Option<&ContextP
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return compaction::clone_base_messages_with_work(
+        return compaction::clone_base_messages(
             input.selected_context.as_ref().map_or(&[], |selected| selected.messages.as_slice()),
             input.selected_context.is_none().then_some(&input.input), &input.prior_messages,
             &mut Some(&mut history)).map(|(copy, _)| copy);
@@ -2401,8 +2377,7 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
             "context stage has no native contract capability"))
     }
 
-    /// Validates a replacement before installation. Custom implementations may
-    /// reject incompatible configuration; rejection never replaces the last valid pipeline.
+    /// Validates a replacement before installation.
     fn validate(&self) -> Result<()> {
         crate::contract::validate_component_label(self.name(), "context stage")?;
         if !self.contract().is_object() {
@@ -2414,8 +2389,6 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     }
 
     /// Transforms context under the original admitted limits, in application order.
-    /// Implementations must apply these bounds before source reads or allocation;
-    /// the pipeline also checks every returned projection.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
@@ -2454,7 +2427,6 @@ pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
     /// Validates stage identities before installation or explicit reload.
-    /// Implementations must keep their contract and pinned state immutable.
     pub fn validate(&self) -> Result<()> {
         for stage in &self.0 {
             stage.validate()?;
@@ -2493,8 +2465,6 @@ impl ContextPipeline {
     }
 
     /// Installs a structurally valid replacement for future operations only.
-    /// Failure leaves this pipeline and its visibly inspectable contracts intact;
-    /// existing clones retain their original stage implementations.
     pub fn reload(&self, replacement: Self) -> Result<Self> {
         replacement.validate()?;
         Ok(replacement)
@@ -2520,7 +2490,6 @@ impl ContextPipeline {
     }
 
     /// Builds the canonical selection/current input and in-turn messages before stages.
-    /// This boundary contains no stage contributions and performs no source reads.
     pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
         Self::base_context_with_io(input, limits, None)
     }
@@ -2573,7 +2542,6 @@ impl ContextPipeline {
     }
 
     /// Adds an exact new delta to an owner-resolved base before running stages.
-    /// The caller establishes source provenance; the active input belongs to the delta.
     pub fn continue_base(retained: Context, delta: Context, limits: Limits) -> Result<Context> {
         Self::continue_base_with_io(retained, delta, limits, None)
     }
@@ -2591,7 +2559,7 @@ impl ContextPipeline {
         }
         // The retained parent's old active input is historical in this admission.
         retained.current_input_index = None;
-        selection::place_context_with_io(retained, delta, ContextPlacement::Append, limits, io)
+        selection::place_context(retained, delta, ContextPlacement::Append, limits, io)
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.
@@ -2600,9 +2568,7 @@ impl ContextPipeline {
             .await
     }
 
-    /// Applies declared stages to an explicit base, including a retained canonical
-    /// checkpoint plus its new history delta. The caller owns that base's provenance;
-    /// transforms may replace or reorder it while preserving the current input marker.
+    /// Applies declared stages to an explicit base, including a retained canonical checkpoint plus its new history delta.
     pub async fn transform_bounded(
         &self,
         input: &ContextInput,
@@ -2804,7 +2770,7 @@ mod tests {
             }).collect(),
             current_input_index: Some(3), ..Context::default()
         };
-        let prefix = compaction::clone_context_prefix_with_work(&source, 2, &mut None)?.0;
+        let prefix = compaction::clone_context_prefix(&source, 2, &mut None)?.0;
         let output = message(ModelRole::Assistant, "summary")?.content.file_refs()[0].clone();
         let summary = ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 2, source_digest: crate::contract::canonical_json_digest(&prefix)?, output };
@@ -3081,8 +3047,6 @@ mod tests {
             .next()
             .ok_or_else(|| crate::Error::Invalid("media reference missing".into()))?
             .clone();
-        // Native data in either the call message or its first result retains
-        // the complete multi-call exchange, including every other result.
         for (results, native_in_result) in
             (1..=3).flat_map(|results| [false, true].map(move |nested| (results, nested)))
         {
@@ -4014,8 +3978,6 @@ mod tests {
         let raw = ContextPipeline::base_context(&input, Limits::default())?;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(ContextPipeline::default().run(&input).await?, raw);
-        // The continuation owner supplies its retained base plus the current delta.
-        // No prior stage contribution is saved into this base.
         let retained = retained_input_base(input.input.clone());
         let first = pipeline
             .transform_bounded(&input, retained.clone(), Limits::default())
@@ -4723,8 +4685,7 @@ mod tests {
             CompactionRetention::default(),
         )?;
         let key = Bytes::from_static(b"atomic-compaction");
-        // Discard the first successful acknowledgement, as a caller whose
-        // receipt was lost would. The same admission must remain recoverable.
+        // Discard the first successful acknowledgement, as a caller whose receipt was lost would.
         provider
             .append_compaction(
                 0,
@@ -4925,14 +4886,6 @@ mod tests {
 }
 
 /// Bounded request-admission model; no unbounded correctness claim.
-///
-/// Two distinct payloads, one request, exhaustive reachable finite state space.
-/// State: current projection, retained admission, storage intact, dispatch
-/// count, durable completion. Linearizable journal CAS and immutable
-/// authenticated storage are assumptions. Admission claims the attempt before
-/// provider dispatch; a crash at that boundary may lose dispatch, never
-/// authorize redispatch. Correspondence: `executor::run_model_step`
-/// `ModelStarted`/`load_json`/`append_if_tail`/`Model` admission.
 #[cfg(test)]
 mod admission_model {
     use std::collections::{BTreeSet, VecDeque};
@@ -5013,8 +4966,7 @@ mod admission_model {
     fn retained_replay_holds_over_every_reachable_state() {
         let retained: fn(State) -> Option<u8> = |state| state.admitted.filter(|_| state.intact);
         assert_eq!(check(retained), Ok(26));
-        // Negative controls: replaying the current projection, or ignoring
-        // missing storage, must be rejected.
+        // Negative controls: replaying the current projection, or ignoring missing storage, must be rejected.
         let fresh: fn(State) -> Option<u8> = |state| state.intact.then_some(state.projection);
         let unchecked: fn(State) -> Option<u8> = |state| state.admitted;
         assert!(check(fresh).is_err());

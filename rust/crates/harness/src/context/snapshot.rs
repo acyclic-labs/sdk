@@ -10,10 +10,6 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// Authenticated, immutable messages and metadata from one exact context file.
-/// Unlike a messages-only `ContextSource`, this stage preserves metadata.
-/// Its contract pins the complete immutable file reference. A fork consumer
-/// must additionally bind the original seed/cut and receiving task admission.
-/// It must choose one inherited model projection, avoiding duplicate history.
 pub struct PinnedContextStage {
     name: String,
     revision: String,
@@ -29,9 +25,6 @@ pub struct PinnedContextStage {
 
 impl PinnedContextStage {
     /// Explicitly reads and authenticates one canonical context snapshot.
-    /// The reader must already be bound to the original receiving authority;
-    /// a file reference does not grant access. No model operation is performed.
-    /// Construction of an ordinary builder does not call this capture method.
     pub async fn capture(
         name: impl Into<String>,
         revision: impl Into<String>,
@@ -188,8 +181,7 @@ impl ContextStage for PinnedContextStage {
             validate_reference(&self.reference, limits)?;
             let composed =
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
-            // A new admission still requires the original bound reader's current
-            // authority and retained content. Admitted model replay skips stages.
+            // A new admission still requires the original bound reader's current authority and retained content.
             self.reader.verify(&self.reference).await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits).await?;
             Ok(composed)

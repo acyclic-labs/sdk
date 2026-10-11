@@ -1,5 +1,4 @@
 //! Explicit credential-free functional provider for installed runtime qualification.
-//! Results derive from admitted request bytes; this is not wire-event playback.
 
 use acyclic_harness::{Error, Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -18,8 +17,7 @@ use acyclic_harness::{NativeFutureBundle, model::{NativeModelAttempt, NativeMode
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_RECORDS: u64 = 128;
 
-/// Independent finite diagnostic evidence of actual provider entry, never task
-/// state, a model result cache, an effect receipt or replay input.
+/// Independent finite diagnostic evidence of actual provider entry, never task state, a model result cache, an effect receipt or replay input.
 struct InvocationLedger {
     file: File,
     bytes: u64,
@@ -105,8 +103,7 @@ impl Deterministic {
     fn observe_invocation_native(
         &self, phase: &'static str, dispatch: ModelDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        // The complete bounded diagnostic record is built on the stack. It is
-        // independent evidence, never a semantic cache or a retry suppression.
+        // The complete bounded diagnostic record is built on the stack.
         work.remaining()?;
         let mut storage = [0u8; 512];
         let digest = digest_hex(dispatch.request_digest);
@@ -285,8 +282,6 @@ impl ModelProvider for Deterministic {
             )?;
             u32::try_from(bytes).map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))
         }).collect::<Result<Vec<_>>>()?;
-        // Count the full serialized envelope as fixed overhead as well. This
-        // conservative additive upper bound includes all model/tool framing.
         let fixed_tokens = u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
         Ok(ModelTokenCount { request_digest: request.manifest().request_digest, fixed_tokens, message_tokens })
@@ -328,9 +323,6 @@ impl ModelProvider for Deterministic {
     }
 }
 
-// This independent qualification oracle chooses semantic obligations from the
-// real admitted exchange. Its receipts are actual generated responses, not the
-// diagnostic invocation ledger or a prerecorded sequence of runtime events.
 const SCENARIO_RECEIPT_BYTES: usize = 65_536;
 const SCENARIO_RECEIPTS: usize = 32;
 const SCENARIO_EVENTS: usize = 16;
@@ -403,7 +395,6 @@ struct ScenarioChild {
 }
 
 /// Controlled external model for the distinct native recursive qualification.
-/// The terminal supplies completion data only after observing real SDK success.
 pub struct NativeScenarioOracle {
     diagnostic: Deterministic,
     actors: [acyclic_harness::AgentId; 4],
@@ -454,8 +445,7 @@ impl NativeScenarioOracle {
         Ok(std::array::from_fn(|index| if children[index].success.is_none() { children[index].task } else { None }))
     }
 
-    /// The caller is the real terminal scheduler, never this model provider's
-    /// hidden task-host reader. `actual_result` is the actual SDK-read TurnOutput.text.
+    /// The caller is the real terminal scheduler, never this model provider's hidden task-host reader. `actual_result` is the actual SDK-read TurnOutput.text.
     pub fn observe_child_succeeded(&self, task: acyclic_harness::TaskId, actual_result: &str) -> Result<()> {
         let mut children = self.children.lock().map_err(|_| Error::Storage("recursive fixture completion lock poisoned".into()))?;
         let child = children.iter_mut().find(|child| child.task == Some(task))
@@ -627,9 +617,6 @@ impl NativeScenarioOracle {
                     acyclic_harness::wire::ErrorCode::Storage, "recursive fixture completion lock poisoned"))?;
                 if let Some(success) = &children[index].success { return Ok(std::sync::Arc::clone(success)); }
             }
-            // A bounded external-oracle response wait, not a task-host poll.
-            // Timer/Notify internals are opaque Tokio allocations; the actual
-            // enclosing native future frame is admitted by NativeFutureBundle.
             tokio::select! {
                 () = notified => {},
                 () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {},
@@ -955,7 +942,6 @@ impl NativeScenarioOracle {
             .as_ref().map(|path| path.value.clone()))
     }
 
-
     fn receipt_path(&self, dispatch: ModelDispatch, budget: &ScenarioBudget<'_>) -> Result<std::sync::Arc<ScenarioReceiptPath>> {
         self.receipt_path_with_suffix(dispatch, "response", budget)
     }
@@ -1070,8 +1056,7 @@ impl NativeScenarioOracle {
         self.diagnostic.observe_invocation("generate", dispatch)?;
         let response = self.response(request, dispatch, budget).await?;
         self.persist_response(&response, dispatch, budget)?;
-        // The independent terminal can kill the process during this real,
-        // configured provider delay only after the actual durable response.
+        // The independent terminal can kill the process during this real, configured provider delay only after the actual durable response.
         budget.check()?;
         tokio::time::sleep(std::time::Duration::from_millis(u64::from(self.diagnostic.delay_ms))).await;
         budget.check()?;

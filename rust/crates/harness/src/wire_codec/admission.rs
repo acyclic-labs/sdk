@@ -69,10 +69,6 @@ impl Fields {
     }
 
     fn quota(&self, work: &Option<&mut dyn HistoryIo>) -> Result<u64> {
-        // String/Vec<u8> grow to at most twice the admitted payload, with the
-        // standard minimum eight-byte byte-buffer growth. Vec<String> has a
-        // four-slot minimum and geometric growth. Duplicate wire occurrences
-        // count even when prost subsequently replaces their values.
         let buffers = self.bytes.checked_mul(2)
             .and_then(|bytes| self.buffers.checked_mul(8).and_then(|minimum| bytes.checked_add(minimum)));
         let slots = if self.capabilities == 0 { 0 } else {
@@ -203,7 +199,6 @@ impl<'a, 'b> Quota<'a, 'b> {
         Ok(Self { work, bytes })
     }
     /// Takes responsibility for already-paid custody on this observer.
-    /// Unlike `new`, transfer must also work after cancellation or quota denial.
     pub(crate) fn from_retained(
         work: &'a mut Option<&'b mut dyn HistoryIo>,
         bytes: u64,

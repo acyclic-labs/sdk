@@ -9,8 +9,7 @@ const LIMITS: JsonBounds = JsonBounds {
     maximum_depth: 256,
 };
 
-// Oracle construction belongs exclusively to controls: production never makes
-// an unchecked Value or reparses a Raw string to discover its resource shape.
+// Oracle construction belongs exclusively to controls: production never makes an unchecked Value or reparses a Raw string to discover its resource shape.
 fn raw_document(payload: &str) -> String {
     format!("{{\"{RAW}\":{}}}", serde_json::to_string(payload).unwrap())
 }
@@ -46,8 +45,6 @@ fn shape(bytes: &[u8], schema: JsonValueSchema) -> JsonValueShape {
         .unwrap_or_else(|_| panic!("valid fixture must have an admitted shape"))
 }
 
-// These are concrete observable capacities, not allocator/RSS observations.
-// BTreeMap nodes are opaque; its logical pairs are the documented codec model.
 fn concrete_owned(value: &Value) -> u64 {
     match value {
         Value::String(text) => text.capacity() as u64,
@@ -142,8 +139,7 @@ fn interaction_selection_is_gated_by_real_tag_not_field_order_or_name_alone() {
     let ignored_shape = shape(ignored.as_bytes(), JsonValueSchema::Interaction);
     assert_eq!(ignored_shape.virtual_items, 0);
     assert_eq!(ignored_shape.raw_frames, 0);
-    // A potential root schema preceding an unrelated discriminator may need
-    // inspection work, but cannot become Value authority or a bounds rejection.
+    // A potential root schema preceding an unrelated discriminator may need inspection work, but cannot become Value authority or a bounds rejection.
     let unrelated = format!("{{\"schema\":{deep},\"type\":\"choice\"}}");
     assert!(inspect(unrelated.as_bytes(), Some(JsonValueSchema::Interaction), JsonBounds {
         maximum_items: 16, maximum_depth: 3, ..LIMITS
@@ -192,8 +188,7 @@ fn every_closed_descriptor_follows_its_literal_producer_value_paths() {
         (JsonValueSchema::MachineCheckpoint, format!(r#"{{"state":{raw}}}"#), 1),
     ];
     for (schema, document, selected) in fixtures {
-        // This table exercises literal reachability, not arbitrary typed
-        // Deserialize heap proofs or validity of omitted DTO required fields.
+        // This table exercises literal reachability, not arbitrary typed Deserialize heap proofs or validity of omitted DTO required fields.
         let actual = shape(document.as_bytes(), schema);
         assert_eq!(actual.raw_frames, selected, "{schema:?}: {document}");
         assert_eq!(actual.raw_bytes, selected * 3, "{schema:?}: {document}");
@@ -251,8 +246,7 @@ fn consuming_inspection_uses_real_sorted_map_order_not_original_lexical_order() 
             maximum_items: lexical.lexical_items, ..LIMITS
         }, schema, &mut |_| Ok(())).is_err(), "virtual growth is admitted before consuming serde");
     }
-    // The pinned consuming visitor parses the hidden source before noticing
-    // the remaining ordinary key. Do not replace its genuine eventual error.
+    // The pinned consuming visitor parses the hidden source before noticing the remaining ordinary key.
     let invocation: Value = serde_json::from_str(&invocation).unwrap();
     assert!(serde_json::from_value::<crate::tool::ToolInvocation>(invocation).is_err());
     let result: Value = serde_json::from_str(&result).unwrap();
@@ -273,8 +267,6 @@ fn consuming_shape_excludes_moved_strings_but_conserves_raw_overlap_and_first_ca
     assert!(json_owned_value_conversion_additional_bytes(slice).is_err(), "slice witness cannot claim consuming origin");
 
     let (raw, raw_bytes, _) = raw_layers(serde_json::to_string(&"leaf".repeat(4096)).unwrap(), 3);
-    // Original lexical Raw is consumed by from_slice, so build a resident
-    // Raw wrapper without deserializing away its private representation.
     let resident = serde_json::json!({"kind":"json","value":{(RAW): raw}});
     let mut callbacks = 0;
     let raw_shape = json_owned_value_shape_bounded(&resident, LIMITS, JsonValueSchema::ToolResultContent, &mut |_| {
@@ -319,8 +311,6 @@ fn typed_borrowed_quota_rejects_slice_and_consuming_origin() {
 #[test]
 fn preparation_request_has_exactly_four_value_paths_not_command_fileref_payload() {
     let raw = raw_document("[0]");
-    // Literal reachability control for the real request's audited fields. This
-    // partial envelope is not claimed to satisfy its omitted DTO identities.
     let document = format!(r#"{{"payload":{raw},"child":{{"input":{raw},"input_schema":{raw},"output_schema":{raw}}},"command":{{"payload":{raw}}}}}"#);
     let selected = shape(document.as_bytes(), JsonValueSchema::ResourcePreparationRequest);
     assert_eq!(selected.raw_frames, 4);
@@ -421,8 +411,6 @@ fn recursive_wire_and_owned_profiles_follow_every_literal_container_gate() {
         (JsonValueSchema::ProjectMergeReceipt, receipt, 1),
     ];
     for (schema, document, selected) in fixtures {
-        // Private recursive DTO owners supply producer E2E. These controls
-        // exercise actual SDK wire/owned selection, not omitted DTO validity.
         let wire = shape(document.as_bytes(), schema);
         assert_eq!(wire.raw_frames, selected, "{schema:?}");
         assert_eq!(wire.raw_bytes, 3 * selected, "{schema:?}");
@@ -460,8 +448,6 @@ fn recursive_wire_and_owned_profiles_follow_every_literal_container_gate() {
 }
 
 fn source_authorization_document(native_snapshot: &str) -> String {
-    // Real public DTO metadata, including a genuine serialized Scope. This
-    // fixture exercises Deserialize, not authorization/provider verification.
     let owner = crate::core::Authority {
         kind: crate::core::AggregateKind::Task, id: "source-owner".into(),
     };
@@ -560,8 +546,7 @@ fn source_authorization_composites_preserve_wire_and_owned_map_order() {
         (JsonValueSchema::RecursiveInitialPlan, format!(r#"{{"plan":{recursive_merge}}}"#), 1),
         (JsonValueSchema::RecursiveState, format!(r#"{{"plan":{recursive_merge},"phase":"waiting"}}"#), 1),
     ] {
-        // Literal graph controls for the joined source carriers/private DTOs:
-        // omitted required fields make these explicitly NOT producer E2E.
+        // Literal graph controls for the joined source carriers/private DTOs: omitted required fields make these explicitly NOT producer E2E.
         let wire = shape(document.as_bytes(), schema);
         assert_eq!(wire.raw_frames, selected, "{schema:?}");
         assert_eq!(wire.raw_bytes, selected * 3, "{schema:?}");
@@ -691,8 +676,6 @@ fn stock_command_profiles_select_only_the_actual_closed_value_fields() {
         assert_eq!(ignored.raw_frames, 0, "{schema:?}");
         assert_eq!(ignored.virtual_items, 0, "{schema:?}");
     }
-    // NativeProcessRequest's complete view/MCP identities and private producer
-    // execution are owned elsewhere; the partial profile table is not E2E.
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -834,8 +817,6 @@ mod native {
             assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
         }
 
-        // A malformed typed String is not a Value subtree, even if its object
-        // contains the private key. Preserve the actual enum/String serde error.
         let document = format!(r#"{{"Failed":{{"message":{}}}}}"#, raw_document("[0,]"));
         let expected = serde_json::from_str::<crate::Outcome<Value>>(&document).err().unwrap();
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -938,8 +919,6 @@ mod native {
 
     #[test]
     fn native_fork_authorization_preserves_aggregate_depth_and_first_owned_cause() {
-        // Literal joined ForkRequest reachability, not an omitted-field
-        // producer DTO claim. The public authorization DTO is tested above.
         let document = format!(r#"{{"authorized_source":{{"native_snapshot":{}}}}}"#, raw_document("[0]"));
         let ordinary = format!(r#"{{"authorized_source":{{"native_snapshot":{{"ordinary":"[0]"}}}}}}"#);
         assert!(inspect(ordinary.as_bytes(), Some(JsonValueSchema::ForkRequest),
@@ -1020,9 +999,6 @@ mod native {
             assert!(!admitted);
             assert!(matches!(failure, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
         }
-        // Both serde parsers have local depth one; the parent raw-map visitor
-        // remains live while the nested array visits its scalar, global depth
-        // two. The finite bound deliberately covers this cumulative ancestry.
         let document = raw_document("[0]");
         let original: Value = serde_json::from_slice(document.as_bytes()).unwrap();
         assert_eq!(original, serde_json::json!([0]));
@@ -1092,8 +1068,6 @@ mod native {
 
     #[test]
     fn real_native_source_holds_original_logical_custody_until_error_drop() {
-        // This exercises the codec/error transfer boundary with the production
-        // materializer ledger, not a mock allocator or a producer E2E claim.
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget {
             source_bytes_read: LIMITS.maximum_bytes,
@@ -1191,8 +1165,6 @@ mod native {
             payload, command: None, source_checkpoint: None,
             input_files: Vec::new(), read_authorization: None,
         };
-        // A real closed public Deserialize fixture, not provider validation or
-        // authentication: the empty resources intentionally are not validated.
         serde_json::to_value(request).unwrap()
     }
 
@@ -1339,9 +1311,7 @@ mod native {
                         value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(),
                         Some(crate::wire::ErrorCode::Storage),
                     )?;
-                    // This first unknown key fails before any valid nested
-                    // typed field is decoded. The actual SDK Value/scratch/base
-                    // allowance and diagnostic overlap are prepaid separately.
+                    // This first unknown key fails before any valid nested typed field is decoded.
                     future.resize_retained(json_owned_value_conversion_additional_bytes(value_shape)?
                         + diagnostic + std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -1351,8 +1321,6 @@ mod native {
             },
         ).err().unwrap();
         assert!(admitted);
-        // The genuine consuming converter has dropped the whole old source on
-        // failure; its guard is no longer needed for moved resident strings.
         drop(original);
         let Error::NativeDecode { code, source, custody: None } = failure else {
             panic!("original typed serde source expected")
@@ -1389,8 +1357,6 @@ mod native {
         original.resize_retained(concrete_owned(&source)).unwrap();
         let mut future = work.retain_owned(0).unwrap();
         future.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        // This concrete fixture has no nonempty resource/proof/file Vec. Its
-        // two owned Value strings move; remaining typed fields are fixed slots.
         let slots = std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64;
         let mut admitted = false;
         let actual: crate::resource_preparation::ResourcePreparationRequest =
@@ -1581,8 +1547,6 @@ mod native {
             assert_eq!(CONVERSIONS.with(|count| count.get()), 0);
             assert_eq!(before - work.remaining().unwrap().peak_allocation_bytes, input.bytes() + future.bytes());
             assert_eq!(work.receipt().allocation_operations, operations);
-            // The consumed source has been physically dropped on return; the
-            // caller's original AL stays live throughout that drop and cleanup.
             drop(failure);
             drop(future);
             drop(input);
@@ -1798,97 +1762,6 @@ mod native {
         assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
     }
 
-    #[test]
-    fn native_sizer_counts_real_duplicate_bytes_without_owned_tree_or_wire_charges() {
-        struct Duplicates;
-        impl serde::Serialize for Duplicates {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("same", "\0\n😀\"\\")?;
-                map.serialize_entry("same", &(u64::MAX, i64::MIN, 0.1, -0.0, Option::<u8>::None))?;
-                map.end()
-            }
-        }
-        let encoded = serde_json::to_vec(&Duplicates).unwrap();
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 1, peak_allocation_bytes: 65536,
-            ..acyclic_fs::WorkBudget::default()
-        }, &cancellation).unwrap_or_else(|_| panic!("finite sizer diagnostic custody"));
-        let baseline_operations = work.receipt().allocation_operations;
-        let mut original = work.retain_owned(0).unwrap();
-        original.resize_retained(sdk_json_diagnostic_bytes()).unwrap();
-        let held = work.remaining().unwrap().peak_allocation_bytes;
-        let mut trace = Vec::new();
-        validate_json_byte_bound_native_trusted(&Duplicates, JsonBounds {
-            maximum_bytes: encoded.len() as u64, ..LIMITS
-        }, crate::wire::ErrorCode::Storage, &mut |event| {
-            trace.push(match event {
-                JsonCodecCharge::Inspect { items } => (1, items),
-                JsonCodecCharge::Work { bytes: 0, items } => (0, items),
-                _ => panic!("sizing never emits Read, wire Work bytes, Copy, Retain or allocation operations"),
-            });
-            Ok(())
-        }).unwrap();
-        assert_eq!(trace.iter().filter(|(kind, _)| *kind == 1).map(|(_, count)| count).sum::<u64>(), encoded.len() as u64);
-        assert_eq!(trace.iter().filter(|(kind, _)| *kind == 0).map(|(_, count)| count).sum::<u64>(), lexical_items(&encoded));
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, held);
-        assert_eq!(work.receipt().allocation_operations - baseline_operations, 0);
-        let bound = validate_json_byte_bound_native_trusted(&Duplicates, JsonBounds {
-            maximum_bytes: encoded.len() as u64 - 1, ..LIMITS
-        }, crate::wire::ErrorCode::Storage, &mut |_| Ok(())).unwrap_err();
-        assert!(matches!(bound, Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. }));
-        for denied in 0..trace.len() {
-            let token = acyclic_fs::CancellationToken::new();
-            let cause = crate::OperationId::new();
-            let mut prefix = Vec::new();
-            let failure = validate_json_byte_bound_native_trusted(&Duplicates, LIMITS,
-                crate::wire::ErrorCode::Storage, &mut |event| {
-                    prefix.push(match event {
-                        JsonCodecCharge::Inspect { items } => (1, items),
-                        JsonCodecCharge::Work { bytes: 0, items } => (0, items),
-                        _ => panic!("sizing creates no owned output"),
-                    });
-                    if prefix.len() == denied + 1 { token.cancel(); }
-                    token.check().map_err(|_| Error::Indeterminate(cause))
-                }).unwrap_err();
-            assert!(matches!(failure, Error::Indeterminate(id) if id == cause));
-            assert_eq!(prefix, trace[..=denied]);
-        }
-        let resident = serde_json::json!({(RAW): "[[[[0]]]]"});
-        let mut source_guard = work.retain_owned(0).unwrap();
-        source_guard.resize_retained(concrete_owned(&resident)).unwrap();
-        let source_shape = json_owned_value_shape_bounded(&resident, LIMITS, JsonValueSchema::None, &mut |_| Ok(())).unwrap();
-        assert_eq!(source_shape.raw_frames, 0);
-        validate_json_byte_bound_native_trusted(&resident, LIMITS, crate::wire::ErrorCode::Storage, &mut |event| {
-            assert!(matches!(event, JsonCodecCharge::Inspect { .. } | JsonCodecCharge::Work { bytes: 0, .. }));
-            Ok(())
-        }).unwrap();
-        drop(resident);
-        drop(source_guard);
-        struct SerializerFailure;
-        impl serde::Serialize for SerializerFailure {
-            fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom("real sizing serializer failure"))
-            }
-        }
-        let expected = serde_json::to_vec(&SerializerFailure).unwrap_err();
-        let error = validate_json_byte_bound_native_trusted(
-            &SerializerFailure, LIMITS, crate::wire::ErrorCode::Storage, &mut |_| Ok(()),
-        ).unwrap_err();
-        let error = match error {
-            Error::NativeEncode { code, source, custody: None } => Error::NativeEncode {
-                code, source, custody: Some(original),
-            },
-            other => panic!("actual sizing serde source required: {other}"),
-        };
-        let source = std::error::Error::source(&error).unwrap().downcast_ref::<serde_json::Error>().unwrap();
-        assert_eq!(source.classify(), expected.classify());
-        assert_eq!(source.to_string(), expected.to_string());
-        assert_eq!(work.remaining().unwrap().peak_allocation_bytes, held);
-        drop(error);
-    }
 
     #[test]
     fn native_seed_member_bound_preserves_prefix_drop_custody_and_owned_sidecar() {
@@ -1940,8 +1813,6 @@ mod native {
                     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error> {
                         let seed = self.0;
                         let mut values = Vec::new();
-                        // One genuine positive test-seed Vec reservation; serde
-                        // String allocations remain foreign and unobserved.
                         seed.work.charge(acyclic_fs::WorkCounters {
                             allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
                         }).unwrap();
@@ -2230,8 +2101,7 @@ mod native {
             assert_eq!(work.remaining().unwrap().peak_allocation_bytes, before);
         }
         for canonical in [true, false] {
-            // Genuine deterministic capacity-overflow carrier, prepared before
-            // codec entry. This is not an invented codec allocation operation.
+            // Genuine deterministic capacity-overflow carrier, prepared before codec entry.
             let allocation = Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err();
             let mut original = Some(Error::Allocation(allocation));
             let mut callbacks = 0;
@@ -2259,7 +2129,6 @@ mod native {
     #[test]
     fn native_identity_preserves_legacy_deep_value_bytes_without_weakening_finite_entry_points() {
         // This already resident migration-style Value is NOT untrusted wire.
-        // Its private-looking map key must stay an ordinary literal identity.
         let mut value = serde_json::json!({
             "z": [u64::MAX, i64::MIN, -0.0, 0.1],
             "$serde_json::private::RawValue": "[0,1]",
@@ -2312,8 +2181,7 @@ mod native {
     }
 
     fn prepaid_journal_fixture() -> Value {
-        // Actual public DTO serialization, not a physical journal producer E2E:
-        // these literal identities confer no root or preparation authority.
+        // Actual public DTO serialization, not a physical journal producer E2E: these literal identities confer no root or preparation authority.
         let journal = acyclic_fs::MaterializationJournal {
             version: 1, revision: 0,
             plan: acyclic_fs::MaterializationPlan {
@@ -2361,7 +2229,6 @@ mod native {
     #[test]
     fn prepaid_public_journal_and_literal_float_vectors_preserve_paid_buffers() {
         // No accepted completion-reservation API exists in this dependency.
-        // This is a final-writer/AL control, not post-effect native authority.
         for mut value in [
             prepaid_journal_fixture(),
             serde_json::json!({

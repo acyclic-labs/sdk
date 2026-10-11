@@ -27,11 +27,7 @@ pub struct ContextRoot {
 }
 
 impl ContextRoot {
-    fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+    fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.volume.validate_with_work(work)?;
         if !self.directory.is_empty() {
             crate::conversation::validate_content_path_with_work(&self.directory, work)?;
@@ -112,9 +108,7 @@ impl ContextDiscovery {
         .await
     }
 
-    /// Selects an immutable revision before model admission. This does not install
-    /// a watcher or mutate the captured context used by an in-flight request.
-    /// The caller admits and records refresh through its existing workflow journal.
+    /// Selects an immutable revision before model admission.
     pub async fn for_request(
         &self,
         reader: &dyn ContentResidencyVerifier,
@@ -188,12 +182,8 @@ pub struct PinnedContextPath {
 }
 
 impl PinnedContextPath {
-    fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        self.root.validate_with_work(work)?;
+    fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        self.root.validate(work)?;
         self.generation.validate_with_work(work)?;
         crate::conversation::validate_content_path_with_work(&self.path, work)?;
         if self.generation.as_resource().provider() != self.root.volume.provider()
@@ -212,7 +202,7 @@ impl PinnedContextPath {
 
     /// Loads a body through the ordinary authorized pinned read, checking provider output.
     pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        self.validate()?;
+        self.validate(&mut None)?;
         let (file, bytes) = reader
             .read_private_path(
                 &self.root.volume,
@@ -254,7 +244,7 @@ impl SkillMetadata {
     }
 
     fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        self.source.validate_with_work(work)?;
+        self.source.validate(work)?;
         if self.name.is_empty()
             || self.name.starts_with('-')
             || self.name.ends_with('-')
@@ -476,10 +466,9 @@ struct Frontmatter {
     fields: BTreeMap<String, serde_json::Value>,
 }
 
-/// Parses a bounded prefix. Missing delimiters, invalid UTF-8/YAML and oversized
-/// frontmatter are explicit errors; the trailing body need not be valid UTF-8 yet.
+/// Parses a bounded prefix.
 pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<SkillMetadata> {
-    source.validate()?;
+    source.validate(&mut None)?;
     let mut offset = 0;
     let mut header_start = None;
     let mut header_end = None;
@@ -507,9 +496,6 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     let header = prefix
         .get(start..end)
         .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
-    // Capture has already enforced the caller's prefix budget. Do not add
-    // unrelated ceilings on the contents of that admitted input. One document
-    // and rejection of expansion features are frontmatter format restrictions.
     let options = serde_saphyr::options! {
         budget: serde_saphyr::budget! {
             max_events: usize::MAX, max_nodes: usize::MAX, max_depth: usize::MAX,
@@ -535,8 +521,7 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     Ok(metadata)
 }
 
-/// Immutable discovery revision. Serialize this value through the existing admitted
-/// caller journal for restart; it contains no credentials or mutable provider handles.
+/// Immutable discovery revision.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -666,7 +651,6 @@ impl DiscoveredContext {
     }
 
     /// Projects this immutable snapshot into ordinary typed model messages.
-    /// Body resolution remains the provider's bounded full/reference contract.
     pub fn messages(&self) -> Result<Vec<ModelMessage>> {
         self.messages_with_io(None, None)
     }
@@ -781,8 +765,7 @@ impl DiscoveredContext {
         Ok(messages)
     }
 
-    /// Explicit bounded capture. Construction is pure; only calling capture performs
-    /// authorized reads. Call from an admitted caller workflow for reload/live refresh.
+    /// Explicit bounded capture.
     pub async fn capture(
         reader: &dyn ContentResidencyVerifier,
         instructions: &[InstructionScope],
@@ -817,7 +800,7 @@ impl DiscoveredContext {
         };
         let mut result = Self::default();
         for scope in instructions {
-            scope.root.validate()?;
+            scope.root.validate(&mut None)?;
             if !scope.active_directory.is_empty() {
                 validate_content_path(&scope.active_directory)?;
             }
@@ -887,7 +870,6 @@ impl DiscoveredContext {
     }
 
     /// Composes this immutable revision through the existing source/stage path.
-    /// Its complete provenance is part of the ordinary executor binding digest.
     pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
         self.validate()?;
         let revision = crate::contract::canonical_json_digest(&self)?;
@@ -937,7 +919,7 @@ async fn discover_skills(
 ) -> Result<Vec<SkillMetadata>> {
     let mut result: Vec<SkillMetadata> = Vec::new();
     for root in skills {
-        root.validate()?;
+        root.validate(&mut None)?;
         let (generation, entries) = work.list(reader, root, &root.directory, None).await?;
         for entry in entries {
             if entry.kind != PrivateDirectoryEntryKind::Directory {

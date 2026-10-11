@@ -1,7 +1,4 @@
 //! Reference-preserving JavaScript binding of the existing client kernel.
-//!
-//! The embedding host supplies the same trusted, pure, bounded Domain obligations
-//! as native Rust. Callbacks are not evidence authentication or an authority grant.
 
 use super::{
     Begin, BranchId, Client, Correspondence, Dependency, DependencyRequirement, Domain, Error,
@@ -250,8 +247,7 @@ impl Domain for JavaScriptDomain {
 #[wasm_bindgen]
 pub struct WasmClientViews {
     client: Client<JavaScriptDomain>,
-    // Immutable configuration is copied solely to bound boundary allocations
-    // before invoking the kernel; no canonical or hypothesis state is duplicated.
+    // Immutable configuration is copied solely to bound boundary allocations before invoking the kernel; no canonical or hypothesis state is duplicated.
     limits: Limits,
 }
 
