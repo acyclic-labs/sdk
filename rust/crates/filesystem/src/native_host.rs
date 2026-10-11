@@ -4563,7 +4563,7 @@ mod windows_clone_tests {
         std::fs::rename(&root_path, &moved_root)?;
         std::fs::create_dir(&root_path)?;
         std::fs::write(root_path.join("foreign"), b"foreign")?;
-        // NTFS denies an ancestor move while child directories are open.
+        // Windows denies an ancestor move while child directories are open.
         // Move each original directory before opening any of its descendants.
         let parent = root.create_dir_all_held(Path::new("parent"))?;
         std::fs::write(moved_root.join("parent/original"), b"original")?;
