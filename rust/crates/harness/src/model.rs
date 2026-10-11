@@ -481,7 +481,7 @@ fn model_digest<T: Serialize>(
     if let Some(io) = io {
         let _bytes;
         let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
+        _bytes = io.guard_bytes(&bytes)?;
         return model_hash(&bytes, Some(io));
     }
     crate::contract::canonical_json_digest(value)
@@ -970,7 +970,7 @@ impl NativeConfigurationBinding {
                 &(admission.source(), admission.selected(), admission.configurations()),
                 io.remaining()?.bytes_encoded, false,
             )?;
-            _bytes = io.guard_owned(bytes.len() as u64)?;
+            _bytes = io.guard_bytes(&bytes)?;
         }
         if admission.source() != &self.source
             || !admission.selected().contains(&self.configuration.extension)
@@ -1359,7 +1359,7 @@ pub struct ModelRequest {
 #[derive(Clone, Debug)]
 pub struct PreparedModelRequest {
     request: ModelRequest,
-    bytes: Vec<u8>,
+    bytes: acyclic_stream::OwnedBytes,
     manifest: ModelRequestManifest,
 }
 
@@ -1477,7 +1477,7 @@ impl ModelRequest {
                             Some(io) => {
                             let _bytes;
                             let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
-                            _bytes = io.guard_owned(bytes.len() as u64)?;
+                            _bytes = io.guard_bytes(&bytes)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
                             crate::contract::validate_json_schema_value_with_io(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
@@ -1516,11 +1516,10 @@ impl ModelRequest {
 }
 
 impl PreparedModelRequest {
-    /// Actual complete returned graph; transient codec buffers are not retained.
+    /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
             model_request_payload_bytes(&self.request)?)?;
-        let bytes = model_owned_add(bytes, self.bytes.capacity() as u64)?;
         model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
     }
 
@@ -1559,7 +1558,7 @@ impl PreparedModelRequest {
             let before = io.receipt().items_examined;
             let _witness;
             let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
-            _witness = io.guard_owned(witness.len() as u64)?;
+            _witness = io.guard_bytes(&witness)?;
             let items = io.receipt().items_examined.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
             let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
@@ -1590,11 +1589,11 @@ impl PreparedModelRequest {
         let bytes = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => io.encode_json(&request, io.remaining()?.bytes_encoded, true)?,
-            _ => crate::contract::canonical_json_bytes(&request)?,
+            _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
         #[cfg(feature = "filesystem")]
         {
-            bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+            bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = model_hash(&bytes, io)?;
         let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
@@ -1658,7 +1657,7 @@ impl PreparedModelRequest {
             model_step(Some(&io), 1)?;
             let _hold;
             let bytes = io.encode_json(message, io.remaining()?.bytes_encoded, false)?;
-            _hold = io.guard_owned(bytes.capacity() as u64)?;
+            _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             message.content.visit_file_bindings(|file, _| {
                 model_step(Some(&io), 1)?;
@@ -1789,10 +1788,10 @@ impl PreparedModelRequest {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("native branch retains original work");
-                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work).await?;
+                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work)?.await?;
                     let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
-                    ).await?;
+                    )?.await?;
                     bytes
                 }
                 #[cfg(feature = "filesystem")]
@@ -1943,7 +1942,7 @@ async fn model_verify_content_files(
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
                 verifier.verify_with_native_work(file, file.descriptor().byte_length(),
-                    io.original_native_work().expect("native branch retains original work")).await?;
+                    io.original_native_work().expect("native branch retains original work"))?.await?;
             }
             #[cfg(feature = "filesystem")]
             Some(io) => {

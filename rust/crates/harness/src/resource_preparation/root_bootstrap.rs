@@ -177,7 +177,7 @@ impl<'a> RootBootstrapContentContext<'a> {
             original, original_root, binding, work,
         )?;
         Self::from_authenticated_source_with_native_work(
-            original_root, &original.declaration().owner, binding, work,
+            original_root, original.declaration().owner.authority(), binding, work,
         )
     }
 
