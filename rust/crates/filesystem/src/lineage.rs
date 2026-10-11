@@ -122,7 +122,7 @@ impl LineageRegistrationWork<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         let copied = crate::WorkCounters {
             bytes_copied: std::mem::size_of::<WorkspaceLineageRecord>() as u64,
-            ..crate::WorkCounters::UNCHARGED,
+            ..crate::WorkCounters::UNCHARGED
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::Native { original, cancellation } = self {
@@ -682,7 +682,7 @@ impl MemoryWorkspaceLineageStore {
         #[cfg(not(target_arch = "wasm32"))]
         if let LineageRegistrationWork::Native { original, cancellation } = control {
             KernelAccounting::native(original, cancellation).charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(lineage_filesystem_failure)?;
         }
         let records = self.records.0.lock()
@@ -705,7 +705,7 @@ impl MemoryWorkspaceLineageStore {
                 return Err(lineage_filesystem_failure(crate::NativeTreeMaterializationError::InvalidLayout.into()));
             }
             KernelAccounting::native(original, cancellation).charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(lineage_filesystem_failure)?;
         }
         let mut records = self.records.0.lock()
