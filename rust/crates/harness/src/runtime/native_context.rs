@@ -80,6 +80,11 @@ impl NativeTaskContext {
     #[must_use]
     pub const fn context(&self) -> &TaskContext { &self.context }
 
+    /// Borrows the original metadata ledger without granting resource authority.
+    pub(crate) const fn native_work(&self) -> &NativeMaterializationWork {
+        self.custody.work()
+    }
+
     /// Pure membership check for the original metadata ledger, not authority.
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
         same_work(self.custody.work(), work)
@@ -476,6 +481,7 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
+        assert!(same_work(shared.native_work(), &original));
         let operation = crate::OperationId::from_bytes([119; 16]);
         let call_id = operation.to_string();
         let baseline = original.live_allocation_bytes();
