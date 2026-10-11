@@ -129,7 +129,7 @@ impl CustomerCustodyNamespace {
     }
 }
 
-/// Nonsecret public receipt for reopening exactly an acknowledged vault generation.
+/// Nonsecret receipt fencing exactly a Rust-planned or acknowledged vault generation.
 /// Contains only namespace digest, generation nonce and own public key, never a seed,
 /// SQL session, authority grant, or authenticated proof about the current OS entry.
 pub struct CustomerCustodyReference {
@@ -191,15 +191,21 @@ impl PendingCustomerLeaf {
         self.key.verifying_key().to_bytes()
     }
 
-    /// Binds this exact pending key to the returned public certificate, then atomically
-    /// replaces the complete key/SQL-session pair. A failed write never deletes the old pair.
+    /// Binds this exact pending key and prepares one actual future OS generation without
+    /// writing secrets. Persist the public reference before calling PreparedCustomerLeaf::commit.
     /// Expired certificates remain restorable for SQL renewal; mint still enforces expiry.
-    pub fn commit(self, namespace: CustomerCustodyNamespace, birth: &str, certificate: &str, sql_session: Zeroizing<String>) -> Result<RestoredCustomerLeaf, CustodyError> {
+    pub fn prepare(self, namespace: CustomerCustodyNamespace, birth: &str, certificate: &str, sql_session: Zeroizing<String>) -> Result<PreparedCustomerLeaf, CustodyError> {
         namespace.bind(&self.key.verifying_key(), birth, certificate)?;
-        self.store_pair(namespace, sql_session)
+        let prepared = self.prepare_pair(namespace, sql_session)?;
+        let _lock = lock::NamespaceLock::acquire(&prepared.namespace.name)?;
+        match read_record(&prepared.namespace) {
+            Err(CustodyError::NotFound) => Ok(prepared),
+            Ok(_) => Err(CustodyError::Stale),
+            Err(error) => Err(error),
+        }
     }
 
-    fn store_pair(self, namespace: CustomerCustodyNamespace, sql_session: Zeroizing<String>) -> Result<RestoredCustomerLeaf, CustodyError> {
+    fn prepare_pair(self, namespace: CustomerCustodyNamespace, sql_session: Zeroizing<String>) -> Result<PreparedCustomerLeaf, CustodyError> {
         if sql_session.is_empty() || sql_session.chars().any(char::is_control) {
             return Err(CustodyError::InvalidSession);
         }
@@ -216,9 +222,58 @@ impl PendingCustomerLeaf {
         record.extend_from_slice(self.key.as_bytes());
         record.extend_from_slice(&(sql_session.len() as u32).to_be_bytes());
         record.extend_from_slice(sql_session.as_bytes());
-        let _lock = lock::NamespaceLock::acquire(&namespace.name)?;
-        platform::write(&namespace.name, &record)?;
-        Ok(RestoredCustomerLeaf { public_key: self.public_key(), generation, namespace })
+        Ok(PreparedCustomerLeaf { public_key: self.public_key(), generation, namespace, bytes: record })
+    }
+
+    // Isolated real-vault tests exercise foreign OS replacement with the SAME pair codec.
+    // Production callers only receive prepared generation-fenced commits, never this writer.
+    #[cfg(test)]
+    fn store_pair(self, namespace: CustomerCustodyNamespace, sql_session: Zeroizing<String>) -> Result<RestoredCustomerLeaf, CustodyError> {
+        let prepared = self.prepare_pair(namespace, sql_session)?;
+        let _lock = lock::NamespaceLock::acquire(&prepared.namespace.name)?;
+        platform::write(&prepared.namespace.name, &prepared.bytes)?;
+        Ok(RestoredCustomerLeaf { public_key: prepared.public_key, generation: prepared.generation, namespace: prepared.namespace })
+    }
+}
+
+/// Opaque zeroizing private pair with one Rust-assigned future vault generation.
+/// Not Clone, Debug or Serialize. Dropping an uncommitted preparation destroys its secrets.
+pub struct PreparedCustomerLeaf {
+    namespace: CustomerCustodyNamespace,
+    bytes: Zeroizing<Vec<u8>>,
+    generation: [u8; 32],
+    public_key: [u8; 32],
+}
+
+impl PreparedCustomerLeaf {
+    /// The sole exportable key material.
+    pub fn public_key(&self) -> [u8; 32] {
+        self.public_key
+    }
+
+    /// The actual nonce this preparation will write, not a certificate-derived generation.
+    pub fn reference(&self) -> CustomerCustodyReference {
+        CustomerCustodyReference {
+            namespace_digest: self.namespace.digest,
+            generation: self.generation,
+            public_key: self.public_key,
+        }
+    }
+
+    /// Commits exactly the prepared pair once, without adopting or overwriting another
+    /// generation. Persisted receipts resolve lost acknowledgements through open_at.
+    pub fn commit(self) -> Result<RestoredCustomerLeaf, CustodyError> {
+        let _lock = lock::NamespaceLock::acquire(&self.namespace.name)?;
+        match read_record(&self.namespace) {
+            Ok(existing) => {
+                if existing.bytes.as_slice() != self.bytes.as_slice() {
+                    return Err(CustodyError::Stale);
+                }
+            }
+            Err(CustodyError::NotFound) => platform::write(&self.namespace.name, &self.bytes)?,
+            Err(error) => return Err(error),
+        }
+        Ok(RestoredCustomerLeaf { namespace: self.namespace, generation: self.generation, public_key: self.public_key })
     }
 }
 

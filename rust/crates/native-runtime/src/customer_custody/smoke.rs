@@ -51,7 +51,7 @@ fn real_os_custody_create_reopen_sign_delete_and_failures() {
     drop(record);
 
     let bad_binding = PendingCustomerLeaf::generate().expect("replacement leaf");
-    assert!(matches!(bad_binding.commit(namespace.clone(), "not-a-birth", "not-a-certificate", Zeroizing::new("not-stored".into())), Err(CustodyError::Holder(_))));
+    assert!(matches!(bad_binding.prepare(namespace.clone(), "not-a-birth", "not-a-certificate", Zeroizing::new("not-stored".into())), Err(CustodyError::Holder(_))));
     let too_large = PendingCustomerLeaf::generate().expect("replacement leaf");
     assert!(matches!(too_large.store_pair(namespace.clone(), Zeroizing::new("x".repeat(MAX_RECORD_BYTES))), Err(CustodyError::TooLarge)));
     let empty = PendingCustomerLeaf::generate().expect("replacement leaf");

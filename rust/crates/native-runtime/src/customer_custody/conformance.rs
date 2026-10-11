@@ -145,8 +145,9 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
     let pending = PendingCustomerLeaf::generate().expect("actual own leaf");
     let public = URL_SAFE_NO_PAD.encode(pending.public_key());
     let fixture = server.issue(&account, &public, &key_id, jti, 30);
-    let stored = pending.commit(namespace.clone(), &fixture.birth, &fixture.certificate,
-        Zeroizing::new("explicit-local-conformance-sql-session".into())).expect("actual bound OS commit");
+    let stored = pending.prepare(namespace.clone(), &fixture.birth, &fixture.certificate,
+        Zeroizing::new("explicit-local-conformance-sql-session".into())).expect("actual bound preparation")
+        .commit().expect("actual bound OS commit");
     drop(stored);
     let restored = RestoredCustomerLeaf::open(namespace.clone()).expect("actual OS reopen");
     assert!(URL_SAFE_NO_PAD.encode(restored.public_key()) == public);
@@ -164,7 +165,7 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
     let foreign_fixture = server.issue(&account, &foreign_public, &foreign_key_id, jti, 30);
     assert!(matches!(restored.mint(&foreign_fixture.birth, &foreign_fixture.certificate, jti, &ActualClock, 60),
         Err(CustodyError::Holder(AccountHolderError::Scope))));
-    assert!(matches!(foreign.commit(namespace.clone(), &fixture.birth, &fixture.certificate,
+    assert!(matches!(foreign.prepare(namespace.clone(), &fixture.birth, &fixture.certificate,
         Zeroizing::new("not-stored".into())), Err(CustodyError::Holder(AccountHolderError::Scope))));
     restored.with_sql_session(|session| assert!(session == "explicit-local-conformance-sql-session"))
         .expect("original survives foreign-certificate replacement");
@@ -212,8 +213,9 @@ fn real_os_restored_holder_and_canonical_server_conformance() {
     let short_namespace = CustomerCustodyNamespace::new("https://custody-conformance.invalid", "staging", &account, &short_key_id).expect("short-window namespace");
     let _short_cleanup = Cleanup(short_namespace.clone());
     let short_fixture = server.issue(&account, &short_public, &short_key_id, jti, 3);
-    let short_handle = short.commit(short_namespace.clone(), &short_fixture.birth, &short_fixture.certificate,
-        Zeroizing::new("explicit-local-conformance-renewal-session".into())).expect("short-window actual OS commit");
+    let short_handle = short.prepare(short_namespace.clone(), &short_fixture.birth, &short_fixture.certificate,
+        Zeroizing::new("explicit-local-conformance-renewal-session".into())).expect("short-window preparation")
+        .commit().expect("short-window actual OS commit");
     let short_bearer = short_handle.mint(&short_fixture.birth, &short_fixture.certificate, jti, &ActualClock, 60)
         .expect("actual certificate-bounded bearer");
     server.verify(&short_bearer, &account, &short_public, &short_key_id, jti, false, false, true);
@@ -258,9 +260,9 @@ fn real_os_recertification_lost_acknowledgement_and_foreign_replacement() {
     let public = URL_SAFE_NO_PAD.encode(pending.public_key());
     let original_fixture = server.issue(&account, &public, &key_id, jti, 30);
     let renewed_fixture = server.issue(&account, &public, &new_key_id, jti, 30);
-    let original = pending.commit(original_namespace.clone(), &original_fixture.birth,
+    let original = pending.prepare(original_namespace.clone(), &original_fixture.birth,
         &original_fixture.certificate, Zeroizing::new("lost-ack-original-sql-session".into()))
-        .expect("actual original pair commit");
+        .expect("actual original pair preparation").commit().expect("actual original pair commit");
     let original_receipt = original.reference().encode();
     let saved_original = CustomerCustodyReference::decode(&original_receipt).expect("canonical original public receipt");
     assert!(saved_original.encode() == original_receipt);
@@ -314,9 +316,8 @@ fn real_os_recertification_lost_acknowledgement_and_foreign_replacement() {
         let _lock = lock::NamespaceLock::acquire(&original_namespace.name).expect("original namespace lock");
         original.current().expect("actual original restored key").key
     };
-    let changed_session = PendingCustomerLeaf { key }.commit(destination.clone(),
-        &renewed_fixture.birth, &renewed_fixture.certificate,
-        Zeroizing::new("lost-ack-replacement-sql-session".into())).expect("real same-leaf session replacement");
+    let changed_session = PendingCustomerLeaf { key }.store_pair(destination.clone(),
+        Zeroizing::new("lost-ack-replacement-sql-session".into())).expect("real same-leaf foreign session replacement");
     assert!(matches!(original.recertify(destination.clone(), &renewed_fixture.birth,
         &renewed_fixture.certificate), Err(CustodyError::Stale)));
     changed_session.with_sql_session(|session| assert!(session == "lost-ack-replacement-sql-session"))
@@ -399,4 +400,91 @@ fn real_os_recertification_lost_acknowledgement_and_foreign_replacement() {
     current.delete().expect("lost destination delete acknowledgement is idempotent");
     assert!(matches!(RestoredCustomerLeaf::open(original_namespace), Err(CustodyError::NotFound)));
     assert!(matches!(RestoredCustomerLeaf::open(destination), Err(CustodyError::NotFound)));
+}
+
+/// Initial enrollment publishes the actual Rust-prepared receipt before the OS write.
+/// An unknown acknowledgement is recovered only with that saved exact-generation fence.
+#[test]
+#[ignore = "requires a real OS vault and source-bound Cloud customer-holder-fixture executable"]
+fn real_os_prepared_initial_commit_acknowledgement_and_receipt() {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("actual OS random source");
+    nonce[6] = (nonce[6] & 0x0f) | 0x40;
+    nonce[8] = (nonce[8] & 0x3f) | 0x80;
+    let mut hex = String::with_capacity(32);
+    for byte in nonce { write!(hex, "{byte:02x}").expect("public namespace hex"); }
+    let account = format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]);
+    let key_id = format!("prepared-initial-{hex}");
+    let jti = "native-prepared-initial";
+    let namespace = CustomerCustodyNamespace::new("https://custody-prepared-initial.invalid",
+        "staging", &account, &key_id).expect("isolated initial enrollment namespace");
+    let _cleanup = Cleanup(namespace.clone());
+    let mut server = ServerFixture::start();
+    let pending = PendingCustomerLeaf::generate().expect("own initial leaf");
+    let public_bytes = pending.public_key();
+    let public = URL_SAFE_NO_PAD.encode(public_bytes);
+    let fixture = server.issue(&account, &public, &key_id, jti, 30);
+    let prepared = pending.prepare(namespace.clone(), &fixture.birth, &fixture.certificate,
+        Zeroizing::new("prepared-initial-private-sql-session".into())).expect("bind and prepare without OS write");
+    assert!(prepared.public_key() == public_bytes);
+    let actual_planned_generation = prepared.generation;
+
+    // Only the NONSECRET receipt is durable public metadata; no private pair serializer.
+    struct PublicReceiptFile(std::path::PathBuf);
+    impl Drop for PublicReceiptFile {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let receipt_file = PublicReceiptFile(std::env::temp_dir().join(format!("acyclic-prepared-{hex}.receipt")));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(&receipt_file.0).expect("isolated public metadata file");
+    file.write_all(prepared.reference().encode().as_bytes()).expect("persist actual planned receipt BEFORE OS write");
+    file.sync_all().expect("durable public receipt");
+    drop(file);
+    let published = std::fs::read_to_string(&receipt_file.0).expect("restart reads saved public receipt");
+    let saved = CustomerCustodyReference::decode(&published).expect("Rust-owned saved reference");
+    assert!(saved.generation == actual_planned_generation && saved.public_key == public_bytes);
+    assert!(matches!(RestoredCustomerLeaf::open_at(namespace.clone(), &saved), Err(CustodyError::NotFound)));
+
+    // Two genuine preparations for the same own leaf/session still have distinct
+    // Rust-assigned generations. A later competing commit cannot adopt the first.
+    let seed: &[u8; 32] = prepared.bytes[72..104].try_into().expect("own private test seed borrow");
+    let competing = PendingCustomerLeaf { key: SigningKey::from_bytes(seed) }
+        .prepare(namespace.clone(), &fixture.birth, &fixture.certificate,
+            Zeroizing::new("prepared-initial-private-sql-session".into())).expect("second preparation before any OS write");
+    assert!(competing.generation != actual_planned_generation);
+    // Internal replay exercises exact-generation idempotency; no public Clone/key export.
+    let replay = PreparedCustomerLeaf {
+        namespace: prepared.namespace.clone(),
+        bytes: Zeroizing::new(prepared.bytes.to_vec()),
+        generation: prepared.generation,
+        public_key: prepared.public_key,
+    };
+    let acknowledged = prepared.commit().expect("OS writes EXACT published planned generation");
+    assert!(acknowledged.reference().encode() == published);
+    drop(acknowledged); // Successful OS write, lost initial JavaScript acknowledgement.
+    let reopened = RestoredCustomerLeaf::open_at(namespace.clone(), &saved)
+        .expect("restart cannot adopt an unknown current generation");
+    assert!(reopened.generation == actual_planned_generation && reopened.public_key() == public_bytes);
+    reopened.with_sql_session(|session| assert!(session == "prepared-initial-private-sql-session"))
+        .expect("actual restored distinct SQL session");
+    let bearer = reopened.mint(&fixture.birth, &fixture.certificate, jti, &ActualClock, 60)
+        .expect("actual usable bearer after initial lost acknowledgement");
+    server.verify(&bearer, &account, &public, &key_id, jti, false, false, true);
+    assert!(matches!(competing.commit(), Err(CustodyError::Stale)));
+    let retried = replay.commit().expect("EXACT prepared pair/generation returns existing actual handle");
+    assert!(retried.generation == actual_planned_generation);
+    let occupied = PendingCustomerLeaf { key: reopened.current().expect("actual current pair").key };
+    assert!(matches!(occupied.prepare(namespace.clone(), &fixture.birth, &fixture.certificate,
+        Zeroizing::new("prepared-initial-private-sql-session".into())), Err(CustodyError::Stale)));
+    let foreign = PendingCustomerLeaf::generate().expect("actual foreign writer");
+    let foreign_public = foreign.public_key();
+    let foreign_handle = foreign.store_pair(namespace.clone(),
+        Zeroizing::new("prepared-initial-foreign-sql-session".into())).expect("real OS foreign replacement");
+    assert!(matches!(RestoredCustomerLeaf::open_at(namespace.clone(), &saved), Err(CustodyError::Stale)));
+    assert!(matches!(reopened.delete(), Err(CustodyError::Stale)));
+    let actual_foreign = RestoredCustomerLeaf::open(namespace.clone()).expect("foreign replacement remains");
+    assert!(actual_foreign.public_key() == foreign_public);
+    foreign_handle.delete().expect("delete ONLY actual foreign test handle");
+    assert!(matches!(RestoredCustomerLeaf::open_at(namespace, &saved), Err(CustodyError::NotFound)));
+    // Missing replay remains an uncompleted/absent enrollment, never a fresh Root grant.
 }
