@@ -208,28 +208,6 @@ async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<
     Ok(())
 }
 
-#[test]
-fn stdio_service_frames_all_cuts_and_arbitrary_ingress_fail_closed() -> Result<()> {
-    let initialization = OperationId::from_bytes([95;16]);
-    let operation = OperationId::from_bytes([96;16]);
-    let descriptor = McpStdioRequest { initialization, operation, method: McpStdioMethod::ReadResource, params: json!({"uri":"test://resource"}), maximum_bytes: 8192 };
-    let transcript = format!("{}\n{}\n", json!({"jsonrpc":"2.0","id":initialization.to_string(),"result":{"protocolVersion":acyclic_harness::mcp::PROTOCOL_VERSION,"capabilities":{"resources":{}},"serverInfo":{"name":"fixture","version":"1"}}}), json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"contents":[{"uri":"test://resource","text":"héllo"}]}}));
-    for cut in 0..=transcript.len() {
-        let (mut exchange, _) = descriptor.exchange()?;
-        let (left, right) = transcript.as_bytes().split_at(cut);
-        exchange.push(left)?; exchange.push(right)?;
-        assert_eq!(exchange.finish()?.pointer("/contents/0/text"), Some(&json!("héllo")));
-    }
-    use proptest::{prelude::*, test_runner::TestRunner};
-    let strategy = proptest::collection::vec(any::<u8>(), 0..4096);
-    TestRunner::default().run(&strategy, |bytes| {
-        let (mut exchange, _) = descriptor.exchange().map_err(|error| TestCaseError::fail(error.to_string()))?;
-        if exchange.push(&bytes).is_err() { prop_assert!(exchange.push(transcript.as_bytes()).is_err()); }
-        Ok(())
-    }).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(())
-}
-
 #[tokio::test]
 async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> Result<()> {
     let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

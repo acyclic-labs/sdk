@@ -1256,11 +1256,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
             if io.is_some() {
-                crate::contract::validate_json_schema_value_with_io(
+                crate::contract::validate_json_schema_value(
                     &self.output_schema, value, "task output", io,
                 )?;
             } else {
-                crate::tool::validate_value(&self.output_schema, value, "task output")?;
+                crate::tool::validate_value(&self.output_schema, value, "task output", None)?;
             }
         }
         Ok(())
@@ -3868,7 +3868,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                             "task output failed validation"));
                     }
                 } else {
-                    crate::tool::validate_value(&admission.output_schema, &value, "task output")?;
+                    crate::tool::validate_value(&admission.output_schema, &value, "task output", None)?;
                 }
                 let bytes = crate::store::history::canonical_bytes_with_work(
                     &value, admission.limits.file_bytes, work,
@@ -5991,7 +5991,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
-        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input")?;
+        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input", None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

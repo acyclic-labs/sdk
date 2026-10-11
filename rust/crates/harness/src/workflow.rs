@@ -360,7 +360,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate_with_io(io)?;
-        crate::contract::compile_json_schema_with_io(machine.state_schema(), "machine state", io)?;
+        crate::contract::compile_json_schema(machine.state_schema(), "machine state", io)?;
         let key = (
             workflow_copy_text(&identity.name, io)?,
             workflow_copy_text(&identity.version, io)?,
@@ -448,7 +448,7 @@ impl MachineRegistry {
         })?;
         #[allow(unused_mut)]
         let mut transition_retained = 0;
-        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &checkpoint.state, "machine state", io)?;
+        crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let transition = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -467,7 +467,7 @@ impl MachineRegistry {
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, input)?;
-        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &transition.state, "machine state", io)?;
+        crate::contract::validate_json_schema_value(machine.state_schema(), &transition.state, "machine state", io)?;
         validate_commands(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
         let next = MachineCheckpoint {
@@ -512,7 +512,7 @@ impl MachineRegistry {
             let (state, custody) = machine.initialize_with_native_work(input, work)?;
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
-            crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &state, "machine state", Some(&io))?;
+            crate::contract::validate_json_schema_value(machine.state_schema(), &state, "machine state", Some(&io))?;
             Ok((state, retained))
         })();
         let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
@@ -570,7 +570,7 @@ impl MachineRegistry {
         let machine = self.resolve(&checkpoint.machine).ok_or_else(|| {
             Error::Unsupported("pinned machine implementation is unavailable".into())
         })?;
-        crate::contract::validate_json_schema_value_with_io(machine.state_schema(), &checkpoint.state, "machine state", io)
+        crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", io)
     }
 
     fn replayed_checkpoint_body(

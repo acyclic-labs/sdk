@@ -1912,9 +1912,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        crate::contract::compile_json_schema(&schema, "extension")?;
+        crate::contract::compile_json_schema(&schema, "extension", None)?;
         if let Some(configuration_schema) = &configuration_schema {
-            crate::contract::compile_json_schema(configuration_schema, "configuration")?;
+            crate::contract::compile_json_schema(configuration_schema, "configuration", None)?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -2269,7 +2269,7 @@ impl SchemaRegistry {
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
-        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload")?;
+        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload", None)?;
         Ok(())
     }
 
@@ -2478,7 +2478,7 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::contract::validate_json_schema_value_with_io(schema, value, "configuration", io)
+        crate::contract::validate_json_schema_value(schema, value, "configuration", io)
     }
 }
 

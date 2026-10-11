@@ -863,10 +863,7 @@ impl Snapshot {
                     return Err(Error::Storage(source.to_string()));
                 }
             };
-            let future_cache = admission.conversation_cache_bytes
-                .checked_add(admission.conversation_canonical_scratch_bytes)
-                .ok_or_else(|| Error::Storage("snapshot cache allowance overflows".into()))?;
-            custody.relinquish(future_cache)?;
+            custody.relinquish(admission.1)?;
             let (snapshot, cache_bytes) = wire.into_snapshot_with_work(
                 maximum_bytes, custody.work())?;
             custody.adopt(cache_bytes)?;

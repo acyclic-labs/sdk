@@ -934,8 +934,7 @@ impl Interaction {
             ) => {
                 if work.is_none() {
                     crate::contract::validate_json_schema_value(
-                        response_schema, value, "interaction response",
-                    )
+                        response_schema, value, "interaction response", None)
                 } else {
                     crate::contract::validate_json_schema_value_with_work(
                         response_schema, value, "interaction response", work,

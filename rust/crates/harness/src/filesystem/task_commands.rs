@@ -1431,7 +1431,7 @@ fn tool_invocation(
             "task scope lacks tool call grant".into(),
         ));
     }
-    validate_value(&definition.input_schema, &arguments, "tool input")?;
+    validate_value(&definition.input_schema, &arguments, "tool input", None)?;
     let task = context
         .durable_task_id()
         .ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
@@ -1507,7 +1507,7 @@ fn tool_invocation_with_native_operation(
         });
     }
     drop(grant);
-    crate::contract::validate_json_schema_value_with_io(
+    crate::contract::validate_json_schema_value(
         &definition.input_schema, &arguments, "tool input", Some(io),
     )?;
     let (call_id, custody) = work.display(&operation)?;

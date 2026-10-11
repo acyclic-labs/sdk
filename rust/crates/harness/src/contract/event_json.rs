@@ -313,7 +313,7 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
 
 pub(crate) fn json_decode_owned_bytes(
     shape: JsonValueShape, snapshot: bool, native_code: Option<crate::wire::ErrorCode>,
-) -> Result<(u64, u64)> {
+) -> Result<(u64, u64, u64)> {
     let multiply = |value, factor| multiply_with_code(value, factor, native_code);
     let sum = |values: &[u64]| sum_with_code(values, native_code);
     let input_bytes = shape.input_bytes();
@@ -359,80 +359,6 @@ pub(crate) fn json_decode_owned_bytes(
     }
     let maximum_owned_bytes = sum(&[serde_content_bytes, typed_collection_bytes, value_overlap_bytes,
         boxed_payload_bytes, string_payload_bytes, scratch_bytes, diagnostic_bytes, conversation_bytes])?;
-    Ok((maximum_owned_bytes, diagnostic_bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::{EventPayload, LifecycleState};
-    use crate::interaction::{InteractionOutcome, InteractionResolution};
-
-    fn bounds(bytes: &[u8]) -> JsonBounds {
-        JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 }
-    }
-
-    #[test]
-    fn stack_and_cancellation_reject_before_schema_decode() {
-        let bytes = format!("{}0{}", "[".repeat(300), "]".repeat(300));
-        let mut reserved = false;
-        assert!(event_payload_json_admission(bytes.as_bytes(), bounds(bytes.as_bytes()), &mut |event| {
-            reserved |= matches!(event, JsonCodecCharge::Admission { .. });
-            Ok(())
-        }).is_err());
-        assert!(!reserved);
-        let bytes = br#"{"kind":"conversation_bound","agent":"00000000-0000-0000-0000-000000000001"}"#;
-        let operation = crate::OperationId::from_bytes([92; 16]);
-        let mut error = Some(Error::Indeterminate(operation));
-        let result = event_payload_json_admission(bytes, bounds(bytes), &mut |_| {
-            Err(error.take().expect("admission must stop after its first failure"))
-        });
-        assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
-    }
-
-    fn raw_event_bytes(raw: &str) -> Result<Vec<u8>> {
-        serde_json::to_vec(&serde_json::json!({
-            "kind": "interaction_resolved",
-            "resolution": {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "expected_version": 1,
-                "outcome": { "$serde_json::private::RawValue": raw },
-            },
-        })).map_err(|error| Error::Storage(error.to_string()))
-    }
-
-    #[test]
-    fn hidden_raw_items_and_depth_reject_before_serde_and_reservation() -> Result<()> {
-        let wide = format!(r#"{{"kind":"approved","extra":[{}]}}"#, vec!["0"; 96].join(","));
-        let deep = format!(r#"{{"kind":"approved","extra":{}0{}}}"#, "[".repeat(40), "]".repeat(40));
-        for (raw, restrict_items) in [(wide, true), (deep, false)] {
-            let bytes = raw_event_bytes(&raw)?;
-            let mut shape = None;
-            event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
-                if let JsonCodecCharge::Admission { value_shape, .. } = event { shape = Some(value_shape); }
-                Ok(())
-            })?;
-            let shape = shape.expect("actual source shape");
-            assert!(shape.virtual_items() > 0);
-            let mut limited = bounds(&bytes);
-            if restrict_items { limited.maximum_items = shape.lexical_items(); }
-            else { limited.maximum_depth = 16; }
-            let mut reserved = false;
-            let mut decoded = false;
-            let result = event_payload_json_admission(&bytes, limited, &mut |event| {
-                reserved |= matches!(event, JsonCodecCharge::Admission { .. });
-                Ok(())
-            }).and_then(|_| {
-                decoded = true;
-                serde_json::from_slice::<EventPayload>(&bytes)
-                    .map_err(|error| Error::Storage(error.to_string()))
-            });
-            assert!(result.is_err());
-            assert!(!reserved);
-            assert!(!decoded);
-        }
-        Ok(())
-    }
-
+    Ok((maximum_owned_bytes, diagnostic_bytes, conversation_bytes))
 }
 

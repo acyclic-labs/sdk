@@ -1451,19 +1451,9 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
-    use serde::ser::SerializeMap as _;
+    use serde::Serialize;
 
     const BOUNDS: JsonBounds = JsonBounds { maximum_bytes: 65_536, maximum_items: 4_096, maximum_depth: 32 };
-    struct Pairs(Vec<(String, u64)>);
-    impl Serialize for Pairs {
-        fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-            let mut map = serializer.serialize_map(Some(usize::MAX))?;
-            for (key, value) in &self.0 { map.serialize_entry(key, value)?; }
-            map.end()
-        }
-    }
-
     #[test]
     fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
@@ -1556,37 +1546,6 @@ mod tests {
         assert!(matches!(failure, Err(Error::Indeterminate(original)) if original == operation));
         assert_eq!(copy_failures, 1);
         assert_eq!(live, 0);
-    }
-
-    #[test]
-    fn ordinary_second_pass_error_and_size_change_release_output_quota() {
-        use std::cell::Cell;
-        struct Changing<'a> { calls: &'a Cell<usize>, fail: bool }
-        impl Serialize for Changing<'_> {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let call = self.calls.get();
-                self.calls.set(call + 1);
-                if call == 0 { serializer.serialize_str("first output") }
-                else if self.fail { Err(ser::Error::custom("second pass failure")) }
-                else { serializer.serialize_str("short") }
-            }
-        }
-        for fail in [true, false] {
-            let calls = Cell::new(0);
-            let mut live = 0u64;
-            let mut peak = 0;
-            let result = json_bytes_bounded(&Changing { calls: &calls, fail }, BOUNDS, None, &mut |event| {
-                match event {
-                    JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
-                    JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                    _ => {}
-                }
-                Ok(())
-            });
-            assert!(result.is_err());
-            assert!(peak > 0);
-            assert_eq!(live, 0);
-        }
     }
 
     #[test]

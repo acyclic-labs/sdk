@@ -176,7 +176,7 @@ mod tests {
             ),
         ] {
             let unchanged = canonical.clone();
-            crate::tool::validate_value(&schema, &projection, "file reference projection")?;
+            crate::tool::validate_value(&schema, &projection, "file reference projection", None)?;
             let wire: ToolResultContent = serde_json::from_value(projection.clone())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let ToolResultContent::Parts { parts } = wire else {
@@ -190,7 +190,7 @@ mod tests {
             );
             let mut changed = projection;
             changed["parts"][1]["policy"] = json!("bounded_full");
-            assert!(crate::tool::validate_value(&schema, &changed, "unselected policy").is_err());
+            assert!(crate::tool::validate_value(&schema, &changed, "unselected policy", None).is_err());
             assert_eq!(canonical, &unchanged);
         }
         assert_eq!(
@@ -243,12 +243,12 @@ mod tests {
                 Some(&json!("https://json-schema.org/draft/2020-12/schema"))
             );
             assert!(schema.get("$defs").is_some());
-            crate::contract::compile_json_schema(schema, "generated native tool")?;
+            crate::contract::compile_json_schema(schema, "generated native tool", None)?;
         }
-        crate::tool::validate_value(&input_schema, &json!({"file":file}), "generated read")?;
-        crate::tool::validate_value(&output_schema, &canonical, "generated result")?;
+        crate::tool::validate_value(&input_schema, &json!({"file":file}), "generated read", None)?;
+        crate::tool::validate_value(&output_schema, &canonical, "generated result", None)?;
         let projection = project_json(result.clone())?;
-        crate::tool::validate_value(&projection_schema, &projection, "generated projection")?;
+        crate::tool::validate_value(&projection_schema, &projection, "generated projection", None)?;
         assert_eq!(projection, json!({"kind":"json","value":canonical}));
         assert_eq!(
             serde_json::from_value::<FileResult>(canonical.clone())
@@ -256,10 +256,10 @@ mod tests {
             result
         );
         assert!(
-            crate::tool::validate_value(&projection_schema, &canonical, "bare result").is_err()
+            crate::tool::validate_value(&projection_schema, &canonical, "bare result", None).is_err()
         );
         assert!(
-            crate::tool::validate_value(&output_schema, &projection, "wrong canonical envelope")
+            crate::tool::validate_value(&output_schema, &projection, "wrong canonical envelope", None)
                 .is_err()
         );
         for pointer in [
@@ -273,7 +273,7 @@ mod tests {
                 .pointer_mut(pointer)
                 .ok_or_else(|| Error::Invalid("fixture field missing".into()))? = json!(1);
             assert!(
-                crate::tool::validate_value(&output_schema, &changed, "wrong nested type").is_err()
+                crate::tool::validate_value(&output_schema, &changed, "wrong nested type", None).is_err()
             );
         }
         let mut changed = canonical.clone();
@@ -283,7 +283,7 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture ref missing".into()))?
             .remove("version");
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "missing nested field").is_err()
+            crate::tool::validate_value(&output_schema, &changed, "missing nested field", None).is_err()
         );
         let mut changed = canonical.clone();
         changed
@@ -292,7 +292,7 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture descriptor missing".into()))?
             .insert("extra".into(), json!(true));
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "unknown nested field").is_err()
+            crate::tool::validate_value(&output_schema, &changed, "unknown nested field", None).is_err()
         );
         for digest in [vec![0; 31], vec![0; 33], vec![256; 32]] {
             let mut changed = canonical.clone();
@@ -300,7 +300,7 @@ mod tests {
                 .pointer_mut("/file/descriptor/sha256")
                 .ok_or_else(|| Error::Invalid("fixture digest missing".into()))? = json!(digest);
             assert!(
-                crate::tool::validate_value(&output_schema, &changed, "invalid digest").is_err()
+                crate::tool::validate_value(&output_schema, &changed, "invalid digest", None).is_err()
             );
         }
         let mut changed = canonical;
@@ -309,7 +309,7 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture length missing".into()))? =
             json!(crate::conversation::MAX_EXACT_JS_INTEGER + 1);
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "imprecise descriptor").is_err()
+            crate::tool::validate_value(&output_schema, &changed, "imprecise descriptor", None).is_err()
         );
         Ok(())
     }
@@ -347,7 +347,7 @@ mod tests {
                 &edit.definition.input_schema,
                 &json!({"file":file,"old_text":"","new_text":"x"}),
                 "empty edit"
-            )
+            , None)
             .is_err()
         );
         assert!(
@@ -355,7 +355,7 @@ mod tests {
                 &patch.definition.input_schema,
                 &json!({"file":file,"diff":""}),
                 "empty patch"
-            )
+            , None)
             .is_err()
         );
         // Shape schemas do not replace business validators or signed authority.
