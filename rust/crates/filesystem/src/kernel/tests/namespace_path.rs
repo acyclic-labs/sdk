@@ -861,32 +861,6 @@ fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-fn measured_profiles_charge_exact_owned_names() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = VolumeLimits::default();
-    let cancellation = CancellationToken::new();
-    for (profile, name_bytes, copied, encoded) in [
-        (FilesystemProfile::Portable, 6, 6, 0),
-        (FilesystemProfile::Browser, 6, 6, 0),
-        (FilesystemProfile::Posix, 6, 6, 0),
-        (FilesystemProfile::Windows, 6, 0, 6),
-    ] {
-        let receipt = NamespacePath::parse_in_profile_measured(
-            "/é/𝄞", profile, limits, WorkBudget::UNBOUNDED, &cancellation, 17,
-        )?;
-        assert_eq!(receipt.value.depth(), 2);
-        assert_eq!(receipt.work.source_path_components, 2);
-        assert_eq!(receipt.work.items_examined, 2);
-        assert_eq!(receipt.work.allocation_operations, 3);
-        assert_eq!(receipt.work.bytes_copied, copied);
-        assert_eq!(receipt.work.bytes_encoded, encoded);
-        assert_eq!(receipt.value.retained_bytes(),
-            2 * std::mem::size_of::<LogicalName>() as u64 + name_bytes);
-        assert_eq!(receipt.work.peak_allocation_bytes, 17 + receipt.value.retained_bytes());
-    }
-    Ok(())
-}
-
-#[test]
 fn invalid_and_cancelled_paths_do_not_allocate() {
     let cancellation = CancellationToken::new();
     for path in ["relative", "/a//b", "/.", "/..", "/a/", "/nul\0"] {

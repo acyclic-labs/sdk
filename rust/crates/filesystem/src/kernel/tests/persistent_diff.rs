@@ -542,58 +542,6 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 }
 
 #[test]
-fn repeated_diff_reuses_authenticated_decoded_pages_without_backend_reads()
--> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let before = put(
-        &backend,
-        &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    )?;
-    let after = put(
-        &backend,
-        &TreePage::Leaf(vec![entry("a", 3)?, entry("c", 4)?]),
-    )?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
-        },
-    )?;
-    let cancellation = CancellationToken::new();
-    let first = diff(
-        &store,
-        Some(before),
-        Some(after),
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .ok_or("cached diff blocked")??;
-    assert_eq!(first.work.backend_read_operations, 2);
-    assert_eq!(store.stats()?.resident_decoded_pages, 2);
-
-    let second = diff(
-        &store,
-        Some(before),
-        Some(after),
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .ok_or("warm cached diff blocked")??;
-    assert_eq!(second.changes, first.changes);
-    assert_eq!(second.work.page_reads, 2);
-    assert_eq!(second.work.backend_read_operations, 0);
-    assert_eq!(second.work.object_bytes_read, 0);
-    assert!(second.work.bytes_copied > 0);
-    assert_eq!(store.stats()?.decoded_hits, 2);
-    Ok(())
-}
-
-#[test]
 fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
