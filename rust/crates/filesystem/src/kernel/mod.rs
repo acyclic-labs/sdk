@@ -8,7 +8,7 @@ mod attribute_mutation;
 mod blob;
 mod checkpoint;
 mod closure;
-mod codec;
+pub(crate) mod codec;
 mod export;
 mod extent;
 mod extent_clone;
@@ -51,6 +51,48 @@ mod tree;
 mod tree_mutation;
 pub(crate) mod types;
 mod volume;
+
+pub(crate) use attribute::encode_attribute_page_with_accounting;
+pub(crate) use attribute_list::list_attributes_async_with_accounting;
+pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
+pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
+pub(crate) use checkpoint::build_checkpoint_with_accounting;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use checkpoint::build_checkpoint_with_native_work;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use closure::{
+    prove_generation_closure_with_native_work, prove_record_closure_with_native_work,
+};
+pub(crate) use codec::{EncodeAllocationStep, ReadAllocationStep};
+pub(crate) use file_read::{OriginalReadAccounting, ReadDecodeError, read_object_with_accounting};
+pub(crate) use file_table::encode_file_table_leaf_records_with_accounting;
+pub(crate) use generation::encode_generation_root_with_accounting;
+pub(crate) use generation_mutation::{
+    apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
+};
+pub(crate) use list::{
+    list_tree_entries_async_with_accounting, list_tree_entries_at_or_after_async_with_accounting,
+};
+pub(crate) use merge::{
+    MergeGenerationBorrowedRequest,
+    merge_generation_with_accounting, merge_generation_with_borrowed_map_resolutions_with_accounting,
+    merge_generation_with_borrowed_resolutions_with_accounting,
+};
+pub(crate) use metadata::encode_file_metadata_with_accounting;
+pub(crate) use namespace_path::NamespacePathStep;
+pub(crate) use persistent_point::split_allocation;
+pub(crate) use publication::{
+    contextual_publication_fingerprint_with_accounting, decode_published_generation_with_steps,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use publication::publish_generation_async_guarded_with_native_work;
+pub(crate) use range::plan_extent_range_with_accounting;
+pub(crate) use rebase::{ClassifyRebaseFailure, classify_rebase_with_accounting};
+pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
+pub(crate) use retention::encode_retention_created_with_accounting;
+pub(crate) use search::binary_search_with_accounting;
+pub(crate) use tree::encode_tree_page_with_accounting;
+pub(crate) use volume::{decode_volume_created_with_steps, encode_volume_created_with_accounting};
 
 pub use attribute::{
     AttributeChild, AttributeClass, AttributeEncodeError, AttributeEntry, AttributeError,

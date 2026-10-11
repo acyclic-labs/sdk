@@ -70,6 +70,7 @@ pub mod compat_wire;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
+pub use demand::DemandError;
 #[cfg(feature = "distributed")]
 pub mod distributed;
 #[cfg(feature = "distributed")]
@@ -116,7 +117,7 @@ pub mod native_host;
 mod native_identity;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub mod native_mount;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_name;
 pub mod notification;
 pub mod operation_window;
