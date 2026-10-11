@@ -1312,9 +1312,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let machine = admission.machine.clone();
         let output_schema = admission.output_schema.clone();
         let parent = admission.parent;
-        let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?
-            .with_replayed_extensions(admission.extensions.clone())?;
+        let scope = admission.runtime_scope()?;
         self.root_scope
             .narrow(scope.grants().clone(), scope.limits())?
             .with_run_limits(scope.run_limits())?;

@@ -731,6 +731,14 @@ pub struct TaskChildrenPage {
 }
 
 impl TaskAdmissionRecord {
+    /// Reconstructs the original effective scope without selecting new extensions.
+    /// The owner must still verify this retained admission's authority and registration.
+    pub fn runtime_scope(&self) -> Result<RuntimeScope> {
+        RuntimeScope::new(self.grants.clone(), self.limits)?
+            .with_run_limits(self.run_limits)?
+            .with_replayed_extensions(self.extensions.clone())
+    }
+
     /// Constructs and validates an exact admission envelope from the fields
     /// supplied by an SDK boundary. Identity derivation and all invariants are
     /// deliberately owned here so native and WASM callers share one path.
