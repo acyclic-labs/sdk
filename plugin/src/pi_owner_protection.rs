@@ -109,6 +109,22 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
+/// The managed copy belongs to the original caller's guarded SDK producer.
+/// Unix protection has no foreign buffer; no intermediate plaintext is made.
+#[cfg(unix)]
+pub(super) fn unprotect_with_copy<T, E>(
+    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<T, E> {
+    copy(bytes)
+}
+
+#[cfg(unix)]
+pub(super) fn protect_with_copy<T, E>(
+    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<T, E> {
+    copy(bytes)
+}
+
 #[cfg(windows)]
 #[allow(
     unsafe_code,
@@ -144,12 +160,36 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     windows_protect(bytes, false)
 }
 
+/// DPAPI owns its opaque foreign allocation. The original native copy callback
+/// admits the managed output before growth; denial still clears and frees the
+/// foreign plaintext in the same protection engine.
+#[cfg(windows)]
+pub(super) fn unprotect_with_copy<T, E: From<io::Error>>(
+    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<T, E> {
+    windows_protect_with_copy(bytes, false, copy)
+}
+
+#[cfg(windows)]
+pub(super) fn protect_with_copy<T, E: From<io::Error>>(
+    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<T, E> {
+    windows_protect_with_copy(bytes, true, copy)
+}
+
+#[cfg(windows)]
+fn windows_protect(bytes: &[u8], protect: bool) -> io::Result<Vec<u8>> {
+    windows_protect_with_copy(bytes, protect, |bytes| Ok(bytes.to_vec()))
+}
+
 #[cfg(windows)]
 #[allow(
     unsafe_code,
     reason = "DPAPI protects owner credentials for the current Windows user; all output allocations are cleared and freed"
 )]
-fn windows_protect(bytes: &[u8], protect: bool) -> io::Result<Vec<u8>> {
+fn windows_protect_with_copy<T, E: From<io::Error>>(
+    bytes: &[u8], protect: bool, copy: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> Result<T, E> {
     use std::{ptr, slice};
     use windows_sys::Win32::{
         Foundation::LocalFree,
@@ -193,16 +233,16 @@ fn windows_protect(bytes: &[u8], protect: bool) -> io::Result<Vec<u8>> {
         }
     };
     if success == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::last_os_error().into());
     }
     let result = if output.cbData == 0
         || output.pbData.is_null()
         || u64::from(output.cbData) > super::MAXIMUM_OWNER_BYTES
     {
-        Err(io::Error::other("invalid protected Pi owner payload size"))
+        Err(io::Error::other("invalid protected Pi owner payload size").into())
     } else {
         // SAFETY: successful DPAPI returned an allocation of cbData bytes.
-        Ok(unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec())
+        copy(unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) })
     };
     if !output.pbData.is_null() {
         // SAFETY: output is the live DPAPI allocation above, cleared before
