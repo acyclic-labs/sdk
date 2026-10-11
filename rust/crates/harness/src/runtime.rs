@@ -3326,6 +3326,7 @@ impl RuntimeScope {
         }
         Ok(())
     }
+
     /// Attenuates every grant and numeric bound.
     pub fn narrow(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         limits.validate()?;
@@ -10168,6 +10169,7 @@ mod tests {
         assert!(matches!(RuntimeScope::validate_session_limits_with_native_work(&valid, &work),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     }
+
     fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
         let header = format!("export interface {name} {{");
         let bytes = source.as_bytes();
