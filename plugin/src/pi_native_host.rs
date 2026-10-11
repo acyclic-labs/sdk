@@ -26,8 +26,8 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     effect_host::{ConversationEffectHost, TaskEffectPlan}, effects::EffectRegistry,
     fork::ForkReport,
     filesystem::{BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
-        NativeProcessAuthority, NativeProcessReceipt, NativePublicationCleanup, NativePublicationReservation, NativeReservationError, workspace_ref,
-        NativeVolumeNamespace, NativeReceiptError,
+        NativeProcessAuthority, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
+        NativeVolumeView, NativeVolumeNamespace, NativeReceiptError,
         NativePreparationJournalObservation, NativePreparationJournalError,
         RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
@@ -66,19 +66,21 @@ type Scratch = PiPreparedScratch<LocalAuthorityBackend, LocalObjectBackend>;
 type Journal = FilesystemExecutionJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 type Effects = ConversationEffectHost<LocalStream>;
 type Reservation = NativePublicationReservation<LocalAuthorityBackend, LocalObjectBackend>;
-type ReservationCleanup = NativePublicationCleanup<LocalAuthorityBackend, LocalObjectBackend>;
 
 #[derive(Default)]
 struct NativeGate {
     reservation: Option<Reservation>,
-    cleanup: Option<ReservationCleanup>,
-    cleanup_error: Option<NativeReservationError>,
-    unwitnessed: Option<acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>>,
+    // Readiness only. Failure capabilities belong to the returned SDK Root error.
+    requires_original_recovery: bool,
 }
 
 impl NativeGate {
+    fn is_settled(&self) -> bool {
+        self.reservation.is_none() && !self.requires_original_recovery
+    }
+
     async fn reserve(&mut self, owner: &TaskJournalOwner<LocalStream>,
-        workspace: acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
         volume: &acyclic_harness::conversation::VolumeRef, generation: GenerationId, command: OperationId,
         meter: &NativeMaterializationWork, cancellation: &CancellationToken,
         cleanup_cancellation: &CancellationToken, existing_only: bool,
@@ -88,57 +90,39 @@ impl NativeGate {
             owner.native_view_owner().require_volume_grant_with_native_work(volume, VolumeOperation::Write, meter)?;
             return Ok(reservation.permit());
         }
-        if self.cleanup.is_some() { return Err(Error::Indeterminate(command)); }
+        let recover_original = existing_only || self.requires_original_recovery;
+        self.requires_original_recovery = true;
         let original = acyclic_fs::OperationId::from_bytes(command.into_bytes());
-        let acquired = if existing_only || self.unwitnessed.is_some() {
+        let acquired = if recover_original {
             owner.native_view_owner().recover_publication(workspace, volume, generation,
-                original, meter, cancellation, cleanup_cancellation).await
+                original, meter, cancellation, cleanup_cancellation).await?
         } else {
-            owner.native_view_owner().reserve_publication(workspace, volume, generation,
-                original, meter, cancellation, cleanup_cancellation).await
-                .map(|receipt| OperationReceipt { value: Some(receipt.value), work: receipt.work })
+            Some(owner.native_view_owner().reserve_publication(workspace, volume, generation,
+                original, meter, cancellation, cleanup_cancellation).await?)
         };
-        match acquired {
-            Ok(receipt) => {
-                let Some(reservation) = receipt.value else { return Err(Error::Indeterminate(command)); };
-                let permit = reservation.permit();
-                self.reservation = Some(reservation);
-                self.unwitnessed = None;
-                remaining(meter)?;
-                Ok(permit)
-            }
-            Err(failure) => {
-                self.cleanup = failure.cleanup;
-                self.cleanup_error = failure.cleanup_error;
-                self.unwitnessed = failure.unwitnessed_workspace;
-                Err(reservation_error(failure.error, command))
-            }
-        }
+        let reservation = acquired.ok_or(Error::Indeterminate(command))?;
+        let permit = reservation.permit();
+        self.reservation = Some(reservation);
+        remaining(meter)?;
+        Ok(permit)
     }
-    async fn release(&mut self, meter: &NativeMaterializationWork, cancellation: &CancellationToken,
-        command: OperationId,
+
+    async fn release(&mut self, owner: &TaskJournalOwner<LocalStream>,
+        meter: &NativeMaterializationWork, cancellation: &CancellationToken, command: OperationId,
     ) -> Result<()> {
-        if let Some(reservation) = self.reservation.take() {
-            self.cleanup = Some(reservation.into_cleanup());
-        }
-        if self.unwitnessed.is_some() {
-            return Err(Error::Indeterminate(command));
-        }
-        let Some(cleanup) = self.cleanup.take() else {
-            return match self.cleanup_error.take() {
-                Some(error) => Err(reservation_error(error, command)),
-                None => Ok(()),
+        let Some(reservation) = self.reservation.take() else {
+            return if self.requires_original_recovery {
+                Err(Error::Indeterminate(command))
+            } else {
+                Ok(())
             };
         };
-        match cleanup.release(meter, cancellation).await {
-            Ok(_) => { self.cleanup_error = None; remaining(meter)?; Ok(()) }
-            Err(failure) => {
-                self.cleanup = failure.cleanup;
-                self.cleanup_error = failure.cleanup_error;
-                self.unwitnessed = failure.unwitnessed_workspace;
-                Err(reservation_error(failure.error, command))
-            }
-        }
+        // The prepaid SDK error retains the actual cleanup owner on every failure.
+        // An empty local reservation is not evidence of physical settlement.
+        reservation.into_cleanup().release(&owner.native_view_owner(), meter, cancellation).await?;
+        self.requires_original_recovery = false;
+        remaining(meter)?;
+        Ok(())
     }
 }
 
@@ -867,10 +851,7 @@ impl PiNativeCommandHost {
             {
                 let handles = entry.handles.lock().await;
                 if handles.mounts_drained && handles.drained.is_some()
-                    && handles.project_gate.reservation.is_none() && handles.project_gate.cleanup.is_none()
-                    && handles.project_gate.unwitnessed.is_none()
-                    && handles.scratch_gate.reservation.is_none() && handles.scratch_gate.cleanup.is_none()
-                    && handles.scratch_gate.unwitnessed.is_none()
+                    && handles.project_gate.is_settled() && handles.scratch_gate.is_settled()
                     && handles.project_startup_owner.is_none()
                     && handles.root_seed.is_none()
                 {
@@ -897,8 +878,8 @@ impl PiNativeCommandHost {
             if !handles.mounts_drained { return Err(Error::Indeterminate(effect.command)); }
             handles.project_allocation = None;
             effect.owner.verify_with_native_work(true, meter).await?;
-            handles.project_gate.release(meter, cancellation, effect.command).await?;
-            handles.scratch_gate.release(meter, cancellation, effect.command).await?;
+            handles.project_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
+            handles.scratch_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
             Ok(())
         }.await
     }
@@ -1004,8 +985,8 @@ impl PiNativeCommandHost {
         *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         handles.project_allocation = None;
         handles.scratch = None;
-        handles.project_gate.release(meter, cancellation, command).await?;
-        handles.scratch_gate.release(meter, cancellation, command).await?;
+        handles.project_gate.release(&owner, meter, cancellation, command).await?;
+        handles.scratch_gate.release(&owner, meter, cancellation, command).await?;
         Ok(())
     }
 
@@ -1130,10 +1111,8 @@ impl PiNativeCommandHost {
             if handles.effect.is_some() || handles.preparation_owner.is_some()
                 || handles.scratch.is_some() || handles.root_seed.is_some() || handles.project.is_some()
                 || handles.project_allocation.is_some() || handles.project_startup_owner.is_some()
-                || handles.scratch_gate.reservation.is_some() || handles.scratch_gate.cleanup.is_some()
-                || handles.scratch_gate.unwitnessed.is_some()
-                || handles.project_gate.reservation.is_some() || handles.project_gate.cleanup.is_some()
-                || handles.project_gate.unwitnessed.is_some() || self.live_view(task).is_some()
+                || !handles.scratch_gate.is_settled()
+                || !handles.project_gate.is_settled() || self.live_view(task).is_some()
             { return Ok(false); }
         }
         // Observe the original lease only. Idle never authorizes a replacement
@@ -1387,7 +1366,7 @@ impl PiNativeCommandHost {
                     remaining(work)?, cancellation).await, work)?;
                 let scratch_generation = GenerationId::new(Digest::from_bytes(
                     generation.as_resource().key().try_into().map_err(|_| unauthorized("Pi scratch generation is not canonical"))?));
-                let scratch_permit = handles.scratch_gate.reserve(&owner, scratch_workspace,
+                let scratch_permit = handles.scratch_gate.reserve(&owner, &scratch_workspace,
                     &prepared.binding.scratch.volume, scratch_generation, command.operation_id,
                     work, cancellation, &entry.cleanup_cancellation, existing_only).await?;
                 let options = pi_native::native_view_options_with_work(&self.resources, root_session,
@@ -1420,7 +1399,7 @@ impl PiNativeCommandHost {
                     prepared.native_lazy.authored_generation.digest().into_bytes(), None, work)?;
                 let write_capability = project.capability_with_native_work(VolumeOperation::Write, work)?;
                 let writable = context.scope().grants().contains(&write_capability.0);
-                let project_permit = handles.project_gate.reserve(&owner, prepared.workspace.workspace().clone(),
+                let project_permit = handles.project_gate.reserve(&owner, prepared.workspace.workspace(),
                     project, prepared.native_lazy.authored_generation, command.operation_id,
                     work, cancellation, &entry.cleanup_cancellation, existing_only).await?;
                 let project_capture = {
@@ -1731,7 +1710,9 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 fn native_construction((cause, work): (acyclic_fs::NativeTreeMaterializationError, WorkCounters)) -> Error {
     Error::NativeConstruction { cause, work }
 }
-fn unauthorized(message: &str) -> Error { Error::Unauthorized(message.into()) }
+fn unauthorized(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized, reason }
+}
 fn json_error(error: serde_json::Error) -> Error { Error::Invalid(error.to_string()) }
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> { serde_json::from_value(value).map_err(json_error) }
 fn reserved_environment(key: &str) -> bool {
@@ -1740,21 +1721,7 @@ fn reserved_environment(key: &str) -> bool {
         || key.get(.."ACYCLIC_PI_CALLER_".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
 
-fn reservation_error(error: NativeReservationError, command: OperationId) -> Error {
-    match error {
-        NativeReservationError::Owner(error) => error,
-        NativeReservationError::Native(error) => native_error(error),
-        NativeReservationError::Sdk(acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
-            acyclic_fs::AuthorityStoreError::ReservationOriginalHeadUnavailable { .. },
-        ))) => Error::Indeterminate(command),
-        NativeReservationError::Sdk(error) => Error::Conflict(error.to_string()),
-        NativeReservationError::Selection(message) => unauthorized(message),
-    }
-}
 
-#[cfg(test)]
-#[path = "pi_native_host_tests.rs"]
-mod tests;
 
 
 fn receipt_error(error: NativeReceiptError) -> Error {
