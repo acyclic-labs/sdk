@@ -168,6 +168,20 @@ pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result
     Ok(schema)
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn validate_effect_reference_with_work(
+    reference: &FileRef,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+    }
+    // All fields are private and immutable; new and the guarded typed serde
+    // constructor already enforce this original metadata predicate. Rechecking
+    // the same predicate on an existing typed reference allocates nothing.
+    reference.validate()
+}
+
 /// Validates the original schema without letting an unguarded Value escape.
 pub(crate) fn validate_effect_schema_bytes_with_work(
     reference: &FileRef, bytes: &[u8],
@@ -178,7 +192,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        reference.validate_with_work(work)?;
+        validate_effect_reference_with_work(reference, work)?;
         if reference.descriptor().media_type() != "application/schema+json" {
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
@@ -208,22 +222,28 @@ pub(crate) fn validate_effect_result_bytes_with_work(
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        schema_reference.validate_with_work(work)?;
-        result.validate_with_work(work)?;
+        validate_effect_reference_with_work(schema_reference, work)?;
+        validate_effect_reference_with_work(result, work)?;
         if schema_reference.descriptor().media_type() != "application/schema+json" {
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
         }
-        if result.descriptor().media_type() != "application/json" {
-            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
-                "effect result must be JSON content"));
-        }
         schema_reference.descriptor().verify_with_work(schema_bytes, work)?;
-        result.descriptor().verify_with_work(bytes, work)?;
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(schema_bytes)?;
+        // Preserve schema admission before result parsing/allocation, as in the
+        // original validate_schema_bytes + validate_result_bytes sequence.
+        drop(crate::contract::compile_json_schema_with_io(
+            &schema, "effect result", Some(&decode))?);
+        if result.descriptor().media_type() != "application/json" {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "effect result must be JSON content",
+            });
+        }
+        result.descriptor().verify_with_native_work(bytes, original)?;
         let value = decode.decode_preparation::<Value>(bytes)?;
         return crate::contract::validate_json_schema_value_with_io(
             &schema, &value, "effect result", Some(&decode));
