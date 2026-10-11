@@ -356,7 +356,7 @@ pub(super) async fn stage_json_with_io<T: Serialize>(journal: &dyn ExecutionJour
 
 pub(super) async fn load_json_with_io<T: PreparationRecord>(journal: &dyn ExecutionJournal,
     reference: &FileRef, io: Option<&PreparationIo>) -> Result<T> {
-    Ok(load_preparation_json(journal, reference, io).await?.into_retained())
+    Ok(load_preparation_json::<T>(journal, reference, io).await?.into_retained())
 }
 
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
@@ -910,7 +910,7 @@ impl StockExecutor {
         step: u32) -> Result<crate::model::PreparedModelRequest> {
         StockExecution::ordinary(self).completed_tool_batch_prefix(journal, input, step).await
     }
-    fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
+    pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         StockExecution::ordinary(self).verify_task_context_binding(operation)
     }
     #[cfg(test)]

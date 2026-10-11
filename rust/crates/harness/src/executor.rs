@@ -1179,10 +1179,11 @@ impl StockExecution<'_> {
         }
         // Pin even metadata omitted from the provider request. A retry cannot
         // relabel an uncertain summary with a different source projection.
+        let source_key = stock_key(format_args!("summary:{step}:source"), self.io())?;
         stage_bytes_with_io(
             journal,
             operation_id,
-            &stock_key(format_args!("summary:{step}:source"), self.io())?,
+            &source_key,
             &source_bytes,
             self.io(),
         ).await?;
@@ -1210,10 +1211,11 @@ impl StockExecution<'_> {
         if text.is_empty() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary operation returned no content"));
         }
+        let output_key = stock_key(format_args!("summary:{step}:output"), self.io())?;
         let output = stage_media_bytes_with_io(
             journal,
             operation_id,
-            &stock_key(format_args!("summary:{step}:output"), self.io())?,
+            &output_key,
             text.as_bytes(),
             "text/plain",
             self.io(),
@@ -1225,10 +1227,11 @@ impl StockExecution<'_> {
             source_digest,
             output,
         };
+        let provenance_key = stock_key(format_args!("summary:{step}:provenance"), self.io())?;
         stage_json_with_io(
             journal,
             operation_id,
-            &stock_key(format_args!("summary:{step}:provenance"), self.io())?,
+            &provenance_key,
             &summary,
             self.io(),
         ).await?;
@@ -1926,11 +1929,12 @@ impl StockExecution<'_> {
         )
         .await?;
         let accounting_ref = if let Some(accounting) = &accounting {
+            let accounting_key = stock_key(format_args!("context:{step}:accounting"), self.io())?;
             Some(
                 stage_json_with_io(
                     journal,
                     input.operation_id,
-                    &stock_key(format_args!("context:{step}:accounting"), self.io())?,
+                    &accounting_key,
                     accounting,
                     self.io(),
                 )
@@ -1939,12 +1943,13 @@ impl StockExecution<'_> {
         } else {
             None
         };
+        let prepared_key = stock_key(format_args!("context:{step}:prepared"), self.io())?;
         self.verify_execution_owner().await?;
         if !stock_append_if_tail(
             journal,
             input.operation_id,
             tail,
-            &stock_key(format_args!("context:{step}:prepared"), self.io())?,
+            &prepared_key,
             &ExecutionEvent::ContextPrepared {
                 step,
                 projection: reference,
@@ -2331,10 +2336,11 @@ impl StockExecution<'_> {
             self.io(),
         )
         .await?;
+        let accounting_key = stock_key(format_args!("context:{step}:compacted-accounting"), self.io())?;
         let accounting = stage_json_with_io(
             journal,
             input.operation_id,
-            &stock_key(format_args!("context:{step}:compacted-accounting"), self.io())?,
+            &accounting_key,
             accounting,
             self.io(),
         )
