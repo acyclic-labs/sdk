@@ -692,6 +692,7 @@ impl NativeFile {
             &meter, arc_allocation_bytes::<Mutex<CompletionState<(B, usize)>>>(),
         )?;
         let state = Arc::new(Mutex::new(CompletionState {
+            task_pending: false,
             result: None, panic: None, waker: None, _allocation: Some(allocation),
         }));
         let output = Arc::clone(&state);
@@ -752,6 +753,7 @@ impl NativeFile {
             &meter, arc_allocation_bytes::<Mutex<CompletionState<NativeReadResult>>>(),
         )?;
         let state = Arc::new(Mutex::new(CompletionState {
+            task_pending: false,
             result: None,
             panic: None,
             waker: None,
@@ -911,6 +913,7 @@ impl NativeFile {
             &meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
         )?;
         let state = Arc::new(Mutex::new(CompletionState {
+            task_pending: false,
             result: None, panic: None, waker: None, _allocation: Some(allocation),
         }));
         Ok(NativeCompletion {
@@ -2318,6 +2321,7 @@ fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
         meter, arc_allocation_bytes::<Mutex<CompletionState<T>>>(),
     )).transpose()?;
     let state = Arc::new(Mutex::new(CompletionState {
+        task_pending: true,
         result: None, panic: None, waker: None, _allocation: allocation,
     }));
     let completion = Arc::clone(&state);
@@ -2328,26 +2332,22 @@ fn blocking_io_task_with_allocation_meter<T: Send + 'static>(
     let observer = meter.clone();
     let operation = move || span.scope(|| {
         let admission = observer.as_ref().map_or(Ok(()), |meter| meter.check());
-        if let Err(error) = admission {
-            let result = Err(error);
-            span.record_result(&result);
-            return finish_job(&completion, result, None);
-        }
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
-            Ok(value) => {
-                let result = Ok(value);
-                span.record_result(&result);
-                finish_job(&completion, result, None)
-            }
-            Err(payload) => finish_panicked_job(&completion, payload, None),
-        }
+        let result = match admission {
+            Ok(()) => Ok(operation()),
+            Err(error) => Err(error),
+        };
+        span.record_result(&result);
+        // Staged data is not observable as Ready. In particular, the uncalled
+        // operation still owns its accepted payload on worker admission error.
+        completion.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result);
     });
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
         meter, std::mem::size_of_val(&operation),
     )).transpose()?;
     Ok(BlockingIoTask {
         pending: Some(NativeJob::Task {
-            operation: Box::new(operation), meter, _allocation: allocation,
+            operation: Box::new(operation), meter, completion: Arc::clone(&state) as Arc<dyn TaskTerminal>,
+            _allocation: allocation,
         }),
         state, waiter: None, terminated: false, prepared_wake: None,
     })
@@ -2485,10 +2485,29 @@ impl OperationFence {
 }
 
 struct CompletionState<T> {
+    task_pending: bool,
     result: Option<io::Result<T>>,
     panic: Option<Box<dyn std::any::Any + Send>>,
     waker: Option<Waker>,
     _allocation: Option<ReadAllocation>,
+}
+
+/// Publication authority for the existing task's already-funded state Arc.
+/// Erasing this alias allocates nothing and introduces no additional owner.
+trait TaskTerminal: Send + Sync {
+    fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
+    fn publish(&self) -> Option<Waker>;
+}
+
+impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
+    fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner).panic = Some(payload);
+    }
+    fn publish(&self) -> Option<Waker> {
+        let mut state = self.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.task_pending = false;
+        state.waker.take()
+    }
 }
 
 /// The only authority to finish an admitted file operation. Keeping the
@@ -2674,8 +2693,9 @@ enum NativeJob {
         _health: Option<Arc<FileHealth>>,
     },
     Task {
-        operation: Box<dyn FnOnce() -> Option<Waker> + Send>,
+        operation: Box<dyn FnOnce() + Send>,
         meter: Option<Arc<dyn NativeReadMeter>>,
+        completion: Arc<dyn TaskTerminal>,
         _allocation: Option<ReadAllocation>,
     },
 }
@@ -2937,10 +2957,15 @@ impl NativeJob {
                     finish.finish(result)
                 })
             }),
-            Self::Task { operation, _allocation, .. } => {
-                let wake = operation();
+            Self::Task { operation, meter, completion, _allocation } => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+                // Calling the owned FnOnce also destroys its actual Box and
+                // captured payloads. Retire job custody and the operative lease
+                // before allowing any observer to consume staged output.
                 drop(_allocation);
-                wake
+                drop(meter);
+                if let Err(panic) = result { completion.stage_panic(panic); }
+                completion.publish()
             }
         }
     }
@@ -3109,6 +3134,7 @@ impl NativeCompletion<Vec<Bytes>> {
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
         let state = Arc::new(Mutex::new(CompletionState {
+            task_pending: false,
             result: None,
             panic: None,
             waker: None,
@@ -3144,6 +3170,7 @@ impl<T> NativeCompletion<T> {
     fn failed(error: io::Error) -> Self {
         Self {
             state: Arc::new(Mutex::new(CompletionState {
+                task_pending: false,
                 result: Some(Err(error)),
                 panic: None,
                 waker: None,
@@ -3178,6 +3205,7 @@ impl NativeCompletion<()> {
             });
         }
         let state = Arc::new(Mutex::new(CompletionState {
+            task_pending: false,
             result: None,
             panic: None,
             waker: None,
@@ -3314,6 +3342,12 @@ impl<T> Future for NativeCompletion<T> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.task_pending {
+            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
+                state.waker = Some(context.waker().clone());
+            }
+            return Poll::Pending;
+        }
         if let Some(payload) = state.panic.take() {
             this.terminated = true;
             let waker = state.waker.take();
@@ -3490,6 +3524,12 @@ impl<T> Future for BlockingIoTask<T> {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.task_pending {
+            if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
+                state.waker = Some(context.waker().clone());
+            }
+            return Poll::Pending;
+        }
         if let Some(payload) = state.panic.take() {
             this.terminated = true;
             let waker = state.waker.take();
@@ -5196,7 +5236,11 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
         workers.sender.try_send(NativeJob::Task {
-            operation: Box::new(|| None), meter: None, _allocation: None,
+            operation: Box::new(|| ()), meter: None,
+            completion: Arc::new(Mutex::new(CompletionState::<()> {
+                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
+            })),
+            _allocation: None,
         }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
         workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
         let context = Context::from_waker(Waker::noop());
@@ -5351,6 +5395,58 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code, reason = "queries the exact retained file descriptor while its destructor is blocked")]
+    fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        struct HeldFile {
+            file: Option<File>,
+            entered: mpsc::SyncSender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Drop for HeldFile {
+            fn drop(&mut self) {
+                self.entered.send(()).expect("actual payload-drop observer remains owned");
+                self.release.recv().expect("actual destructor release remains owned");
+                drop(self.file.take());
+            }
+        }
+        initialize_native_io_services()?;
+        let file = tempfile::tempfile()?;
+        let fd = file.as_raw_fd();
+        let (entered, entered_drop) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let held = HeldFile { file: Some(file), entered, release: released };
+        let mut policy = ReadBudgetMeter::new(0, 0);
+        policy.allocation_limit = 4;
+        let observer = Arc::new(policy);
+        let mut task = prepare_blocking_io_measured(move || { drop(held); }, observer.clone())?;
+        let prepared = observer.memory.load(Ordering::Acquire);
+        let job = task.pending.take().expect("same canonical prepared ingress");
+        observer.cancelled.store(true, Ordering::Release);
+        let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
+        entered_drop.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
+        assert!(task.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result.is_some(),
+            "the actual worker admission error is staged before payload destruction");
+        assert!(Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert_eq!(observer.memory.load(Ordering::Acquire), prepared,
+            "the real closure allocation remains owned while its payload destructor is pending");
+        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1,
+            "the original held file remains physically open before destructor release");
+        release.send(()).map_err(io::Error::other)?;
+        worker.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+        match Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
+            _ => panic!("the actual terminal admission error must now be observable"),
+        }
+        assert!(observer.memory.load(Ordering::Acquire) < prepared,
+            "job backing retires before terminal publication");
+        drop(task);
+        assert_eq!(observer.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
+
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn owned_native_file_claim_follows_physical_last_arc_not_capability_drop() -> io::Result<()> {
@@ -5390,14 +5486,14 @@ mod tests {
         let weak = Arc::downgrade(&native.file);
         let (started, start) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
-        let mut operation = native.control_bounded_async(meter, move |file, meter| {
+        let mut operation = native.control_bounded_async(move |file, meter| {
             started.send(()).map_err(io::Error::other)?;
             released.recv().map_err(io::Error::other)?;
             let mut byte = [0_u8; 1];
             assert_eq!(read_declared_source_bytes(file, 0, &mut byte, meter)?, 1);
             assert_eq!(byte, *b"x");
             Ok(())
-        })?;
+        }, meter)?;
         let waker = completion_waker();
         assert!(Pin::new(&mut operation).poll(&mut Context::from_waker(&waker)).is_pending());
         start.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
@@ -8427,6 +8523,7 @@ mod tests {
                 tail: None,
                 uncertain: None,
                 state: Arc::new(Mutex::new(CompletionState {
+                    task_pending: false,
                     result: None,
                     panic: None,
                     waker: None,
@@ -8558,7 +8655,11 @@ mod tests {
             admission: Arc::new(Mutex::new(AdmissionState::new())),
         };
         let job = || NativeJob::Task {
-            operation: Box::new(|| None), meter: None, _allocation: None,
+            operation: Box::new(|| ()), meter: None,
+            completion: Arc::new(Mutex::new(CompletionState::<()> {
+                task_pending: true, result: None, panic: None, waker: None, _allocation: None,
+            })),
+            _allocation: None,
         };
         workers
             .sender
