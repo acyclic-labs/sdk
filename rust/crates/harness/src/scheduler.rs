@@ -81,6 +81,13 @@ pub struct SessionLimits {
 impl SessionLimits {
     /// Rejects empty or inconsistent session ceilings.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        observe(work.as_deref_mut())?;
         if self.active_tasks == 0
             || self.total_tasks == 0
             || self.model_steps == 0
@@ -89,7 +96,7 @@ impl SessionLimits {
                 .iter()
                 .any(|value| *value > crate::conversation::MAX_EXACT_JS_INTEGER)
         {
-            return Err(Error::Invalid("session limits are invalid".into()));
+            return Err(diagnostic(work, crate::wire::ErrorCode::Invalid, "session limits are invalid"));
         }
         Ok(())
     }
@@ -833,13 +840,7 @@ impl Scheduler {
         match event {
             SchedulerEvent::Declared { spec } => self.validate_declaration_with_work(spec, work)?,
             SchedulerEvent::SessionConfigured { limits, .. } => {
-                if limits.active_tasks == 0 || limits.total_tasks == 0 || limits.model_steps == 0
-                    || limits.active_tasks > limits.total_tasks
-                    || [limits.active_tasks, limits.total_tasks, limits.model_steps]
-                        .iter().any(|value| *value > crate::conversation::MAX_EXACT_JS_INTEGER)
-                {
-                    return Err(diagnostic(work, Invalid, "session limits are invalid"));
-                }
+                limits.validate_with_work(work)?;
                 let operation = self.validated_operation(primary, work)?;
                 if operation.spec.parent.is_some() || operation.reservation.is_some()
                     || operation.cancellation_requested
@@ -1777,7 +1778,7 @@ impl Scheduler {
         self.session_root_with_work(id, &mut None)
     }
 
-    fn session_root_with_work(
+    pub(crate) fn session_root_with_work(
         &self, mut id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(OperationId, u32)> {
@@ -3266,6 +3267,30 @@ mod tests {
         assert!(scheduler.apply_with_work(&valid, &mut Some(&mut io)).expect_err("pre-cancel").is_native_failure());
         assert_eq!(scheduler, original);
         assert_eq!(work.receipt(), before);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_session_lookup_and_scalar_validation_use_static_denials() -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
+            .expect("original scalar session ledger");
+        let mut io = crate::store::history::native_work_io(&work).expect("original session observer");
+        let scheduler = Scheduler::new();
+        assert!(matches!(scheduler.session_limits_with_work(id(88), &mut Some(&mut io)),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, .. })));
+        let invalid = SessionLimits { active_tasks: 0, total_tasks: 1, model_steps: 1, depth: 1 };
+        assert!(matches!(invalid.validate_with_work(&mut Some(&mut io)),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert!(invalid.validate().is_err());
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.receipt().allocation_attempts, 1);
+        let receipt = work.receipt();
+        cancellation.cancel();
+        assert!(scheduler.session_limits_with_work(id(88), &mut Some(&mut io))
+            .expect_err("precancel preserves original first cause").is_native_failure());
+        assert_eq!(work.receipt(), receipt);
         Ok(())
     }
 

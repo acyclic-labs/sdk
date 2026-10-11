@@ -278,6 +278,9 @@ metadata retain their original per-field allocation custody after query IO
 drops. Replacing a field drops its old payload before releasing that custody.
 Capacity snapshots and work leases clone only the metadata they return;
 logical SDK tuple/String/Vec ownership excludes opaque BTree allocator nodes.
+Session limits use the same scalar validator for ordinary and native reads;
+root lookup walks borrowed parent links with observed, cycle-bounded lookups,
+without allocating a lineage set or formatting a native missing-task denial.
 
 `AgentHarness::children` asks the retained task owner for a bounded page of direct children, independent of conversation forks and task dependencies. The coordinator authenticates the parent, exposes only same-owner children in stable slot order, and requires its revision on continuation so concurrent admissions cannot silently skip a child. A caller from another owner cannot declare a child under that parent merely by knowing its ID.
 
