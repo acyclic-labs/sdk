@@ -41,7 +41,6 @@ static TEST_WRITE_GATE: std::sync::OnceLock<std::sync::Mutex<Option<TestWriteGat
     std::sync::OnceLock::new();
 
 /// One-shot control for a real FUSE write paused after handle admission and
-/// dirty tracking but before the authenticated mutation begins.
 #[cfg(test)]
 pub(super) struct TestWriteControl {
     admitted: std::sync::mpsc::Receiver<()>,
@@ -91,34 +90,14 @@ fn pause_test_write() {
 }
 
 const ROOT_INODE: u64 = 1;
-/// The path every detached inode is anchored at for view checks.
 static ROOT_PATH: MountPath = MountPath::root();
-/// Kernel lifetime of entries, negative entries, attributes, symlink targets,
-/// and retained file and directory data. Nothing here expires by time: the
-/// kernel applies mounted mutations itself, and the invalidator drops what
-/// every other change to the source superseded.
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-/// Largest file a first read-only open hands the kernel whole, as the
-/// default FUSE readahead window bounds a first read's fetch.
-///
-/// Every page the kernel reads from the daemon marks the inode's cached
-/// access time stale unless the whole superblock is read-only
-/// (`fuse_invalidate_atime`, even under `noatime`), and `stat` always asks
-/// for it: a file read once would cost one `GETATTR` round trip at its next
-/// `stat`. Pages stored with the open (`FUSE_NOTIFY_STORE`) are never read,
-/// so they spare both that round trip and the `READ` itself. Larger files
-/// are read on demand as before.
 const PAGE_STORE_LIMIT: u64 = 128 * 1024;
-/// Negative entries tracked per directory. Invalidation must reach every
-/// negative entry the kernel may hold, so past this bound a directory answers
-/// further absent names without a cache lifetime.
 const MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY: usize = 1024;
-/// Optional kernel capabilities; each has an exact kernel fallback.
 const REQUESTED_CAPABILITIES: InitFlags = InitFlags::FUSE_DO_READDIRPLUS
     .union(InitFlags::FUSE_PARALLEL_DIROPS)
     .union(InitFlags::FUSE_AUTO_INVAL_DATA)
     .union(InitFlags::FUSE_CACHE_SYMLINKS);
-/// FUSE RENAME2 wire flag; equals Linux renameat2's `RENAME_NOREPLACE`.
 const RENAME_NOREPLACE: u32 = 1;
 #[allow(
     clippy::unnecessary_cast,
@@ -136,11 +115,8 @@ mod mode {
 }
 use mode::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 const DETACHED_COPY_CHUNK_BYTES: u32 = 1024 * 1024;
-/// Directory listings a projection keeps positioned for the kernel.
 const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 
-/// An exact producer-owned payload and its original invocation's retirement
-/// proof. The payload is destroyed before the proof reports physical release.
 struct FuseOwned<T> {
     value: Option<T>,
     custody: Option<crate::demand::NativeMountAllocationCustody>,
@@ -185,8 +161,6 @@ impl<T> FuseOwned<T> {
         self.claim_admission(bytes, work).map_err(NativeMountError::from).map_err(Into::into)
     }
 
-    /// Splits known admitted payload into an independent physical-drop owner.
-    /// Custody is an alias of the same original admission, not a new claim.
     fn split_claim(&mut self, bytes: u64) -> FuseOwned<()> {
         if let Some(allocation) = &mut self.native_allocation {
             let split = allocation.split_off(bytes).expect("split only original admitted payload");
@@ -465,8 +439,6 @@ fn fuse_open_file(packet: (Arc<dyn MountOpenFile>, u64), work: &super::NativeMou
     fuse_open_file_admission(packet, work).map_err(Into::into)
 }
 
-/// Copies one SDK-borrowed input into the exact source packet, keeping its
-/// full original allocation guard inseparable from every physical byte alias.
 fn fuse_source_chunk(bytes: &[u8], work: &super::NativeMountMeterWork)
     -> Result<crate::kernel::OwnedSourceChunk, FuseRequestError>
 {
@@ -494,16 +466,6 @@ fn fuse_source_chunk(bytes: &[u8], work: &super::NativeMountMeterWork)
     Ok(crate::kernel::OwnedSourceChunk::intrinsic(owned, logical_owned_bytes))
 }
 
-/// Names the source was seen binding to the node each is paired with, after
-/// the view could no longer vouch for them, each with the position it was
-/// resolved after: the evidence the module's inode identity rule accepts
-/// from a resolution.
-///
-/// A confirmation made at a position holds only while the view vouches that
-/// its name has not changed since. One without a position, from a source
-/// that cannot report its changes, is as current as the facts it was
-/// resolved with, which such a source reads afresh whenever they are used
-/// again.
 #[derive(Default)]
 struct ConfirmedNames {
     names: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
@@ -526,7 +488,6 @@ impl ConfirmedNames {
         Ok(())
     }
 
-    /// Whether `name` is confirmed bound to `file_id` now.
     fn still_bound(
         &self,
         source: &dyn MountFilesystem,
@@ -551,17 +512,12 @@ struct DirectoryStream {
     path: FuseOwned<MountPath>,
     parent_inode: u64,
     binding_epoch: Option<u64>,
-    /// Owns the source's exact page vector, names, and continuation together.
     page: Option<super::MountDirectoryPage>,
     entry_position: usize,
-    /// Source view the buffered entries were read after, if cacheable.
     entries_stamp: Option<ViewStamp>,
-    /// Names of the buffered entries' nodes the source still binds.
     confirmed: ConfirmedNames,
     exhausted: bool,
-    /// Offset of the next entry: `.` and `..` are 1 and 2.
     emitted: u64,
-    /// When this stream was last parked, for eviction.
     parked: u64,
     park_replacement: Option<(u64, u64)>,
     storage: FuseOwned<()>,
@@ -577,9 +533,6 @@ impl DirectoryStream {
     }
 }
 
-/// Streams waiting for the kernel's next listing request, at most
-/// [`MAXIMUM_DIRECTORY_STREAMS`]. A request whose stream was evicted
-/// restarts the listing and skips to its offset.
 #[derive(Default)]
 struct DirectoryStreams {
     waiting: HashMap<(u64, u64), DirectoryStream>,
@@ -595,7 +548,6 @@ impl DirectoryStreams {
         Some(stream)
     }
 
-    /// Admits the actual row before the listing can send its SDK reply.
     fn prepare_park(&mut self, _inode: u64, stream: &mut DirectoryStream,
         work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError>
     {
@@ -616,7 +568,6 @@ impl DirectoryStreams {
         Ok(())
     }
 
-    /// Places only the already-admitted row; no work can refuse after reply.
     fn park(&mut self, inode: u64, mut stream: DirectoryStream,
         _work: &super::NativeMountMeterWork)
     {
@@ -644,14 +595,9 @@ impl DirectoryStreams {
     }
 }
 
-/// One name of an inode.
 struct Binding {
     path: FuseOwned<MountPath>,
-    /// Position after which this name was last seen resolving to the node;
-    /// the name's lookups are reusable while nothing changed since.
     verified: Option<ViewStamp>,
-    /// Lower bound on the position the kernel's entry for this name was
-    /// derived after; `None` while the kernel holds no such entry.
     kernel: Option<ViewStamp>,
 }
 
@@ -668,29 +614,18 @@ impl Binding {
 struct InodeEntry {
     bindings: FuseOwned<Vec<Binding>>,
     lookup: MountLookup,
-    /// Position after which `lookup` was read, through a name or a handle;
-    /// `None` when unknown.
     facts: Option<ViewStamp>,
-    /// Lower bound on the position everything the kernel holds for this
-    /// inode (attributes, pages, listing, link target) was derived after.
     kernel: Option<ViewStamp>,
     lookup_references: u64,
     open_handles: u64,
-    /// Version the kernel page cache was last admitted under.
     cached_content: Option<ContentVersion>,
-    /// Absent child names the kernel may hold as negative entries, each with
-    /// a lower bound on the position its absence was derived after.
     negative_children: HashMap<FuseOwned<Vec<u8>>, ViewStamp>,
-    /// A position at which this directory had no children: set when this
-    /// session created it. A name beneath it bound at no later position is
-    /// absent without asking the source.
     empty_since: Option<ViewStamp>,
     identity_storage: FuseOwned<()>,
     _storage: FuseOwned<()>,
 }
 
 impl InodeEntry {
-    /// Administrative root construction, admitted externally by the lifecycle.
     fn new(
         binding: MountPath,
         lookup: MountLookup,
@@ -761,17 +696,12 @@ impl InodeEntry {
             .find(|binding| binding.path == *path)
     }
 
-    /// The name view checks of the node itself go through.
     fn anchor(&self) -> &MountPath {
         self.bindings
             .first()
             .map_or(&ROOT_PATH, |binding| &*binding.path)
     }
 
-    /// The position the node facts are current after, if they still are.
-    ///
-    /// A directory's attributes follow its listing, which the source tracks
-    /// by path; every other node's attributes change only with the node.
     fn current_facts(&self, source: &dyn MountFilesystem, work: &super::NativeMountMeterWork)
         -> Result<Option<ViewStamp>, FuseRequestError>
     {
@@ -786,8 +716,6 @@ impl InodeEntry {
         Ok(current.then_some(stamp))
     }
 
-    /// Whether the node certainly has no named attributes: its current
-    /// metadata carries no attribute table, which every source reads first.
     fn lacks_named_attributes(&self, source: &dyn MountFilesystem, work: &super::NativeMountMeterWork)
         -> Result<bool, FuseRequestError>
     {
@@ -795,9 +723,6 @@ impl InodeEntry {
             && self.current_facts(source, work)?.is_some())
     }
 
-    /// Records the version a new handle opens and reports what the kernel
-    /// may hold of the file's pages: none, when no handle opened it before,
-    /// or pages earlier handles left under the same or another version.
     fn admit_cached_content(&mut self, lookup: &MountLookup) -> CachedContent {
         let opened = ContentVersion::of(lookup);
         match self.cached_content.replace(opened) {
@@ -807,8 +732,6 @@ impl InodeEntry {
         }
     }
 
-    /// Records that the kernel may hold `name` as a negative entry derived
-    /// after `stamp`; false when this directory already tracks its maximum.
     fn remember_negative_child(&mut self, name: &[u8], stamp: ViewStamp,
         work: &super::NativeMountMeterWork) -> Result<bool, FuseRequestError>
     {
@@ -828,15 +751,10 @@ impl InodeEntry {
     }
 }
 
-/// Lowers `held` to cover one more item derived after `stamp`.
 fn hold(held: &mut Option<ViewStamp>, stamp: ViewStamp) {
     *held = Some(held.map_or(stamp, |held| held.min(stamp)));
 }
 
-/// Size and times a regular file was opened with. Within the source's cache
-/// contract, bytes change only through this mount, which updates the kernel
-/// page cache itself, or around it, which the invalidator drops; a differing
-/// version also drops pages left by content changed around that contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ContentVersion {
     logical_bytes: u64,
@@ -854,25 +772,16 @@ impl ContentVersion {
     }
 }
 
-/// What the kernel may hold of one file's pages as a new handle opens it.
-///
-/// Pages reach the kernel only through open handles, so a file no handle
-/// opened before has none: the kernel inode is as new as the projection's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CachedContent {
     Absent,
-    /// Pages admitted under the version the handle opens.
     Current,
-    /// Pages admitted under another version.
     Superseded,
 }
 
-/// One kernel cache item a session can drop.
 #[derive(Debug, Eq, PartialEq)]
 enum KernelCacheItem {
-    /// Attributes, file data, directory listing, and symlink target.
     Inode(u64),
-    /// One positive or negative name under a directory.
     Entry { parent: u64, name: FuseOwned<Vec<u8>> },
 }
 
@@ -881,17 +790,10 @@ struct FileHandle {
     open_file: FuseOpenFile,
     operation: Arc<FuseOwned<Mutex<()>>>,
     dirty: bool,
-    /// The file whose content this handle claims, when it may change it.
     claim: Option<crate::FileId>,
     _storage: FuseOwned<()>,
 }
 
-/// A read-only handle to a file whose pages the kernel already holds at the
-/// version this handle opens. Reads come from those pages, so the source file
-/// opens only when a use reaches it: when the file changed since, through
-/// another handle, the kernel dropped its pages and this one reads what the
-/// file holds now, as any open handle does. It serves that use only while
-/// the path still names the file the handle opened.
 struct DeferredOpenFile {
     source: Arc<dyn MountFilesystem>,
     path: FuseOwned<MountPath>,
@@ -914,8 +816,6 @@ impl DeferredOpenFile {
         Ok(opened)
     }
 
-    /// Lazily opens on the invoking handler's original meter; no constructor
-    /// invocation or byte-only trait fallback lends authority to this I/O.
     fn file(&self, work: &super::NativeMountMeterWork) -> Result<FuseOpenFile, MountSourceError> {
         let mut file = self.file.lock().map_err(|_| MountSourceError::Stale)?;
         if let Some(file) = file.as_ref() {
@@ -1128,40 +1028,25 @@ impl MountOpenFile for DeferredOpenFile {
     }
 }
 
-/// A handle this session opened for a file the kernel opened without
-/// asking.
 #[derive(Clone, Copy)]
 struct Implicit {
     handle: u64,
     writes: bool,
 }
 
-/// What I/O the kernel sent without a handle needs of the inode's own.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Access {
     Read,
     Write,
 }
 
-/// Whether an open with `flags` may change the file's content.
 fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
 }
 
-/// Page stores in flight, and the claims that exclude them, per file.
-///
-/// A store reads a file's content and hands it to the kernel page cache
-/// outside every lock, so it must never land over content this mount
-/// changed meanwhile: a store begins only while nothing claims the file's
-/// content, and a claim is granted only once the file's store has landed.
-/// Changes around the mount are checked as a store lands, and the
-/// revalidation barrier waits for every store read before its target.
 #[derive(Default)]
 struct PageStores {
-    /// Position each store's content was read after, by file.
     in_flight: HashMap<crate::FileId, FuseOwned<ViewStamp>>,
-    /// Handles that may change each file's content, and callbacks changing
-    /// it now.
     claims: HashMap<crate::FileId, FuseOwned<u64>>,
 }
 
@@ -1190,7 +1075,6 @@ impl PageStores {
         self.in_flight.remove(&file_id);
     }
 
-    /// Adds a claim on `file_id`, whose store must already have landed.
     fn claim_with_meter(&mut self, file_id: crate::FileId, work: &super::NativeMountMeterWork)
         -> Result<(), FuseRequestError>
     {
@@ -1220,14 +1104,11 @@ impl PageStores {
         }
     }
 
-    /// Whether a store in flight read its content before `target`.
     fn precede(&self, target: ViewStamp) -> bool {
         self.in_flight.values().any(|stamp| **stamp < target)
     }
 }
 
-/// A store of one file's whole content that an open began, which the open
-/// completes before it replies.
 struct PageStore {
     inode: u64,
     file_id: crate::FileId,
@@ -1237,20 +1118,16 @@ struct PageStore {
     open_file: FuseOpenFile,
 }
 
-/// One handle a callback opened, for the projection to admit.
 struct OpenedFile<'a> {
     path: &'a MountPath,
     lookup: &'a MountLookup,
-    /// Position `lookup` was read after.
     stamp: Option<ViewStamp>,
     flags: i32,
     open_file: FuseOpenFile,
     dirty: bool,
-    /// Whether the open may send the kernel small files' pages.
     stores_pages: bool,
 }
 
-/// Mount-wide facts every attribute reply is built from.
 #[derive(Clone, Copy)]
 struct AttributeDefaults {
     writable: bool,
@@ -1258,25 +1135,14 @@ struct AttributeDefaults {
     mount_gid: u32,
 }
 
-/// Kernel invalidation owed to changes made around this mount.
 #[derive(Default)]
 struct InvalidationQueue {
-    /// Latest change by another origin the source reported.
     notified: Option<ViewStamp>,
-    /// Latest reported change every kernel item was checked against. A reply
-    /// admitted later is checked against it instead.
     scanned: Option<ViewStamp>,
-    /// Latest reported change whose notification attempts the SDK completed;
-    /// this is not an acknowledgement of provider IPC delivery.
     processed: Option<ViewStamp>,
-    /// Items to drop regardless of any change.
     deferred: FuseOwned<Vec<KernelCacheItem>>,
-    /// Actual unattempted items retained from the original in-flight pass.
     pending_tail: Option<FuseOwned<std::vec::IntoIter<KernelCacheItem>>>,
-    /// The invalidator removed items from the queue but has not finished
-    /// notifying the kernel. Processed stamps may already cover this pass.
     in_flight: bool,
-    /// First actual SDK failure and its original operation prefix, for query.
     failure: Option<super::NativeMountCallbackFailure>,
 }
 
@@ -1310,41 +1176,25 @@ impl InvalidationQueue {
     }
 }
 
-/// Node facts one callback read from the source.
 struct Resolved {
     lookup: MountLookup,
-    /// Position the facts were read after.
     stamp: Option<ViewStamp>,
-    /// The name they were resolved through; `None` for an open handle.
     through: Option<FuseOwned<MountPath>>,
 }
 
-/// How a callback reads current facts for one inode from the source.
 enum NodeFacts {
-    /// Read through an open handle.
     Handle(FuseOpenFile),
-    /// Resolve through the first name still bound to `file_id` (any node,
-    /// for the root, whose identity follows the checkout).
     Names {
         file_id: Option<crate::FileId>,
         paths: FuseOwned<Vec<FuseOwned<MountPath>>>,
     },
 }
 
-/// What a named-attribute callback reads or changes.
 enum AttributeTarget {
     Handle(FuseOpenFile),
     Path(FuseOwned<MountPath>),
 }
 
-/// One name under a directory, as a caller spelled it and as the projection
-/// records it.
-///
-/// A source that folds names resolves every spelling of a name to one entry,
-/// while the kernel caches each spelling as its own entry. The projection
-/// keys its records by the folded spelling so all spellings share them, and
-/// the kernel never keeps a folded name's entry: a change through one
-/// spelling could not reach the entries of the others.
 struct ChildName {
     spelled: FuseOwned<MountPath>,
     folded: Option<FuseOwned<MountPath>>,
@@ -1359,12 +1209,10 @@ impl ChildName {
         Ok(Self { spelled, folded })
     }
 
-    /// The path the projection's records use.
     fn key(&self) -> &MountPath {
         self.folded.as_deref().unwrap_or(&self.spelled)
     }
 
-    /// Whether the kernel may cache this spelling's entry.
     fn is_exact(&self) -> bool {
         self.folded.is_none()
     }
@@ -1385,7 +1233,6 @@ fn fuse_fixture_errno(error: FuseRequestError) -> i32 {
     }
 }
 
-/// One `LOOKUP`-style reply.
 struct Entry {
     attr: FileAttr,
     ttl: Duration,
@@ -1397,8 +1244,6 @@ impl Entry {
     }
 }
 
-/// Every in-memory record of one projection. Nothing here calls the source
-/// in a way that can wait, so the lock guarding it is only ever held briefly.
 struct ProjectionState {
     defaults: AttributeDefaults,
     next_inode: u64,
@@ -1407,9 +1252,6 @@ struct ProjectionState {
     inode_by_path: HashMap<FuseOwned<MountPath>, u64>,
     inode_by_file: HashMap<crate::FileId, u64>,
     files: HashMap<u64, FileHandle>,
-    /// The handle this session opened for each inode whose I/O the kernel
-    /// sends without one (see [`FuseProjection::skips_open`]), and whether
-    /// it writes, until the kernel forgets the inode.
     implicit: HashMap<u64, FuseOwned<Implicit>>,
     streams: DirectoryStreams,
     invalidation: InvalidationQueue,
@@ -1453,10 +1295,6 @@ impl ProjectionState {
         self.defaults.writable.then_some(()).ok_or(libc::EROFS)
     }
 
-    /// Records facts about `path`, resolved after `stamp`, and returns the
-    /// inode they belong to. `confirmed` holds names the source was seen
-    /// binding to their nodes since the view last vouched for them (see
-    /// [`FuseProjection::confirm_names`]).
     fn intern(
         &mut self, source: &dyn MountFilesystem, path: FuseOwned<MountPath>, lookup: &MountLookup,
         stamp: Option<ViewStamp>, lookup_reference: bool, confirmed: &ConfirmedNames,
@@ -1500,8 +1338,6 @@ impl ProjectionState {
             &mut self.inode_by_path, &mut self.inode_by_file, path, lookup, stamp, lookup_reference, work)
     }
 
-    /// The names other than `path` recorded for the node `file_id` names
-    /// that the view cannot vouch are still bound to it.
     fn unvouched_names(&self, source: &dyn MountFilesystem, file_id: crate::FileId,
         path: &MountPath, work: &super::NativeMountMeterWork)
         -> Result<FuseOwned<Vec<FuseOwned<MountPath>>>, FuseRequestError>
@@ -1550,8 +1386,6 @@ impl ProjectionState {
             entry.lookup_references = entry.lookup_references.saturating_sub(references);
             entry.lookup_references == 0
         });
-        // The kernel forgets only an inode no open file holds, so the
-        // handle its I/O arrived on is done.
         if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
             let _ = self.discard_file_handle(inode, implicit.handle);
         }
@@ -1585,13 +1419,6 @@ impl ProjectionState {
         Ok(Some((inode, entry.lookup, stamp)))
     }
 
-    /// Whether facts about `file_id` at `anchor`, derived after `stamp`, may
-    /// enter the kernel: the source reports every change to the node, so the
-    /// invalidator will drop them once one supersedes them, and every change
-    /// the invalidator already checked the kernel against either precedes
-    /// them or left them unchanged. Every kernel admission (entry and
-    /// attribute lifetimes, negative entries, listings, kept pages, and page
-    /// stores) is decided here.
     fn admissible(&self, source: &dyn MountFilesystem, anchor: &MountPath,
         file_id: Option<crate::FileId>, stamp: Option<ViewStamp>, work: &super::NativeMountMeterWork)
         -> Result<bool, FuseRequestError>
@@ -1602,8 +1429,6 @@ impl ProjectionState {
         Ok(source.unchanged_since_with_meter(anchor, file_id, stamp, work)?)
     }
 
-    /// Records that a reply hands the kernel `inode`'s attributes, derived
-    /// after `stamp`; returns their cache lifetime.
     fn admit_attributes(&mut self, source: &dyn MountFilesystem, inode: u64,
         stamp: Option<ViewStamp>, work: &super::NativeMountMeterWork) -> Result<Duration, FuseRequestError>
     {
@@ -1614,9 +1439,6 @@ impl ProjectionState {
         Ok(if admitted { CACHE_TTL } else { Duration::ZERO })
     }
 
-    /// Records that a reply hands the kernel `name`'s entry for `inode`,
-    /// with its attributes, derived after `stamp`; returns the lifetime of
-    /// both, which share one reply.
     fn admit_entry(&mut self, source: &dyn MountFilesystem, inode: u64, name: &ChildName,
         stamp: Option<ViewStamp>, work: &super::NativeMountMeterWork) -> Result<Duration, FuseRequestError>
     {
@@ -1632,15 +1454,10 @@ impl ProjectionState {
         Ok(if admitted { attributes } else { Duration::ZERO })
     }
 
-    /// A position at which the directory `inode` had no children.
     fn empty_since(&self, inode: u64) -> Option<ViewStamp> {
         self.by_inode.get(&inode)?.empty_since
     }
 
-    /// Answers a lookup of `name` under `parent` found absent after `stamp`:
-    /// a zero-inode entry carrying a negative-dentry TTL. Plain ENOENT has no
-    /// cache lifetime and makes compiler probes traverse the same absent
-    /// dependency paths thousands of times.
     fn negative_entry(
         &mut self,
         source: &dyn MountFilesystem,
@@ -1657,8 +1474,6 @@ impl ProjectionState {
         Ok(Entry { attr, ttl })
     }
 
-    /// The position after which `name` under `parent` was last found absent,
-    /// as the negative entry the kernel holds for it records.
     fn absent_since(&self, parent: u64, name: &ChildName) -> Option<ViewStamp> {
         let component = name.key().components().last()?;
         name.is_exact()
@@ -1672,8 +1487,6 @@ impl ProjectionState {
             .flatten()
     }
 
-    /// Records a negative entry for `name` under `parent`, derived after
-    /// `stamp`, returning its cache lifetime when the kernel may keep it.
     fn admit_negative(&mut self, source: &dyn MountFilesystem, parent: u64, name: &ChildName,
         stamp: Option<ViewStamp>, work: &super::NativeMountMeterWork) -> Result<Option<Duration>, FuseRequestError>
     {
@@ -1684,8 +1497,6 @@ impl ProjectionState {
         Ok(entry.remember_negative_child(component, stamp, work)?.then_some(CACHE_TTL))
     }
 
-    /// Records a directory listing handed to the kernel, read after `stamp`;
-    /// one the kernel may not keep is dropped by the invalidator.
     fn admit_listing(&mut self, source: &dyn MountFilesystem, inode: u64,
         stamp: Option<ViewStamp>, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError>
     {
@@ -1697,7 +1508,6 @@ impl ProjectionState {
         Ok(())
     }
 
-    /// Applies facts one callback resolved, returning the attribute reply.
     fn apply(
         &mut self,
         source: &dyn MountFilesystem,
@@ -1715,8 +1525,6 @@ impl ProjectionState {
         }
         entry.lookup = lookup;
         entry.facts = resolved.stamp;
-        // A handle can outlive its names, so only a name it was resolved
-        // through is verified.
         if let Some(path) = resolved.through.as_ref() {
             if let Some(binding) = entry.binding_mut_with_meter(path, work)? {
                 binding.verified = resolved.stamp;
@@ -1726,8 +1534,6 @@ impl ProjectionState {
         Ok((self.attr(inode, &lookup)?, ttl))
     }
 
-    /// Current facts for `inode`: the projection's own record while it is
-    /// current and no handle asks for its own, or else how to read them.
     fn node_facts(&self, source: &dyn MountFilesystem, inode: u64, handle: Option<u64>,
         work: &super::NativeMountMeterWork) -> Result<Result<Resolved, NodeFacts>, FuseRequestError>
     {
@@ -1786,18 +1592,6 @@ impl ProjectionState {
         })
     }
 
-    /// Admits a new handle on `inode`, returning it with its kernel flags
-    /// and the page store its open completes, if any.
-    ///
-    /// Pages retained from earlier handles are kept only while the file opens
-    /// with the [`ContentVersion`] they were admitted under and the kernel may
-    /// keep what it opens. A read-only open of a small file the kernel holds
-    /// no pages of hands it the whole content instead ([`PAGE_STORE_LIMIT`]).
-    /// A handle that may change the content claims it ([`PageStores`]); the
-    /// caller already holds a claim, so no store of the file is in flight.
-    /// Closing a handle is a publication boundary only when it may write and
-    /// the source publishes on close; every other close needs no FLUSH round
-    /// trip.
     fn admit_file_handle(
         &mut self, source: &dyn MountFilesystem, inode: u64, opened: OpenedFile<'_>,
         work: &super::NativeMountMeterWork,
@@ -1913,9 +1707,6 @@ impl ProjectionState {
         Ok(None)
     }
 
-    /// Where to read `inode`'s named attributes; `None` when its current
-    /// facts prove it has none, as the kernel's capability check before
-    /// every write asks, so no source call is needed.
     fn attributes_to_read(&self, source: &dyn MountFilesystem, inode: u64,
         work: &super::NativeMountMeterWork) -> Result<Option<AttributeTarget>, FuseRequestError>
     {
@@ -1935,8 +1726,6 @@ impl ProjectionState {
         }
     }
 
-    /// Replaces the node facts of a handle's inode with facts read through
-    /// that handle after `stamp`.
     fn apply_handle_facts(&mut self, inode: u64, lookup: MountLookup, stamp: Option<ViewStamp>) {
         if let Some(entry) = self.by_inode.get_mut(&inode)
             && entry.lookup.node.file_id == lookup.node.file_id
@@ -1962,9 +1751,6 @@ impl ProjectionState {
         Ok(())
     }
 
-    /// The inode the kernel may still use for I/O, without having opened it
-    /// through this session, once `lookup`'s name is removed: a regular file
-    /// with one name, which the kernel holds and has no handle for yet.
     fn unopened_referenced_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
         let lookup = lookup?;
         if lookup.node.kind != MountNodeKind::Regular || lookup.node.link_count != 1 {
@@ -1977,8 +1763,6 @@ impl ProjectionState {
             .then_some(inode)
     }
 
-    /// The inode with open handles that loses its last name when `lookup`'s
-    /// name is removed; its handles must move to a detached view first.
     fn detaching_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
         let lookup = lookup?;
         if lookup.node.kind != MountNodeKind::Regular || lookup.node.link_count != 1 {
@@ -2057,11 +1841,6 @@ impl ProjectionState {
         Ok(())
     }
 
-    /// Kernel caching of `inode`'s listing: the kernel resets a cached
-    /// listing whenever the directory changes through the mount or its
-    /// modification time changes, and the invalidator drops it when the
-    /// source changes around the mount. A source without view stamps cannot
-    /// report that, so its listings are never kept.
     fn directory_open_flags_with_meter(source: &dyn MountFilesystem, work: &super::NativeMountMeterWork)
         -> Result<FopenFlags, FuseRequestError>
     {
@@ -2070,8 +1849,6 @@ impl ProjectionState {
         } else { FopenFlags::empty() })
     }
 
-    /// The stream the kernel resumes `inode`'s listing at `offset` from: the
-    /// one parked there, or a fresh one that must first skip to it.
     fn directory_stream(&mut self, source: &dyn MountFilesystem, inode: u64, offset: u64,
         work: &super::NativeMountMeterWork) -> Result<DirectoryStream, FuseRequestError>
     {
@@ -2088,9 +1865,6 @@ impl ProjectionState {
         })
     }
 
-    /// Emits a stream's buffered entries into one kernel listing reply;
-    /// [`FuseProjection::position_directory_stream`] reads the next source
-    /// page beforehand, outside this state's lock.
     fn list_directory<L: DirectoryListing>(
         &mut self, source: &dyn MountFilesystem, inode: u64, stream: &mut DirectoryStream,
         listing: &mut Option<L>, _span: &tracing::Span, work: &super::NativeMountMeterWork,
@@ -2164,8 +1938,6 @@ impl ProjectionState {
             self.release_lookup_reference_administrative(inode, 1);
         }
         if result.is_err() && listed {
-            // The valid prefix reaches the kernel, but the original late cause
-            // still reaches the root handler's receipt and fatal-health policy.
             listing.take().expect("unsent listing prefix").ok();
         }
         result
@@ -2173,8 +1945,6 @@ impl ProjectionState {
 
 }
 
-/// Plans every stale kernel item before changing held stamps or names.
-/// Refusal cannot forget an item whose invalidation was never retained.
 fn stale_kernel_items_with_meter(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &HashMap<FuseOwned<MountPath>, u64>,
@@ -2266,7 +2036,6 @@ fn cached_projected_lookup(
     Some((inode, entry.lookup, stamp))
 }
 
-/// Rebinds the root inode to the checkout's current root identity.
 fn replace_root_lookup_with_meter(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_file: &mut HashMap<crate::FileId, u64>,
     lookup: MountLookup, work: &super::NativeMountMeterWork,
@@ -2296,19 +2065,6 @@ fn replace_root_lookup(
     replace_root_lookup_with_meter(by_inode, inode_by_file, lookup, &fuse_fixture_work()).map_err(fuse_fixture_errno)
 }
 
-/// Forgets the names `inode` no longer has, other than `path`, retaining
-/// their held kernel entries in the original deferred queue before removal.
-///
-/// A source can remove a name and its host reuse the node's identity for a
-/// file it creates under another name, so a name recorded before may be one
-/// the view no longer binds: only names `still_bound` (given the position
-/// they were last verified after) count against the node's links. The inode
-/// itself stays, as the kernel may still hold it.
-///
-/// Whether a name is still bound is a question about the name, not about
-/// the node's facts: a node with several names is read afresh on every
-/// lookup, yet each of its names stays bound until the source reports it
-/// changed or a lookup sees it naming another node.
 fn forget_unbound_names_with_meter(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
@@ -2370,10 +2126,6 @@ fn forget_unbound_names(
     deferred
 }
 
-/// Records `path` as bound to `inode` alone. A path names one file, so an
-/// inode that held it before holds it no longer, and one left with no name,
-/// reference, or handle is forgotten. `inode_by_path` thereby indexes every
-/// binding, which lets a path's binding go without scanning every inode.
 fn bind_path_with_meter(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
     inode_by_file: &mut HashMap<crate::FileId, u64>, path: &MountPath, inode: u64,
@@ -2392,8 +2144,6 @@ fn bind_path_with_meter(
     Ok(())
 }
 
-/// Removes `path` from `inode`'s bindings and forgets an inode left with no
-/// name, lookup reference, or open handle. The caller keeps `inode_by_path`.
 fn unbind_with_meter(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_file: &mut HashMap<crate::FileId, u64>,
     inode: u64, path: &MountPath, work: &super::NativeMountMeterWork,
@@ -2420,7 +2170,6 @@ fn unbind_with_meter(
     Ok(())
 }
 
-/// Forgets the physical identity row before retiring its original custody.
 fn forget_file(
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     file_id: crate::FileId,
@@ -2433,15 +2182,6 @@ fn forget_file(
     }
 }
 
-/// Retires `inode` from its identity once it has no name left, so the next
-/// name bound to that identity gets a fresh inode.
-///
-/// A host that reuses a removed file's identity for a new file makes the
-/// old inode, which the kernel may still hold, name a file that no longer
-/// exists; attaching the new file to it would let a request against the
-/// held inode, such as a `SETATTR` without a handle, change the new file.
-/// A retired inode keeps its open handles and answers every request that
-/// needs a name as stale until the kernel forgets it.
 fn retire_reused_identity(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_file: &mut HashMap<crate::FileId, u64>,
@@ -2508,16 +2248,11 @@ fn intern_projected(
         FuseOwned::empty(path), lookup, stamp, lookup_reference, &fuse_fixture_work()).map_err(fuse_fixture_errno)
 }
 
-/// One kernel directory listing reply. `READDIRPLUS` also instantiates every
-/// listed child, which the kernel counts as one lookup of it.
 trait DirectoryListing {
     const COUNTS_LOOKUPS: bool;
 
-    /// Adds one entry; true when the reply is full and nothing was added.
     fn push(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, ttl: &Duration) -> bool;
 
-    /// The SDK supplied this buffer before the callback. Only an accepted
-    /// native name copy is charged here; no private SDK capacity is guessed.
     fn push_with_meter(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, ttl: &Duration,
         work: &super::NativeMountMeterWork) -> Result<bool, FuseRequestError>
     {
@@ -2527,7 +2262,6 @@ trait DirectoryListing {
         if !full { fuse_copy_record(bytes, work)?; }
         Ok(full)
     }
-    /// Attempts the borrowed SDK terminal exit; kernel delivery is unknown.
     fn ok(self);
     fn error(self, error: Errno);
 }
@@ -2564,8 +2298,6 @@ impl DirectoryListing for ReplyDirectoryPlus {
     }
 }
 
-/// The same inline context record conserves completed future request receipts.
-/// Peak is the maximum original operation scope, not concurrent process memory.
 #[derive(Default)]
 struct FuseHandlerReports {
     completed_future_request_work: crate::WorkCounters,
@@ -2615,51 +2347,30 @@ fn fuse_native_source_original(
     Ok(original)
 }
 
-/// Everything one mount session's callbacks and invalidator share.
-///
-/// Locks are only ever taken in this order: `names`, then a source view
-/// lease, then `state`. The state lock is never held across a source call
-/// that can wait, so no callback ever waits on another's source work to
-/// reach the in-memory records.
 struct ProjectionCore {
     source: Arc<dyn MountFilesystem>,
     allocation_custody: Option<crate::demand::NativeMountAllocationCustody>,
     handler_budget: crate::WorkBudget,
     handler_cancellation: crate::CancellationToken,
     startup_meter: Mutex<super::NativeMountMeterActivation>,
-    /// Sticky evidence of an actual fatal callback, even after its receipt is read.
     handler_failed: AtomicBool,
-    /// Completed future receipts and the first original fatal packet.
     handler_error: Mutex<FuseHandlerReports>,
     state: Mutex<ProjectionState>,
-    /// Shared by callbacks that resolve names or open them; exclusive while a
-    /// removal or rename changes names in the source and in `state` together.
     names: RwLock<()>,
-    /// Signals invalidation work and its completion.
     invalidation: Condvar,
-    /// Signals that a page store landed.
     page_stored: Condvar,
     stopping: AtomicBool,
-    /// Attributes this session's own changes, which its kernel applied.
     origin: ViewOrigin,
-    /// Set once, before the session serves its first request.
     notifier: OnceLock<Notifier>,
-    /// Every request a callback served, by operation.
     #[cfg(test)]
     requests: Mutex<Vec<&'static str>>,
     native_allocation: Option<crate::NativeAllocation>,
     callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    /// Original accounting/lifetime view, not task or source authority.
     source_original_work: Option<super::NativeMountMeterWork>,
 }
 
-/// A callback's hold on the projection state. Releasing it wakes the
-/// invalidator for kernel items the callback deferred, so they drop without
-/// waiting for the next change to the source (a source that cannot be
-/// watched reports none).
 struct StateGuard<'a> {
     state: Option<MutexGuard<'a, ProjectionState>>,
-    /// The invalidator's condition.
     wake: &'a Condvar,
 }
 
@@ -2682,7 +2393,6 @@ impl std::ops::DerefMut for StateGuard<'_> {
 }
 
 impl StateGuard<'_> {
-    /// Waits on `condition`, releasing the state meanwhile.
     fn wait(mut self, condition: &Condvar) -> Result<Self, i32> {
         let state = self
             .state
@@ -2708,8 +2418,6 @@ impl Drop for StateGuard<'_> {
 impl Drop for ProjectionCore {
     fn drop(&mut self) {
         // Standard tables account their initialized caller payload, not opaque
-        // allocator bucket/control bytes. Drop those actual containing buffers
-        // and the root binding vector before retiring their original custody.
         let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         drop(std::mem::take(&mut state.inode_by_path));
         drop(std::mem::take(&mut state.inode_by_file));
@@ -2781,8 +2489,6 @@ impl FuseStartupMeterScope {
         Ok(Self { core: Arc::clone(core), _custody: custody.cloned(), meter: meter.clone(), generation })
     }
     /// Aliases this operative SDK scope in the actual accepted I/O payload.
-    /// Capture the returned owner in the accepted payload, not just its caller
-    /// future: dropping a native completion does not drain accepted SDK I/O.
     pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::existing(&self.core, self._custody.as_ref(), &self.meter)
     }
@@ -2846,8 +2552,6 @@ impl ProjectionCore {
         let binding_allocation = materialization.claim(binding_bytes)?;
         let mut entry = InodeEntry::new(MountPath::root(), root, stamp, 1);
         entry.bindings.native_allocation = Some(binding_allocation);
-        // These real standard-library table constructions declare initialized
-        // input-entry payload; allocator bucket/control capacity is opaque.
         let bytes = std::mem::size_of::<(u64, InodeEntry)>() as u64;
         core.native_allocation = Some(materialization.claim(bytes)?);
         core.state.get_mut().unwrap_or_else(PoisonError::into_inner).by_inode =
@@ -2867,7 +2571,6 @@ impl ProjectionCore {
         Ok(FuseCoreOwner { core: Arc::new(core), custody })
     }
 
-    /// The state for a callback serving a request.
     fn state(&self) -> Result<StateGuard<'_>, i32> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV);
@@ -2876,9 +2579,6 @@ impl ProjectionCore {
         Ok(self.guard(state))
     }
 
-    /// The state for a callback that must finish what it started, such as
-    /// landing a page store or releasing a claim, even while the session
-    /// stops or after another callback panicked.
     fn state_to_finish(&self) -> StateGuard<'_> {
         self.guard(self.state.lock().unwrap_or_else(PoisonError::into_inner))
     }
@@ -2898,8 +2598,6 @@ impl ProjectionCore {
         self.names.write().map_err(|_| libc::EIO)
     }
 
-    /// Holds the original view attribution for one installed kernel request.
-    /// Work is entered only when the callback executes, never while it waits.
     fn request(&self, operation: &'static str) -> FuseRequestScope<'_> {
         FuseRequestScope { core: self, operation, _origin: self.origin.enter() }
     }
@@ -2933,7 +2631,6 @@ impl ProjectionCore {
     fn conserve_completed_request(&self, work: &crate::WorkCounters) {
         if let Err(error) = self.record_completed_request_work(work) {
             // Only this genuine completed request supplies the fatal prefix;
-            // the accumulated context total is never substituted for it.
             self.retain_handler_failure(super::NativeMountCallbackFailure {
                 cause: error.into(), work: *work,
             });
@@ -2952,8 +2649,6 @@ impl ProjectionCore {
         self.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).upgrade()
     }
 
-    /// Reuses accounting/lifetime custody only; task and source authority stay
-    /// at their existing admission hooks, not at this original-work getter.
     fn callback_meter(&self) -> Result<Option<super::NativeMountMeterWork>, NativeMountError> {
         let active = self.active_meter();
         let candidate = active.as_ref().or(self.source_original_work.as_ref());
@@ -2982,8 +2677,6 @@ impl ProjectionCore {
         Ok(selected)
     }
 
-    /// Borrows the operative lifecycle invocation, or enters a future request
-    /// with its full original policy and original cancellation root.
     fn with_request_native<T>(
         &self,
         operation: &'static str,
@@ -2992,16 +2685,12 @@ impl ProjectionCore {
         self.request(operation).with_native_work(callback).into_callback_result()
     }
 
-    /// Claims `file_id`'s content for a change through this mount, once its
-    /// page store in flight, if any, has landed.
     fn claim_content(&self, file_id: crate::FileId, work: &super::NativeMountMeterWork)
         -> Result<ContentClaim<'_>, FuseRequestError>
     {
         work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
         let mut state = self.state()?;
         while state.page_stores.in_flight.contains_key(&file_id) {
-            // A condition wait is synchronization, not backend I/O. Neither
-            // the original work mutex nor the source gate is held here.
             work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
             state = state.wait(&self.page_stored)?;
             work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
@@ -3011,8 +2700,6 @@ impl ProjectionCore {
     }
 }
 
-/// A driver's errno is kept separate from an original SDK/source failure until
-/// the kernel reply projects it. The source's typed cause is never replaced.
 #[derive(Debug)]
 enum FuseRequestError {
     Native(NativeMountError),
@@ -3194,7 +2881,6 @@ struct FuseRequestScope<'a> {
     _origin: ViewOriginScope,
 }
 
-/// Only future requests own receipts. Lifecycle callbacks keep their real prefix in the original Arc.
 enum FuseRequestOutcome<T> {
     Shared { result: Result<T, NativeMountError>, work: crate::WorkCounters },
     Owned(Result<crate::OperationReceipt<T>, super::NativeMountCallbackFailure>),
@@ -3214,8 +2900,6 @@ impl<T> FuseRequestOutcome<T> {
             if let Some(cause) = clone_fatal_handler_error(&failure.cause) {
                 core.retain_handler_failure(super::NativeMountCallbackFailure { cause, work: failure.work });
             } else if fatal_handler_error(&failure.cause) {
-                // An actual uncloneable SDK panic/publication remains in its
-                // original packet. The caller gets the known failed-state witness.
                 core.retain_handler_failure(failure);
                 return NativeMountError::Lifecycle("FUSE invalidation handler failed");
             }
@@ -3253,8 +2937,6 @@ impl FuseRequestScope<'_> {
                     callback(work)
                 },
             );
-            // Conserve every genuine closed receipt, including normal misses;
-            // active shared work remains solely in its original operative Arc.
             match &result {
                 Ok(receipt) => self.core.conserve_completed_request(&receipt.work),
                 Err(failure) => self.core.conserve_completed_request(&failure.work),
@@ -3262,7 +2944,6 @@ impl FuseRequestScope<'_> {
             FuseRequestOutcome::Owned(result)
         }
     }
-    /// Projects the SDK errno only after retaining the genuine fatal cause and prefix.
     fn finish<T>(&self, result: FuseRequestOutcome<T>) -> Result<T, i32> {
         match result {
             FuseRequestOutcome::Owned(Ok(receipt)) => {
@@ -3288,8 +2969,6 @@ impl FuseRequestScope<'_> {
     }
 }
 
-/// A claim on one file's content held while a callback changes it or
-/// admits a handle that may; see [`PageStores`].
 struct ContentClaim<'a> {
     core: &'a ProjectionCore,
     file_id: crate::FileId,
@@ -3309,10 +2988,6 @@ impl ViewObserver for ProjectionCore {
         self.allocation_custody.clone()
     }
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
-        // The kernel applied this session's own changes as it made them: a
-        // change reaches every entry it keeps for the changed name, since it
-        // keeps no entry for a spelling of a folded name (`ChildName`), and
-        // attributes, pages, and listings belong to inodes, not spellings.
         if origin == self.origin {
             return;
         }
@@ -3323,8 +2998,6 @@ impl ViewObserver for ProjectionCore {
 }
 
 
-/// Returns the original allocation-owning tail even if an actual SDK/source
-/// panic unwinds the producer. No replacement request or queue is created.
 struct FuseInvalidationBatch<'a> {
     core: &'a ProjectionCore,
     items: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
@@ -3336,10 +3009,7 @@ impl Drop for FuseInvalidationBatch<'_> {
         self.core.state_to_finish().invalidation.retain_pending_tail(items);
     }
 }
-/// Drops actual owed items under the active original lifecycle or a finite future request.
 fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
-    // A denied original tail waits for actual new work or a new lifecycle scope;
-    // this is the same queue, not an unbounded retry operation.
     let mut blocked: Option<(Option<ViewStamp>, usize, (Weak<crate::demand::NativeDemandReadMeter>,
         Option<Weak<crate::materializer::NativeResourceAllowance>>))> = None;
     loop {
@@ -3416,8 +3086,6 @@ fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
     }
 }
 
-/// Attempts every admitted item in original order. Refusal retains the exact
-/// original allocation and unattempted iterator tail, without copying it.
 fn drop_kernel_caches(
     notifier: &Notifier, items: &mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     work: &super::NativeMountMeterWork,
@@ -3442,7 +3110,6 @@ fn drop_kernel_caches(
     Ok(())
 }
 
-/// Resolves a binding on the original callback invocation, retaining its source failures.
 fn resolve_path(
     source: &dyn MountFilesystem,
     path: &MountPath,
@@ -3451,7 +3118,6 @@ fn resolve_path(
     let binding_epoch = source.binding_epoch_with_meter(work)?;
     let _lease = source.acquire_binding_lease_with_meter(binding_epoch, work).map_err(FuseRequestError::from)?;
     // Sampled first: a later change to anything this lookup read records a
-    // later position, so the result can never validate over it.
     let stamp = source.view_stamp_with_meter(work)?;
     let lookup = source.lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
     if !source.view_is_stable_with_meter(work)? || source.binding_epoch_with_meter(work)? != binding_epoch {
@@ -3460,8 +3126,6 @@ fn resolve_path(
     Ok((lookup, stamp))
 }
 
-/// Current facts for one node: `facts` when they already are, or else read
-/// from the source as they direct.
 fn resolve_node(
     source: &dyn MountFilesystem,
     facts: Result<Resolved, NodeFacts>,
@@ -3499,16 +3163,7 @@ struct FuseProjection {
     core: Arc<ProjectionCore>,
     // The outer owner drops its Arc before releasing this physical marker.
     _core_custody: Option<crate::demand::NativeMountAllocationCustody>,
-    /// Whether the kernel lists directories without opening them, which it
-    /// then does with the listing cached as [`ProjectionState::directory_open_flags`]
-    /// would allow for a source with view stamps.
     skips_opendir: bool,
-    /// Whether the kernel opens files without asking. It then keeps every
-    /// file's pages, which a source that reports its changes keeps coherent
-    /// (and, should its reports stop, attributes that expire at once let
-    /// the kernel drop on the next read), and sends each file's I/O on its
-    /// inode, which [`Self::handle`] gives one handle of its own. A source
-    /// that flushes when a handle closes needs every close, so it is asked.
     skips_open: bool,
 }
 
@@ -3668,7 +3323,6 @@ fn receive_fuse_device(socket: &std::os::unix::net::UnixStream) -> std::io::Resu
     device.ok_or_else(|| std::io::ErrorKind::InvalidData.into())
 }
 
-/// Unmount helper prepared before namespace birth.
 struct FuseRetirementHelper {
     program: &'static std::ffi::CStr,
     frame: Option<acyclic_native_runtime::PreparedClosedProcess>,
@@ -3768,7 +3422,6 @@ impl FuseRetirementHelper {
         }
     }
 
-    /// Reap accepted helper owners without spawning another helper.
     fn drain_process(&mut self) -> Result<(), NativeMountError> {
         if let Some(helper) = self.helper.as_mut() {
             helper.terminate_measured(self.terminal_credit.as_ref())
@@ -3780,7 +3433,6 @@ impl FuseRetirementHelper {
     }
 }
 
-/// Dispatch worker input; the physical driver retains the mount.
 struct FuseSdkInput {
     state: Mutex<FuseSdkInputState>,
     ready: Condvar,
@@ -3812,7 +3464,6 @@ impl FuseSdkInput {
     }
 }
 
-/// Physical owners stay in the invalidator producer across failed starts.
 struct FuseDriverControl {
     state: Mutex<FuseDriverControlState>,
     changed: Condvar,
@@ -3879,33 +3530,16 @@ pub(super) struct FuseSession {
     invalidator: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Mount and dispatch owners.
 struct FusePhysicalSession {
     session: Option<FuseMount>,
     sdk_input: Option<Arc<FuseSdkInput>>,
     sdk_worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     core: Arc<ProjectionCore>,
     core_custody: Option<crate::demand::NativeMountAllocationCustody>,
-    invalidator: Option<std::thread::JoinHandle<()>>,
-    invalidator_failed: bool,
     active_root: Option<cap_std::fs::Dir>,
     native_root_identity: Option<crate::NativeRootIdentity>,
     retirement_helper: Option<FuseRetirementHelper>,
     birth_cleanup: crate::NativeWorkReservation,
-}
-
-/// Borrowed driver controls.
-struct FuseStopState<'a> {
-    session: &'a mut Option<FuseMount>,
-    sdk_input: &'a Option<Arc<FuseSdkInput>>,
-    sdk_worker: &'a mut Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    core: &'a Arc<ProjectionCore>,
-    core_custody: Option<&'a crate::demand::NativeMountAllocationCustody>,
-    invalidator: &'a mut Option<std::thread::JoinHandle<()>>,
-    invalidator_failed: &'a mut bool,
-    active_root: &'a mut Option<cap_std::fs::Dir>,
-    retirement_helper: &'a mut Option<FuseRetirementHelper>,
-    native_root_identity: Option<crate::NativeRootIdentity>,
 }
 
 enum FuseStopWork<'a, 'b> {
@@ -3923,12 +3557,27 @@ impl FuseStopWork<'_, '_> {
     }
 }
 
-impl FuseStopState<'_> {
-    fn stop(self, work: FuseStopWork<'_, '_>) -> Result<(), NativeMountError> {
-        if *self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
-        if self.session.is_none() && self.invalidator.is_none()
-            && self.sdk_worker.is_none() && self.active_root.is_none()
-            && self.retirement_helper.is_none() { return Ok(()); }
+
+
+impl FusePhysicalSession {
+    fn stop(&mut self, native: Option<&super::NativeMountMeterWork>, wait: Option<&crate::CancellationToken>)
+        -> Result<(), NativeMountError>
+    {
+        let Self { session, sdk_input, sdk_worker, core, core_custody, active_root,
+            retirement_helper, native_root_identity, birth_cleanup } = self;
+        let loan = if native.is_none() {
+            Some(match wait {
+                Some(wait) => birth_cleanup.cleanup_loan(wait),
+                None => birth_cleanup.accepted_cleanup_loan(),
+            })
+        } else { None };
+        let work = match native {
+            Some(native) => FuseStopWork::Native(native),
+            None => FuseStopWork::Cleanup(loan.as_ref().ok_or(NativeMountError::ControlPending)?),
+        };
+        if session.is_none()
+            && sdk_worker.is_none() && active_root.is_none()
+            && retirement_helper.is_none() { return Ok(()); }
         let native = match &work {
             FuseStopWork::Native(native) => {
                 native.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
@@ -3940,15 +3589,15 @@ impl FuseStopState<'_> {
             }
         };
         // Callbacks retain their original grants and cancellation.
-        let _active = FuseStartupMeterScope::existing(self.core, self.core_custody, &native)?;
+        let _active = FuseStartupMeterScope::existing(core, core_custody.as_ref(), &native)?;
         let write = crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED };
-        if self.active_root.is_some() {
+        if active_root.is_some() {
             match &work {
                 FuseStopWork::Native(native) => {
                     let materialization = native.native_materialization_work();
                     let mut host = &materialization;
                     let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
-                    let directory = self.active_root.take().expect("preadmitted root capability remains owned");
+                    let directory = active_root.take().expect("preadmitted root capability remains owned");
                     let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
                         &mut host, cleanup, || drop(directory),
                     );
@@ -3956,40 +3605,38 @@ impl FuseStopState<'_> {
                 }
                 FuseStopWork::Cleanup(_) => {
                     work.started_io(write)?;
-                    // SDK capability-drop attempt, not an internal syscall
-                    // count or namespace acknowledgement.
-                    drop(self.active_root.take());
+                    drop(active_root.take());
                 }
             }
         }
-        if let Some(session) = self.session.as_mut() {
+        if let Some(mount) = session.as_mut() {
             work.started_io(write)?;
-            self.core.stopping.store(true, Ordering::Release);
-            self.core.invalidation.notify_all();
+            core.stopping.store(true, Ordering::Release);
+            core.invalidation.notify_all();
             // Kernel refusal retains the mount for retry.
-            if let Err(error) = session.try_unmount() {
+            if let Err(error) = mount.try_unmount() {
                 if error.raw_os_error() != Some(libc::EPERM) { return Err(error.into()); }
-                let helper = self.retirement_helper.as_mut().ok_or(
+                let helper = retirement_helper.as_mut().ok_or(
                     NativeMountError::CapabilityUnavailable(
                         "no canonical fusermount helper is available for retirement".into(),
                     ),
                 )?;
-                helper.retire(std::ffi::CStr::from_bytes_with_nul(&session.path)
-                    .map_err(|_| NativeMountError::InvalidDestination)?, self.native_root_identity)?;
-                session.mounted = false;
+                helper.retire(std::ffi::CStr::from_bytes_with_nul(&mount.path)
+                    .map_err(|_| NativeMountError::InvalidDestination)?, *native_root_identity)?;
+                mount.mounted = false;
             }
-            session.drain_helper()?;
-            drop(self.session.take());
+            mount.drain_helper()?;
+            drop(session.take());
         }
-        if let Some(input) = self.sdk_input { 
+        if let Some(input) = sdk_input { 
             let submitted = input.state.lock().unwrap_or_else(PoisonError::into_inner).submitted;
             if !submitted { input.submit(None); }
         }
-        if self.sdk_worker.is_some() {
+        if sdk_worker.is_some() {
             work.started_io(crate::WorkCounters {
                 backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
             })?;
-            let worker = self.sdk_worker.take().expect("accepted SDK worker remains owned");
+            let worker = sdk_worker.take().expect("accepted SDK worker remains owned");
             match worker.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => return Err(error.into()),
@@ -3998,34 +3645,14 @@ impl FuseStopState<'_> {
                 }),
             }
         }
-        if self.invalidator.is_some() {
-            work.started_io(crate::WorkCounters {
-                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
-            })?;
-            {
-                let _state = self.core.state.lock();
-                self.core.stopping.store(true, Ordering::Release);
-                self.core.invalidation.notify_all();
-            }
-            let invalidator = self.invalidator.take().expect("admitted invalidator remains owned");
-            let joined = invalidator.join();
-            if joined.is_err() { *self.invalidator_failed = true; }
-            if let Err(panic) = joined {
-                return Err(NativeMountError::DriverPanicked {
-                    operation: "FUSE invalidator shutdown", panic: Mutex::new(panic),
-                });
-            }
-        }
-        if let Some(helper) = self.retirement_helper.as_mut() {
+        if let Some(helper) = retirement_helper.as_mut() {
             helper.drain_process()?;
         }
         // Workers are terminal; release unused helper backing and credits.
-        drop(self.retirement_helper.take());
+        drop(retirement_helper.take());
         Ok(())
     }
-}
 
-impl FusePhysicalSession {
     pub(super) fn begin_original_work(
         &self, native: &super::NativeMountMeterWork,
     ) -> Result<FuseStartupMeterScope, NativeMountError> {
@@ -4058,8 +3685,6 @@ impl FusePhysicalSession {
         let mut host = &materialization;
         let cleanup = crate::native_host::NativeHostWork::reserve_cleanup_write(&mut host)?;
         let directory = self.active_root.take().expect("preadmitted root capability remains owned");
-        // This is the real SDK capability-drop attempt, not a guessed number
-        // of internal close syscalls or namespace-detach acknowledgement.
         let (_, recorded) = crate::native_host::NativeHostWork::attempt_cleanup_write(
             &mut host, cleanup, || drop(directory),
         );
@@ -4067,7 +3692,6 @@ impl FusePhysicalSession {
     }
 
     /// Parses and queues the real owned invalidation plan on the invoking meter.
-    /// The existing worker borrows this same Arc through native completion.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let scope = self.core.request("invalidate_path");
         let result = scope.with_work(|work| {
@@ -4133,27 +3757,6 @@ impl FusePhysicalSession {
         result.into_native_result(&self.core)
     }
 
-    /// Waits until the kernel no longer holds anything superseded by a change
-    /// to the source recorded before this call.
-    ///
-    /// Changes made around the mount reach the kernel as soon as the
-    /// invalidator processes them; this is the barrier for callers that must
-    /// observe one through the mount immediately afterwards.
-    pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| NativeMountError::from(cause))?;
-        self.revalidate_measured(&work)
-    }
-
-    /// Fences source changes and waits for the actual retained invalidation
-    /// tail on the original meter. Local condition waits are not backend I/O.
-    pub(super) fn revalidate_measured(
-        &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.revalidate_with_meter(&work.native_mount_work())
-    }
-
     pub(super) fn revalidate_with_meter(
         &self, native: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
@@ -4189,66 +3792,6 @@ impl FusePhysicalSession {
             .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))
     }
 
-    /// Retires this original driver's accepted controls without a new payer.
-    pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
-        if self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
-        if self.session.is_none() && self.invalidator.is_none()
-            && self.sdk_worker.is_none() && self.active_root.is_none() && self.retirement_helper.is_none() {
-            return Ok(());
-        }
-        let loan = self.birth_cleanup.accepted_cleanup_loan();
-        FuseStopState {
-            session: &mut self.session,
-            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
-            core: &self.core, core_custody: self.core_custody.as_ref(),
-            invalidator: &mut self.invalidator,
-            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
-            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
-        }.stop(FuseStopWork::Cleanup(&loan))
-    }
-
-    /// Detaches the mount and joins its workers on the supplied meter.
-    pub(super) fn stop_measured(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        if self.invalidator_failed { return Err(NativeMountError::FuseInvalidatorFailed); }
-        if self.session.is_none() && self.invalidator.is_none()
-            && self.sdk_worker.is_none() && self.active_root.is_none()
-            && self.retirement_helper.is_none() { return Ok(()); }
-        self.stop_with_meter(&work.native_mount_work())
-    }
-
-    /// Shared startup, callbacks and teardown use the same actual original
-    /// meter. Only short admission locks surround the external SDK attempts.
-    pub(super) fn stop_with_meter(
-        &mut self, native: &super::NativeMountMeterWork,
-    ) -> Result<(), NativeMountError> {
-        FuseStopState {
-            session: &mut self.session,
-            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
-            core: &self.core, core_custody: self.core_custody.as_ref(),
-            invalidator: &mut self.invalidator,
-            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
-            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
-        }.stop(FuseStopWork::Native(native))
-    }
-
-    /// Uses only this original driver's accepted birth credits. The wait token
-    /// controls liveness, not original cancellation or namespace authority.
-    pub(super) fn stop_with_cleanup_wait(
-        &mut self, wait: &crate::CancellationToken,
-    ) -> Result<(), NativeMountError> {
-        let loan = self.birth_cleanup.cleanup_loan(wait);
-        FuseStopState {
-            session: &mut self.session,
-            sdk_input: &self.sdk_input, sdk_worker: &mut self.sdk_worker,
-            core: &self.core, core_custody: self.core_custody.as_ref(),
-            invalidator: &mut self.invalidator,
-            invalidator_failed: &mut self.invalidator_failed, active_root: &mut self.active_root,
-            retirement_helper: &mut self.retirement_helper, native_root_identity: self.native_root_identity,
-        }.stop(FuseStopWork::Cleanup(&loan))
-    }
-
     /// Reports successful namespace detach independently of worker joins.
     pub(super) fn namespace_detach_confirmed(&self) -> bool {
         self.session.is_none()
@@ -4260,10 +3803,7 @@ fn retire_fuse_driver(
 ) -> Result<(), NativeMountError> {
     let mut loan = FuseDriverLoan::take(control, false)?;
     let physical = loan.physical.as_mut().expect("physical driver loan");
-    match wait {
-        Some(wait) => physical.stop_with_cleanup_wait(wait)?,
-        None => physical.stop()?,
-    }
+    physical.stop(None, wait)?;
     if let Some(retirement) = loan.retirement.as_mut() {
         match wait {
             Some(wait) => { retirement.retire_with_cleanup_wait(wait)?; }
@@ -4302,37 +3842,6 @@ impl FuseSdkJob {
 }
 
 impl FuseSession {
-    pub(super) fn start(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, super::DriverStartFailure> {
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| NativeMountError::from(cause))?;
-        Self::start_with_work(request, source, &work)
-    }
-
-    pub(super) fn start_with_work(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, super::DriverStartFailure> {
-        let mut out = None;
-        let mut retirement = Some(super::NativeMountRetirement {
-            retained_source: Some(Arc::clone(&source)),
-            destination_guard: None,
-            startup_source_watch: None,
-        });
-        match Self::start_into(request, source, &work.native_mount_work(),
-            &mut out, &mut retirement, |_| Ok(())) {
-            Ok(()) => Ok(out.expect("born FUSE driver retained")),
-            Err(error) => {
-                if let Some(driver) = out {
-                    Err(super::DriverStartFailure::retaining_driver(
-                        error.error, super::DriverSession::Fuse(driver)))
-                } else { Err(error) }
-            }
-        }
-    }
-
     pub(super) fn start_into<F>(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         source_work: &super::NativeMountMeterWork, out: &mut Option<Self>,
@@ -4380,8 +3889,7 @@ impl FuseSession {
                 physical: Some(FusePhysicalSession {
                     session: None, sdk_input: Some(Arc::clone(&input)),
                     sdk_worker: None, core: Arc::clone(&owner.core),
-                    core_custody: Some(owner.custody.clone()), invalidator: None,
-                    invalidator_failed: false, active_root: None,
+                    core_custody: Some(owner.custody.clone()), active_root: None,
                     native_root_identity: None, retirement_helper, birth_cleanup,
                 }),
                 retirement: None, loan_custody: (false, false), startup_finished: false, stop_requested: false,
@@ -4470,11 +3978,12 @@ impl FuseSession {
         self.with_physical(|physical| physical.invalidate(path))
     }
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        self.with_physical(FusePhysicalSession::revalidate)
-    }
-    pub(super) fn revalidate_measured(&self, work: &crate::NativeMaterializationWork)
-        -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.revalidate_measured(work))
+        self.with_physical(|physical| {
+            let cancellation = crate::CancellationToken::new();
+            let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| NativeMountError::from(cause))?;
+            physical.revalidate_with_meter(&work.native_mount_work())
+        })
     }
     pub(super) fn revalidate_with_meter(&self, work: &super::NativeMountMeterWork)
         -> Result<(), NativeMountError> {
@@ -4506,14 +4015,9 @@ impl FuseSession {
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> { self.finish_stop(None) }
     pub(super) fn stop_with_cleanup_wait(&mut self, wait: &crate::CancellationToken)
         -> Result<(), NativeMountError> { self.finish_stop(Some(wait)) }
-    pub(super) fn stop_measured(&mut self, work: &crate::NativeMaterializationWork)
-        -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.stop_measured(work))?;
-        self.finish_stop(None)
-    }
     pub(super) fn stop_with_meter(&mut self, work: &super::NativeMountMeterWork)
         -> Result<(), NativeMountError> {
-        self.with_physical(|physical| physical.stop_with_meter(work))?;
+        self.with_physical(|physical| physical.stop(Some(work), None))?;
         self.finish_stop(None)
     }
     fn finish_stop(&mut self, wait: Option<&crate::CancellationToken>) -> Result<(), NativeMountError> {
@@ -4559,14 +4063,10 @@ impl Drop for FuseSession {
         let mut state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.stop_requested = true;
         self.control.changed.notify_all();
-        // The existing producer owns all SDK/namespace/source controls. The
-        // caller's JoinHandle drop only detaches its opaque standard wait tail.
     }
 }
 
 /// Crash-recovery custody paired by the root owner with its original fence.
-/// This is the same finite direct-detach/helper engine for both ordinary and
-/// measured recovery; no helper identity is surrendered before actual reap.
 #[derive(Default)]
 pub(super) struct FuseRecoveryControl {
     helper: Option<acyclic_native_runtime::ProcessTree>,
@@ -4592,8 +4092,6 @@ impl FuseRecoveryControl {
     }
 
     /// Retires only the accepted helper, never the destination namespace.
-    /// The caller supplies its original prebirth administrative work; each
-    /// failed signal, reap or close leaves the same tree and payload owner here.
     pub(super) fn retire_controls_with_work(
         &mut self, original: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
@@ -4601,10 +4099,6 @@ impl FuseRecoveryControl {
     }
 
     /// Every path, retry, probe, spawn action, observation, signal, and reap is
-    /// admitted at its actual leaf. Failure retains the tree in this control,
-    /// so the caller must retain the same destination fence alongside it.
-    /// A retry's finite action work need not share the helper creator's ledger:
-    /// the retained tree and helper_work keep their intrinsic original owner.
     pub(super) fn recover_measured(
         &mut self, destination: &Path, native: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
@@ -4616,9 +4110,6 @@ impl FuseRecoveryControl {
         if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_helper(work)?; }
         if !mounted { return Ok(()); }
         if self.helper.is_none() {
-            // Lazy direct detach matches the fallback helper's existing -z
-            // policy. An OS denial is not an absence proof: only the following
-            // real mount probe may establish that evidence.
             let direct = crate::native_host::unix_name_with_work(
                 destination.as_os_str(), &mut &*work, |path, work| {
                     fuse_recovery_attempt(work, true, || {
@@ -4739,7 +4230,6 @@ fn fuse_recovery_helper(
     ))
 }
 
-/// Attribute changes one `SETATTR` requests.
 #[allow(
     clippy::struct_field_names,
     reason = "field names follow the SETATTR attribute names"
@@ -4799,11 +4289,6 @@ impl AttributeChanges {
 }
 
 impl FuseProjection {
-    fn source(&self, _work: &super::NativeMountMeterWork) -> &dyn MountFilesystem {
-        self.core.source.as_ref()
-    }
-
-    /// Checks task/effect authority separately from original request accounting.
     fn check_source_write(&self, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
         match (&self.core.callback_guard, self.core.source.native_callback_guard()) {
             (None, None) => Ok(()),
@@ -4823,8 +4308,6 @@ impl FuseProjection {
         self.check_source_write(work)?;
         let result = effect();
         if let Err(refusal) = self.check_source_write(work) {
-            // The effect really ran. Preserve its authentic failure, when
-            // present, rather than replacing it with the later authority loss.
             let cause = match result {
                 Err(cause) => cause.into_native(),
                 Ok(_) => refusal.into_native(),
@@ -4838,39 +4321,21 @@ impl FuseProjection {
         result
     }
 
-    /// The name `name` under `parent`, as spelled and as recorded.
     fn child(&self, state: &ProjectionState, parent: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<ChildName, FuseRequestError> {
         Ok(ChildName::new(
-            self.source(work),
+            self.core.source.as_ref(),
             state.child_path(parent, name, work)?,
             work,
         )?)
     }
 
-    /// The recorded names of each node with several names, other than the
-    /// name it was just resolved through, that the source still binds to it.
-    ///
-    /// A node with several names keeps one inode for all of them, while a
-    /// host that reused a removed node's identity for a new file must not
-    /// have the new file attached to the inode the kernel holds for the
-    /// removed one. Once the view cannot vouch for a recorded name, only the
-    /// source can tell the two apart: a name that still resolves to the same
-    /// identity shows that the node the inode stands for still exists, and
-    /// so is the node resolved now. Those names are resolved here, outside
-    /// the state's lock, into `confirmed`; a node with one name has no other
-    /// name to keep, and a node no inode stands for has no recorded name.
-    ///
-    /// Only a resolution that finds the name absent or naming another node
-    /// counts against it. One that fails (a name the caller may not reach,
-    /// say) leaves the name recorded as bound: the requested name resolved,
-    /// so its own lookup must not fail for a name it did not ask for.
     fn confirm_names<'a>(
         &self,
         mut confirmed: ConfirmedNames,
         resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
         work: &super::NativeMountMeterWork,
     ) -> Result<ConfirmedNames, FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         for (path, node) in resolved {
             fuse_item(work)?;
             if node.link_count <= 1 { continue; }
@@ -4883,7 +4348,6 @@ impl FuseProjection {
                     Ok(_) => {}
                     Err(error) => {
                         // A denied alias is retained, but finite-work and cancellation
-                        // failures belong to this invocation rather than a false success.
                         self.core.record_handler_failure(work, error.into_native());
                         confirmed.confirm(node.file_id, name, None, work)?;
                     }
@@ -4894,7 +4358,7 @@ impl FuseProjection {
     }
 
     fn lookup_entry(&self, parent: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<Entry, FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let child = {
             let mut state = self.core.state()?;
@@ -4904,8 +4368,6 @@ impl FuseProjection {
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
             }
-            // Under a directory this session created, a name nothing bound
-            // since it was empty is absent: no source lookup needed.
             if let Some(empty) = state.empty_since(parent)
                 && child.is_exact()
                 && source.unchanged_since_with_meter(child.key(), None, empty, work)?
@@ -4948,7 +4410,7 @@ impl FuseProjection {
         handle: Option<u64>,
         work: &super::NativeMountMeterWork,
     ) -> Result<(FileAttr, Duration), FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let facts = {
             let mut state = self.core.state()?;
@@ -4973,7 +4435,7 @@ impl FuseProjection {
         work: &super::NativeMountMeterWork,
     ) -> Result<(FileAttr, Duration), FuseRequestError> {
         if !changes.is_empty() { self.check_source_write(work)?; }
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let (facts, open_file) = {
             let state = self.core.state()?;
@@ -5029,7 +4491,6 @@ impl FuseProjection {
         Ok(state.apply(source, inode, &resolved, work)?)
     }
 
-    /// Creates one node through `create` and interns it at its new name.
     fn create_node(
         &self,
         parent: u64,
@@ -5038,7 +4499,7 @@ impl FuseProjection {
         work: &super::NativeMountMeterWork,
     ) -> Result<Entry, FuseRequestError> {
         self.check_source_write(work)?;
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let child = {
             let state = self.core.state()?;
@@ -5048,7 +4509,6 @@ impl FuseProjection {
         let stamp = source.view_stamp_with_meter(work)?;
         let lookup = self.source_write(work, || create(&child.spelled, work))?;
         // A directory just created is empty as of a position sampled after
-        // its creation, when no name beneath it was bound since before it.
         let empty = if lookup.node.kind == MountNodeKind::Directory {
             let after = source.view_stamp_with_meter(work)?;
             match stamp {
@@ -5079,9 +4539,6 @@ impl FuseProjection {
         Ok(Entry { attr, ttl })
     }
 
-    /// Opens the implicit handle of the file `lookup` names, when the kernel
-    /// may hold it open without having asked, so removing its last name
-    /// detaches it for the kernel's later I/O.
     fn hold_unopened(&self, lookup: Option<&MountLookup>, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
         if !self.skips_open {
             return Ok(());
@@ -5096,7 +4553,7 @@ impl FuseProjection {
 
     fn remove_name(&self, parent: u64, name: &OsStr, work: &super::NativeMountMeterWork) -> Result<(), FuseRequestError> {
         self.check_source_write(work)?;
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names_exclusive()?;
         let child = {
             let state = self.core.state()?;
@@ -5133,7 +4590,7 @@ impl FuseProjection {
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
         self.check_source_write(work)?;
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP.into());
         }
@@ -5171,11 +4628,7 @@ impl FuseProjection {
             state.retain_detached_handles(inode, &detached, work)?;
         }
         renamed?;
-        // Renaming between spellings of one folded name moves nothing the
-        // projection records.
         if from.key() != to.key() {
-            // Whatever the projection still binds under the destination is
-            // gone now: the rename replaced it, or it was already absent.
             state.invalidate_prefix(to.key(), work)?;
             state.rename_prefix(from.key(), to.key(), work)?;
         }
@@ -5184,7 +4637,7 @@ impl FuseProjection {
 
     fn link_name(&self, inode: u64, new_parent: u64, new_name: &OsStr, work: &super::NativeMountMeterWork) -> Result<Entry, FuseRequestError> {
         self.check_source_write(work)?;
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let (from, to, facts) = {
             let state = self.core.state()?;
@@ -5233,7 +4686,7 @@ impl FuseProjection {
     }
 
     fn read_link(&self, inode: u64, work: &super::NativeMountMeterWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
         let stamp = source.view_stamp_with_meter(work)?;
@@ -5248,8 +4701,6 @@ impl FuseProjection {
         self.open_node_storing(inode, flags, true, work)
     }
 
-    /// Opens `inode` with `flags`; `storing` sends small files' pages to the
-    /// kernel with the open.
     fn open_node_storing(
         &self,
         inode: u64,
@@ -5261,7 +4712,6 @@ impl FuseProjection {
         self.open_node_named(inode, flags, storing, work)
     }
 
-    /// [`Self::open_node_storing`] for a caller that holds the names lock.
     fn open_node_named(
         &self,
         inode: u64,
@@ -5270,7 +4720,7 @@ impl FuseProjection {
         work: &super::NativeMountMeterWork,
     ) -> Result<(u64, FopenFlags), FuseRequestError> {
         if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
             admit_open(state.defaults.writable, flags)?;
@@ -5278,8 +4728,6 @@ impl FuseProjection {
             if node.kind != MountNodeKind::Regular {
                 return Err(libc::EISDIR.into());
             }
-            // Facts a read-only open can stand on without the source: pages
-            // the kernel holds at the version these facts describe.
             let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
                 .then(|| state.by_inode.get(&inode))
                 .flatten()
@@ -5319,7 +4767,6 @@ impl FuseProjection {
             None => self.open_source(source, &path, file_id, flags, stamp_before, work)?,
         };
         // Lazy promotion and O_TRUNC may write while opening, so pin the
-        // external binding only after those operations have completed.
         let _binding = source
             .acquire_binding_lease_with_meter(binding_before, work)
             .map_err(FuseRequestError::from)?;
@@ -5354,9 +4801,6 @@ impl FuseProjection {
         Ok((handle, self.store_pages(store, open_flags, work)?))
     }
 
-    /// Opens `path` in the source for an open with `flags` and returns the
-    /// file with its facts, the position they were read after, and whether
-    /// the open truncated it.
     #[allow(
         clippy::type_complexity,
         reason = "returns the opened file with its facts, stamp, and truncation flag in one tuple"
@@ -5372,7 +4816,6 @@ impl FuseProjection {
     ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>, bool), FuseRequestError> {
         if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
         // The inode may have outlived its path binding. Check the attached
-        // file before O_TRUNC can mutate a replacement at that path.
         let (open_file, opened) = source.open_file_with_lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
         let open_file = fuse_open_file(open_file, work)?;
         if opened.node.file_id != file_id {
@@ -5382,9 +4825,6 @@ impl FuseProjection {
         if truncated {
             self.source_write(work, || open_file.resize_with_meter(0, work).map_err(FuseRequestError::from))?;
         }
-        // O_TRUNC (and a lazy-file promotion during open) legitimately
-        // changes the node. Validate the attached handle instead of treating
-        // that authored mutation as an external rebind.
         let unchanged = if !truncated {
             match stamp_before {
                 Some(stamp) => source.unchanged_since_with_meter(path, Some(file_id), stamp, work)?,
@@ -5402,13 +4842,6 @@ impl FuseProjection {
         Ok((open_file, refreshed, stamp, truncated))
     }
 
-    /// Completes `store`, if any, for an open replying with `open_flags`.
-    ///
-    /// The whole content reaches the kernel page cache before the open
-    /// replies, and the open keeps it only while no change around the mount
-    /// superseded it since it was read. A superseded store is dropped again
-    /// as the invalidator would have. Optional failures leave the kernel to
-    /// read on demand, retaining fatal causes and real prefixes on this invocation.
     fn store_pages(
         &self,
         store: Option<PageStore>,
@@ -5450,7 +4883,7 @@ impl FuseProjection {
         state.page_stores.land(store.file_id);
         self.core.page_stored.notify_all();
         let admitted = match state.admissible(
-            self.source(work), &store.path, Some(store.file_id), Some(store.stamp),
+            self.core.source.as_ref(), &store.path, Some(store.file_id), Some(store.stamp),
             work,
         ) {
             Ok(admitted) => admitted,
@@ -5480,7 +4913,7 @@ impl FuseProjection {
         work: &super::NativeMountMeterWork,
     ) -> Result<(Entry, u64, FopenFlags), FuseRequestError> {
         self.check_source_write(work)?;
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let (child, absent_since) = {
             let state = self.core.state()?;
@@ -5497,10 +4930,6 @@ impl FuseProjection {
                 .transpose()
         };
         // The kernel looks a name up before it creates it: an absence it was
-        // told of that nothing has changed since needs no second lookup.
-        // The absence the creation relies on, which the source checks again
-        // as it creates: the kernel's, or this lookup's, whose stamp was
-        // sampled before it.
         let (existing, proof) = match absent_since {
             Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => (None, Some(held)),
             _ => (source.lookup_with_meter(path, work).map_err(FuseRequestError::from)?, stamp),
@@ -5577,12 +5006,6 @@ impl FuseProjection {
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 
-    /// Runs `operation` with the handle for I/O the kernel sent on `handle`:
-    /// that handle, or for a file the kernel opened without asking (handle
-    /// 0), the one this session holds for the inode, opened to write on its
-    /// first change. A read of a file the session holds no handle for opens
-    /// one for its own duration, so a file that is only read holds nothing
-    /// open.
     fn with_handle<T>(
         &self,
         inode: u64,
@@ -5609,9 +5032,6 @@ impl FuseProjection {
         }
     }
 
-    /// Opens `inode`'s implicit handle for `access` in place of `stale`,
-    /// the one it held, if any. The kernel reads what it does not hold
-    /// itself, so the open stores no pages.
     fn reopen_implicit(
         &self,
         inode: u64,
@@ -5623,7 +5043,6 @@ impl FuseProjection {
         self.reopen_implicit_named(inode, stale, access, work)
     }
 
-    /// [`Self::reopen_implicit`] for a caller that holds the names lock.
     fn reopen_implicit_named(
         &self,
         inode: u64,
@@ -5653,10 +5072,6 @@ impl FuseProjection {
         Ok(opened)
     }
 
-    /// Reads for I/O the kernel sent on `handle`. A held implicit handle
-    /// serves every open the kernel made without asking, so when the file
-    /// changed around the mount since it opened, it reopens once to read
-    /// what those later opens see.
     fn read_through(&self, inode: u64, handle: u64, offset: u64, size: u32, work: &super::NativeMountMeterWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
         let read = self.with_handle(inode, handle, Access::Read, |opened| {
             self.read_handle(inode, opened, offset, size, work)
@@ -5710,9 +5125,7 @@ impl FuseProjection {
         self.source_write(work, || open_file
             .write_range_with_meter(offset, bytes, work)
             .map_err(FuseRequestError::from))?;
-        // The write recorded its change to the node, so these facts are
-        // current exactly until the next change.
-        let stamp = self.source(work).view_stamp_with_meter(work)?;
+        let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
         let refreshed = Some(open_file.lookup_with_meter(work).map_err(FuseRequestError::from)?);
         let mut state = self.core.state()?;
         let current = state.files.get(&handle).is_some_and(|file| {
@@ -5730,7 +5143,7 @@ impl FuseProjection {
         let authored_flush = {
             let state = self.core.state()?;
             let file = state.files.get(&handle).filter(|file| file.inode == inode).ok_or(libc::ESTALE)?;
-            force || (file.dirty && self.source(work).flush_on_handle_close())
+            force || (file.dirty && self.core.source.as_ref().flush_on_handle_close())
         };
         if authored_flush { self.check_source_write(work)?; }
         let operation = self.core.state()?.open_handle_operation(inode, handle, work)?;
@@ -5742,16 +5155,12 @@ impl FuseProjection {
                 .get(&handle)
                 .filter(|file| file.inode == inode && Arc::ptr_eq(&file.operation, &operation))
                 .ok_or(libc::ESTALE)?;
-            // fsync is an explicit durability request for the file, including
-            // writes made through other descriptors. A close only flushes when
-            // this handle was dirty and the source requires it.
             (
-                force || (file.dirty && self.source(work).flush_on_handle_close()),
+                force || (file.dirty && self.core.source.as_ref().flush_on_handle_close()),
                 fuse_arc_clone(&file.open_file, work)?,
             )
         };
         // A durability request applies what the handle held back first. The per-handle operation gate remains held, but unrelated
-        // FUSE callbacks never wait on the state lock during durable IO.
         let settled = if force {
             self.source_write(work, || open_file.settle_with_meter(work).map_err(FuseRequestError::from))
         } else {
@@ -5759,7 +5168,7 @@ impl FuseProjection {
         };
         let flushed = settled.and_then(|()| {
             if should_flush {
-                self.source_write(work, || self.source(work).flush_with_meter(work).map_err(FuseRequestError::from))
+                self.source_write(work, || self.core.source.as_ref().flush_with_meter(work).map_err(FuseRequestError::from))
             } else {
                 Ok(())
             }
@@ -5793,7 +5202,7 @@ impl FuseProjection {
         span: &tracing::Span,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let mut stream = self.core.state()?.directory_stream(source, inode, offset, work)?;
         self.position_directory_stream(&mut stream, offset, work)?;
@@ -5810,18 +5219,13 @@ impl FuseProjection {
         Ok(())
     }
 
-    /// Advances `stream` to `offset` and buffers source entries until it
-    /// holds some or its listing is exhausted. Source paging dominates
-    /// listing cost, so it runs outside the state lock; a lease pins the
-    /// stream's binding instead, and each page is labelled with the view it
-    /// was read in.
     fn position_directory_stream(
         &self,
         stream: &mut DirectoryStream,
         offset: u64,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         stream.emitted = stream.emitted.max(offset.min(2));
         loop {
             fuse_item(work)?;
@@ -5848,11 +5252,6 @@ impl FuseProjection {
         }
     }
 
-    /// [`Self::confirm_names`] for one listed page, read after `stamp`,
-    /// whose entries also confirm each other: names the page lists for one
-    /// node all name it. Its entries are emitted later, so every
-    /// confirmation is buffered and holds only while the view vouches for
-    /// its name since it was resolved.
     fn confirm_listed_names(
         &self,
         directory: &MountPath,
@@ -5860,7 +5259,7 @@ impl FuseProjection {
         stamp: Option<ViewStamp>,
         work: &super::NativeMountMeterWork,
     ) -> Result<ConfirmedNames, FuseRequestError> {
-        let source = self.source(work);
+        let source = self.core.source.as_ref();
         let mut listed = fuse_vec(entries.len(), work)?;
         for entry in entries {
             fuse_item(work)?;
@@ -5887,7 +5286,7 @@ impl FuseProjection {
     }
 
     fn attributes_to_read(&self, inode: u64, work: &super::NativeMountMeterWork) -> Result<Option<AttributeTarget>, FuseRequestError> {
-        Ok(self.core.state()?.attributes_to_read(self.source(work), inode, work)?)
+        Ok(self.core.state()?.attributes_to_read(self.core.source.as_ref(), inode, work)?)
     }
 
     fn write_named_attribute(
@@ -5919,7 +5318,7 @@ impl FuseProjection {
                 open_file.write_attribute_with_meter(name.as_bytes(), value, mode, work)
             }
             AttributeTarget::Path(path) => {
-                self.source(work)
+                self.core.source.as_ref()
                     .write_attribute_with_meter(&path, name.as_bytes(), value, mode, work)
             }
         }.map_err(FuseRequestError::from))
@@ -5930,7 +5329,7 @@ impl FuseProjection {
         let value = match self.attributes_to_read(inode, work)? {
             Some(AttributeTarget::Handle(open_file)) => open_file.read_attribute_with_meter(name.as_bytes(), work),
             Some(AttributeTarget::Path(path)) => {
-                self.source(work).read_attribute_with_meter(&path, name.as_bytes(), work)
+                self.core.source.as_ref().read_attribute_with_meter(&path, name.as_bytes(), work)
             }
             None => Ok(None),
         }
@@ -5956,7 +5355,7 @@ impl FuseProjection {
             let cursor = previous.as_ref().and_then(|page| page.next_cursor.as_deref());
             let (page, allocation) = match &target {
                 AttributeTarget::Handle(open_file) => open_file.list_attributes_with_meter(cursor, ATTRIBUTE_PAGE_SIZE, work),
-                AttributeTarget::Path(path) => self.source(work).list_attributes_with_meter(path, cursor, ATTRIBUTE_PAGE_SIZE, work),
+                AttributeTarget::Path(path) => self.core.source.as_ref().list_attributes_with_meter(path, cursor, ATTRIBUTE_PAGE_SIZE, work),
             }.map_err(FuseRequestError::from)?;
             let page = FuseOwned::native(page, allocation);
             for name in &page.names {
@@ -5982,7 +5381,7 @@ impl FuseProjection {
         let target = self.attributes_to_write(inode, work)?;
         self.source_write(work, || match target {
             AttributeTarget::Handle(open_file) => open_file.remove_attribute_with_meter(name.as_bytes(), work),
-            AttributeTarget::Path(path) => self.source(work).remove_attribute_with_meter(&path, name.as_bytes(), work),
+            AttributeTarget::Path(path) => self.core.source.as_ref().remove_attribute_with_meter(&path, name.as_bytes(), work),
         }
         .map_err(|error| match error {
             MountSourceError::NotFound => FuseRequestError::Errno(libc::ENODATA),
@@ -6028,7 +5427,7 @@ impl FuseProjection {
             .allocate_range_with_meter(offset, length, operation, work)
             .map_err(FuseRequestError::from))?;
         self.core.state()?.mark_handle_dirty(inode, handle)?;
-        let stamp = self.source(work).view_stamp_with_meter(work)?;
+        let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
         let refreshed = Some(open_file.lookup_with_meter(work).map_err(FuseRequestError::from)?);
         let mut state = self.core.state()?;
         if let Some(lookup) = refreshed {
@@ -6097,7 +5496,7 @@ impl FuseProjection {
             self.core.record_handler_failure(work, error.into_native());
         }
         self.core.state()?.mark_handle_dirty(destination_inode, destination_handle)?;
-        let stamp = self.source(work).view_stamp_with_meter(work)?;
+        let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
         let refreshed = Some(destination_open.lookup_with_meter(work).map_err(FuseRequestError::from)?);
         let mut state = self.core.state()?;
         if let Some(lookup) = refreshed {
@@ -6107,9 +5506,6 @@ impl FuseProjection {
     }
 }
 
-/// Copies one range between open files, cloning stable identities where the
-/// source can and moving sparse chunks otherwise, retaining late failures with
-/// the SDK-supported completed prefix rather than manufacturing full success.
 fn copy_open_range(
     projection: &FuseProjection,
     source_open: &FuseOpenFile,
@@ -6194,15 +5590,11 @@ fn copy_open_range(
     Ok((u32::try_from(transferred).map_err(|_| libc::EOVERFLOW)?, failure))
 }
 
-/// Records one callback error on its exact span before constructing the reply.
 fn errno_on(span: &tracing::Span, error: i32) -> Errno {
     span.record("errno", error);
     Errno::from_i32(error)
 }
 
-/// Computes a source result and attempts the SDK's borrowed terminal reply.
-/// This opaque ABI exit is not a backend mutation or a delivery acknowledgement;
-/// fuser swallows transport errors, so kernel delivery remains unknown.
 macro_rules! respond {
     ($reply:ident, $request:ident, $work:ident, $result:expr, |$value:pat_param| $ok:expr) => {{
         let mut pending_reply = Some($reply);
@@ -6221,7 +5613,6 @@ macro_rules! respond {
 }
 
 // Every callback attributes the view changes it causes to this session, so
-// the invalidator never drops what the kernel applied as it made them.
 impl Filesystem for FuseProjection {
     fn init(&mut self, request: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         let _ = request;
@@ -6229,11 +5620,11 @@ impl Filesystem for FuseProjection {
         let result = scope.with_work(|work| {
             // Only the original stamped source can keep skipped listings coherent.
             let skips_opendir = config.capabilities().contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
-                && ProjectionState::directory_open_flags_with_meter(self.source(work), work)?
+                && ProjectionState::directory_open_flags_with_meter(self.core.source.as_ref(), work)?
                     .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
             let skips_open = config.capabilities().contains(InitFlags::FUSE_NO_OPEN_SUPPORT)
-                && self.source(work).view_stamp_with_meter(work)?.is_some()
-                && !self.source(work).flush_on_handle_close();
+                && self.core.source.as_ref().view_stamp_with_meter(work)?.is_some()
+                && !self.core.source.as_ref().flush_on_handle_close();
             let supported = REQUESTED_CAPABILITIES & config.capabilities();
             config.add_capabilities(supported)
                 .map_err(NativeMountError::FuseUnsupportedCapabilities)?;
@@ -6439,7 +5830,7 @@ impl Filesystem for FuseProjection {
             _request, work,
             self.create_node(parent.0, link_name, |path, work| {
                 let target = fuse_source_chunk(target.as_os_str().as_bytes(), work)?;
-                self.source(work).create_symbolic_link_with_meter(path, target, metadata, work)
+                self.core.source.as_ref().create_symbolic_link_with_meter(path, target, metadata, work)
                     .map_err(FuseRequestError::from)
             }, work),
             |entry| entry.reply(reply)
@@ -6690,7 +6081,7 @@ impl Filesystem for FuseProjection {
         respond!(reply, _request, work, {
             // `ENOSYS` asks the kernel to keep subsequent listings without opens.
             if self.skips_opendir { return Err(libc::ENOSYS.into()); }
-            ProjectionState::directory_open_flags_with_meter(self.source(work), work)
+            ProjectionState::directory_open_flags_with_meter(self.core.source.as_ref(), work)
         }, |flags| reply.opened(FuseFileHandle(0), flags));
     }
 
@@ -6776,11 +6167,10 @@ impl Filesystem for FuseProjection {
             callback_span!(TRACE, fsyncdir, ino = inode.0, fh = fh.0),
         );
         // Directory fsync is an explicit durability boundary too; never hold
-        // the state lock across SDK publication.
         respond!(
             reply,
             _request, work,
-            self.source_write(work, || self.source(work).flush_with_meter(work).map_err(FuseRequestError::from)),
+            self.source_write(work, || self.core.source.as_ref().flush_with_meter(work).map_err(FuseRequestError::from)),
             |()| reply.ok()
         );
     }
@@ -6996,7 +6386,6 @@ impl Filesystem for FuseProjection {
     }
 }
 
-/// Answers a size probe or returns `value` when it fits in `size`.
 fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
     if size == 0 {
         reply.size(u32::try_from(value.len()).unwrap_or(u32::MAX));
@@ -7312,7 +6701,6 @@ mod tests {
         Ok(())
     }
 
-    /// Distinct positions in increasing order.
     fn positions<const N: usize>() -> [ViewStamp; N] {
         let slot = AtomicU64::new(0);
         std::array::from_fn(|_| ViewStamp::record(&slot))
@@ -7594,13 +6982,6 @@ mod tests {
         Ok(())
     }
 
-    /// A reused identity gets a fresh inode: its removed name neither counts
-    /// against the new file's links, which would refuse the new name, nor
-    /// stays in the kernel, and the old inode, which the kernel may still
-    /// hold, names no file any more.
-    /// A name joins its node's inode on the identity rule alone: facts that
-    /// still count fewer links than the names shown bound (a link made in
-    /// the source since they were read) never refuse it.
     #[test]
     fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Result<(), i32> {
         let [before, after] = positions();
@@ -7887,9 +7268,6 @@ mod tests {
         let items = queue.take_deferred();
         assert_eq!(items.len(), 1);
         assert!(queue.deferred.is_empty());
-        // This is the state visible to the barrier while the invalidator
-        // releases the state lock to call the kernel. The stamp alone cannot
-        // distinguish this deferred pass from the already completed scan.
         assert!(
             queue.is_pending(target),
             "kernel notifications have not finished"
@@ -7907,15 +7285,6 @@ mod tests {
         assert!(matches!(queue.failure, Some(crate::NativeMountError::Lifecycle("notification failed"))));
     }
 
-    /// A name confirmed bound at a position (a listed page, read before its
-    /// entries are emitted) stops counting once the name changes, so a
-    /// reused identity is never kept on the inode of the node it replaced;
-    /// one confirmed without a position, by a source that cannot be watched,
-    /// counts with the facts it was resolved with.
-    /// A callback that leaves kernel items for the invalidator wakes it as it
-    /// releases the state, whether it serves a request or finishes one (a
-    /// page store landing), so the items drop, and a revalidation waiting on
-    /// them returns, without a further change to the source.
     #[test]
     fn releasing_deferred_items_wakes_the_invalidator() -> Result<(), Box<dyn std::error::Error>> {
         use super::ProjectionCore;
@@ -7932,7 +7301,6 @@ mod tests {
                 let core = Arc::clone(&core);
                 move || {
                     // Only a notification ends the wait before the deadline;
-                    // an item deferred before the wait began needs none.
                     let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
                     let (state, waited) = core
                         .invalidation
@@ -8134,7 +7502,6 @@ mod tests {
     type MemoryCheckout =
         crate::Checkout<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
-    /// A POSIX volume, whose names are all distinct.
     fn posix_config() -> crate::model::VolumeConfig {
         let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
         config.profile = crate::model::FilesystemProfile::Posix;
@@ -8174,7 +7541,6 @@ mod tests {
         Ok((checkouts, config))
     }
 
-    /// Independent checkouts of one volume, each behind its own source.
     fn tracking_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
         use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
         let (checkouts, config) = memory_checkout(
@@ -8198,8 +7564,6 @@ mod tests {
         }
     }
 
-    /// Two sources over one shared checkout: changes through either are
-    /// changes around a mount of the other.
     fn shared_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
         shared_sources_of(posix_config())
     }
@@ -8665,169 +8029,9 @@ mod tests {
     }
 
     #[test]
-    fn measured_invalidator_join_denial_cancellation_and_panic_retain_truth()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (source, _) = shared_sources()?;
-        let core = Arc::new(super::ProjectionCore::new(
-            Arc::new(source), empty_projection_state(), crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )?);
-        let birth = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).map_err(|(cause, _)| cause)?;
-        let mut session = super::FusePhysicalSession {
-            session: None,
-            sdk_input: None, sdk_worker: None, retirement_helper: None,
-            core: Arc::clone(&core),
-            core_custody: None,
-            invalidator: Some(std::thread::spawn(|| {})),
-            birth_cleanup: birth.reserve_work(crate::WorkCounters {
-                backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
-            })?,
-            invalidator_failed: false,
-            active_root: None, native_root_identity: None,
-        };
-        let cancellation = crate::CancellationToken::new();
-        // These original meters already belong to the caller. Control borrows
-        // them; only the actual join boundary needs additional work.
-        let denied = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-            crate::demand::DemandWork::new(crate::WorkBudget {
-                backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
-            }, &cancellation))));
-        assert!(matches!(session.stop_with_meter(&super::super::NativeMountMeterWork::from_meter(
-            Arc::clone(&denied))), Err(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(denied.lock().work, crate::WorkCounters::UNCHARGED);
-        assert!(session.invalidator.is_some());
-        assert!(!core.stopping.load(super::Ordering::Acquire));
-        cancellation.cancel();
-        let cancelled = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-            crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))));
-        assert!(session.stop_with_meter(&super::super::NativeMountMeterWork::from_meter(
-            Arc::clone(&cancelled))).is_err());
-        assert_eq!(cancelled.lock().work, crate::WorkCounters::UNCHARGED);
-        assert!(session.invalidator.is_some());
-        let cancellation = crate::CancellationToken::new();
-        let exact = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-            crate::demand::DemandWork::new(crate::WorkBudget {
-                backend_read_operations: 1, backend_write_operations: 0,
-                allocation_operations: 0, peak_allocation_bytes: 0,
-                ..crate::WorkBudget::UNBOUNDED
-            }, &cancellation))));
-        session.stop_with_meter(&super::super::NativeMountMeterWork::from_meter(Arc::clone(&exact)))?;
-        assert_eq!(exact.lock().work, crate::WorkCounters {
-            backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
-        });
-        let stopped_cancellation = crate::CancellationToken::new();
-        let stopped = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            allocation_operations: 1,
-            peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(),
-            ..crate::WorkBudget::UNBOUNDED
-        }, &stopped_cancellation).map_err(|(cause, _)| cause)?;
-        let stopped_prefix = stopped.receipt();
-        stopped_cancellation.cancel();
-        session.stop_measured(&stopped)?;
-        assert_eq!(stopped.receipt(), stopped_prefix,
-            "already stopped Drop/control does not allocate another original meter");
-        session.invalidator = Some(std::thread::spawn(|| panic!("controlled invalidator shutdown failure")));
-        let failure = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-            crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))));
-        assert!(matches!(session.stop_with_meter(&super::super::NativeMountMeterWork::from_meter(
-            Arc::clone(&failure))), Err(crate::NativeMountError::DriverPanicked { .. })));
-        assert_eq!(failure.lock().work.backend_read_operations, 1);
-        assert!(session.invalidator_failed);
-        assert!(session.stop().is_err(), "a consumed failed join is never success on retry");
-        assert!(matches!(session.stop_measured(&stopped),
-            Err(crate::NativeMountError::FuseInvalidatorFailed)));
-        assert_eq!(stopped.receipt(), stopped_prefix);
-        Ok(())
-    }
-
-    fn exercise_original_birth_cleanup(ordinary: bool)
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::fd::AsRawFd;
-        let (source, _) = shared_sources()?;
-        let core = Arc::new(super::ProjectionCore::new(
-            Arc::new(source), empty_projection_state(), crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )?);
-        let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: 1, backend_write_operations: 1,
-            allocation_operations: 1,
-            peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(),
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let birth_cleanup = original.reserve_work(crate::WorkCounters {
-            backend_read_operations: 1, backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let directory = tempfile::tempdir()?;
-        let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
-        let fd = root.as_raw_fd();
-        let joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let completed = Arc::clone(&joined);
-        let mut session = super::FusePhysicalSession {
-            session: None, core: Arc::clone(&core), core_custody: None,
-            sdk_input: None, sdk_worker: None, retirement_helper: None,
-            invalidator: Some(std::thread::spawn(move || completed.store(true, super::Ordering::Release))),
-            invalidator_failed: false,
-            active_root: Some(root), native_root_identity: None, birth_cleanup,
-        };
-        let before = original.receipt();
-        assert_eq!(original.remaining()?.backend_read_operations, 0);
-        assert_eq!(original.remaining()?.backend_write_operations, 0);
-        cancellation.cancel();
-        let refused_wait = crate::CancellationToken::new();
-        refused_wait.cancel();
-        assert!(session.stop_with_cleanup_wait(&refused_wait).is_err());
-        assert!(session.active_root.is_some() && session.invalidator.is_some());
-        assert_eq!(original.receipt(), before);
-        assert!(!core.stopping.load(super::Ordering::Acquire));
-        if ordinary {
-            session.stop()?;
-        } else {
-            session.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
-        }
-        assert!(session.active_root.is_none() && session.invalidator.is_none());
-        assert!(joined.load(super::Ordering::Acquire));
-        // No replacement handle was opened between the physical drop and
-        // this direct descriptor query.
-        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
-        let after = original.receipt();
-        assert_eq!(after.backend_write_operations - before.backend_write_operations, 1);
-        assert_eq!(after.backend_read_operations - before.backend_read_operations, 1);
-        assert_eq!(after.allocation_operations, before.allocation_operations);
-        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
-        assert!(original.cancellation().is_cancelled(), "original root was never masked");
-        assert_eq!(session.birth_cleanup.remaining_work(), crate::WorkCounters::UNCHARGED);
-        if ordinary {
-            session.stop()?;
-        } else {
-            session.stop_with_cleanup_wait(&refused_wait)?;
-        }
-        assert_eq!(original.receipt(), after, "terminal replay attempts no I/O");
-        Ok(())
-    }
-
-    #[test]
-    fn birth_cleanup_closes_actual_root_and_joins_original_thread_after_root_cancel()
-    -> Result<(), Box<dyn std::error::Error>> {
-        exercise_original_birth_cleanup(false)
-    }
-
-    #[test]
-    fn ordinary_stop_uses_actual_original_birth_credit_after_root_cancel()
-    -> Result<(), Box<dyn std::error::Error>> {
-        exercise_original_birth_cleanup(true)
-    }
-
-    #[test]
     fn last_facade_drop_signals_the_original_keeper_and_retires_its_actual_root()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
-        // Already-owned ordinary Source: this fixture proves physical-driver
-        // retirement, not Source/watch/fence retirement.
         let core = Arc::new(super::ProjectionCore::new(
             Arc::new(source), empty_projection_state(), finite_handler_policy(),
             &crate::CancellationToken::new(),
@@ -8851,7 +8055,6 @@ mod tests {
                 physical: Some(super::FusePhysicalSession {
                     session: None, sdk_input: None, sdk_worker: None,
                     core: Arc::clone(&core), core_custody: Some(custody.clone()),
-                    invalidator: None, invalidator_failed: false,
                     active_root: Some(root), native_root_identity: None, retirement_helper: None,
                     birth_cleanup,
                 }),
@@ -9007,84 +8210,6 @@ mod tests {
     }
 
     #[test]
-    fn linux_recovery_probe_exact_paths_and_denied_prefix_preserve_evidence()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let mut control = super::FuseRecoveryControl::default();
-        let denied = cache_work(crate::WorkBudget {
-            backend_read_operations: 1, backend_write_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        assert!(matches!(control.recover_measured(temporary.path(), &denied),
-            Err(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(denied.meter().lock().work.backend_read_operations, 1, "only the real parent stat completed");
-        assert_eq!(denied.meter().lock().work.backend_write_operations, 0);
-        assert_eq!(denied.meter().lock().work.allocation_operations, 2, "both actual native pathnames were constructed");
-        assert_eq!(denied.meter().lock().live_allocation_bytes(), 0);
-        assert!(!control.namespace_detach_confirmed());
-        assert!(!control.controls_pending());
-        let path_bytes = temporary.path().as_os_str().as_encoded_bytes().len() as u64;
-        let parent_bytes = temporary.path().parent().expect("temporary parent")
-            .as_os_str().as_encoded_bytes().len() as u64;
-        let exact = cache_work(crate::WorkBudget {
-            backend_read_operations: 2, backend_write_operations: 0,
-            allocation_operations: 2, peak_allocation_bytes: path_bytes + 1,
-            bytes_copied: path_bytes + parent_bytes, items_examined: path_bytes + parent_bytes,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        control.recover_measured(temporary.path(), &exact)?;
-        assert_eq!(exact.meter().lock().work.backend_read_operations, 2);
-        assert_eq!(exact.meter().lock().work.backend_write_operations, 0);
-        assert_eq!(exact.meter().lock().work.allocation_operations, 2);
-        assert_eq!(exact.meter().lock().live_allocation_bytes(), 0);
-        assert!(control.namespace_detach_confirmed(), "absence came from actual device probes");
-        let cancelled = crate::CancellationToken::new();
-        cancelled.cancel();
-        let canceled_work = cache_work(crate::WorkBudget::UNBOUNDED, &cancelled);
-        assert!(control.recover_measured(temporary.path(), &canceled_work).is_err());
-        assert_eq!(canceled_work.meter().lock().work, crate::WorkCounters::UNCHARGED);
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "requires a live Linux FUSE mount"]
-    fn linux_recovery_denied_control_keeps_the_actual_provider_attached()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (source, _) = shared_sources()?;
-        let source = Arc::new(source);
-        let temporary = tempfile::tempdir()?;
-        let mut session = super::FuseSession::start(&crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination: temporary.path().to_path_buf(), writable: true,
-        }, source as Arc<dyn MountFilesystem>)?;
-        let cancellation = crate::CancellationToken::new();
-        let mut control = super::FuseRecoveryControl::default();
-        let denied = cache_work(crate::WorkBudget {
-            backend_read_operations: 2, backend_write_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        assert!(matches!(control.recover_measured(temporary.path(), &denied),
-            Err(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(denied.meter().lock().work.backend_read_operations, 2);
-        assert_eq!(denied.meter().lock().work.backend_write_operations, 0, "umount2 was not entered");
-        assert_eq!(denied.meter().lock().live_allocation_bytes(), 0);
-        assert!(!control.namespace_detach_confirmed());
-        assert!(!control.controls_pending());
-        std::fs::write(temporary.path().join("still-attached"), b"same live provider")?;
-        session.stop()?;
-        let exact = cache_work(crate::WorkBudget {
-            backend_read_operations: 2, backend_write_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        control.recover_measured(temporary.path(), &exact)?;
-        assert!(control.namespace_detach_confirmed());
-        assert_eq!(exact.meter().lock().work.backend_read_operations, 2);
-        assert_eq!(exact.meter().lock().work.backend_write_operations, 0);
-        Ok(())
-    }
-
-    #[test]
     #[ignore = "requires a live Linux FUSE mount"]
     fn linux_changes_around_the_mount_reach_every_kernel_cache()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -9130,81 +8255,6 @@ mod tests {
 
     #[test]
     #[ignore = "requires a live Linux FUSE mount"]
-    fn linux_kernel_caches_answer_unchanged_files_until_they_change()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (mounted_source, around) = shared_sources()?;
-        let mounted_source = Arc::new(mounted_source);
-        let small = name("small");
-        around.create_file(&small, FileMetadata::default())?;
-        around.write_range(&small, 0, Bytes::from_static(b"first"))?;
-        let large = name("large");
-        let large_bytes = (0..PAGE_STORE_LIMIT + 1)
-            .map(|index| u8::try_from(index % 251).unwrap_or_default())
-            .collect::<Vec<_>>();
-        around.create_file(&large, FileMetadata::default())?;
-        around.write_range(&large, 0, Bytes::from(large_bytes.clone()))?;
-        let temporary = tempfile::tempdir()?;
-        let mut session = mount(
-            Arc::clone(&mounted_source) as Arc<dyn MountFilesystem>,
-            mounted_source.volume_id()?,
-            temporary.path(),
-        )?;
-        let mounted = temporary.path().join("small");
-        // Every request but a close, which the kernel sends asynchronously.
-        let requests = |session: &crate::NativeMountSession| {
-            let mut requests = session.take_fuse_requests();
-            requests.retain(|operation| *operation != "release");
-            requests
-        };
-        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
-        requests(&session);
-
-        // The first open hands the kernel the whole file: nothing is read
-        // page by page, so nothing marks the access time stale either.
-        assert_eq!(std::fs::read(&mounted)?, b"first");
-        assert_eq!(requests(&session), ["open"]);
-        for _ in 0..3 {
-            assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
-        }
-        assert_eq!(requests(&session), Vec::<&str>::new());
-        assert_eq!(std::fs::read(&mounted)?, b"first");
-        assert_eq!(requests(&session), ["open"], "retained pages serve reads");
-
-        // Same length, same (unavailable) times: only invalidation can tell.
-        around.write_range(&small, 0, Bytes::from_static(b"other"))?;
-        session.revalidate()?;
-        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
-        assert_ne!(
-            requests(&session),
-            Vec::<&str>::new(),
-            "a change is fetched"
-        );
-        assert_eq!(std::fs::read(&mounted)?, b"other");
-        assert!(requests(&session).contains(&"open"));
-        // After invalidation this read may use READ instead of stored pages,
-        // which makes Linux invalidate atime even under noatime. Refresh that
-        // attribute once before checking that unchanged stats stay cached.
-        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
-        requests(&session);
-        for _ in 0..3 {
-            assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
-        }
-        assert_eq!(requests(&session), Vec::<&str>::new());
-
-        // A change through the mount reaches every later open and stat.
-        std::fs::write(&mounted, b"third!")?;
-        assert_eq!(std::fs::metadata(&mounted)?.len(), 6);
-        assert_eq!(std::fs::read(&mounted)?, b"third!");
-
-        // A file past the store limit is read on demand, exactly.
-        assert_eq!(std::fs::read(temporary.path().join("large"))?, large_bytes);
-        assert!(requests(&session).contains(&"read"));
-        assert!(session.stop()?);
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "requires a live Linux FUSE mount"]
     fn linux_an_open_reader_sees_a_write_through_another_handle()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Read as _, Seek as _, Write as _};
@@ -9220,8 +8270,6 @@ mod tests {
         )?;
         let shared = temporary.path().join("shared");
         std::fs::write(&shared, b"before")?;
-        // Read once so the kernel holds its pages: the next read-only open
-        // stands on them and opens the source file only when a read needs it.
         assert_eq!(std::fs::read(&shared)?, b"before");
         let mut writer = std::fs::OpenOptions::new()
             .read(true)
@@ -9255,7 +8303,6 @@ mod tests {
         std::fs::write(&written, b"first")?;
         let before = counted.reads().len();
         // The kernel asks whether each write must drop capabilities, and
-        // stats after writes; the facts the writes returned answer both.
         for body in [b"second write".as_slice(), b"third".as_slice()] {
             let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
             std::io::Write::write_all(&mut file, body)?;
@@ -9263,69 +8310,11 @@ mod tests {
             assert_eq!(std::fs::metadata(&written)?.len(), 12);
         }
         // The directory's own attributes change with each write's parent
-        // update and are read again; the written file's never are.
         assert!(
             !counted.reads()[before..].contains(&b"written".to_vec()),
             "a stat or capability check after a write went back to the source"
         );
         assert_eq!(std::fs::read(&written)?, b"thirdd write");
-        assert!(session.stop()?);
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "requires a live Linux FUSE mount"]
-    fn linux_names_under_a_created_directory_need_no_source_lookup()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (inner, around) = shared_sources()?;
-        let volume_id = inner.volume_id()?;
-        let counted = Arc::new(GatedSource::ungated(Arc::new(inner)));
-        let temporary = tempfile::tempdir()?;
-        let mut session = mount(
-            Arc::clone(&counted) as Arc<dyn MountFilesystem>,
-            volume_id,
-            temporary.path(),
-        )?;
-        let made = temporary.path().join("made");
-        std::fs::create_dir(&made)?;
-        let before = counted.reads().len();
-        let mut expected = Vec::new();
-        for index in 0..8 {
-            let created = format!("new-{index}");
-            std::fs::write(made.join(&created), created.as_bytes())?;
-            expected.push(created);
-        }
-        assert!(!made.join("absent").exists());
-        // The kernel looks each name up before creating it; the directory
-        // was empty when this session made it, so none reaches the source.
-        assert!(
-            !counted.reads()[before..]
-                .iter()
-                .any(|read| read.starts_with(b"new-") || read == b"absent"),
-            "a lookup under a directory this session created reached the source"
-        );
-        // A name bound around the mount is found all the same.
-        around.create_file(
-            &name("made").child(b"around".to_vec()),
-            FileMetadata::default(),
-        )?;
-        session.revalidate()?;
-        assert!(made.join("around").is_file());
-        expected.push("around".to_owned());
-        expected.sort();
-        assert_eq!(
-            listing(&made)?,
-            expected
-                .iter()
-                .map(std::ffi::OsString::from)
-                .collect::<Vec<_>>()
-        );
-        for created in expected
-            .iter()
-            .filter(|created| created.starts_with("new-"))
-        {
-            assert_eq!(std::fs::read(made.join(created))?, created.as_bytes());
-        }
         assert!(session.stop()?);
         Ok(())
     }
@@ -9499,16 +8488,12 @@ mod tests {
         Ok(())
     }
 
-    /// Delegates to a source, blocking lookups of one name and directory
-    /// creation of another until released.
     struct GatedSource {
         inner: Arc<dyn MountFilesystem>,
         gated_lookup: Vec<u8>,
         gated_directory: Vec<u8>,
         entered: SyncSender<()>,
         released: Mutex<Receiver<()>>,
-        /// The final name of every lookup and attribute read that reached
-        /// the source, in order.
         reads: Mutex<Vec<Vec<u8>>>,
     }
 
@@ -10029,8 +9014,6 @@ mod tests {
         }
     }
 
-    /// Runs `operation` on a fresh thread and reports whether it finished
-    /// within `limit`.
     fn finishes_within(limit: Duration, operation: impl FnOnce() + Send + 'static) -> bool {
         let (done, finished) = sync_channel(1);
         std::thread::spawn(move || {
@@ -10066,8 +9049,6 @@ mod tests {
         let mut session = mount(gated, volume_id, temporary.path())?;
         let root = temporary.path().to_path_buf();
 
-        // One lookup and one mkdir block inside the source, each in its own
-        // directory so the kernel's directory locks keep the rest free.
         let slow = root.join("slow").join("blocked-lookup");
         let blocked_lookup = std::thread::spawn(move || slow.exists());
         let busy = root.join("busy").join("blocked-mkdir");
@@ -10075,9 +9056,6 @@ mod tests {
         for _ in 0..2 {
             entries.recv_timeout(Duration::from_secs(5))?;
         }
-        // Every other callback that reads the source, including lookups,
-        // opens, and listings, keeps making progress meanwhile. (A source
-        // mutation would rightly wait for the view the blocked lookup holds.)
         let free = root.join("free");
         assert!(
             finishes_within(Duration::from_secs(5), move || {

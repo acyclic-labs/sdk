@@ -1,7 +1,4 @@
 //! Self-contained macOS mount projection over loopback `NFSv4`.
-//!
-//! The embedded C transport translates NFS requests into this module's bounded
-//! callbacks; the canonical Rust checkout remains the only filesystem state.
 
 #![allow(
     unsafe_code,
@@ -13,7 +10,7 @@ use super::{
     MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
     MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
     MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp, create_metadata, errno, metadata_or, source_error, system_time_ns,
+    ViewOrigin, ViewStamp, create_metadata, metadata_or, source_error, system_time_ns,
 };
 use crate::FileId;
 use crate::demand::{NativeDemandReadMeter, native_demand_error};
@@ -31,19 +28,14 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
-/// Most times a listing that has delivered no entry starts over in a view
-/// that keeps moving before it fails.
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
-/// Most labelled objects a revalidation verifies against the source after
-/// an unconfirmed fence; with more, waiting out the attribute timeout costs
-/// less.
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
@@ -56,8 +48,6 @@ const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Existing NFS cache grace policy after completed callbacks. The SDK exposes
-/// neither transport delivery nor ACK; this duration is not evidence of either.
 const CALLBACK_GRACE_INTERVAL: Duration = Duration::from_millis(100);
 const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 mod mode {
@@ -92,7 +82,6 @@ struct NativeStat {
     device: u64,
     block_size: u32,
     flags: u32,
-    /// NFS change attribute: see [`ChangeLabels`].
     change: u64,
 }
 
@@ -141,13 +130,9 @@ unsafe extern "C" {
 
 struct FileHandle {
     file_id: FileId,
-    /// Bound to the source file on first use: an open that is only closed,
-    /// as a read served from the kernel's cache is, never opens the source.
     file: Option<DarwinSourceFile>,
-    observation: DarwinShared<Mutex<FileObservation>>,
-    /// Ledger sequence of the latest mutation through this handle; zero
-    /// until one completes.
-    written: DarwinShared<AtomicU64>,
+    observation: Arc<DarwinShared<Mutex<FileObservation>>>,
+    written: Arc<DarwinShared<AtomicU64>>,
 }
 
 struct FileObservation {
@@ -155,10 +140,6 @@ struct FileObservation {
     lookup: MountLookup,
 }
 
-/// When this mount sampled the source's view, before observing facts that
-/// a later callback may reuse: the source's stamp, and how many changes the
-/// source did not record the mount had been told of by then (see
-/// [`DarwinMountContext::forget_view`]). Ordered by age.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct CacheStamp {
     forgotten: u64,
@@ -182,7 +163,6 @@ struct DirectoryHandle {
     revision: Option<u64>,
     path_custody: Option<DarwinOwned<()>>,
     page_custody: Option<DarwinOwned<()>>,
-    /// Exact producer custody, including raw source ownership, follows all page data.
     page_source_ownership: Option<crate::demand::SourcePayloadOwnership>,
 }
 
@@ -216,8 +196,6 @@ impl DirectoryHandle {
         self.revision = None;
     }
 
-    /// Whether buffered pages still describe the directory: its binding is
-    /// the same and nothing has changed its listing since they were read.
     fn clear_page(&mut self) {
         drop(self.cursor.take());
         drop(std::mem::take(&mut self.entries));
@@ -301,12 +279,6 @@ impl DirectoryHandle {
         self.epochs.is_some()
     }
 
-    /// Keeps the listing in the current view, or fails it with `ESTALE`. A
-    /// listing that has delivered nothing but `.` and `..` (which no view
-    /// changes) starts over in the view current now, as if just opened: a
-    /// change to the source while a directory is being opened or first read
-    /// never fails the listing. Only one already delivering entries from an
-    /// older view fails, rather than mixing two views in one listing.
     fn keep_current_measured(&mut self, context: &DarwinMountContext, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         for _ in 0..MAXIMUM_LISTING_RESTARTS {
             if !self.can_reuse_pages() || self.is_current_measured(context, work)? {
@@ -324,8 +296,6 @@ impl DirectoryHandle {
     }
 }
 
-/// Completed future requests, including ordinary misses, share the existing
-/// diagnostic lock. Active lifecycle requests remain solely in their meter.
 #[derive(Default)]
 struct DarwinCallbackState {
     completed_future_request_work: crate::WorkCounters,
@@ -390,38 +360,29 @@ struct DarwinMountContext {
     next_handle: AtomicU64,
     next_inode: AtomicU64,
     inodes: Mutex<DarwinMap<FileId, u64>>,
-    /// Changes the source did not record that this mount was told of.
     forgotten: AtomicU64,
     lookups: Mutex<LookupCache>,
     files: RwLock<DarwinMap<u64, FileHandle>>,
-    directories: Mutex<DarwinMap<u64, DarwinShared<Mutex<DirectoryHandle>>>>,
+    directories: Mutex<DarwinMap<u64, Arc<DarwinShared<Mutex<DirectoryHandle>>>>>,
     directory_checkpoints: Mutex<DarwinMap<MountPath, DirectoryCheckpoint>>,
     namespace_revision: AtomicU64,
     ledger: FlushLedger,
     changes: ChangeLabels,
-    /// Attributes every change this mount's callbacks make to the mount.
     origin: ViewOrigin,
     callbacks: CallbackGate,
     around: AroundChanges,
     native_allocation: Option<crate::NativeAllocation>,
     callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    /// Original accounting/lifetime view, not task or source authority.
     source_original_work: Option<super::NativeMountMeterWork>,
 }
 
-/// Native callbacks in flight, in two generations, so a barrier can wait
-/// for every callback that began before it without holding up later ones.
 struct CallbackGate {
     generation: AtomicU64,
-    /// Callbacks in flight that entered in an even or odd generation.
     even: AtomicU64,
     odd: AtomicU64,
-    /// Serializes barriers and retains an interrupted generation until its
-    /// actual callbacks leave, before either slot can be reused.
     draining: Mutex<Option<u64>>,
 }
 
-/// One callback's place in its generation, left when dropped.
 struct CallbackPass<'a>(&'a AtomicU64);
 
 impl CallbackGate {
@@ -448,7 +409,6 @@ impl CallbackGate {
             let active = self.slot(generation);
             active.fetch_add(1, Ordering::SeqCst);
             // A barrier that began in between may already have found this
-            // slot idle; join the generation after it instead.
             if self.generation.load(Ordering::SeqCst) == generation {
                 return CallbackPass(active);
             }
@@ -456,8 +416,6 @@ impl CallbackGate {
         }
     }
 
-    /// Ordinary barriers use the same admitted engine, with explicit unlimited
-    /// grants. A cancelled measured barrier retains the actual generation slot.
     #[cfg(test)]
     fn drain(&self) {
         let cancellation = crate::CancellationToken::new();
@@ -474,7 +432,6 @@ impl CallbackGate {
         work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
         let mut pending = self.draining.lock().unwrap_or_else(PoisonError::into_inner);
         // An interrupted previous barrier must finish before either slot can
-        // be reused. It does not cover callbacks that entered before this retry.
         if let Some(generation) = *pending {
             self.wait_generation(generation, work)?;
             *pending = None;
@@ -503,17 +460,10 @@ impl Drop for CallbackPass<'_> {
     }
 }
 
-/// Changes made around the mount, which the NFS client learns of only when
-/// its cached attributes expire.
 struct AroundChanges {
-    /// Changes another origin reported, plus views forgotten.
     made: AtomicU64,
-    /// `made` as of the latest barrier that waited them out.
     settled: AtomicU64,
-    /// Fences that could not confirm every change was reported.
     unconfirmed: AtomicU64,
-    /// `unconfirmed` as of the latest barrier that verified or waited them
-    /// out.
     verified: AtomicU64,
 }
 
@@ -534,8 +484,6 @@ impl ViewObserver for DarwinMountContext {
     }
 }
 
-/// Uptime excluding sleep, the real clock used by the NFS client's cache.
-/// Each actual clock query is admitted; a failed query is not expiry evidence.
 fn uptime_measured<W: crate::native_host::NativeHostWork>(work: &mut W) -> Result<Duration, NativeMountError>
 where NativeMountError: From<W::Error> {
     let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -553,17 +501,9 @@ fn uptime() -> Duration {
         .expect("the native uptime clock is available")
 }
 
-/// Orders completed native mutations against source flushes.
-///
-/// A mutating callback advances `completed` only after its source call
-/// returns, so a flush that samples `completed` before it starts covers every
-/// mutation up to that sample. The ledger starts dirty because the state the
-/// mount opened over may be unpublished, and the first sync must cover it.
 struct FlushLedger {
     completed: AtomicU64,
     flushed: AtomicU64,
-    /// Serializes flushes: a waiter that a finished flush already covered
-    /// returns without flushing again, so concurrent syncs share one flush.
     flushing: Mutex<()>,
 }
 
@@ -576,24 +516,12 @@ impl FlushLedger {
         }
     }
 
-    /// Records one completed (or failed, possibly partial) mutation and
-    /// returns its sequence.
     fn record(&self) -> u64 {
         self.completed.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     fn latest(&self) -> u64 {
         self.completed.load(Ordering::Acquire)
-    }
-
-    /// Makes every mutation up to `required` durable, flushing the source
-    /// only when no earlier successful flush already covers it.
-    fn flush_through(&self, required: u64, source: &dyn MountFilesystem) -> Result<(), i32> {
-        let cancellation = crate::CancellationToken::new();
-        super::run_native_mount_handler(crate::WorkBudget::UNBOUNDED, &cancellation, |native| {
-            let work = DarwinCallbackWork::new(native);
-            work.finish(self.flush_through_measured(required, source, &work))
-        }).map(|receipt| receipt.value).map_err(|_| libc::EIO)
     }
 
     fn flush_through_measured(&self, required: u64, source: &dyn MountFilesystem, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
@@ -611,33 +539,19 @@ impl FlushLedger {
     }
 }
 
-/// Per-object NFS change attributes (RFC 7530 s5.4).
-///
-/// A node keeps its label while the source reports nothing that node's
-/// attributes, listing, or name depend on changed since the label was
-/// issued, or, across changes the source could not confirm it reported,
-/// while the attributes observed again match those it was issued for;
-/// otherwise it gets a fresh one. Labels come from one counter and are
-/// never reissued, so a stale cached value can never match again, and a
-/// write to one file leaves every other object's cached state valid.
 struct ChangeLabels {
     next: AtomicU64,
     labels: Mutex<DarwinMap<FileId, IssuedLabel>>,
-    /// Times the labels were dropped at capacity, after which a revalidation
-    /// cannot tell what the client holds.
     cleared: AtomicU64,
 }
 
 struct IssuedLabel {
     label: u64,
-    /// Sampled before the attributes the label was issued for.
     stamp: CacheStamp,
     binding: Option<u64>,
-    /// The attributes it was issued for, and the path they were observed at.
     observed: Observed,
 }
 
-/// Attributes a label was issued for, as observed at a path.
 struct Observed {
     path: MountPath,
     lookup: MountLookup,
@@ -645,13 +559,6 @@ struct Observed {
 }
 
 impl Observed {
-    /// Whether `lookup` shows the client what these attributes did. Access
-    /// times are left out: no source reports reads, so no label follows them.
-    ///
-    /// A directory's label also covers its listing, which its attributes
-    /// witness only through its change time: every entry created, removed,
-    /// or renamed in it sets that time, and no caller can set it back. A
-    /// directory whose change time is unknown is never taken as unchanged.
     fn matches(&self, lookup: &MountLookup) -> bool {
         let mut seen = *lookup;
         seen.metadata.accessed_ns = self.lookup.metadata.accessed_ns;
@@ -670,12 +577,6 @@ impl ChangeLabels {
         }
     }
 
-    /// The label for `file_id`'s attributes, `observed` after `stamp` was
-    /// sampled under source binding `binding`; `unchanged` tells whether
-    /// nothing they depend on changed since a stamp, and `reported_unchanged`
-    /// whether nothing reported did. A source without stamps gets a fresh
-    /// label every time, so its cached state is never trusted past a
-    /// revalidation.
     #[cfg(test)]
     fn label(
         &self, file_id: FileId, stamp: Option<CacheStamp>, binding: Option<u64>, observed: Observed,
@@ -703,12 +604,8 @@ impl ChangeLabels {
         let Some(stamp) = stamp else {
             return Ok(self.fresh());
         };
-        // Labels only ever move to fresh values, so a panicked holder
-        // cannot leave one that repeats.
         let mut labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
         // The issued label names these attributes only if nothing changed
-        // since the older of the two observations, so attributes observed
-        // before a change never take a label issued after it.
         if let Some(issued) = labels.get_mut_measured(&file_id, work)?
             && issued.binding == binding
         {
@@ -716,8 +613,6 @@ impl ChangeLabels {
             if unchanged(since)? {
                 return Ok(issued.label);
             }
-            // Read again across changes the source could not confirm, with
-            // the same result: the client's copy still holds.
             if issued.observed.matches(&lookup) && reported_unchanged(since)? {
                 issued.stamp = issued.stamp.max(stamp);
                 return Ok(issued.label);
@@ -744,8 +639,6 @@ impl ChangeLabels {
         Ok(label)
     }
 
-    /// An exact caller-owned snapshot. Each path is cloned through the same
-    /// component-by-component admission engine used by real callbacks.
     fn issued_with_meter(
         &self, native: &super::NativeMountMeterWork,
     ) -> Result<Option<DarwinOwned<Vec<(FileId, Observed)>>>, NativeMountError> {
@@ -782,7 +675,6 @@ impl ChangeLabels {
     }
 }
 
-/// Lookups, each with the stamp it was resolved after.
 struct LookupCache {
     entries: DarwinMap<MountPath, (Option<MountLookup>, CacheStamp, DarwinOwned<()>)>,
 }
@@ -821,8 +713,6 @@ impl DarwinStartupMeterScope {
         Ok(Self { context, _custody: custody, meter: meter.clone(), generation })
     }
     /// Aliases this operative SDK scope in the actual accepted I/O payload.
-    /// Capture the returned owner in the accepted payload, not just its caller
-    /// future: dropping a native completion does not drain accepted SDK I/O.
     pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::existing(Arc::clone(&self.context), self._custody.clone(), &self.meter)
     }
@@ -922,11 +812,10 @@ impl DarwinMountContext {
         Ok(selected)
     }
 
-    /// Shares this context, told of every change to its source's view.
     fn observing_source(self) -> Result<Arc<Self>, MountSourceError> {
         let context = Arc::new(self);
         let observer: Weak<dyn ViewObserver> = Arc::<Self>::downgrade(&context);
-        context.source.observe_view(observer)?;
+        context.source.observe_view(observer);
         Ok(context)
     }
 
@@ -942,8 +831,6 @@ impl DarwinMountContext {
         self.namespace_revision.fetch_add(1, Ordering::Release);
     }
 
-    /// Samples the view before observing facts a later callback may reuse;
-    /// `None` when the source cannot invalidate exactly.
     fn cache_stamp_measured(&self, work: &DarwinCallbackWork<'_>) -> Result<Option<CacheStamp>, i32> {
         let forgotten = self.forgotten.load(Ordering::Acquire);
         Ok(self.source.view_stamp_with_meter(work.native).map_err(|error| work.source_error(error))?
@@ -977,8 +864,6 @@ impl DarwinMountContext {
         })
     }
 
-    /// Whether facts about `path`, which resolved to `file_id` (`None`: to
-    /// nothing), observed after `stamp` still describe the view.
     fn unchanged_since(
         &self,
         path: &MountPath,
@@ -989,7 +874,6 @@ impl DarwinMountContext {
             && self.source.unchanged_since(path, file_id, stamp.view)
     }
 
-    /// [`Self::unchanged_since`], counting only changes the source reported.
     fn reported_unchanged_since(
         &self,
         path: &MountPath,
@@ -1012,11 +896,6 @@ impl DarwinMountContext {
         })
     }
 
-    /// Stops trusting every fact this mount observed so far, because a
-    /// change the source did not record may have superseded any of them:
-    /// cached lookups, handle observations, and directory pages all fail
-    /// validation, and every object's next change attribute is fresh, so
-    /// the client discards what it cached at its next revalidation.
     fn forget_view(&self) {
         self.forgotten.fetch_add(1, Ordering::AcqRel);
         self.namespace_changed();
@@ -1028,29 +907,9 @@ impl DarwinMountContext {
         self.around.made.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Waits until the NFS client holds nothing that a change made around
-    /// the mount before this call superseded. Changes made through the mount
-    /// need no wait: the client learns of them from their replies.
-    ///
-    /// Without delegations, which a local-socket mount cannot take, the
-    /// server cannot recall what the client cached. The client trusts
-    /// cached attributes, names, and directory pages until the attribute
-    /// timeout expires, measured in whole seconds of uptime from when each
-    /// reply arrived, and then revalidates them against change attributes,
-    /// which every such change moved (see [`ChangeLabels`]). Every callback
-    /// that began before this call is waited out. Existing cache timing policy
-    /// adds [`CALLBACK_GRACE_INTERVAL`] and one attribute timeout; callback
-    /// completion and elapsed grace do not prove reply delivery or ACK.
-    /// The wait is at most the timeout plus grace and averages half a second less.
-    ///
-    /// A fence that could not confirm every change was reported (macOS)
-    /// needs no wait when nothing the client holds changed: each object it
-    /// holds a label for is read again, and the wait follows only if one no
-    /// longer matches what its label was issued for.
     #[cfg(test)]
     fn revalidate(&self) { self.revalidate_with_wait(); }
 
-    /// Test-facing selective policy result through the same canonical engine.
     #[cfg(test)]
     fn revalidate_with_wait(&self) -> bool {
         let cancellation = crate::CancellationToken::new();
@@ -1088,8 +947,6 @@ impl DarwinMountContext {
         Ok(true)
     }
 
-    /// Checks the same actual memo/source engine, preserving typed work and
-    /// cancellation failures rather than treating denial as changed contents.
     fn verify_labels_with_meter(
         &self, native: &super::NativeMountMeterWork,
     ) -> Result<bool, NativeMountError> {
@@ -1097,7 +954,7 @@ impl DarwinMountContext {
         let Some(issued) = self.changes.issued_with_meter(native)? else { return Ok(false); };
         for (file_id, observed) in issued.iter() {
             native.native_materialization_work().charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
             })?;
             match self.lookup_with_meter(&observed.path, native) {
                 Ok(current) if current.node.file_id == *file_id && observed.matches(&current) => {}
@@ -1124,7 +981,6 @@ impl DarwinMountContext {
 
     fn lookup_measured(&self, path: &MountPath, work: &DarwinCallbackWork<'_>) -> Result<MountLookup, i32> {
         // Sampled first: a change to anything the lookup reads records a
-        // later position, so its result can never validate over the change.
         let stamp = self.cache_stamp_measured(work)?;
         if stamp.is_some() {
             let cache = self.lookups.lock().map_err(|_| libc::EIO)?;
@@ -1172,8 +1028,6 @@ impl DarwinMountContext {
         Ok(())
     }
 
-    /// Opens a handle on the regular file at `path`. The source file is
-    /// bound on first use (see [`Self::bind`]).
     fn open_measured(&self, path: &MountPath, state: InitialHandleState, work: &DarwinCallbackWork<'_>) -> Result<u64, i32> {
         let written = match state {
             InitialHandleState::Clean => 0,
@@ -1196,13 +1050,6 @@ impl DarwinMountContext {
         Ok(handle)
     }
 
-    /// The source file behind `handle`, opened at `path` on first use.
-    ///
-    /// A handle names one file identity. Until a callback needs its source
-    /// file, `path` (the kernel's current name for the handle's object) still
-    /// names that identity unless something outside this mount removed or
-    /// replaced it, which fails the handle as a stale NFS handle; a removal
-    /// or replacement through this mount detaches its file first (see [`Self::unlink`]).
     fn bind_measured(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<DarwinSourceFile, i32> {
         let file_id = {
             let files = self.files.read().map_err(|_| libc::EIO)?;
@@ -1221,10 +1068,6 @@ impl DarwinMountContext {
         Ok(entry.file.get_or_insert(file).clone())
     }
 
-    /// Runs `unlink`, which removes `path`, the name `lookup` resolved.
-    /// When that is the last name of a regular file with open handles, the
-    /// file is detached first and, once the name is gone, those handles use
-    /// it, so an unlinked open file stays readable and writable.
     fn unlink_measured(
         &self,
         path: &MountPath,
@@ -1241,7 +1084,7 @@ impl DarwinMountContext {
             found
         } else { false };
         self.admit_write(work)?;
-        let result = (|| {
+        let result: Result<Option<DarwinSourceFile>, i32> = (|| {
             let detached = if has_open {
                 Some(work.retained_file(self.source.detach_file_with_meter(path, work.native)
                     .map_err(|error| work.source_error(error))?)?)
@@ -1266,8 +1109,6 @@ impl DarwinMountContext {
         Ok(())
     }
 
-    /// The open handle's file and written marker, or a path-bound file
-    /// without a marker when `handle` is zero.
     fn file_target_measured(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<FileTarget, i32> {
         if handle == 0 {
             let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.source_error(error))?)?;
@@ -1288,9 +1129,6 @@ impl DarwinMountContext {
     fn file_or_open_measured(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<DarwinSourceFile, i32> {
         self.file_target_measured(path, handle, work).map(|target| target.file)
     }
-    /// Runs one mutating callback and records its completion before the
-    /// reply, including a failed attempt that may have applied partially, so
-    /// a later sync covers it and the change attribute advances.
     fn mutate_measured<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
         self.admit_write(work)?;
         let result = mutation().map_err(|error| work.source_error(error));
@@ -1298,9 +1136,6 @@ impl DarwinMountContext {
         result.and_then(|value| { self.admit_write(work)?; Ok(value) })
     }
 
-    /// Mutates one regular file through `handle` (or a path-bound file when
-    /// it is zero) and marks that handle written, so its close publishes
-    /// when the source publishes on close.
     fn mutate_file_measured<T>(
         &self,
         path: &MountPath,
@@ -1316,8 +1151,6 @@ impl DarwinMountContext {
         result.and_then(|value| { self.admit_write(work)?; Ok(value) })
     }
 
-    /// The attributes of `handle`'s file, or of the file at `path` when
-    /// `handle` is zero.
     fn lookup_handle_measured(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<MountLookup, i32> {
         if handle == 0 {
             return self.lookup_measured(path, work);
@@ -1351,7 +1184,6 @@ impl DarwinMountContext {
         self.attributes_from_lookup_measured(path, lookup, stamp, work)
     }
 
-    /// Native attributes of `lookup`, observed at `path` after `stamp`.
     fn attributes_from_lookup_measured(
         &self,
         path: &MountPath,
@@ -1411,17 +1243,10 @@ impl DarwinMountContext {
         })
     }
 
-    /// Whether the node at `path` may carry named attributes. A node's
-    /// metadata records its named attributes; without that record it has
-    /// none, which every source reads the same way, so the probes the macOS
-    /// client makes on each new file (provenance, Finder info) need no
-    /// source call.
     fn may_have_named_attributes_measured(&self, path: &MountPath, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
         Ok(self.lookup_measured(path, work)?.metadata.named_attributes != MetadataField::Unavailable)
     }
 
-    /// Authored source effects use the installed guard's WRITE authority on
-    /// this same original work, not the SDK's namespace-control permission.
     fn admit_write(&self, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         self.writable.then_some(()).ok_or(libc::EROFS)?;
         if let Some(guard) = &self.callback_guard {
@@ -1449,11 +1274,8 @@ impl DarwinMountContext {
         }
     }
 
-    /// Publishes this handle's mutations when the source publishes on close.
     fn flush_on_close_measured(&self, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         if handle == 0 {
-            // Named-attribute opens carry no handle; their writes are
-            // recorded mutations that the next sync covers.
             return Ok(());
         }
         let written = self
@@ -1472,7 +1294,6 @@ impl DarwinMountContext {
         self.admit_write(work)
     }
 
-    /// Publishes every mutation this mount has acknowledged.
     fn sync_measured(&self, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
         self.admit_write(work)?;
         self.ledger.flush_through_measured(self.ledger.latest(), self.source.as_ref(), work)?;
@@ -1482,21 +1303,15 @@ impl DarwinMountContext {
 
 struct FileTarget {
     file: DarwinSourceFile,
-    written: Option<DarwinShared<AtomicU64>>,
+    written: Option<Arc<DarwinShared<AtomicU64>>>,
 }
 
 #[derive(Clone, Copy)]
 enum InitialHandleState {
     Clean,
-    /// Created by this callback: unpublished until a sync covers it.
     Written,
 }
 
-/// What a mount loop has reported: that the kernel accepted its mount, and
-/// that the loop has returned. Mount and teardown block on these reports
-/// rather than polling for their effects, so each wakes the moment the loop
-/// reports; a poll's sleep is stretched far beyond its interval when the
-/// system coalesces a background service's timers.
 #[derive(Default)]
 struct LoopEvents {
     state: Mutex<LoopState>,
@@ -1521,8 +1336,6 @@ impl LoopEvents {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Waits up to `timeout` for a state `done` accepts, and returns the
-    /// state reported by then.
     fn wait_until(&self, timeout: Duration, done: impl Fn(LoopState) -> bool) -> LoopState {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let (state, _) = self
@@ -1533,8 +1346,6 @@ impl LoopEvents {
     }
 }
 
-/// Held by the mount loop thread; reports its return when dropped, so a
-/// waiter also wakes if the thread unwinds.
 struct ExitReport(Arc<LoopEvents>);
 
 impl Drop for ExitReport {
@@ -1543,7 +1354,6 @@ impl Drop for ExitReport {
     }
 }
 
-/// Called by the bridge once the kernel has accepted the mount.
 unsafe extern "C" fn report_mounted(events: *mut c_void) {
     // SAFETY: the loop thread's `ExitReport` keeps these events alive for
     // the whole native loop, which is the only caller.
@@ -1551,9 +1361,6 @@ unsafe extern "C" fn report_mounted(events: *mut c_void) {
     events.report(|state| state.mounted = true);
 }
 
-/// Caller-created argv and native destination buffers outlive the blocking
-/// SDK loop. Their known payload is claimed, not opaque SDK allocator headers,
-/// kernel allocations, or resident thread stacks.
 struct DarwinStartupBuffers {
     destination: Option<CString>,
     arguments: Vec<CString>,
@@ -1661,7 +1468,6 @@ enum MountLoopResult {
 }
 
 /// Allocation-free evidence from actual Darwin teardown controls. Formatting
-/// occurs only when a caller displays the retained cause, never at a denied leaf.
 #[derive(Debug)]
 pub enum DarwinTeardownFailure {
     /// The provider had already exited while its mount still required detach.
@@ -1703,8 +1509,6 @@ impl std::fmt::Display for DarwinTeardownFailure {
 
 impl std::error::Error for DarwinTeardownFailure {}
 
-/// Both the session and mount loop own these pointers. A timed-out loop may
-/// outlive the session, but neither pointer is freed until that loop exits.
 struct DriverSessionResources {
     source_context: usize,
     driver_session: AtomicUsize,
@@ -1737,8 +1541,6 @@ impl DriverSessionResources {
     fn reserve_cleanup_credit(
         original: &crate::NativeMaterializationWork,
     ) -> Result<crate::materializer::NativeWorkReservation, NativeMountError> {
-        // One interrupt, one actual installed-thread join, and one SDK free.
-        // Unused controls remain original credit until physical owner drop.
         original.reserve_work(crate::WorkCounters {
             backend_read_operations: 1, backend_write_operations: 2,
             ..crate::WorkCounters::UNCHARGED
@@ -1778,8 +1580,6 @@ impl DriverSessionResources {
         unsafe { acyclic_fs_darwin_mount_interrupt(pointer as *mut c_void); }
     }
 
-    /// The sole physical loop calls this only after SDK callback transport has
-    /// returned and every accepted detach/process control has actually retired.
     fn free_after_loop_quiescence(&self) {
         let _control = self.native_control.lock().unwrap_or_else(PoisonError::into_inner);
         let pointer = self.driver_session.load(Ordering::Acquire);
@@ -1856,8 +1656,6 @@ impl Drop for DriverSessionResources {
     }
 }
 
-/// A synchronous factory owns the packet outside the controller lock. Any
-/// error or unwind returns its real partial owner to the preborn loop.
 struct DarwinStartupRetirementLoan {
     packet: Option<super::NativeMountRetirement>,
     controller: Arc<DarwinStopController>,
@@ -1939,7 +1737,6 @@ impl DarwinLoopOwner {
         };
         self.events.0.report(|state| state.provider_exited = true);
         // The SDK invocation is physically finished, so its operative source
-        // lease retires before the same source's terminal shutdown is observed.
         drop(self.original.take());
         self.controller.finish_retirement_after_loop(&self.resources);
         status
@@ -1970,7 +1767,6 @@ enum UnmountEvidence {
 
 impl DarwinMountSession {
     /// Ordinary startup establishes global I/O services outside any measured
-    /// request, then delegates to the same per-mount lifecycle engine.
     pub(super) fn start(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
     ) -> Result<Self, DriverStartFailure> {
@@ -1982,9 +1778,6 @@ impl DarwinMountSession {
     }
 
     /// Every known native argument, callback owner and per-mount thread is
-    /// admitted before construction. A partially started native session is
-    /// returned with its actual resources, never forgotten or retried with
-    /// an unbounded replacement invocation.
     pub(super) fn start_with_work(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>, work: &crate::NativeMaterializationWork,
     ) -> Result<Self, DriverStartFailure> {
@@ -2180,7 +1973,7 @@ impl DarwinMountSession {
         let deadline = Instant::now() + MOUNT_VISIBILITY_TIMEOUT;
         let reported = loop {
             native.native_materialization_work().charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED,
+                items_examined: 1, ..crate::WorkCounters::UNCHARGED
             })?;
             let state = self.events.current();
             if state.mounted || state.exited { break state; }
@@ -2213,8 +2006,6 @@ impl DarwinMountSession {
             return Err(std::io::Error::from_raw_os_error(libc::EIO).into());
         }
         // Opening the NFS root can invoke measured source callbacks. Never hold
-        // the work mutex across that real native call; reserve its actual close
-        // first and record the observed open/close prefix on the same carrier.
         let cleanup = {
             let read = crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED };
             materialization.admit(read)?;
@@ -2231,8 +2022,6 @@ impl DarwinMountSession {
             return Err(error.into());
         }
         use std::os::fd::{FromRawFd as _, IntoRawFd as _};
-        // The existing successful privacy-open is also the authentic mounted
-        // root witness. Reuse it instead of opening and probing a second root.
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         let mut host = &materialization;
         let identity = crate::native_host::file_identity_and_length_with_work(&file, &mut host);
@@ -2240,7 +2029,6 @@ impl DarwinMountSession {
             if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
         });
         // The actual close above consumed the descriptor; never schedule a
-        // hidden std::File drop/retry, even when its status was uncertain.
         let _ = std::mem::ManuallyDrop::into_inner(file).into_raw_fd();
         recorded.map_err(NativeMountError::from)?;
         let (identity, _) = identity?;
@@ -2250,12 +2038,6 @@ impl DarwinMountSession {
     }
 
     /// Marks one mount-relative path (leading `/` optional) changed by a
-    /// projection change the source did not record, such as a removed
-    /// route. NFS offers no server-initiated invalidation without
-    /// delegations: this forgets everything the mount cached about the view
-    /// (the change may reach beyond `path`), so the client drops its cached
-    /// names, attributes, and data at its next revalidation, which
-    /// [`Self::revalidate`] waits for and every open makes immediately.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let resources = self.resources()?;
         resources.context().run_control(|native| {
@@ -2284,15 +2066,11 @@ impl DarwinMountSession {
         let cancellation = crate::CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?;
-        self.revalidate_measured(&work)
+        self.revalidate_with_meter(&work.native_mount_work())
     }
 
     /// Source fencing, each callback-generation probe, clock query and real
-    /// expiry wait share the caller's original work and cancellation. A denied
-    /// barrier retains its exact generation; no interrupted wait counts settled.
-    pub(super) fn revalidate_measured(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
-        self.revalidate_with_meter(&work.native_mount_work())
-    }
+
 
     pub(super) fn revalidate_with_meter(
         &self, native: &super::NativeMountMeterWork,
@@ -2314,13 +2092,11 @@ impl DarwinMountSession {
     }
 
     /// Authentic mounted-root observation of this original driver epoch,
-    /// without a fresh path probe or a claim that a transient fd stays open.
     pub(super) fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
         if self.teardown_complete || self.namespace_detach_confirmed() { None } else { self.native_root_identity }
     }
 
     /// Moves the actual recorded callback packet; observing it does not clear
-    /// the sticky failure evidence or revive an incomplete callback context.
     pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
         if let Some(resources) = self.resources.as_deref() {
             let context = resources.context();
@@ -2332,7 +2108,6 @@ impl DarwinMountSession {
     }
 
     /// Adds only real completed future request receipts. Active requests are
-    /// already charged on their original lifecycle carrier and are not copied.
     pub(super) fn completed_callback_work(&self) -> crate::WorkCounters {
         self.resources.as_deref().map_or(self.completed_callback_work, |resources| {
             resources.context().handler_failure.lock().unwrap_or_else(PoisonError::into_inner)
@@ -2355,7 +2130,6 @@ impl DarwinMountSession {
     }
 
     /// The caller contributes observation cancellation only. All physical
-    /// cleanup uses credits and control storage admitted before SDK birth.
     pub(super) fn stop_with_cleanup_wait(
         &mut self, wait: &crate::CancellationToken,
     ) -> Result<(), NativeMountError> {
@@ -2396,9 +2170,6 @@ impl DarwinMountSession {
     ) -> Result<(), NativeMountError> {
         detach_check(meter, cleanup)?;
         // Observe whether the provider loop failed independently before any
-        // teardown action can make it exit. A detach closes the transport,
-        // which ends the loop, so sampling after it races a successful detach
-        // and misclassifies it as a pre-existing failure.
         if self.loop_finished_before_teardown.is_none() {
             self.loop_finished_before_teardown = Some(if self.thread.is_none() {
                 true
@@ -2471,8 +2242,6 @@ impl DarwinMountSession {
     }
 
     /// Last actual mount-table absence evidence, not a new physical probe.
-    /// This may coexist with retained callbacks or a still-running control;
-    /// successful stop requires those owners to have settled separately.
     pub(super) fn namespace_detach_confirmed(&self) -> bool {
         self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner).detached
     }
@@ -2545,8 +2314,6 @@ impl DarwinMountSession {
         Ok(status)
     }
 
-    /// Frees the real SDK session exactly once while its callback context is
-    /// still owned, then moves the final receipts before physical context drop.
     fn release_resources_with_cleanup_wait(
         &mut self, wait: &crate::CancellationToken,
     ) -> Result<(), NativeMountError> {
@@ -2636,7 +2403,6 @@ fn detach_observe<T>(
 }
 
 
-/// Records an admitted SDK/native attempt at its boundary, including failures.
 fn darwin_stop_admit<W: crate::native_host::NativeHostWork>(
     work: &mut W, write: bool,
 ) -> Result<(), NativeMountError> where NativeMountError: From<W::Error> {
@@ -2661,7 +2427,7 @@ fn darwin_stop_io<T, W: crate::native_host::NativeHostWork>(
     work: &mut W, write: bool, call: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, NativeMountError> where NativeMountError: From<W::Error> {
     darwin_stop_admit(work, write)?;
-    call().map_err(NativeMountError::from)
+    call().map_err(NativeMountError::Io)
 }
 
 struct DarwinStopScratch {
@@ -2691,7 +2457,6 @@ fn closed_control_visits(timeout: Duration, interval: Duration) -> Result<u64, N
 
 fn stop_mount_probe_maximum() -> Result<u64, NativeMountError> {
     // Initial visibility, after direct detach, after diskutil, and the actual
-    // bounded visibility polling protocol, including its terminal probe.
     stop_protocol_visits(DISKUTIL_VISIBILITY_TIMEOUT)?
         .checked_add(3).ok_or_else(|| crate::WorkError::Overflow.into())
 }
@@ -2910,8 +2675,6 @@ fn normalize_mount_probe<W: crate::native_host::NativeHostWork>(
     };
     match (result, close) { (Ok(end), Ok(())) => Ok(end), (Err(error), _) | (_, Err(error)) => Err(error) }
 }
-/// The mount table is caller-owned, not getmntinfo's hidden reallocating array.
-/// Ordinary full tables retry; a prepaid full table fails closed without growth.
 fn is_mounted_measured<W: crate::native_host::NativeHostWork>(
     destination: &Path, work: &mut W, scratch: Option<&mut DarwinStopScratch>,
     cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
@@ -2960,7 +2723,6 @@ fn is_mounted_measured<W: crate::native_host::NativeHostWork>(
                     return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::MountTableCapacityExceeded));
                 }
                 // The ordinary producer releases this exact backing before
-                // its next independently admitted count/fill attempt.
                 mounts.clear(work)?;
                 continue;
             }
@@ -3059,7 +2821,6 @@ impl DarwinStopController {
             Err(cause) => { state.failure = Some(cause); }
         }
         // The same existing driver thread retains every pending owner. This
-        // passive control wait retries only after a real caller request.
         let mut pending_wait = state.failure_wait_credit.take().expect("the loop's birth-paid retained-owner wait");
         pending_wait.started_drop_io(crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3097,14 +2858,11 @@ struct UnmountState {
 }
 
 /// One original work loan and its original physical buffer-retirement proof.
-/// No second ledger exists; cancellation-free release remains valid after seal.
 pub(crate) struct DetachReadMeter {
     work: Mutex<Option<super::NativeMountMeterWork>>,
     custody: crate::demand::NativeMountAllocationCustody,
 }
 
-/// Actual direct task plus its existing shared carrier. Field order drops the
-/// native task and carrier Arc before the last outside allocation-custody alias.
 struct DirectUnmountTask {
     task: Option<acyclic_native_runtime::BlockingIoTask<std::io::Result<c_int>>>,
     submission_failure: Option<std::io::Error>,
@@ -3154,8 +2912,6 @@ impl DetachReadMeter {
     ) -> Result<T, NativeMountError> {
         let original = self.work.lock().unwrap_or_else(PoisonError::into_inner)
             .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-        // The loan-state and original-work mutexes are both free while native
-        // I/O runs or invokes a source callback on this same original Arc.
         let materialization = original.native_materialization_work();
         call(&mut &materialization)
     }
@@ -3167,9 +2923,6 @@ impl DetachReadMeter {
 }
 
 
-/// Borrows the complete original phase while actual controls use it.
-/// The original registration owns its real Weak; accepted physical tasks keep
-/// full resource policy and custody beyond the caller's observation.
 fn with_detach_work<T>(
     work: &crate::NativeMaterializationWork, call: impl FnOnce(&Arc<DetachReadMeter>) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountError> {
@@ -3199,7 +2952,7 @@ fn new_detach_meter(
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
     custody.attach_known_control_with_meter(super::NativeMountControlAllocation::DarwinDetachMeter(
-        Arc::downgrade(&meter)), native)?;
+        Arc::downgrade(&(Arc::clone(&meter) as Arc<dyn std::any::Any + Send + Sync>))), native)?;
     Ok(meter)
 }
 
@@ -3293,8 +3046,6 @@ fn poll_direct(
 }
 
 // A live driver reuses its exact constructor-owned terminated destination.
-// Recovery retains its own admitted path. Both physical owners precede the
-// original reserved operation, including worker panic and observer abandonment.
 struct AcceptedDirectUnmount {
     path: DirectUnmountPath,
     operation: acyclic_native_runtime::OwnedNativeOperationReservation,
@@ -3343,9 +3094,6 @@ fn prepare_direct_unmount(
     })
 }
 
-/// Offloads the same actual libc detach through the existing measured service.
-/// The bound stops observation, not the syscall: accepted work and its path
-/// stay owned, and a later stop must retire this task before releasing a fence.
 fn bounded_direct_unmount(
     destination: &Path, state: &mut UnmountState, meter: &Arc<DetachReadMeter>,
     resources: Option<&Arc<DriverSessionResources>>,
@@ -3430,16 +3178,10 @@ impl PreparedDiskutilProcess {
         let pointer_bytes = pointer_slots.checked_mul(std::mem::size_of::<*mut libc::c_char>())
             .ok_or(crate::WorkError::Overflow)?;
         Ok(crate::WorkCounters {
-            // Each leader visit has waitid and an unfinished sleep. An EPERM
-            // membership visit has proc_listpids, sole-leader waitid and sleep.
-            // The final physical reap is independently admitted.
             backend_read_operations: termination.checked_mul(2).and_then(|n|
                 termination.checked_mul(3).and_then(|group| n.checked_add(group)))
                 .and_then(|n| n.checked_add(observations)).and_then(|n| n.checked_add(1))
                 .ok_or(crate::WorkError::Overflow)?,
-            // Two initializations, two setters, three /dev/null actions and
-            // both mandatory configuration destructions; SIGKILL is separate.
-            // EINTR retries share the finite original controller allowance.
             backend_write_operations: observations.checked_add(2 + 2 + [0, 1, 2].len() as u64)
                 .and_then(|n| n.checked_add(2)).and_then(|n| n.checked_add(1))
                 .ok_or(crate::WorkError::Overflow)?,
@@ -3536,8 +3278,6 @@ impl DiskutilProcess {
     }
 }
 
-/// Keeps the original direct-then-diskutil ordering, with each retry and probe
-/// admitted where it really occurs. Failed control retains the task or PID.
 fn bounded_unmount_measured(
     destination: &Path, state: &mut UnmountState, meter: &Arc<DetachReadMeter>,
     resources: Option<&Arc<DriverSessionResources>>,
@@ -3547,7 +3287,6 @@ fn bounded_unmount_measured(
     let mounted = meter.with_host_work(|work| is_mounted_measured(destination, work, scratch.as_deref_mut(), cleanup))?;
     state.detached = !mounted;
     // An aborted start never invoked the SDK's namespace producer. Its
-    // original spelling cannot authorize detaching somebody else's mount.
     if mounted && state.start_aborted {
         return Err(NativeMountError::DestinationBusy);
     }
@@ -3615,8 +3354,6 @@ fn bounded_unmount_measured(
 }
 
 /// Native recovery controls without a provider loop. The root recovery owner
-/// must keep this value together with its original destination fence, and take
-/// both on retry before admitting another owner of that destination.
 #[derive(Default)]
 pub(super) struct DarwinRecoveryControl(UnmountState);
 
@@ -3628,10 +3365,6 @@ impl DarwinRecoveryControl {
     pub(super) fn namespace_detach_confirmed(&self) -> bool { self.0.detached }
 
     /// Drains accepted controls without probing or changing the namespace.
-    /// No detach loan, task, process or replacement budget is born here.
-    /// Admission or timeout retains the real pending owner. Completed native
-    /// failure is returned after drain, without claiming namespace restoration;
-    /// the root owner retains its first cause independently of terminal custody.
     pub(super) fn retire_controls_with_work(
         &mut self, original: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
@@ -3643,8 +3376,6 @@ impl DarwinRecoveryControl {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 })?;
                 let task = self.0.direct.as_mut().expect("accepted direct task retained");
-                // poll_direct's submission error is a terminal Future error,
-                // not a live syscall. Do not repoll that terminated Future.
                 let completed = if let Some(error) = task.submission_failure.take() {
                     Some(Err(error))
                 } else {
@@ -3657,7 +3388,6 @@ impl DarwinRecoveryControl {
                         Ok(std::task::Poll::Ready(result)) => Some(result),
                         Err(panic) => {
                             // BlockingIoTask publishes panic only after its
-                            // accepted payload has physically unwound.
                             failure = Some(NativeMountError::DriverPanicked {
                                 operation: "Darwin administrative direct detach",
                                 panic: Mutex::new(panic),
@@ -3676,7 +3406,6 @@ impl DarwinRecoveryControl {
                         ));
                     }
                     // The actual task/carrier drops before its original
-                    // custody alias. Completion alone is no absence proof.
                     drop(task);
                     break;
                 }
@@ -3699,7 +3428,6 @@ impl DarwinRecoveryControl {
     }
 
     /// Runs the same admitted teardown leaves as session stop and retains
-    /// accepted control identity on every failed or cancelled attempt.
     pub(super) fn recover_measured(
         &mut self, destination: &Path, work: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
@@ -3726,9 +3454,6 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     Ok(unsafe { &*(address as *const DarwinMountContext) })
 }
 
-/// The existing memo tables use exact-capacity backing, not opaque hash
-/// buckets. Each real growth owns its allocating invocation's marker; moving
-/// entries preserves the original owners of paths, pages, and source handles.
 struct DarwinMap<K, V> {
     storage: DarwinOwned<Vec<(K, V)>>,
 }
@@ -3823,8 +3548,6 @@ impl<K: Ord, V> DarwinMap<K, V> {
     }
 }
 
-/// Scratch still owned by this request; source bytes retain their original
-/// allocation claim inside the canonical carrier through every alias.
 struct DarwinTransient<T> {
     value: Option<T>,
     meter: Arc<NativeDemandReadMeter>,
@@ -3887,28 +3610,18 @@ impl DarwinTransient<OwnedBytes> {
     }
 }
 
-/// The existing SDK Arc owns its data before its full original allocation guard.
-struct DarwinSharedValue<T> {
+struct DarwinShared<T> {
     value: T,
     _allocation: crate::NativeAllocation,
 }
 
-struct DarwinShared<T> {
-    value: Arc<DarwinSharedValue<T>>,
-}
-
-impl<T> Clone for DarwinShared<T> {
-    fn clone(&self) -> Self { Self { value: Arc::clone(&self.value) } }
-}
-
 impl<T> std::ops::Deref for DarwinShared<T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.value.value }
+    fn deref(&self) -> &T { &self.value }
 }
 
-/// Source-created Arc payloads retain their source's physical owner.
 struct DarwinSourceFile {
-    value: Option<Arc<dyn MountOpenFile>>,
+    value: Arc<dyn MountOpenFile>,
     custody: Option<super::NativeMountAllocationCustody>,
 }
 
@@ -3920,19 +3633,12 @@ impl Clone for DarwinSourceFile {
 
 impl std::ops::Deref for DarwinSourceFile {
     type Target = dyn MountOpenFile;
-    fn deref(&self) -> &Self::Target { self.value.as_deref().expect("retained source Arc") }
-}
-
-impl Drop for DarwinSourceFile {
-    fn drop(&mut self) {
-        drop(self.value.take());
-        drop(self.custody.take());
-    }
+    fn deref(&self) -> &Self::Target { self.value.as_ref() }
 }
 
 impl DarwinOwned<Arc<dyn MountOpenFile>> {
     fn into_source_file(mut self) -> DarwinSourceFile {
-        DarwinSourceFile { value: self.value.take(), custody: self.custody.take() }
+        DarwinSourceFile { value: self.value.take().expect("retained source Arc"), custody: self.custody.take() }
     }
 }
 
@@ -4084,11 +3790,11 @@ impl DarwinCallbackWork<'_> {
         Ok(self.admitted(file.0, file.1)?.into_source_file())
     }
 
-    fn shared<T>(&self, build: impl FnOnce() -> T) -> Result<DarwinShared<T>, i32> {
+    fn shared<T>(&self, build: impl FnOnce() -> T) -> Result<Arc<DarwinShared<T>>, i32> {
         let allocation = self.native.native_materialization_work()
-            .claim(std::mem::size_of::<DarwinSharedValue<T>>() as u64)
+            .claim(std::mem::size_of::<DarwinShared<T>>() as u64)
             .map_err(|error| self.native_error(error.into()))?;
-        Ok(DarwinShared { value: Arc::new(DarwinSharedValue { value: build(), _allocation: allocation }) })
+        Ok(Arc::new(DarwinShared { value: build(), _allocation: allocation }))
     }
 
     fn native_name(&self, name: &[u8]) -> Result<DarwinOwned<CString>, i32> {
@@ -4228,8 +3934,6 @@ fn darwin_handler_is_fatal(error: &NativeMountError) -> bool {
 }
 
 impl DarwinMountContext {
-    /// Explicit controls use the installed handler's original grants, or the
-    /// currently active original lifecycle meter, never an unbounded fallback.
     fn run_control(
         &self, operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<(), NativeMountError>,
     ) -> Result<(), NativeMountError> {
@@ -4271,8 +3975,6 @@ impl DarwinMountContext {
         let Err(failure) = result else { return Ok(()); };
         if !darwin_handler_is_fatal(&failure.cause) { return Err(failure.cause); }
         self.handler_failed.store(true, Ordering::Release);
-        // Work/cancellation causes are inline and can be copied without a new
-        // error envelope. The original SDK panic payload has only one owner.
         let returned = match &failure.cause {
             NativeMountError::Work(error) => Some(NativeMountError::Work(error.clone())),
             NativeMountError::Demand(crate::DemandError::Cancelled) =>
@@ -4284,7 +3986,7 @@ impl DarwinMountContext {
             NativeMountError::ControlPending => Some(NativeMountError::ControlPending),
             _ => None,
         };
-        if active.is_some() {
+        if matches!(active, Ok(Some(_))) {
             let mut retained = self.startup_failure.lock().unwrap_or_else(PoisonError::into_inner);
             if retained.is_none() { *retained = Some(failure); }
         } else {
@@ -4329,8 +4031,6 @@ impl DarwinCallbackWork<'_> {
         self.native.native_materialization_work().admit(delta).map_err(|error| self.native_error(error.into()))
     }
 
-    /// Only local memory copies enter this closure; full original admission is
-    /// retained without holding a work mutex across SDK/source/native waits.
     fn copying<T>(&self, delta: crate::WorkCounters, copy: impl FnOnce() -> T) -> Result<T, i32> {
         let work = self.native.native_materialization_work();
         work.admit(delta).map_err(|error| self.native_error(error.into()))?;
@@ -4437,8 +4137,6 @@ impl DarwinMountContext {
         }
     }
 
-    /// Admits authored callbacks before their path/payload/provider frames and
-    /// rechecks after the actual effect before any successful SDK reply.
     fn run_write_request<T>(
         &self, operation: impl FnOnce(&DarwinCallbackWork<'_>) -> Result<T, i32>,
     ) -> Result<T, i32> {
@@ -4448,78 +4146,6 @@ impl DarwinMountContext {
             self.admit_write(work)?;
             Ok(value)
         })
-    }
-
-    fn lookup(&self, path: &MountPath) -> Result<MountLookup, i32> {
-        self.run_request(|work| self.lookup_measured(path, work))
-    }
-
-    fn remember_current_lookup(&self, path: &MountPath, lookup: Option<MountLookup>) -> Result<(), i32> {
-        self.run_request(|work| self.remember_current_lookup_measured(path, lookup, work))
-    }
-
-    fn remember_lookup(&self, path: &MountPath, lookup: Option<MountLookup>, stamp: CacheStamp) -> Result<(), i32> {
-        self.run_request(|work| self.remember_lookup_measured(path, lookup, stamp, work))
-    }
-
-    fn open(&self, path: &MountPath, state: InitialHandleState) -> Result<u64, i32> {
-        self.run_request(|work| self.open_measured(path, state, work))
-    }
-
-    fn bind(&self, path: &MountPath, handle: u64) -> Result<DarwinSourceFile, i32> {
-        self.run_request(|work| self.bind_measured(path, handle, work))
-    }
-
-    fn unlink(&self, path: &MountPath, lookup: MountLookup, unlink: impl FnOnce() -> Result<(), MountSourceError>) -> Result<(), i32> {
-        self.run_write_request(|work| self.unlink_measured(path, lookup, unlink, work))
-    }
-
-    fn file_target(&self, path: &MountPath, handle: u64) -> Result<FileTarget, i32> {
-        self.run_request(|work| self.file_target_measured(path, handle, work))
-    }
-
-    fn file_or_open(&self, path: &MountPath, handle: u64) -> Result<DarwinSourceFile, i32> {
-        self.run_request(|work| self.file_or_open_measured(path, handle, work))
-    }
-
-    fn lookup_handle(&self, path: &MountPath, handle: u64) -> Result<MountLookup, i32> {
-        self.run_request(|work| self.lookup_handle_measured(path, handle, work))
-    }
-
-    fn attributes(&self, path: &MountPath, handle: u64) -> Result<NativeStat, i32> {
-        self.run_request(|work| self.attributes_measured(path, handle, work))
-    }
-
-    fn attributes_from_lookup(&self, path: &MountPath, lookup: MountLookup, stamp: Option<CacheStamp>) -> Result<NativeStat, i32> {
-        self.run_request(|work| self.attributes_from_lookup_measured(path, lookup, stamp, work))
-    }
-
-    fn may_have_named_attributes(&self, path: &MountPath) -> Result<bool, i32> {
-        self.run_request(|work| self.may_have_named_attributes_measured(path, work))
-    }
-
-    fn mutate_metadata(&self, path: &MountPath, handle: u64, mutate: impl FnOnce(&mut FileMetadata) -> Result<(), i32>) -> Result<(), i32> {
-        self.run_write_request(|work| self.mutate_metadata_measured(path, handle, mutate, work))
-    }
-
-    fn flush_on_close(&self, handle: u64) -> Result<(), i32> {
-        self.run_write_request(|work| self.flush_on_close_measured(handle, work))
-    }
-
-    fn sync(&self) -> Result<(), i32> {
-        self.run_write_request(|work| self.sync_measured(work))
-    }
-
-    fn inode(&self, file_id: FileId) -> Result<u64, i32> {
-        self.run_request(|work| self.inode_measured(file_id, work))
-    }
-
-    fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>) -> Result<T, i32> {
-        self.run_write_request(|work| self.mutate_measured(mutation, work))
-    }
-
-    fn mutate_file<T>(&self, path: &MountPath, handle: u64, mutation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>) -> Result<T, i32> {
-        self.run_write_request(|work| self.mutate_file_measured(path, handle, mutation, work))
     }
 
     pub(super) fn lookup_with_meter(
@@ -4542,8 +4168,6 @@ impl DarwinMountContext {
     }
 }
 
-/// and it completes before any barrier that began after it (see
-/// [`DarwinMountContext::revalidate`]). A panic fails it with `EIO`.
 fn callback<T>(
     address: usize,
     span: &tracing::span::EnteredSpan,
@@ -4615,7 +4239,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
 ) -> c_int {
     let _span = callback_span!(TRACE, getattr, fh = handle);
     ffi_status(address, &_span, |context, work| {
-        let attributes = context.attributes_measured(&mount_path_measured(path, work)?, handle, work)?;
+        let attributes = context.attributes_measured(&*mount_path_measured(path, work)?, handle, work)?;
         // SAFETY: the bridge passes a valid, writable `NativeStat` for the callback.
         work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<NativeStat>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { result.write(attributes) })?;
         Ok(0)
@@ -4631,7 +4255,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
 ) -> c_int {
     let _span = callback_span!(TRACE, open);
     callback_with_write(address, &_span, flags & libc::O_ACCMODE != libc::O_RDONLY, |context, work| {
-        let opened = context.open_measured(&mount_path_measured(path, work)?, InitialHandleState::Clean, work)?;
+        let opened = context.open_measured(&*mount_path_measured(path, work)?, InitialHandleState::Clean, work)?;
         // SAFETY: the bridge passes a valid, writable handle slot for the callback.
         work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
         Ok(0)
@@ -4697,7 +4321,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     ffi_status(address, &_span, |context, work| {
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
-        let chunk = context.file_or_open_measured(&mount_path_measured(path, work)?, handle, work)?
+        let chunk = context.file_or_open_measured(&*mount_path_measured(path, work)?, handle, work)?
             .read_up_to_with_meter(offset, requested_length, work.native)
             .map_err(|error| work.source_error(error))?;
         let bytes = work.source_chunk(chunk)?;
@@ -4729,7 +4353,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
         // the callback; `bounded_length` capped that length.
         let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) };
         let copied = work.copy_bytes(bytes)?;
-        context.mutate_file_measured(&mount_path_measured(path, work)?, handle, |file| {
+        context.mutate_file_measured(&*mount_path_measured(path, work)?, handle, |file| {
             file.write_range_with_meter(offset, copied.into_chunk(), work.native)
         }, work)?;
         c_int::try_from(length).map_err(|_| libc::EOVERFLOW)
@@ -4746,13 +4370,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     let _span = callback_span!(DEBUG, truncate, fh = handle, len = length);
     ffi_write_status(address, &_span, |context, work| {
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
-        context.mutate_file_measured(&mount_path_measured(path, work)?, handle, |file| file.resize_with_meter(length, work.native), work)?;
+        context.mutate_file_measured(&*mount_path_measured(path, work)?, handle, |file| file.resize_with_meter(length, work.native), work)?;
         Ok(0)
     })
 }
 
-/// NFS CLOSE: publishes only what this handle wrote, and only for sources
-/// whose close is a publication boundary.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) -> c_int {
     let _span = callback_span!(DEBUG, flush, fh = handle);
@@ -4762,9 +4384,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) 
     })
 }
 
-/// NFS COMMIT and stable WRITE. The client sends these for `fsync` and
-/// for its close-to-open flush alike, so each keeps the `fsync` guarantee:
-/// every acknowledged mutation is published once this returns.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
     let _span = callback_span!(DEBUG, fsync);
@@ -4774,9 +4393,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
     })
 }
 
-/// Whether every acknowledged write is already as durable as `fsync` would
-/// make it, because the source's flush publishes nothing: WRITE replies are
-/// then stable and the client never needs to COMMIT.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
     let _span = callback_span!(TRACE, durable_writes);
@@ -4920,8 +4536,6 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     })
 }
 
-/// One listed entry's native name and attributes. The page was read after
-/// the directory's stamp was sampled, which therefore labels the entry.
 fn directory_entry_measured(
     context: &DarwinMountContext,
     directory: &DirectoryHandle,
@@ -4944,8 +4558,6 @@ fn finish_directory_page_measured(
     directory: &DirectoryHandle,
     checkpoint: bool, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
     // A mutation can happen after the last page read, while the native filler
-    // copies entries into its buffer. Returning ESTALE discards that buffer
-    // rather than exposing a listing assembled from different view epochs.
     if directory.emitted > 2 && directory.can_reuse_pages() && !directory.is_current_measured(context, work)? {
         return Err(libc::ESTALE);
     }
@@ -5195,7 +4807,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         if length == 0 {
             return Err(libc::ERANGE);
         }
-        let chunk = context.source.read_link_with_meter(&mount_path_measured(path, work)?, work.native)
+        let chunk = context.source.read_link_with_meter(&*mount_path_measured(path, work)?, work.native)
             .map_err(|error| work.source_error(error))?;
         let target = work.source_chunk(chunk)?;
         if target.len() >= length {
@@ -5257,7 +4869,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
 ) -> c_int {
     let _span = callback_span!(DEBUG, chmod, fh = handle);
     ffi_write_status(address, &_span, |context, work| {
-        context.mutate_metadata_measured(&mount_path_measured(path, work)?, handle, |metadata| {
+        context.mutate_metadata_measured(&*mount_path_measured(path, work)?, handle, |metadata| {
             let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
             metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
             Ok(())
@@ -5276,7 +4888,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
 ) -> c_int {
     let _span = callback_span!(DEBUG, chown, fh = handle);
     ffi_write_status(address, &_span, |context, work| {
-        context.mutate_metadata_measured(&mount_path_measured(path, work)?, handle, |metadata| {
+        context.mutate_metadata_measured(&*mount_path_measured(path, work)?, handle, |metadata| {
             if uid != u32::MAX {
                 metadata.posix_uid = MetadataField::Value(uid);
             }
@@ -5301,7 +4913,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
         // SAFETY: the bridge passes null (rejected here) or a `NativeTimes` valid for
         // the callback.
         let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
-        context.mutate_metadata_measured(&mount_path_measured(path, work)?, handle, |metadata| {
+        context.mutate_metadata_measured(&*mount_path_measured(path, work)?, handle, |metadata| {
             update_time(
                 &mut metadata.accessed_ns,
                 times.accessed_seconds,
@@ -5458,7 +5070,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
             libc::SEEK_HOLE => MountSeekTarget::Hole,
             _ => return Err(libc::EINVAL),
         };
-        let result = context.file_or_open_measured(&mount_path_measured(path, work)?, handle, work)?
+        let result = context.file_or_open_measured(&*mount_path_measured(path, work)?, handle, work)?
             .seek_with_meter(offset, target, work.native)
             .map_err(|error| work.source_error(error))?
             .ok_or(libc::ENXIO)?;
@@ -5502,7 +5114,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
         if mode & !permitted_flags != 0 {
             return Err(libc::EOPNOTSUPP);
         }
-        context.mutate_file_measured(&mount_path_measured(path, work)?, handle, |file| {
+        context.mutate_file_measured(&*mount_path_measured(path, work)?, handle, |file| {
             file.allocate_range_with_meter(offset, length, operation, work.native)
         }, work)?;
         Ok(0)
@@ -5529,9 +5141,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
         let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
         let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
-        let source = context.file_or_open_measured(&mount_path_measured(source_path, work)?, source_handle, work)?;
+        let source = context.file_or_open_measured(&*mount_path_measured(source_path, work)?, source_handle, work)?;
         let length = context.mutate_file_measured(
-            &mount_path_measured(destination_path, work)?,
+            &*mount_path_measured(destination_path, work)?,
             destination_handle,
             |destination| {
                 let source_lookup = source.lookup_with_meter(work.native)?;
@@ -5678,7 +5290,7 @@ mod tests {
     #[test]
     fn filtered_callback_error_does_not_overwrite_parent_errno() {
         crate::obs::assert_filtered_callback_isolation(|span| {
-            let status = super::ffi_status(0, span, |_| Ok(0));
+            let status = super::ffi_status(0, span, |_, _| Ok(0));
             assert_eq!(status, -libc::ESTALE);
             -status
         });
@@ -5701,50 +5313,6 @@ mod tests {
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
     >;
-
-    #[test]
-    fn native_startup_buffers_exact_capacity_denial_and_cancellation() -> TestResult {
-        let cancellation = crate::CancellationToken::new();
-        let path = Path::new("/native-buffer-test");
-        let full = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let buffers = DarwinStartupBuffers::new(path, false, true, &full)?;
-        assert_eq!(buffers.arguments.len(), 7);
-        assert_eq!(buffers.pointers.len(), 7);
-        assert!(buffers.arguments.iter().zip(&buffers.pointers)
-            .all(|(argument, pointer)| argument.as_ptr() as usize == *pointer));
-        let operations = full.receipt().allocation_operations;
-        assert!(operations >= 10, "destination, argv and pointer buffers own actual allocation guards");
-        assert_eq!(full.receipt().backend_read_operations, 0);
-        assert_eq!(full.receipt().backend_write_operations, 0);
-        let ceiling = full.receipt().peak_allocation_bytes;
-        drop(buffers);
-        full.admit(crate::WorkCounters::UNCHARGED)?;
-        assert_eq!(full.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        let exact = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            allocation_operations: operations, peak_allocation_bytes: ceiling, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        drop(DarwinStartupBuffers::new(path, false, true, &exact)?);
-        exact.admit(crate::WorkCounters::UNCHARGED)?;
-        assert_eq!(exact.receipt().allocation_operations, operations);
-        assert_eq!(exact.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            allocation_operations: operations - 1, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        assert!(matches!(DarwinStartupBuffers::new(path, false, true, &denied),
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        denied.admit(crate::WorkCounters::UNCHARGED)?;
-        assert_eq!(denied.receipt().allocation_operations, operations - 1);
-        assert_eq!(denied.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        let cancelled = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let cancelled_prefix = cancelled.receipt();
-        cancellation.cancel();
-        assert!(matches!(DarwinStartupBuffers::new(path, false, true, &cancelled),
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled))));
-        assert_eq!(cancelled.receipt(), cancelled_prefix);
-        Ok(())
-    }
 
     #[test]
     fn interrupted_callback_barrier_retains_slot_and_retry_covers_new_callbacks() -> TestResult {
@@ -5908,44 +5476,6 @@ mod tests {
         original.admit(crate::WorkCounters::UNCHARGED)?;
         assert!(original.live_allocation_bytes() >= std::mem::size_of::<DetachReadMeter>() as u64,
             "the real original known-control Weak still retains its Arc backing");
-        Ok(())
-    }
-
-    #[test]
-    fn mount_table_probe_denies_each_real_leaf_and_releases_native_buffers() -> TestResult {
-        let temporary = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let mut prefix = DemandWork::new(crate::WorkBudget {
-            backend_read_operations: 4, backend_write_operations: 1,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        assert!(matches!(is_mounted_measured(temporary.path(), &mut prefix, None, None), Err(NativeMountError::Work(_))));
-        assert_eq!(prefix.work.backend_read_operations, 4, "count call occurred, denied fill did not");
-        assert_eq!(prefix.work.backend_write_operations, 1, "the owned parent descriptor really closed");
-        assert_eq!(prefix.work.allocation_operations, 3, "CString, F_GETPATH buffer and mount array");
-        assert_eq!(prefix.live_allocation_bytes(), 0);
-        let parent_bytes = temporary.path().parent().ok_or("parent absent")?.as_os_str().len() as u64 + 1;
-        let mut memory = DemandWork::new(crate::WorkBudget {
-            peak_allocation_bytes: parent_bytes + libc::PATH_MAX as u64 - 1,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        assert!(matches!(is_mounted_measured(temporary.path(), &mut memory, None, None), Err(NativeMountError::Work(_))));
-        assert_eq!(memory.work.backend_read_operations, 2, "F_GETPATH waits for actual buffer admission");
-        assert_eq!(memory.work.backend_write_operations, 1);
-        assert_eq!(memory.work.allocation_operations, 1);
-        assert_eq!(memory.live_allocation_bytes(), 0);
-        let mut exact = DemandWork::new(crate::WorkBudget {
-            backend_read_operations: 5, backend_write_operations: 1,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        assert!(!is_mounted_measured(temporary.path(), &mut exact, None, None)?);
-        assert_eq!(exact.work.backend_read_operations, 5);
-        assert_eq!(exact.work.backend_write_operations, 1);
-        assert_eq!(exact.live_allocation_bytes(), 0);
-        cancellation.cancel();
-        let mut cancelled = DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-        assert!(is_mounted_measured(temporary.path(), &mut cancelled, None, None).is_err());
-        assert_eq!(cancelled.work, crate::WorkCounters::UNCHARGED);
         Ok(())
     }
 
@@ -6122,109 +5652,6 @@ mod tests {
     }
 
     #[test]
-    fn direct_native_detach_uses_exact_task_carriers_and_original_cancellation() -> TestResult {
-        // Inline admission makes queue contention irrelevant without replacing
-        // either the measured task machinery or the actual unmount syscall.
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        let temporary = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let mut state = UnmountState::default();
-        let baseline = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let baseline_error = with_detach_work(&baseline, |meter|
-            bounded_direct_unmount(temporary.path(), &mut state, meter, None, None, None))
-            .expect_err("a real ordinary directory is not a mount to detach");
-        assert!(matches!(baseline_error, NativeMountError::Io(_)));
-        assert_eq!(baseline.receipt().backend_write_operations, 1);
-        assert_eq!(baseline.receipt().backend_read_operations, 0);
-        assert_eq!(baseline.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
-                + (std::mem::size_of::<DetachReadMeter>() + std::mem::size_of::<AtomicU64>()) as u64);
-        assert!(state.direct.is_none());
-        let exact = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 1, backend_read_operations: 0,
-            allocation_operations: baseline.receipt().allocation_operations,
-            peak_allocation_bytes: baseline.receipt().peak_allocation_bytes,
-            items_examined: baseline.receipt().items_examined,
-            bytes_copied: baseline.receipt().bytes_copied,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let exact_error = with_detach_work(&exact, |meter|
-            bounded_direct_unmount(temporary.path(), &mut state, meter, None, None, None))
-            .expect_err("the actual syscall must preserve its non-mount error");
-        assert!(matches!(exact_error, NativeMountError::Io(_)));
-        assert_eq!(exact.receipt(), baseline.receipt());
-        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        assert!(matches!(with_detach_work(&denied, |meter|
-            bounded_direct_unmount(temporary.path(), &mut state, meter, None, None, None)),
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(denied.receipt().backend_write_operations, 0);
-        assert_eq!(denied.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
-                + (std::mem::size_of::<DetachReadMeter>() + std::mem::size_of::<AtomicU64>()) as u64);
-        let cancelled = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let cancelled_prefix = cancelled.receipt();
-        cancellation.cancel();
-        assert!(with_detach_work(&cancelled, |meter|
-            bounded_direct_unmount(temporary.path(), &mut state, meter, None, None, None)).is_err());
-        assert_eq!(cancelled.receipt(), cancelled_prefix);
-        Ok(())
-    }
-
-    #[test]
-    fn actual_direct_detach_reuses_constructor_destination_without_copying_another_path() -> TestResult {
-        acyclic_native_runtime::initialize_native_io_services()?;
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        let temporary = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 4, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let native = original.native_mount_work();
-        let startup = DarwinStartupBuffers::new_with_meter(temporary.path(), false, false, &native)?;
-        let cleanup_credit = DriverSessionResources::reserve_cleanup_credit(&original)?;
-        let mut observation = original.reserve_work(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        })?;
-        let allocation = original.claim(std::mem::size_of::<DriverSessionResources>() as u64)?;
-        let resources = Arc::new(DriverSessionResources {
-            source_context: 0, driver_session: AtomicUsize::new(0),
-            cleanup_credit: Mutex::new(cleanup_credit),
-            native_control: Mutex::new(()),
-            sdk_allocation: Mutex::new(None),
-            interrupted: std::sync::atomic::AtomicBool::new(false), startup: Some(startup),
-            context_custody: None, _allocation: Some(allocation),
-        });
-        let mut state = UnmountState::default();
-        state.prepared_direct = Some(prepare_direct_unmount(&resources, &native)?);
-        let (driver_session, sdk_allocation) = DriverSessionResources::new_sdk_session_with_work(&original)?;
-        *resources.sdk_allocation.lock().unwrap_or_else(PoisonError::into_inner) = Some(sdk_allocation);
-        resources.driver_session.store(driver_session, Ordering::Release);
-        let original_prefix = original.receipt();
-        cancellation.cancel();
-        let wait = crate::CancellationToken::new();
-        let cleanup = observation.cleanup_loan(&wait);
-        let mut task = state.prepared_direct.take().ok_or("missing constructor-prepared task")?;
-        let meter = Arc::clone(&task._meter);
-        assert!(matches!(poll_direct(&mut task, &meter, Some(&cleanup))?,
-            std::task::Poll::Ready(Ok(Err(_)))), "the actual directory is not a mount");
-        drop(task);
-        drop(meter);
-        let mut expected = original_prefix;
-        expected.backend_write_operations += 1;
-        expected.items_examined += 1;
-        assert_eq!(original.receipt(), expected, "only the actual original prepaid direct attempt is added");
-        assert!(original.cancellation().is_cancelled(), "execution cannot replace source cancellation");
-        assert_eq!(Arc::strong_count(&resources), 1, "the settled task retired its actual driver alias");
-        drop(resources);
-        assert_eq!(original.receipt().backend_write_operations, 3);
-        Ok(())
-    }
-
-    #[test]
     #[ignore = "requires a live macOS NFS mount"]
     fn macos_wait_only_stop_keeps_real_driver_and_fence_after_denied_wait() -> TestResult {
         acyclic_native_runtime::initialize_native_io_services()?;
@@ -6245,7 +5672,6 @@ mod tests {
         Ok(())
     }
 
-    /// A writable context over a fresh POSIX checkout.
     fn checkout_context(
         publication: MountPublication,
     ) -> Result<(Arc<MemorySource>, DarwinMountContext), Box<dyn std::error::Error>> {
@@ -6306,7 +5732,7 @@ mod tests {
         })?;
         let shared = Arc::new(super::super::SharedCheckout::new(checkout));
         let ordinary = MemorySource::new(Arc::clone(&shared), config)?;
-        let root_id = ordinary.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
+        let root_id = ordinary.run_request(|work| ordinary.lookup_measured(&MountPath::root(), work))?.ok_or("root absent")?.node.file_id;
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
             items_examined: 0, ..crate::WorkBudget::UNBOUNDED
@@ -6340,8 +5766,6 @@ mod tests {
         std::io::Error::from_raw_os_error(error)
     }
 
-    /// Complete finite policies reach the installed raw callbacks, not a
-    /// substitute source operation or a fabricated failure producer.
     fn callback_policy() -> crate::WorkBudget {
         crate::WorkBudget {
             authority_records_read: 1_000_000, authority_records_appended: 1_000_000,
@@ -6364,8 +5788,6 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         let root_id = source.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
         let metadata = std::fs::metadata(".")?;
-        // Administrative fixture setup; the policy/token installed for every
-        // subsequent real callback are the exact incoming arguments.
         Ok(Arc::new(DarwinMountContext::new_owner(
             Arc::clone(source) as Arc<dyn MountFilesystem>, true, metadata.uid(), metadata.gid(),
             Vec::from([(root_id, ROOT_INODE)]), budget, cancellation,
@@ -6376,9 +5798,6 @@ mod tests {
     #[error("installed callback owner has no authored write permission")]
     struct DarwinWriteAuthorityDenied;
 
-    /// The real exported guard protocol over the stock source engine. This is
-    /// not an SDK owner implementation; its role transition exercises the raw
-    /// driver's handling of installed authority and original failure custody.
     struct DarwinAuthoredGuard {
         original: crate::NativeMaterializationWork,
         writable: AtomicBool,
@@ -6440,7 +5859,7 @@ mod tests {
         })?;
         let shared = Arc::new(super::super::SharedCheckout::with_publication(checkout, MountPublication::Manual));
         let ordinary = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
-        let root_id = ordinary.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
+        let root_id = ordinary.run_request(|work| ordinary.lookup_measured(&MountPath::root(), work))?.ok_or("root absent")?.node.file_id;
         let original = crate::NativeMaterializationWork::new(
             callback_policy(), &crate::CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
@@ -6949,13 +6368,13 @@ mod tests {
             .open(&path, InitialHandleState::Written)
             .map_err(os)?;
         let before = epoch()?;
-        context.flush_on_close(created).map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(created, work)).map_err(os)?;
         assert_ne!(epoch()?, before, "closing the creating handle publishes");
 
-        let reader = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let reader = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         let before = epoch()?;
-        context.flush_on_close(reader).map_err(os)?;
-        context.sync().map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(reader, work)).map_err(os)?;
+        context.run_write_request(|work| context.sync_measured(work)).map_err(os)?;
         assert_eq!(epoch()?, before, "a clean close or sync publishes nothing");
 
         context
@@ -6964,23 +6383,21 @@ mod tests {
             })
             .map_err(os)?;
         let before = epoch()?;
-        context.flush_on_close(reader).map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(reader, work)).map_err(os)?;
         assert_ne!(epoch()?, before, "a written handle's close publishes");
         let before = epoch()?;
-        context.flush_on_close(reader).map_err(os)?;
-        context.sync().map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(reader, work)).map_err(os)?;
+        context.run_write_request(|work| context.sync_measured(work)).map_err(os)?;
         assert_eq!(epoch()?, before, "published writes are not published again");
 
-        // NFS may write under a stateid that names no open handle: that
-        // write does not dirty the handle, but a sync still covers it.
         context
             .mutate_file(&path, 0, |file| {
                 file.write_range(0, Bytes::from_static(b"without a handle"))
             })
             .map_err(os)?;
-        context.flush_on_close(reader).map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(reader, work)).map_err(os)?;
         let before = epoch()?;
-        context.sync().map_err(os)?;
+        context.run_write_request(|work| context.sync_measured(work)).map_err(os)?;
         assert_ne!(
             epoch()?,
             before,
@@ -7005,11 +6422,11 @@ mod tests {
                 file.write_range(0, Bytes::from_static(b"deferred"))
             })
             .map_err(os)?;
-        let reader = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let reader = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         let before = epoch()?;
-        context.flush_on_close(reader).map_err(os)?;
-        context.flush_on_close(created).map_err(os)?;
-        context.sync().map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(reader, work)).map_err(os)?;
+        context.run_write_request(|work| context.flush_on_close_measured(created, work)).map_err(os)?;
+        context.run_write_request(|work| context.sync_measured(work)).map_err(os)?;
         assert_eq!(epoch()?, before, "manual close and fsync publish nothing");
         source.sync()?;
         assert_ne!(epoch()?, before, "an explicit mount sync publishes");
@@ -7100,10 +6517,6 @@ mod tests {
         Ok(())
     }
 
-    /// After a fence that could not confirm every change was reported, each
-    /// labelled object is read again: one that reads the same keeps its
-    /// label and a revalidation returns without waiting out the client's
-    /// attribute timeout, while one that differs makes it wait.
     #[test]
     fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
         use super::super::view_ledger::ViewChange;
@@ -7118,14 +6531,14 @@ mod tests {
         // The creation was made around the mount; take it as waited out.
         let made = context.around.made.load(Ordering::Acquire);
         context.around.settled.store(made, Ordering::Release);
-        let label = context.attributes(&path, 0).map_err(os)?.change;
+        let label = context.run_request(|work| context.attributes_measured(&path, 0, work)).map_err(os)?.change;
 
         source.record_projection_change(&ViewChange::Unconfirmed);
         assert!(
             !context.revalidate_with_wait(),
             "unchanged labels do not require waiting out the attribute timeout"
         );
-        assert_eq!(context.attributes(&path, 0).map_err(os)?.change, label);
+        assert_eq!(context.run_request(|work| context.attributes_measured(&path, 0, work)).map_err(os)?.change, label);
 
         // What the client holds no longer matches what the source reads.
         for issued in context
@@ -7203,7 +6616,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"unrecorded".to_vec());
         source.create_file(&path, FileMetadata::default())?;
-        let handle = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let handle = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         let size = |handle| {
             context
                 .attributes(&path, handle)
@@ -7211,10 +6624,8 @@ mod tests {
                 .map_err(os)
         };
         assert_eq!((size(0)?, size(handle)?), (0, 0));
-        let label = context.attributes(&path, 0).map_err(os)?.change;
+        let label = context.run_request(|work| context.attributes_measured(&path, 0, work)).map_err(os)?.change;
 
-        // Stand in for a change the source reports to nobody: seed the
-        // caches with a size the source no longer has.
         let stale = |lookup: &mut MountLookup| lookup.node.logical_bytes = 7;
         context
             .lookups
@@ -7243,13 +6654,13 @@ mod tests {
             (0, 0),
             "neither the lookup cache nor a handle serves a forgotten fact"
         );
-        let relabeled = context.attributes(&path, 0).map_err(os)?.change;
+        let relabeled = context.run_request(|work| context.attributes_measured(&path, 0, work)).map_err(os)?.change;
         assert!(
             relabeled > label,
             "the reread attributes take a fresh label"
         );
         assert_eq!(
-            context.attributes(&path, handle).map_err(os)?.change,
+            context.run_request(|work| context.attributes_measured(&path, handle, work)).map_err(os)?.change,
             relabeled,
             "which then holds for the unchanged object"
         );
@@ -7375,7 +6786,7 @@ mod tests {
             Ok(files.get(&handle).ok_or("handle absent")?.file.is_some())
         };
 
-        let closed_unused = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let closed_unused = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         assert!(!bound(closed_unused)?, "an open binds nothing");
         assert_eq!(
             context
@@ -7388,7 +6799,7 @@ mod tests {
         );
         assert!(!bound(closed_unused)?);
 
-        let read = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let read = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         let bytes = context
             .file_or_open(&path, read)
             .map_err(os)?
@@ -7396,12 +6807,10 @@ mod tests {
         assert_eq!(bytes.as_ref(), b"kept");
         assert!(bound(read)?, "the first read binds the source file");
 
-        // A replacement outside this mount leaves an unbound handle stale,
-        // as an NFS handle on a removed object is.
-        let stale = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let stale = context.run_request(|work| context.open_measured(&path, InitialHandleState::Clean, work)).map_err(os)?;
         source.remove(&path, Some(created.node.file_id))?;
         source.create_file(&path, FileMetadata::default())?;
-        assert_eq!(context.file_or_open(&path, stale).err(), Some(libc::ESTALE));
+        assert_eq!(context.run_request(|work| context.file_or_open_measured(&path, stale, work)).err(), Some(libc::ESTALE));
         Ok(())
     }
 
@@ -7442,7 +6851,7 @@ mod tests {
             "a failed rename leaves the handle as it was"
         );
         assert_eq!(rename_over(c"/replacement"), 0);
-        let file = context.file_or_open(&replaced, handle).map_err(os)?;
+        let file = context.run_request(|work| context.file_or_open_measured(&replaced, handle, work)).map_err(os)?;
         assert_eq!(file.lookup()?.node.file_id, original.node.file_id);
         assert_eq!(file.read_up_to(0, 16)?.as_ref(), b"original");
         Ok(())
@@ -7453,7 +6862,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"plain".to_vec());
         source.create_file(&path, FileMetadata::default())?;
-        assert!(!context.may_have_named_attributes(&path).map_err(os)?);
+        assert!(!context.run_request(|work| context.may_have_named_attributes_measured(&path, work)).map_err(os)?);
         // SAFETY: the names are NUL-terminated and `context` outlives the call.
         let probe = || unsafe {
             acyclic_fs_darwin_mount_getxattr(
@@ -7471,7 +6880,7 @@ mod tests {
             Bytes::from_static(b"origin"),
             MountAttributeWriteMode::Upsert,
         )?;
-        assert!(context.may_have_named_attributes(&path).map_err(os)?);
+        assert!(context.run_request(|work| context.may_have_named_attributes_measured(&path, work)).map_err(os)?);
         assert_eq!(probe(), 6, "a present attribute is read from the source");
         Ok(())
     }
@@ -7535,7 +6944,6 @@ mod tests {
         Ok(())
     }
 
-    /// Mounts a fresh checkout for one live macOS test.
     #[allow(
         clippy::type_complexity,
         reason = "the tuple keeps the temporary directory, source, and session alive together for one test"
@@ -7562,8 +6970,6 @@ mod tests {
         Ok((temporary, source, mount))
     }
 
-    /// The local socket a live mount's server listens on, from the mount
-    /// table's `<socket>:/` source.
     fn mount_socket(destination: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let destination = destination.canonicalize()?;
         let mut mounts = std::ptr::null_mut::<libc::statfs>();
@@ -7655,8 +7061,6 @@ mod tests {
 
         // An NFS NULL call, as any local process could send it.
         let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
-        // macOS refuses socket options (EINVAL) once the peer has closed, as
-        // this server may already have done; the read then ends at once.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let call: [u32; 11] = [0x8000_0028, 1, 0, 2, 100_003, 4, 0, 0, 0, 0, 0];
         let bytes = call
@@ -7785,8 +7189,6 @@ mod tests {
         let root = MountPath::root();
         let mut directory =
             DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
-        // `.`, `..`, and one entry delivered: a listing that handed out an
-        // entry cannot continue in a later view.
         advance_directory_to_offset(&context, &mut directory, 3)
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
@@ -7864,71 +7266,6 @@ mod tests {
         let epochless = DirectoryHandle::new(MountPath::root(), None, None);
         assert!(!epochless.is_current(&context));
         assert!(!epochless.can_reuse_pages());
-        Ok(())
-    }
-
-    #[test]
-    fn actual_loop_join_keeps_original_panic_after_quota_denial_and_reports_exact_sdk_prefix() -> TestResult {
-        let temporary = tempfile::tempdir()?;
-        let retirement_cancel = crate::CancellationToken::new();
-        let retirement_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &retirement_cancel)
-            .map_err(|(cause, _)| cause)?;
-        let unmount = UnmountState {
-            cleanup_plan: Some(DarwinCleanupPlan::new_with_work(temporary.path(), &retirement_work)?),
-            cleanup_meter: Some(new_detach_meter(&retirement_work.native_mount_work())?),
-            ..UnmountState::default()
-        };
-        let unmount = DarwinStopController::new(unmount, &retirement_work)?;
-        let events = Arc::new(LoopEvents::default());
-        let report = ExitReport(Arc::clone(&events));
-        let thread = std::thread::spawn(move || -> c_int {
-            let _report = report;
-            panic!("original provider loop panic")
-        });
-        assert!(events.wait_until(Duration::from_secs(1), |state| state.exited).exited);
-        let mut session = DarwinMountSession {
-            resources: None,
-            destination: temporary.path().to_path_buf(), _destination_allocation: None,
-            thread: Some(thread),
-            events, loop_finished_before_teardown: Some(true),
-            loop_result: None, loop_panic: None, teardown_complete: false,
-            completed_callback_work: crate::WorkCounters::UNCHARGED,
-            retired_callback_failure: Mutex::new(None), native_root_identity: None,
-            unmount,
-        };
-        let cancellation = crate::CancellationToken::new();
-        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        assert!(matches!(session.finish_thread_measured(Duration::from_secs(1), &denied),
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert!(session.thread.is_some());
-        assert!(session.loop_panic.is_none(), "the actual SDK still owns its unconsumed panic");
-        assert_eq!(denied.receipt().backend_read_operations, 0);
-        let exact = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: 1, backend_write_operations: 0, items_examined: 1,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        assert!(matches!(session.finish_thread_measured(Duration::from_secs(1), &exact)?,
-            MountLoopResult::Panicked));
-        assert_eq!(exact.receipt().backend_read_operations, 1);
-        assert_eq!(exact.receipt().backend_write_operations, 0);
-        assert_eq!(exact.receipt().items_examined, 1);
-        assert!(session.thread.is_none());
-        assert!(session.loop_panic.is_some(), "joined SDK payload remains owned before final detach classification");
-        retirement_cancel.cancel();
-        let wait = crate::CancellationToken::new();
-        match session.stop_with_cleanup_wait(&wait) {
-            Err(NativeMountError::DriverPanicked { panic, .. }) => {
-                assert_eq!(panic.into_inner().unwrap_or_else(PoisonError::into_inner)
-                    .downcast_ref::<&'static str>(), Some(&"original provider loop panic"));
-            }
-            _ => return Err("actual loop panic was replaced by a static description".into()),
-        }
-        assert!(session.namespace_detach_confirmed());
-        assert!(session.loop_panic.is_none());
-        // This actual joined SDK worker never installed a native namespace.
-        session.teardown_complete = true;
         Ok(())
     }
 
