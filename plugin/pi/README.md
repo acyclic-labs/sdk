@@ -264,8 +264,12 @@ Closed Root artifact decoders use concrete envelope sizes plus SDK-issued source
 shapes rather than application bytes-to-heap multipliers.
 Root allocation schemas serialize borrowed, fixed wire descriptors through this
 same bounded encoder; the native path does not first build an unguarded JSON
-schema. Binding validation compares retained full volume identities and borrowed
-root keys without allocating a second identity index.
+schema. Retained binding validation uses the same predicates on the original
+native ledger, borrowing session/root keys instead of cloning them. Indexed
+uniqueness checks retain their known key payload before insertion; opaque
+standard-library tree nodes remain outside physical-allocation accounting.
+Root selection compares canonical identities with fixed stack storage, not
+temporary hexadecimal Strings. Reference validation is not resource authority.
 The native conversation binder consumes the protected issuer's original
 authority, scope and metadata custody without cloning the scope. It resolves
 the original binding event through the SDK's authenticated atomic operation
@@ -619,6 +623,9 @@ Protected host-runtime copies use direct funded String, path and prefix-vector
 operations, not a codec round-trip. Environment pairs acquire logical metadata
 quota before insertion; opaque standard-library tree nodes are excluded rather
 than reported as invented allocator attempts.
+Native runtime validation uses that original ledger and the same validation
+engine; environment and path checks stop on its first quota/cancellation cause,
+and malformed protected metadata returns a static typed boundary error.
 Runner construction borrows the staged plan; the original SDK provider owns its
 funded plan graph, rather than a second unguarded runner copy.
 Publication permits come only from the original task's actual SDK reservation.
