@@ -289,6 +289,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-native-runtime",
+ "acyclic-stream",
  "axum",
  "blake3",
  "futures",
@@ -436,6 +437,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-stream",
  "async-trait",
  "axum",
  "blake3",
@@ -445,9 +447,12 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "http-body",
+ "http-body-util",
  "imbl",
  "js-sys",
  "libc",
+ "parking_lot",
  "pin-project-lite",
  "proptest",
  "prost",
@@ -476,6 +481,7 @@ name = "acyclic-objects-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-objects",
+ "acyclic-stream",
  "base64 0.23.1",
  "bytes",
  "js-sys",
