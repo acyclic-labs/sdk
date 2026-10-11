@@ -61,6 +61,10 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert_eq!(host.source(task), Some(expected_source));
     assert_eq!(host.live_workspace(task).unwrap().workspace().id(), expected_snapshot.workspace_id);
     assert!(host.live_view(task).is_none());
+    for volume in expected_binding.project_volumes.values() {
+        assert!(host.project_mount(task, volume).is_none());
+        assert!(host.project_work(task, volume).is_none());
+    }
     assert_ne!(expected_binding.scratch.volume, expected_binding.results.unwrap().volume);
     let cleanup = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -72,6 +76,10 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert!(host.receipt(task).await.unwrap().is_none());
     assert!(host.output(task).await.unwrap().is_none());
     assert!(host.live_view(task).is_none());
+    for volume in expected_binding.project_volumes.values() {
+        assert!(host.project_mount(task, volume).is_none());
+        assert!(host.project_work(task, volume).is_none());
+    }
 }
 
 #[tokio::test]
