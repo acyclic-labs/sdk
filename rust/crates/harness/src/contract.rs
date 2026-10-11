@@ -758,6 +758,18 @@ pub enum Error {
         /// Existing custody for SDK-owned decoder diagnostics.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An actual native encoder failure, preserving its source and classification.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeEncode {
+        /// The original contract classification for the encoded record.
+        code: crate::wire::ErrorCode,
+        /// The original serializer error, moved without diagnostic conversion.
+        #[source]
+        source: serde_json::Error,
+        /// Original preclaimed SDK diagnostic custody.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual Stream failure in a native operation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -869,7 +881,8 @@ impl Error {
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
-            | Self::NativeDecode { code, .. } | Self::NativeStream { code, .. } => *code,
+            | Self::NativeDecode { code, .. } | Self::NativeEncode { code, .. }
+            | Self::NativeStream { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
@@ -927,6 +940,7 @@ impl Error {
             | Self::NativeBoundary { .. }
             | Self::NativeDiagnostic { .. }
             | Self::NativeDecode { .. }
+            | Self::NativeEncode { .. }
             | Self::NativeStream { .. }
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
