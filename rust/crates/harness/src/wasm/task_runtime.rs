@@ -639,11 +639,11 @@ impl WasmTaskRuntime {
             options.maximum_object_bytes,
         )
         .await
-        .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        .map_err(JsValue::from)?;
         let objects =
             IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
                 .await
-                .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+                .map_err(JsValue::from)?;
         let filesystem = Arc::new(
             FilesystemHost::new(
                 Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
