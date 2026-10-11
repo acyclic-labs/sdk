@@ -1,5 +1,55 @@
 use super::*;
 
+#[test]
+fn borrowed_name_constructor_charges_only_the_invalid_bounds_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::namespace_path::NamespacePathStep;
+    let names = [
+        LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 2)?,
+        LogicalName::new(NameEncoding::Utf8, b"bb".to_vec(), 2)?,
+        LogicalName::new(NameEncoding::Utf8, b"c".to_vec(), 2)?,
+    ];
+    let limits = VolumeLimits { maximum_component_bytes: 1, ..VolumeLimits::default() };
+    let cancellation = CancellationToken::new();
+    let mut work = WorkCounters::UNCHARGED;
+    let mut allocations = 0;
+    let result = NamespacePath::names_with_steps::<NamespacePathError>(
+        &names, limits, &cancellation, &mut |step| {
+            match step {
+                NamespacePathStep::Charge(delta) =>
+                    work.charge(delta, &WorkBudget::UNBOUNDED).map_err(NamespacePathError::Work)?,
+                NamespacePathStep::Allocation(_) => allocations += 1,
+                NamespacePathStep::Admit(_) | NamespacePathStep::Performed(_) => {}
+            }
+            Ok(())
+        },
+    );
+    assert_eq!(result, Err(NamespacePathError::ComponentTooLong));
+    assert_eq!(work.items_examined, 2);
+    assert_eq!(work.source_path_components, 2);
+    assert_eq!(work.bytes_copied, 0);
+    assert_eq!(allocations, 0);
+    Ok(())
+}
+
+#[test]
+fn borrowed_name_constructor_cancellation_precedes_any_accounting_step()
+-> Result<(), Box<dyn std::error::Error>> {
+    let names = [LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], 2)?];
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut steps = 0;
+    let result = NamespacePath::names_with_steps::<NamespacePathError>(
+        &names, VolumeLimits::default(), &cancellation, &mut |_| {
+            steps += 1;
+            Ok(())
+        },
+    );
+    assert_eq!(result, Err(NamespacePathError::Cancelled));
+    assert_eq!(steps, 0);
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod original_namespace_controls {
     use super::*;
@@ -9,6 +59,237 @@ mod original_namespace_controls {
         matches!(error, crate::FsError::NativeKernel(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
         ))
+    }
+
+    #[test]
+    fn original_cursor_codec_uses_funded_encoder_and_retained_input_overlap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        let path = NamespacePath::new(vec![LogicalName::new(
+            NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], limits.maximum_component_bytes,
+        )?], limits)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let capacity = CURSOR_DOMAIN.len() + 2 + path.cursor_encoded_len()?;
+        let mut encoded_guard = accounting.claim_owned(capacity as u64, 1)?;
+        let header = WorkCounters { bytes_encoded: (CURSOR_DOMAIN.len() + 2) as u64,
+            bytes_copied: (CURSOR_DOMAIN.len() + 2) as u64, ..WorkCounters::UNCHARGED };
+        accounting.admit(header)?;
+        let mut encoder = Encoder::with_exact_capacity(CURSOR_DOMAIN, 1, capacity)?;
+        accounting.reconcile_owned(&mut encoded_guard, capacity as u64, encoder.capacity() as u64)?;
+        accounting.record_completed(header)?;
+        let before = original.receipt();
+        path.encode_cursor_into_with_accounting(&mut encoder, &mut accounting, &cancellation)?;
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_encoded - before.bytes_encoded, path.cursor_encoded_len()? as u64);
+        let bytes = encoder.finish();
+        let mut decoder = Decoder::new(&bytes, CURSOR_DOMAIN, 1, u64::MAX)?;
+        let (decoded, decoded_guard) = NamespacePath::decode_cursor_with_accounting(
+            &mut decoder, FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
+        )?;
+        decoder.finish()?;
+        assert_eq!(decoded, path);
+        let (KernelOwnedAllocation::NativeOriginal(encoded_guard),
+            KernelOwnedAllocation::NativeOriginal(decoded_guard)) = (encoded_guard, decoded_guard)
+        else { return Err("cursor backing lost original accounting".into()); };
+        assert_eq!(encoded_guard.bytes(), bytes.capacity() as u64);
+        assert_eq!(decoded_guard.bytes(), decoded.retained_bytes());
+        assert!(decoded_guard.shares_ledger(&encoded_guard));
+        assert_eq!(original.live_allocation_bytes(),
+            baseline + encoded_guard.bytes() + decoded_guard.bytes());
+        drop(decoded);
+        drop(decoded_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline + encoded_guard.bytes());
+        drop(bytes);
+        drop(encoded_guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn original_cursor_decoder_preserves_full_shape_and_partial_quota_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let limits = VolumeLimits::default();
+        let opaque = NamespacePath::new(vec![LogicalName::new(
+            NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], limits.maximum_component_bytes,
+        )?], limits)?;
+        let opaque_bytes = cursor_path_bytes(&opaque)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut decoder = Decoder::new(&opaque_bytes, CURSOR_DOMAIN, 1, u64::MAX)?;
+        assert!(NamespacePath::decode_cursor_with_accounting(
+            &mut decoder, FilesystemProfile::Portable, limits, &mut accounting, &cancellation,
+        ).is_err());
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+
+        let source = NamespacePath::from_portable(&PortablePath::parse("/a/b", limits)?, limits)?;
+        let bytes = cursor_path_bytes(&source)?;
+        let controller_operations = {
+            let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            probe.receipt().allocation_operations
+        };
+        let original = crate::NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: controller_operations.checked_add(2).ok_or("allocation quota overflow")?,
+            ..WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut decoder = Decoder::new(&bytes, CURSOR_DOMAIN, 1, u64::MAX)?;
+        let error = NamespacePath::decode_cursor_with_accounting(
+            &mut decoder, FilesystemProfile::Portable, limits, &mut accounting, &cancellation,
+        ).err().ok_or("partial cursor quota completed")?;
+        assert!(is_budget_error(&error));
+        assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 2);
+        assert_eq!(original.receipt().bytes_copied - before.bytes_copied, 1);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn original_name_clone_preserves_raw_units_and_denies_copy_before_reserve()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], 256)?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let before = original.receipt();
+        let (copied, guard) = name.clone_with_accounting(&mut accounting, &cancellation)?;
+        assert_eq!(copied, name);
+        let KernelOwnedAllocation::NativeOriginal(guard) = guard
+        else { return Err("name clone lost original claim".into()); };
+        assert_eq!(guard.bytes(), copied.retained_bytes() as u64);
+        assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 1);
+        assert_eq!(original.receipt().bytes_copied - before.bytes_copied, 2);
+        drop(copied);
+        drop(guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+
+        let original = crate::NativeMaterializationWork::new(WorkBudget {
+            bytes_copied: 0, ..WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let error = name.clone_with_accounting(&mut accounting, &cancellation)
+            .err().ok_or("zero copy quota reserved a name buffer")?;
+        assert!(is_budget_error(&error));
+        assert_eq!(original.receipt(), before);
+        Ok(())
+    }
+
+    #[test]
+    fn funded_name_unicode_projection_matches_exact_original_encodings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes, NameEncoding::WindowsUtf16Le] {
+            let bytes = if encoding == NameEncoding::WindowsUtf16Le {
+                "é𝄞".encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else { "é𝄞".as_bytes().to_vec() };
+            let name = LogicalName::new(encoding, bytes, 256)?;
+            let expected = name.unicode_text().ok_or("valid Unicode name was rejected")?;
+            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let before = original.receipt();
+            let (text, guard) = name.unicode_text_with_native_work(&original, &cancellation)?;
+            assert_eq!(text, expected.as_ref());
+            assert_eq!(guard.bytes(), text.capacity() as u64);
+            assert_eq!(original.live_allocation_bytes(), baseline + guard.bytes());
+            assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 1);
+            assert_eq!(original.receipt().output_bytes - before.output_bytes, text.len() as u64);
+            if encoding == NameEncoding::WindowsUtf16Le {
+                assert_eq!(original.receipt().bytes_encoded - before.bytes_encoded, text.len() as u64);
+                assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+            } else {
+                assert_eq!(original.receipt().bytes_copied - before.bytes_copied, text.len() as u64);
+                assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+            }
+            drop(text);
+            drop(guard);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn funded_name_projection_exhausts_positive_quota_with_actual_owned_string()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let controller_operations = {
+            let probe = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| error)?;
+            probe.receipt().allocation_operations
+        };
+        let original = crate::NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: controller_operations.checked_add(1).ok_or("allocation quota overflow")?,
+            ..WorkBudget::UNBOUNDED
+        }, &cancellation).map_err(|(error, _)| error)?;
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le,
+            vec![0xe9, 0x00, 0x34, 0xd8, 0x1e, 0xdd], 256)?;
+        let baseline = original.live_allocation_bytes();
+        let (text, guard) = name.unicode_text_with_native_work(&original, &cancellation)?;
+        let before = original.receipt();
+        let live = original.live_allocation_bytes();
+        let error = name.unicode_text_with_native_work(&original, &cancellation)
+            .err().ok_or("exhausted name quota allocated another string")?;
+        assert!(is_budget_error(&error));
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+        assert_eq!(original.receipt().output_bytes, before.output_bytes);
+        assert_eq!(original.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(original.live_allocation_bytes(), live);
+        drop(text);
+        drop(guard);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn funded_name_projection_keeps_opaque_and_cancelled_causes_before_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let names = [
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 256)?,
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0x00, 0xd8], 256)?,
+        ];
+        for name in &names {
+            let before = original.receipt();
+            let live = original.live_allocation_bytes();
+            let error = name.unicode_text_with_native_work(&original, &cancellation)
+                .err().ok_or("opaque name was projected with replacement characters")?;
+            assert!(matches!(error, crate::FsError::Path(crate::kernel::PathLookupError::NamespacePath(
+                NamespacePathError::NonUnicodeProjection,
+            ))));
+            assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+            assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded);
+            assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+            assert_eq!(original.live_allocation_bytes(), live);
+        }
+        let valid = LogicalName::new(NameEncoding::Utf8, b"valid".to_vec(), 256)?;
+        let before = original.receipt();
+        cancellation.cancel();
+        let error = valid.unicode_text_with_native_work(&original, &cancellation)
+            .err().ok_or("cancelled name projection allocated")?;
+        assert!(matches!(error,
+            crate::FsError::Cancelled(_)
+            | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled)
+        ));
+        assert_eq!(original.receipt(), before);
+        Ok(())
     }
 
     #[test]
