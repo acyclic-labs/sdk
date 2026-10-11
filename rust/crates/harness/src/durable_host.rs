@@ -2566,7 +2566,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)?;
         let session = coordinator.scheduler().session_limits_with_work(operation_id, work)?;
         let ceiling = (scope.limits().model_steps as u64)
-            .min(scope.run_limits().max_steps.map_or(u64::MAX, u64::from))
+            .min(scope.run_limits().max_steps.map_or(u64::MAX, |value| value as u64))
             .min(session.model_steps);
         let lease_digest = crate::contract::canonical_json_digest_with_work(
             fence, acyclic_stream::MAX_RECORD_BYTES as u64, work,
@@ -2848,14 +2848,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
-            let (append_path, capacity) = match work.as_deref_mut() {
-                Some(io) => {
-                    let text = io.clone_text(path.as_str())?;
-                    let capacity = text.capacity() as u64;
-                    (acyclic_stream::StreamPath::new(text)?, capacity)
-                },
-                None => (path.clone(), 0),
-            };
+            // The original path owner remains alive through this append; Arc
+            // aliases neither copy its text nor consume another payload quota.
+            let append_path = path.clone();
             let appended = owner
                 .append_with_work(
                     append_path,
@@ -2866,12 +2861,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     work,
                 )
                 .await;
-            let release = match work.as_deref_mut() {
-                Some(io) => io.release_owned(capacity),
-                None => Ok(()),
-            };
             let appended = appended?;
-            release?;
             if appended {
                 self.verify_owner_with_work(task, fence, false, work).await?;
                 if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -5572,8 +5562,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream.stream(Self::timer_path_with_work(task_id, &mut None)?.0)
-            .map_err(|error| Error::Invalid(error.to_string()))
+        self.timer_stream_with_work(task_id, &mut None).map(|(stream, _)| stream)
     }
 
     fn authorize_mail_route(
@@ -5617,19 +5606,44 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(bytes)
     }
 
+    fn timer_path_text(task: TaskId) -> [u8; 54] {
+        let mut text = [0_u8; 54];
+        let prefix = b"harness/v2/timers/";
+        text[..prefix.len()].copy_from_slice(prefix);
+        uuid::Uuid::from_bytes(task.into_bytes()).hyphenated()
+            .encode_lower(&mut text[prefix.len()..]);
+        text
+    }
+
     fn timer_path_with_work(
         task: TaskId, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(acyclic_stream::StreamPath, u64)> {
-        let mut path = String::new();
+        let text = Self::timer_path_text(task);
+        let text = std::str::from_utf8(&text).expect("canonical ASCII timer path");
         if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(54)?;
-            io.reserve_text(&mut path, 54)?;
-            io.copy_bytes(54)?;
+            io.admit_copy(text.len() as u64)?;
+            io.admit_allocation(text.len() as u64)?;
+            io.retain_owned(text.len() as u64)?;
+            io.copy_bytes(text.len() as u64)?;
         }
-        use std::fmt::Write as _;
-        write!(&mut path, "harness/v2/timers/{task}").expect("writing into String");
-        let owned = if work.is_some() { path.capacity() as u64 } else { 0 };
-        Ok((acyclic_stream::StreamPath::new(path)?, owned))
+        let path = acyclic_stream::StreamPath::new(text)?;
+        Ok((path, if work.is_some() { text.len() as u64 } else { 0 }))
+    }
+
+    fn timer_stream_with_work(
+        &self, task: TaskId, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(acyclic_stream::Stream<P>, u64)> {
+        let text = Self::timer_path_text(task);
+        let text = std::str::from_utf8(&text).expect("canonical ASCII timer path");
+        let owned = text.len() as u64 + std::mem::size_of::<acyclic_stream::Stream<P>>() as u64;
+        if let Some(io) = work.as_deref_mut() {
+            io.admit_copy(text.len() as u64)?;
+            io.admit_allocation(text.len() as u64)?;
+            io.retain_owned(owned)?;
+            io.copy_bytes(text.len() as u64)?;
+        }
+        let stream = self.stream.stream(text)?;
+        Ok((stream, if work.is_some() { owned } else { 0 }))
     }
 
     async fn mail_bytes(
@@ -5941,10 +5955,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, operation: OperationId, deadline_unix_ms: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(u64, bool)> {
-        let (path, owned) = Self::timer_path_with_work(task, work)?;
-        let metadata = std::mem::size_of::<acyclic_stream::Stream<P>>() as u64;
-        if let Some(io) = work.as_deref_mut() { io.retain_owned(metadata)?; }
-        let stream = self.stream.stream(path)?;
+        let (stream, owned) = self.timer_stream_with_work(task, work)?;
         if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
         let tail = match stream.bounds().await {
             Ok(bounds) => bounds.tail,
@@ -6007,7 +6018,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         drop(stream);
         if let Some(io) = work.as_deref_mut() {
             io.release_owned(owned)?;
-            io.release_owned(metadata)?;
         }
         Ok((tail, found))
     }
@@ -6913,6 +6923,19 @@ pub(crate) mod tests {
         workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine},
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
+
+    #[test]
+    fn timer_path_preserves_exact_canonical_task_identity() -> Result<()> {
+        let task = TaskId::from_bytes([137; 16]);
+        let (path, owned) = CoordinatorTaskHost::<MemoryStream>::timer_path_with_work(task, &mut None)?;
+        assert_eq!(owned, 0);
+        assert_eq!(path.as_str(), format!("harness/v2/timers/{task}"));
+        assert_eq!(path.as_str().as_bytes(),
+            &CoordinatorTaskHost::<MemoryStream>::timer_path_text(task));
+        let retry = path.clone();
+        assert_eq!(retry, path);
+        Ok(())
+    }
 
     #[cfg(feature = "filesystem")]
     mod resource_preparation;

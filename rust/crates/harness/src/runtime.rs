@@ -4002,7 +4002,8 @@ impl RuntimeScope {
             return Ok(proofs.to_vec());
         }
         crate::core::copy_vector(proofs, quota, |proof, quota| {
-            quota.work().as_deref_mut().expect("proof vector copy observer").items(1)?;
+            quota.work().as_deref_mut().expect("proof vector copy observer")
+                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             let (copied, retained) = crate::core::resource_creation_proof_clone_with_custody(
                 proof, quota.work(),
             )?;
@@ -5699,7 +5700,7 @@ impl AgentHarness {
                 None => std::borrow::Cow::Owned(execution.identity()),
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let current = std::borrow::Cow::Owned(execution.identity());
+            let current: std::borrow::Cow<'_, ComponentIdentity> = std::borrow::Cow::Owned(execution.identity());
             mismatch = match &self.state {
                 Some(state) => identity!(state, execution_identity, execution_identity_with_native_work).as_deref() != Some(current.as_ref()),
                 None => true,
@@ -6453,8 +6454,6 @@ impl AgentHarness {
                         model_steps: Arc::new(TaskModelSteps::ordinary()),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_metadata_source: None,
-                        owned_mailbox: None,
-                        output_content: None,
                     },
                     input,
                 );
@@ -6623,8 +6622,13 @@ impl AgentHarness {
             .child_admission(operation, name, version, input, parent, scope)
     }
 
+    /// Builds a registered descendant request using the original guarded input.
+    ///
+    /// This does not admit the child or acquire its parent's lease: submit the
+    /// returned request through the original owned-admission host with the
+    /// separately guarded original parent fence.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn registered_child_admission_with_native_work(
+    pub fn registered_child_admission_with_native_work(
         &self, operation: OperationId, name: &str, version: &str,
         input: (Value, acyclic_fs::NativeAllocation), parent: TaskId, scope: &RuntimeScope,
         work: &acyclic_fs::NativeMaterializationWork,

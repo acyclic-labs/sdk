@@ -331,6 +331,11 @@ the original authenticated outbox rather than reopening an execution session.
 Original atomic mail receipts are observed without another send. Cancellation
 may release capacity only after all dispatched effects are known, or the
 authenticated journal proves no dispatch occurred.
+Timer identities use their fixed ASCII stack representation before one owned
+Stream path allocation. Observed construction admits the known path payload
+before that allocation; retry aliases do not copy or re-price the same text.
+Portable context construction preserves one original mailbox/output binding
+pair, and proof walks charge the canonical observer's work events.
 
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.
