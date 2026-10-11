@@ -1094,6 +1094,21 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
     fn fence(&self) -> Result<crate::scheduler::LeaseFence>;
 
+    /// Verifies the original lease on the caller's preparation observer.
+    #[cfg(feature = "filesystem")]
+    fn verify_with_io<'a>(
+        &'a self,
+        _io: &'a crate::filesystem::PreparationIo,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "created publication lease has no original preparation verifier",
+        });
+        #[cfg(target_arch = "wasm32")]
+        Err(Error::Unsupported(String::new()))
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,

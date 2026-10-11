@@ -1680,6 +1680,14 @@ impl From<acyclic_fs::FsError> for Error {
     }
 }
 
+/// Moves the complete workspace cause and its intrinsic custody without formatting.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl From<acyclic_fs::WorkspaceError> for Error {
+    fn from(source: acyclic_fs::WorkspaceError) -> Self {
+        Self::NativeWorkspace { source, custody: None }
+    }
+}
+
 /// Moves a lifecycle failure without dropping any retained physical cleanup owner.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
