@@ -232,10 +232,10 @@ pub(super) fn copy_ticket(
         }),
     })
 }
-pub(super) fn copy_resolution(
-    source: &InteractionResolution, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<InteractionResolution> {
-    let outcome = match &source.outcome {
+pub(crate) fn copy_interaction_outcome(
+    source: &InteractionOutcome, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<InteractionOutcome> {
+    Ok(match source {
         InteractionOutcome::Answered { answer } => InteractionOutcome::Answered {
             answer: copy_boxed(answer.as_ref(), quota, copy_file)?,
         },
@@ -246,7 +246,12 @@ pub(super) fn copy_resolution(
         InteractionOutcome::Denied => InteractionOutcome::Denied,
         InteractionOutcome::Indeterminate { operation_id } =>
             InteractionOutcome::Indeterminate { operation_id: *operation_id },
-    };
+    })
+}
+pub(super) fn copy_resolution(
+    source: &InteractionResolution, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<InteractionResolution> {
+    let outcome = copy_interaction_outcome(&source.outcome, quota)?;
     let detail = source.detail.as_ref().map(|file| copy_file(file, quota)).transpose()?;
     Ok(InteractionResolution {
         id: source.id, expected_version: source.expected_version, outcome, detail,
@@ -254,6 +259,17 @@ pub(super) fn copy_resolution(
 }
 physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket);
 physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution);
+physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome);
+fn copy_interaction_state(
+    source: &(InteractionTicket, Option<InteractionResolution>),
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<(InteractionTicket, Option<InteractionResolution>)> {
+    let ticket = copy_ticket(&source.0, quota)?;
+    let resolution = source.1.as_ref().map(|resolution| copy_resolution(resolution, quota)).transpose()?;
+    Ok((ticket, resolution))
+}
+physical_clone_factory!(native_interaction_state_clone_with_custody,
+    (InteractionTicket, Option<InteractionResolution>), copy_interaction_state);
 pub(super) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {

@@ -836,45 +836,11 @@ fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo
 }
 
 fn projection_string(text: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let work = io.original_native_work().expect("checked native work");
-        let (text, custody) = crate::conversation::clone_native_reference_text(text, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(text);
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        projection_allocation(text.len() as u64, Some(io))?;
-        let copied = acyclic_fs::WorkCounters { bytes_copied: text.len() as u64, ..Default::default() };
-        io.preflight(copied)?;
-        io.charge(copied)?;
-    }
-    let _ = io;
-    Ok(text.to_owned())
+    crate::model::model_string_clone_with_io(text, io)
 }
 
 fn projection_file(file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<FileRef> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let (file, custody) = file.clone_with_native_work(
-            io.original_native_work().expect("checked native work"),
-        )?;
-        io.absorb_native_custody(custody)?;
-        return Ok(file);
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let (allocations, copied) = file.clone_work_recipe()?;
-        let next = acyclic_fs::WorkCounters {
-            allocation_operations: allocations, bytes_copied: copied, ..Default::default()
-        };
-        io.preflight(next)?;
-        io.claim(copied)?;
-        io.charge(next)?;
-    }
-    let _ = io;
-    Ok(file.clone())
+    crate::model::model_file_clone_with_io(file, io)
 }
 
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
@@ -1106,7 +1072,7 @@ impl<'a> ProjectionAttachments<'a> {
             }),
             Self::Owned(items) => Ok(ProjectionFiles {
                 source: ProjectionFileSource::Owned(items.into_iter().take(count)),
-                io, move_files: true,
+                io, move_files: io.is_none(),
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 _retired: None,
             }),
@@ -1199,6 +1165,10 @@ async fn resolve_projection_attachments<'a, R: AttachmentListResolver + ?Sized>(
                 return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
             }
             return Ok(ProjectionAttachments::Borrowed(items));
+        } else if let ReferencedAttachments::Manifest { item_count, .. } = &message.attachments {
+            if *item_count as usize > maximum_attachments {
+                return Err(projection_invalid(Some(io), "selected message exceeds attachment projection limit"));
+            }
         }
     }
     let _ = io;
@@ -1214,7 +1184,7 @@ async fn read_projected_invocation<R: AttachmentListResolver + ?Sized>(
         let parsed = read_native_projection_value(resolver, file, maximum_bytes, io).await?;
         return convert_native_projection_value(parsed, maximum_bytes, io);
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_owned_projection_value(resolver, file, maximum_bytes, io).await?;
         let (value, custody) = parsed.into_parts();
@@ -1250,7 +1220,7 @@ async fn read_projected_tool_result<R: AttachmentListResolver + ?Sized>(
         io.absorb_native_custody(custody)?;
         return Ok(value);
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_owned_projection_value(resolver, file, maximum_bytes, io).await?;
         let (value, custody) = parsed.into_parts();
@@ -1270,59 +1240,57 @@ async fn read_projected_tool_result<R: AttachmentListResolver + ?Sized>(
 }
 
 // Private, closed source DTOs only. This is not a DeserializeOwned theorem.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 trait NativeProjectionArtifact: DeserializeOwned {
     fn value_schema() -> crate::contract::JsonValueSchema;
-    fn heap_owned_bytes(&self) -> Result<u64>;
+    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64>;
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl NativeProjectionArtifact for serde_json::Value {
     fn value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::Root
     }
-    fn heap_owned_bytes(&self) -> Result<u64> {
+    fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
         crate::model::model_value_owned_bytes(self)
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl NativeProjectionArtifact for ProjectedToolInvocation {
     fn value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::ProjectedToolInvocation
     }
-    fn heap_owned_bytes(&self) -> Result<u64> {
+    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         let arguments = crate::model::model_value_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(arguments))
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "projected tool invocation ownership overflows" })
+            .ok_or_else(|| projection_invalid(Some(io), "projected tool invocation ownership overflows"))
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl NativeProjectionArtifact for crate::model::ToolResultContent {
     fn value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::ToolResultContent
     }
-    fn heap_owned_bytes(&self) -> Result<u64> {
+    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         self.logical_owned_bytes()?.checked_sub(std::mem::size_of::<Self>() as u64)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "projected tool result ownership overflows" })
+            .ok_or_else(|| projection_invalid(Some(io), "projected tool result ownership overflows"))
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 fn projection_conversion_allowance<T: NativeProjectionArtifact>(
     shape: crate::contract::JsonValueShape,
+    io: &crate::executor::PreparationIo,
 ) -> Result<u64> {
     use serde::__private229::de::Content;
     use std::mem::size_of;
     // ToolResultContent -> ModelDataPart -> VolumeOwner/NativeMediaIntent is
     // the longest real tagged-buffer chain. Projection arguments have none.
     // Vec capacities and Content map PAIRS are quota, not allocator observations.
-    let overflow = || Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-        reason: "tool projection conversion allowance overflows" };
+    let overflow = || projection_invalid(Some(io), "tool projection conversion allowance overflows");
     let nodes = shape.lexical_items().checked_add(shape.virtual_items()).ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
     let typed_result = T::value_schema() == crate::contract::JsonValueSchema::ToolResultContent;
@@ -1399,7 +1367,7 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
     // Admit only new conversion payload/diagnostics before allocating. The
     // original decoded guard is transferred exactly, not inferred from shared
     // IO counters or claimed again for resident strings.
-    let mut additional = work.retain_owned(projection_conversion_allowance::<T>(shape)?)
+    let mut additional = work.retain_owned(projection_conversion_allowance::<T>(shape, io)?)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     if let Err(cause) = source.custody.absorb(&mut additional) {
         let NativeProjectionSource { value, custody } = source;
@@ -1415,7 +1383,7 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
         }),
     };
     let mut output = NativeProjectionSource { value, custody: source.custody };
-    let retained = output.value.heap_owned_bytes()?;
+    let retained = output.value.heap_owned_bytes(io)?;
     if let Err(cause) = output.custody.substitute(retained) {
         let NativeProjectionSource { value, custody } = output;
         drop(value);
@@ -1424,13 +1392,13 @@ fn convert_native_projection_source<T: NativeProjectionArtifact>(
     Ok(output)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 struct OwnedProjectionSource<'a, T> {
     value: T,
     custody: crate::filesystem::DecodeReservation<'a>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
     source: OwnedProjectionSource<'a, serde_json::Value>, maximum_bytes: u64,
     io: &'a crate::executor::PreparationIo, artifact_error_prefix: bool,
@@ -1445,7 +1413,7 @@ fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
             _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
         },
     )?;
-    let additional = io.reserve_decode(projection_conversion_allowance::<T>(shape)?)?;
+    let additional = io.reserve_decode(projection_conversion_allowance::<T>(shape, io)?)?;
     let total = source.custody.bytes().checked_add(additional.bytes())
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion allowance overflows"))?;
     let value: T = match serde_json::from_value(source.value) {
@@ -1457,7 +1425,7 @@ fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
             return Err(Error::Invalid(message));
         }
     };
-    let retained = value.heap_owned_bytes()?;
+    let retained = value.heap_owned_bytes(io)?;
     let released = total.checked_sub(retained)
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion exceeds admission"))?;
     // Transfer the exact two paid scopes, never snapshot shared IO ownership.
@@ -1468,7 +1436,7 @@ fn convert_owned_projection_source<'a, T: NativeProjectionArtifact>(
     Ok(OwnedProjectionSource { value, custody })
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 async fn read_owned_projection_value<'io, R: AttachmentListResolver + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
@@ -2112,7 +2080,7 @@ mod tests {
                 assert_eq!(projected.call_id, expected.call_id);
                 assert_eq!(projected.name, expected.name);
                 assert_eq!(projected.arguments, expected.arguments);
-                assert_eq!(io.owned_bytes()?, projected.heap_owned_bytes()?);
+                assert_eq!(io.owned_bytes()?, projected.heap_owned_bytes(&io)?);
                 drop(projected);
             }
             (Err(Error::NativeDecode { source, custody: Some(custody), .. }), Err(expected)) => {

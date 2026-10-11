@@ -79,6 +79,19 @@ impl ValidatedInteractionRequest {
 }
 
 impl InteractionTicket {
+    /// Copies through the reducer's one original field-copy engine.
+    pub(crate) fn clone_with_work_and_custody(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        crate::core::native_interaction_ticket_clone_with_custody(self, work)
+    }
+
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+    }
+
     /// A scoped observer may see the ticket and outcome refs without being
     /// authorized to answer it or read the referenced private bytes.
     #[must_use]
@@ -565,6 +578,19 @@ impl<'de> Deserialize<'de> for InteractionOutcome {
 }
 
 impl InteractionOutcome {
+    /// Copies through the reducer's one original field-copy engine.
+    pub(crate) fn clone_with_work_and_custody(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        crate::core::native_interaction_outcome_clone_with_custody(self, work)
+    }
+
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+    }
+
     /// Unknown outcomes remain open for later reconciliation.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
@@ -588,6 +614,19 @@ pub struct InteractionResolution {
 }
 
 impl InteractionResolution {
+    /// Copies through the reducer's one original field-copy engine.
+    pub(crate) fn clone_with_work_and_custody(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        crate::core::native_interaction_resolution_clone_with_custody(self, work)
+    }
+
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+    }
+
     /// Checks version, address, and outcome kind against the open ticket.
     pub fn validate(&self, ticket: &InteractionTicket) -> Result<()> {
         if self.id != ticket.id || self.expected_version == 0 {

@@ -35,6 +35,7 @@ pub(crate) use native_custody::{
     native_effect_clone_with_custody, native_event_reference_clone_with_custody,
     native_extension_configuration_clone_with_custody, native_extension_record_clone_with_custody,
     native_interaction_resolution_clone_with_custody, native_interaction_ticket_clone_with_custody,
+    native_interaction_outcome_clone_with_custody, native_interaction_state_clone_with_custody,
     native_value_clone_with_custody, native_event_clone_with_custody,
     event_owned_bytes, value_clone_owned_bytes, value_owned_bytes,
 };
