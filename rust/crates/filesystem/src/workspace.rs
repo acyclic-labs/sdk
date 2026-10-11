@@ -1,8 +1,4 @@
 //! Customer workspace identities and immutable generation handles.
-//!
-//! A workspace is the sole customer-visible unit of mutation, publication,
-//! retention, and convergence. The engine's volume and authority identities
-//! remain implementation details.
 
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::CancellationToken;
@@ -31,9 +27,6 @@ const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 
 /// Canonical immutable customer workspace name.
-///
-/// Names are NFC-normalized, case-sensitive UTF-8 and cannot be reused for a
-/// different workspace in one filesystem namespace.
 pub struct WorkspaceName(
     Arc<str>,
     #[cfg(not(target_arch = "wasm32"))] Option<Arc<NativeWorkspaceNameCustody>>,
@@ -197,7 +190,7 @@ impl WorkspaceNameAccounting<'_> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(original) => {
-                let (excess, verified) = original.record_completed_allocation(bytes);
+                let (excess, verified) = original.record_completed_allocation(bytes, None);
                 let mut excess = WorkspaceNameAllocation::Native(excess);
                 allocation.absorb(&mut excess)?;
                 return verified.map_err(WorkspaceError::from);
@@ -261,10 +254,6 @@ fn workspace_name_scratch_witness(
         maximum_chunk = maximum_chunk.max(chunk);
     }
     // unicode-normalization 0.1.25 uses two four-element TinyVecs. NFD
-    // temporarily retains one complete decomposition beside its pending run;
-    // NFC retains only uncomposed marks. Power-of-two growth plus old/new
-    // overlap bounds their opaque buffers; stable ordering may need one run.
-    // This is admission evidence, never fabricated actual-allocation counters.
     let buffer = |elements: u64, element_bytes: u64| -> Result<u64, WorkspaceError> {
         if elements <= 4 { return Ok(0); }
         elements.checked_next_power_of_two()
@@ -396,7 +385,6 @@ fn normalize_workspace_name(
         accounting.admit(copied)?;
         if custody_bytes != 0 {
             // Admit the whole output pair before either allocation claim, so
-            // a refused spelling cannot report an unconstructed custody Arc.
             let spelling_peak = accounting.live_bytes().checked_add(canonical.len() as u64)
                 .ok_or(crate::WorkError::Overflow)?;
             let custody_peak = spelling_peak.checked_sub(output.capacity() as u64)
@@ -442,11 +430,6 @@ fn normalize_workspace_name(
 
 impl WorkspaceName {
     /// Canonicalizes and validates one friendly workspace name.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, reserved, path-like, control-containing, or oversized
-    /// names before deriving any durable identity.
     pub fn new(name: impl AsRef<str>) -> Result<Self, WorkspaceNameError> {
         static UNBOUNDED_CANCELLATION: std::sync::LazyLock<crate::CancellationToken>
             = std::sync::LazyLock::new(crate::CancellationToken::new);
@@ -481,10 +464,6 @@ impl WorkspaceName {
     }
 
     /// Canonicalizes one name on the native invocation's original work ledger.
-    ///
-    /// # Errors
-    ///
-    /// Returns the canonical name error, cancellation, or original work denial.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_native_work(
         name: &str,
@@ -500,7 +479,6 @@ impl WorkspaceName {
             unreachable!("native accounting always returns original custody");
         };
         // Construct only after the original AL loan has ended: the guard must
-        // never be captured or dropped inside a closure holding that ledger.
         let custody = Arc::new(NativeWorkspaceNameCustody {
             _name: Arc::clone(&name),
             _allocation: allocation,
@@ -551,8 +529,6 @@ impl WorkspaceId {
     }
 
     /// Derives the stable identity for a canonical name in one deployment
-    /// namespace. The namespace is deliberately internal to the selected
-    /// `Fs` deployment.
     #[must_use]
     pub(crate) fn derive(namespace: [u8; 16], name: &WorkspaceName) -> Self {
         let mut hasher = blake3::Hasher::new();
@@ -713,9 +689,6 @@ impl<A, O> Workspace<A, O> {
     }
 
     /// Derives the stable identity of a sibling workspace before creating it.
-    ///
-    /// Durable orchestration stores use this to record a recoverable fork
-    /// intent before the child authority is created.
     pub fn fork_workspace_id(
         &self,
         destination: impl AsRef<str>,
@@ -744,8 +717,6 @@ impl<A, O> Workspace<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Exclusively fences this workspace's mutable head while a cross-provider
-    /// publication decides whether to expose a pinned generation. Exact
-    /// retries with the same operation return the same durable reservation.
     pub async fn reserve_publication(
         &self,
         operation_id: OperationId,
@@ -756,8 +727,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reserves the original authority head with one cumulative work allowance.
-    /// The actual returned reservation must be retained before caller-side
-    /// post-reservation checks; its expected head is never repinned here.
     pub async fn reserve_publication_measured(
         &self,
         operation_id: OperationId,
@@ -798,7 +767,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Releases only this workspace's exact durable publication reservation.
-    /// An ambiguous release response can be retried with the same proof.
     pub async fn release_publication(
         &self,
         reservation: crate::PublicationReservation,
@@ -809,7 +777,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Releases only the actual reservation using the caller's cleanup token.
-    /// Failure does not establish release: retain the same proof for recovery.
     pub async fn release_publication_measured(
         &self,
         reservation: crate::PublicationReservation,
@@ -829,7 +796,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reads only an existing reservation for the original operation identity.
-    /// This never reserves, renews, releases, or adopts a current authority head.
     pub async fn publication_reservation_measured(
         &self,
         operation_id: OperationId,
@@ -915,36 +881,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         result.map_err(crate::facade::native_workspace_failure)
     }
 
-    /// Parses this authenticated volume's customer path on the original scope.
-    /// The returned guard owns only the newly produced canonical path buffers.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn namespace_path_with_native_work(
-        &self,
-        path: &str,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(NamespacePath, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(
-            original, cancellation,
-        );
-        let result = customer_path_with_accounting(
-            path, self.volume.config, &mut accounting, cancellation,
-        ).and_then(|(path, allocation)| match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
-                Ok((path, allocation)),
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => Err(
-                WorkspaceError::from(FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                )),
-            ),
-        });
-        result.map_err(crate::facade::native_workspace_failure)
-    }
-
     /// Resolves the exact generation published by one prior workspace operation.
-    ///
-    /// This is the recovery boundary for adapters that persisted an
-    /// idempotency key before publication but lost the successful result.
     pub async fn operation_generation(
         &self,
         idempotency_key: IdempotencyKey,
@@ -960,11 +897,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Resolves an original committed generation without adopting the mutable
-    /// head, under explicit work bounds and the original cancellation token.
-    ///
-    /// # Errors
-    /// Retains actual lookup and authentication work on storage, malformed
-    /// record, cancellation and budget failures. Absence grants no authority.
     pub async fn operation_generation_measured(
         &self,
         idempotency_key: IdempotencyKey,
@@ -989,7 +921,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Returns the protected original operation record with its genuine
-    /// generation, without substituting the mutable workspace head.
     pub(crate) async fn operation_generation_record_measured(
         &self, key: IdempotencyKey, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -1007,9 +938,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Resolves the exact original operation without adopting the current head.
-    ///
-    /// # Errors
-    /// Preserves original-ledger admission, cancellation and authority failures.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn operation_generation_with_native_work(
         &self,
@@ -1026,7 +954,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Keeps original record bytes ahead of their metadata allocation until
-    /// the caller has decoded its fixed witness.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn operation_generation_record_with_native_work(
         &self, operation_id: crate::OperationId,
@@ -1046,7 +973,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Proves an immutable result was committed by this workspace's exact
-    /// join operation, not by an unrelated mutation with a plausible parent.
     pub async fn verify_join_commit(
         &self,
         witness: &crate::JoinCommitWitness,
@@ -1068,11 +994,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Opens an authenticated checkout using the requested generation and mode.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unsupported mode combinations, unavailable generations, and
-    /// authority or immutable-storage failures.
     pub async fn checkout(
         &self,
         selector: GenerationSelector,
@@ -1094,7 +1015,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Returns the attached native source, when this handle was created by
-    /// [`crate::Fs::attach_directory`].
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[must_use]
     pub fn source(&self) -> Option<&crate::Source<A, O>> {
@@ -1102,11 +1022,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Captures all remaining source state and returns an independent exact
-    /// generation. Workspaces without a source simply return their head.
-    ///
-    /// # Errors
-    ///
-    /// Returns source reconciliation or generation authentication failures.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub async fn seal(&self) -> Result<Generation<A, O>, crate::SourceError> {
         match &self.source {
@@ -1118,10 +1033,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         }
     }
     /// Resolves and pins the current immutable generation for this operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed workspace failure when the head cannot be authenticated.
     pub async fn head(&self) -> Result<Generation<A, O>, WorkspaceError> {
         self.head_measured(
             crate::WorkBudget::UNBOUNDED,
@@ -1133,10 +1044,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Pins the authenticated head under explicit work and cancellation limits.
-    /// Failed admission retains the work already spent by the checkout engine.
-    ///
-    /// # Errors
-    /// Returns a measured storage, authentication, cancellation or work failure.
     pub async fn head_measured(
         &self,
         budget: crate::WorkBudget,
@@ -1164,9 +1071,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Pins the authenticated head using the invocation's original native work.
-    ///
-    /// # Errors
-    /// Preserves original allocation, cancellation and authentication failures.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn head_with_native_work(
         &self, original: &crate::NativeMaterializationWork,
@@ -1188,9 +1092,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Selects the head generation and reports whether its file table holds
-    /// a record for `file_id`: one keyed read, where finding the names bound
-    /// to that identity is a namespace traversal. No name binds an identity
-    /// without a record.
     pub(crate) async fn head_with_file_record_measured(
         &self,
         file_id: FileId,
@@ -1224,8 +1125,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Opens one immutable reader pinned to the head generation, which can
-    /// answer many identity questions, such as every hard-link alias check
-    /// of a directory page, against one head.
     pub(crate) async fn head_reader_measured(
         &self,
         budget: crate::WorkBudget,
@@ -1249,12 +1148,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reopens and authenticates one exact immutable generation belonging to
-    /// this workspace. This is the stateless transport/restart counterpart to
-    /// retaining a live [`Generation`] handle.
-    ///
-    /// # Errors
-    ///
-    /// Rejects absent, foreign, corrupt, or unauthenticated generation state.
     pub async fn generation(
         &self,
         generation_id: GenerationId,
@@ -1270,10 +1163,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Authenticates one exact generation under explicit work and cancellation
-    /// limits, retaining failure work without substituting the mutable head.
-    ///
-    /// # Errors
-    /// Returns a measured storage, authentication, cancellation or work failure.
     pub async fn generation_measured(
         &self,
         generation_id: GenerationId,
@@ -1316,12 +1205,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Atomically moves this workspace head to one of its own exact immutable
-    /// generations. The caller supplies the observed head, making restoration
-    /// a composable compare-and-swap rather than an unconditional reset.
-    ///
-    /// This primitive is also the recovery boundary for compatibility layers:
-    /// retrying the same key and inputs reports the already-restored generation,
-    /// while reusing a key for another generation fails closed.
     pub async fn restore_generation(
         &self,
         generation: &Generation<A, O>,
@@ -1373,12 +1256,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Atomically restores selected paths from an immutable compatible
-    /// generation while leaving every other live path untouched.
-    ///
-    /// This is the core primitive used by compatibility layers for checkout,
-    /// restore, and hard reset. Exact records are reused by reference, richer
-    /// metadata is retained, and live hard-link topology remains authoritative
-    /// for bindings outside `paths`.
     pub async fn restore_paths_from(
         &self,
         source: &Generation<A, O>,
@@ -1429,10 +1306,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Restores selected records through the original publication engine with
-    /// the caller's measured owner check at the actual authority seal.
-    /// Paths select exact namespace records. Existing destination directories
-    /// retain their child set while restoring metadata. Caller-expanded subtree
-    /// unions use [`Self::restore_selected_paths_from_with_permit_measured_guarded`].
     pub async fn restore_paths_from_with_permit_measured_guarded<F, Fut>(
         &self,
         source: &Generation<A, O>,
@@ -1455,9 +1328,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Restores a caller-expanded selected subtree record union with one seal.
-    /// Source-absent records must be ordered children first, and source-present
-    /// records parents first. Preparatory removals and empty directories remain
-    /// private to the same transaction until the final owner-guarded commit.
     pub async fn restore_selected_paths_from_with_permit_measured_guarded<F, Fut>(
         &self,
         source: &Generation<A, O>,
@@ -1480,8 +1350,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Restores the caller-expanded frozen selection at the original native seal.
-    /// Clones the caller's funded owner factory into each native publication;
-    /// its future owns its captures and its original error is returned intact.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn restore_selected_paths_from_with_permit_guarded_with_native_work<'original, E, F, Fut>(
         &self, source: &Generation<A, O>, paths: &[String], if_current: GenerationId,
@@ -1694,9 +1562,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Applies only the paths changed between `base` and `source`, rejecting
-    /// paths independently changed in the live workspace. This is a bounded,
-    /// exact three-way patch primitive for cherry-pick, revert, and similar
-    /// compatibility operations.
     #[allow(
         clippy::too_many_lines,
         reason = "one atomic path application keeps conflict classification and publication together"
@@ -1721,10 +1586,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Whether a path holds the same thing in two states: the same record,
-    /// or one file state under another identity or timestamps (see
-    /// `Fs::same_file_state`), as when a capture records afresh a file a
-    /// publication wrote. A hard link's identity is its other names, so it
-    /// must match exactly.
     async fn same_path_state(
         &self,
         left: Option<crate::kernel::FileRecord>,
@@ -1895,7 +1756,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Ok(WorkspacePathApply::NoChanges(current));
         }
         // Parents are restored before their children, and children removed
-        // before their parents.
         operations.sort_by_key(|operation| match operation {
             crate::kernel::Mutation::Remove { path, .. } => {
                 (1, std::cmp::Reverse(path.components().len()))
@@ -1919,12 +1779,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Returns the current complete immutable workspace state after all prior
-    /// SDK operations on this handle have reached their publication boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an authority or authentication failure when the current head
-    /// cannot be resolved exactly.
     pub async fn sync(&self) -> Result<WorkspaceSync<A, O>, WorkspaceError> {
         let span = crate::obs::span!(
             INFO,
@@ -1945,12 +1799,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Creates an independent named workspace at one exact generation without
-    /// copying unchanged namespace pages or file bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid destination names, foreign generations, incompatible
-    /// existing destinations, or storage/publication failures.
     pub async fn fork(
         &self,
         destination: impl AsRef<str>,
@@ -1968,15 +1816,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Forks one exact generation under caller-supplied work and cancellation
-    /// limits, returning exact work on success and on every partial failure.
-    /// Reuse the same destination, pinned generation, selection and idempotency
-    /// key to reconcile an uncertain publication. A failed call can leave staged
-    /// objects, or a committed workspace if cancellation follows publication.
-    ///
-    /// # Errors
-    ///
-    /// Rejects foreign generations, invalid destinations, exhausted work,
-    /// cancellation, incompatible retries and storage/publication failures.
     pub async fn fork_measured(
         &self,
         destination: impl AsRef<str>,
@@ -1994,7 +1833,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Forks the supplied exact generation with the original owner guard at each destination seal.
-    /// The guard is awaited after actual preparation, never merely before planning.
     pub async fn fork_measured_guarded<F, Fut>(
         &self, destination: impl AsRef<str>, options: ForkOptions<A, O>,
         permit: crate::PublicationPermit, budget: crate::WorkBudget,
@@ -2086,9 +1924,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Forks the supplied immutable source on the invocation's original scope.
-    ///
-    /// Reuse the exact source, selection, destination and operation key after an
-    /// uncertain acknowledgement; a mutable current source head is never substituted.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn fork_with_native_work(
         &self,
@@ -2110,8 +1945,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Seals each real destination publication with the original native owner guard.
-    /// The clonable guard owns its sealed authority and returns an owned future;
-    /// work clones retain the invocation's original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn fork_with_permit_guarded_with_native_work<'original, E, F, Fut>(
         &self, destination: &str, options: ForkOptions<A, O>,
@@ -2154,11 +1987,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Opens one sparse atomic transaction against the current generation.
-    /// No mutation is visible outside this transaction before [`Transaction::commit`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an authentication, authority, storage, or workspace-state failure.
     pub async fn begin_transaction(
         &self,
         idempotency_key: IdempotencyKey,
@@ -2218,16 +2046,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Opens one sparse atomic transaction against an exact immutable generation.
-    ///
-    /// This is the stateless transport boundary: a remote caller can retain its
-    /// base generation, submit sparse mutations later, and receive the same
-    /// observation-safe commit or rebase result as an embedded caller. The
-    /// generation must belong to this workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError::ForeignGeneration`] for another workspace, or
-    /// an authentication, authority, storage, or workspace-state failure.
     pub async fn begin_transaction_at(
         &self,
         generation: &Generation<A, O>,
@@ -2366,13 +2184,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Retains the current generation under one permanent human-readable label.
-    /// Repeating the same label and generation is idempotent; binding the label
-    /// to another generation is rejected.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid labels, generation authentication failures, or an
-    /// existing label bound to different state.
     pub async fn checkpoint(
         &self,
         label: impl AsRef<str>,
@@ -2405,13 +2216,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Durably pins the current immutable generation under an opaque customer
-    /// identity. Repeating the same identity at the same generation is exact
-    /// and binding it to different state fails closed.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid identities, generation authentication failures, or an
-    /// existing identity bound to different state.
     pub async fn pin(
         &self,
         identity: impl AsRef<str>,
@@ -2420,12 +2224,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Terminally deletes this workspace head while leaving independently
-    /// retained checkpoints, pins, and forks valid.
-    ///
-    /// # Errors
-    ///
-    /// Returns a storage or authority failure when deletion cannot be durably
-    /// resolved. Semantic races are returned as typed outcomes.
     pub async fn delete(
         &self,
         idempotency_key: IdempotencyKey,
@@ -2437,12 +2235,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Computes one immutable bounded semantic change set between two exact
-    /// generations of this workspace.
-    ///
-    /// # Errors
-    ///
-    /// Rejects foreign endpoints, zero bounds, malformed state, or a truncated
-    /// authenticated diff frontier.
     pub async fn diff(
         &self,
         from: &Generation<A, O>,
@@ -2488,7 +2280,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Begins a side-effect-free join description from this workspace into a
-    /// target workspace in the same filesystem deployment.
     #[must_use]
     pub fn join_into(&self, target: &Workspace<A, O>) -> JoinBuilder<A, O> {
         JoinBuilder {
@@ -2502,17 +2293,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Advances this fork to its source workspace's current generation while
-    /// preserving independently committed local changes.
-    ///
-    /// The source is recovered from authenticated immutable ancestry; no
-    /// mutable fork catalog is required. Planning and merge are side-effect
-    /// free, conflicts leave this workspace unchanged, and success publishes
-    /// through one idempotent head CAS.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a workspace that is not a fork, incompatible source semantics,
-    /// exhausted lineage/conflict bounds, malformed state, or backend failure.
     pub async fn live_rebase(
         &self,
         idempotency_key: IdempotencyKey,
@@ -2576,7 +2356,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// The parent head that [`Self::live_rebase`] would rebase this fork onto,
-    /// or `None` when the fork is already based on it.
     pub(crate) async fn parent_advance(
         &self,
         maximum_generations: u32,
@@ -2588,12 +2367,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reads at most `maximum_bytes` from one complete file at the current
-    /// immutable head.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-file paths, files above the supplied bound,
-    /// and authenticated backend failures.
     pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
         read_generation(self, GenerationSelector::Head, path, maximum_bytes).await
     }
@@ -2610,11 +2383,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reads one exact regular-file range without materializing unrelated bytes.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-file paths, invalid ranges, and authenticated
-    /// backend failures.
     pub async fn read_range(
         &self,
         path: &str,
@@ -2652,10 +2420,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Returns complete path identity, kind, size, link count, and metadata.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent paths and authenticated backend failures.
     pub async fn stat(&self, path: &str) -> Result<WorkspaceStat, WorkspaceError> {
         stat_generation(self, GenerationSelector::Head, path).await
     }
@@ -2705,7 +2469,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Makes every object `records` reach durable before another durable
-    /// store records them.
     pub(crate) async fn make_records_durable(
         &self,
         records: &[crate::kernel::FileRecord],
@@ -2756,11 +2519,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Returns one authenticated bounded directory page.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-directory paths, invalid cursors or bounds,
-    /// and authenticated backend failures.
     pub async fn list_directory(
         &self,
         path: &str,
@@ -2796,20 +2554,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-symbolic-link paths and authenticated backend
-    /// failures.
     pub async fn read_symbolic_link(&self, path: &str) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
         read_generation_symbolic_link(self, GenerationSelector::Head, path).await
     }
 
     /// Reads a symbolic-link target with the original finite work span.
-    ///
-    /// # Errors
-    ///
-    /// Preserves actual checkout, lookup and target-read work on every failure.
     pub async fn read_symbolic_link_measured(
         &self, path: &str, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -2831,11 +2580,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Plans sparse logical spans without reading content bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-file paths, invalid ranges or bounds, and
-    /// authenticated backend failures.
     pub async fn plan_extents(
         &self,
         path: &str,
@@ -2855,12 +2599,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Creates or replaces one complete UTF-8 file in a single atomic
-    /// generation publication.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, unsupported destinations, stale publication, or
-    /// authenticated storage failures.
     pub async fn write_text(
         &self,
         path: &str,
@@ -2871,11 +2609,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Creates or replaces one complete file in a single atomic generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, unsupported destinations, stale publication,
-    /// size limits, or authenticated storage failures.
     pub async fn write(
         &self,
         path: &str,
@@ -2889,10 +2622,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Removes one existing path in a single atomic generation publication.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent paths and bounded engine failures.
     pub async fn remove(&self, path: &str) -> Result<TransactionCommit<A, O>, WorkspaceError> {
         let mut transaction = self.begin_transaction(IdempotencyKey::new()).await?;
         transaction.remove(path).await?;
@@ -2900,12 +2629,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Copies one complete regular file within this workspace using immutable
-    /// extent references instead of reading or copying file bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, non-regular sources or destinations, and bounded
-    /// publication failures.
     pub async fn copy(
         &self,
         source: &str,
@@ -3492,7 +3215,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Reuses the workspace transaction compiler against a private checkout
-    /// candidate without publishing a second workspace head.
     pub(crate) fn for_checkout_candidate(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,
@@ -3506,7 +3228,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Moves a private candidate with its already-bound SDK operation identity.
-    /// This identity is compiler data and grants no publication authority.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn for_checkout_candidate_with_native_work(
         workspace: &Workspace<A, O>,
@@ -3628,27 +3349,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok(record)
     }
 
-    async fn restore_source_records_with_accounting(
-        &self,
-        source: &Generation<A, O>,
-        paths: &[NamespacePath],
-        selected_subtrees: bool,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<RestoreSourceRecords<A, O>, WorkspaceError> {
-        accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            self.checkout.validate_native_work(original)?;
-        }
-        let root = self.workspace.restore_source_root_with_accounting(
-            source, accounting, cancellation,
-        ).await?;
-        self.restore_source_records_from_root_with_accounting(
-            root, paths, selected_subtrees, accounting, cancellation,
-        ).await
-    }
-
     async fn restore_source_records_from_root_with_accounting(
         &self,
         mut root: RestoreSourceRoot<A, O>,
@@ -3758,23 +3458,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
         let result = self.create_dir_all_with_accounting(path, &mut accounting, cancellation).await;
-        result.map(|()| accounting.spent())
-            .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
-    }
-
-    pub(crate) async fn apply_authored_measured(
-        &mut self, operation: AuthoredMutation,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = async {
-            let bytes = operation.logical_owned_bytes();
-            let allocation = accounting.claim_owned(bytes, 0)?;
-            let operation = crate::kernel::Owned::new(operation, allocation, bytes);
-            let mut operations = crate::kernel::Owned::allocate(1, &mut accounting)?;
-            Self::push_workspace_mutation(&mut operations, operation, &mut accounting)?;
-            self.apply_workspace_authored_with_accounting(operations, &mut accounting, cancellation).await
-        }.await;
         result.map(|()| accounting.spent())
             .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
     }
@@ -4206,29 +3889,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn apply_authored_with_native_work(
-        &mut self, operation: AuthoredMutation, operation_allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(), WorkspaceError> {
-        let bytes = operation_allocation.bytes();
-        let operation = crate::kernel::Owned::new(operation,
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(operation_allocation), bytes);
-        self.checkout.validate_native_work(original)?;
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) = &operation.allocation else {
-            unreachable!("native authored input retains original custody")
-        };
-        if !guard.work().shares_ledger(original) || bytes < operation.value.logical_owned_bytes() {
-            return Err(WorkspaceError::from(crate::FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )));
-        }
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let mut operations = crate::kernel::Owned::allocate(1, &mut accounting)?;
-        Self::push_workspace_mutation(&mut operations, operation, &mut accounting)?;
-        self.apply_workspace_authored_with_accounting(operations, &mut accounting, cancellation).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_authored_bulk_with_native_work(
         &mut self, operations: Vec<AuthoredMutation>, allocation: crate::NativeAllocation,
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
@@ -4238,26 +3898,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         ).await.map_err(WorkspaceError::from)
     }
 
-
-    /// Preserves a stable source identity for an existing non-directory object.
-    ///
-    /// Reusing an identity creates a hard-link alias only when kind, metadata,
-    /// and payload match exactly; collisions fail closed.
-    pub async fn preserve_file_identity(
-        &mut self,
-        path: &str,
-        file_id: FileId,
-    ) -> Result<(), WorkspaceError> {
-        self.preserve_file_identity_measured(path, file_id, crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()).await.map(|_| ()).map_err(|failure| failure.error)
-    }
-
     /// Creates one new regular file and rejects an existing destination.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or existing paths, unsupported metadata, size limits,
-    /// and authenticated engine failures.
     pub async fn create_file(
         &mut self,
         path: &str,
@@ -4271,11 +3912,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Streams bytes into immutable content without changing the transaction's
-    /// candidate namespace. Unused content remains a safe collectible orphan.
-    ///
-    /// # Errors
-    ///
-    /// Returns source, size, cancellation, allocation, or storage failures.
     pub async fn stage_content<R: crate::kernel::AsyncBlobSource>(
         &self,
         source: &mut R,
@@ -4316,10 +3952,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates every missing directory on one canonical absolute path.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, a non-directory prefix, or a bounded engine failure.
     pub async fn create_dir_all(&mut self, path: &str) -> Result<(), WorkspaceError> {
         self.create_dir_all_measured(
             path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
@@ -4327,20 +3959,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates exactly one empty directory with canonical metadata.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/existing paths or authenticated engine failures.
     pub async fn create_directory(&mut self, path: &str) -> Result<(), WorkspaceError> {
         self.create_directory_measured(path, crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()).await.map(|_| ()).map_err(|failure| failure.error)
     }
 
     /// Creates one symbolic link with opaque target bytes.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/existing paths, unsupported profiles, or engine failures.
     pub async fn create_symbolic_link(
         &mut self,
         path: &str,
@@ -4378,22 +4002,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates or atomically replaces one complete UTF-8 file.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, non-regular destinations, size limits, and
-    /// authenticated engine failures.
     pub async fn write_text(&mut self, path: &str, text: &str) -> Result<(), WorkspaceError> {
         self.write(path, Bytes::copy_from_slice(text.as_bytes()))
             .await
     }
 
     /// Creates or atomically replaces one complete file.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, non-regular destinations, size limits, and
-    /// authenticated engine failures.
     pub async fn write(&mut self, path: &str, bytes: Bytes) -> Result<(), WorkspaceError> {
         self.write_measured(path, bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
@@ -4402,10 +4016,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates or replaces the same complete file under exact operation bounds.
-    /// Parent directories must already exist, as for [`Self::write`].
-    /// Transfers the original immutable byte buffer without copying its body.
-    /// Counters include path construction, lookup, and atomic mutation work;
-    /// failures retain that prefix and leave the pending candidate unpublished.
     pub async fn write_measured(
         &mut self,
         path: &str,
@@ -4466,11 +4076,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates or replaces one complete file by concatenating already staged
-    /// authenticated content without copying part bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty input, overflow, invalid destinations, and engine limits.
     pub async fn write_staged(
         &mut self,
         path: &str,
@@ -4520,10 +4125,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Removes one existing namespace binding from this transaction.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent paths and authenticated engine failures.
     pub async fn remove(&mut self, path: &str) -> Result<(), WorkspaceError> {
         self.remove_measured(path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
@@ -4532,9 +4133,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Removes the same authenticated binding under cumulative operation bounds.
-    /// A failed mutation retains the transaction's original pending candidate.
-    /// Counters include canonical path construction, identity lookup, and the
-    /// atomic removal, including completed work when a later stage fails.
     pub async fn remove_measured(
         &mut self,
         path: &str,
@@ -4570,24 +4168,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         ).await
     }
 
-    /// Removes the same authenticated binding through the original compiler.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn remove_with_native_work(
-        &mut self,
-        path: &str,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.remove_with_accounting(
-            path, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
-            cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
-    }
-
     /// Removes one binding only when its authenticated identity still matches.
-    ///
-    /// The precondition is compiled into the same atomic checkout mutation as
-    /// the removal; callers never perform a check-then-delete sequence.
     pub async fn remove_if(
         &mut self,
         path: &str,
@@ -4602,10 +4183,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Replaces one destination with a complete copy-on-write clone.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, non-regular endpoints, and bounded engine errors.
     pub async fn copy(&mut self, source: &str, destination: &str) -> Result<(), WorkspaceError> {
         let config = self.checkout.volume_config();
         let source = customer_path(source, config)?;
@@ -4659,20 +4236,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Atomically renames one namespace binding within the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or missing paths and bounded engine failures.
     pub async fn rename(&mut self, source: &str, destination: &str) -> Result<(), WorkspaceError> {
         self.rename_with_replace(source, destination, true).await
     }
 
     /// Atomically renames one namespace binding with an exact replacement policy.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or missing paths, a disallowed existing destination,
-    /// and bounded engine failures.
     pub async fn rename_with_replace(
         &mut self,
         source: &str,
@@ -4689,10 +4257,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Creates one same-workspace hard link without copying file content.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/foreign paths, incompatible kinds, or engine failures.
     pub async fn hard_link(
         &mut self,
         source: &str,
@@ -4703,10 +4267,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Replaces one regular-file range without rewriting untouched extents.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, overflow, incompatible kinds, or engine failures.
     pub async fn write_range(
         &mut self,
         path: &str,
@@ -4718,10 +4278,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Changes one regular file's logical length while preserving sparse layout.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid paths, incompatible kinds, limits, or engine failures.
     pub async fn resize(&mut self, path: &str, logical_bytes: u64) -> Result<(), WorkspaceError> {
         let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Resize {
@@ -4732,10 +4288,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Punches a hole or installs allocated zeros over one exact range.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid ranges/paths, incompatible kinds, or engine failures.
     pub async fn zero_range(
         &mut self,
         path: &str,
@@ -4754,10 +4306,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Preallocates one sparse range without replacing existing content.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid ranges/paths, incompatible kinds, or engine failures.
     pub async fn preallocate(
         &mut self,
         path: &str,
@@ -4774,10 +4322,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Clones one immutable range without reading or copying content bytes.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid ranges/paths, incompatible files, or engine failures.
     pub async fn clone_range(
         &mut self,
         source: &str,
@@ -4800,10 +4344,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Replaces complete canonical metadata for one existing path.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent paths, unsupported metadata, or engine failures.
     pub async fn set_metadata(
         &mut self,
         path: &str,
@@ -4814,19 +4354,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Publishes the complete candidate with one stable idempotency key.
-    /// Conflicts retain the candidate in `self` for explicit rebase or retry.
-    ///
-    /// # Errors
-    ///
-    /// Returns authentication, closure, storage, cancellation, or indeterminate
-    /// authority failures. Semantic publication rejections are typed outcomes.
     pub async fn commit(&mut self) -> Result<TransactionCommit<A, O>, WorkspaceError> {
         self.commit_with_permit(crate::PublicationPermit::Unrestricted)
             .await
     }
 
     /// Publishes this transaction only while an SDK operation-window permit
-    /// is still active at the authority linearization point.
     pub async fn commit_with_permit(
         &mut self,
         permit: crate::PublicationPermit,
@@ -4855,7 +4388,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Checks the caller's owner at each prepared ordinary publication seal,
-    /// including stale retries, preserving the whole caller error.
     pub async fn commit_with_permit_guarded<E, F, Fut>(
         &mut self,
         permit: crate::PublicationPermit,
@@ -4880,9 +4412,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Publishes through the original seal with the caller's asynchronous owner
-    /// check after closure preparation and before authoritative publication.
-    /// The check receives the current allowance and contributes its complete
-    /// receipt, including failed work, to this same transaction operation.
     pub async fn commit_with_permit_measured_guarded<E, F, Fut>(
         &mut self,
         permit: crate::PublicationPermit,
@@ -4901,9 +4430,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Retains the original opaque operation witness through the same authority
-    /// publication; neither the context nor its evidence grants authority.
-    /// The original permit binds fingerprint data only; the current `permit`
-    /// remains the authority for the actual publication.
     pub(crate) async fn commit_with_context_with_permit_measured_guarded<E, F, Fut>(
         &mut self, context: crate::Digest, operation_evidence: acyclic_stream::OwnedBytes,
         original_fingerprint_permit: crate::PublicationPermit,
@@ -5014,7 +4540,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
         // This outcome is part of the already-admitted commit future. Do not
-        // allocate another unbounded future after authority publication.
         let value = match self.commit_outcome_value(outcome) {
             Some(value) => value,
             None => {
@@ -5107,7 +4632,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Moves the already-funded witness into the original native publication.
-    /// Historical permit metadata never replaces the current publication grant.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn commit_with_context_with_permit_guarded_with_native_work<'a, E, F, Fut>(
         &mut self, context: crate::Digest, operation_evidence: acyclic_stream::OwnedBytes,
@@ -5167,13 +4691,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     /// Safely advances this retained sparse candidate to the current workspace
-    /// head and replays only its local mutations.
-    ///
-    /// # Errors
-    ///
-    /// Returns bounded dependency-probe, authentication, storage, or replay
-    /// failures. Semantic overlap is returned as a typed conflict and leaves
-    /// the transaction unchanged.
     pub async fn rebase(
         &mut self,
         maximum_conflicts: u32,
@@ -5263,7 +4780,6 @@ pub enum TransactionCommit<A, O> {
 /// Observation-safe advancement of one retained transaction candidate.
 pub enum TransactionRebase<A, O> {
     /// The current head is now the candidate's immutable base and its sparse
-    /// local mutations were replayed without crossing a dependency.
     Rebased(Generation<A, O>),
     /// One or more exact observed or mutated regions changed upstream.
     Conflicted {
@@ -5501,10 +5017,6 @@ pub struct WorkspaceStat {
 }
 
 /// Customer-visible metadata without storage object identities.
-///
-/// `None` means the source profile did not represent or observe the fact; zero
-/// remains an exact represented value. Opaque ACL, security-descriptor, and
-/// named-attribute contents are accessed through their dedicated bounded APIs.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkspaceMetadata {
     /// POSIX permission/type bits.
@@ -6215,12 +5727,6 @@ impl IntoIterator for NamespaceRecords {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
     /// Resolves every changed record or binding to exact paths with one bounded traversal of each
-    /// endpoint. Equal Merkle subtrees remain skipped by the semantic diff that created this set.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError::ChangedPathLimit`] instead of a partial result when either
-    /// endpoint exceeds `maximum_entries`.
     pub async fn changed_paths(
         &self,
         maximum_entries: u32,
@@ -6236,7 +5742,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
     }
 
     /// Resolves changed paths with one cumulative work budget and explicit
-    /// cancellation token. Partial traversal is never reported as exact.
     #[allow(
         clippy::too_many_lines,
         reason = "one bounded resolution of changed paths shares a single cumulative work budget"
@@ -6347,15 +5852,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
     }
 
     /// Composes contiguous immutable deltas into their exact net semantic
-    /// change. Intermediate changes that cancel are absent from the result.
-    ///
-    /// The implementation diffs the outer Merkle endpoints instead of
-    /// concatenating records, preserving canonical rename, hard-link, revert,
-    /// and equal-subtree behavior.
-    ///
-    /// # Errors
-    ///
-    /// Rejects non-contiguous or foreign deltas and bounded diff exhaustion.
     pub async fn compose(
         &self,
         next: &ChangeSet<A, O>,
@@ -6469,12 +5965,6 @@ impl<A, O> JoinBuilder<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     /// Authenticates endpoints and discovers one bounded common ancestor
-    /// without writing immutable objects or changing either authority.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unrelated deployments, incompatible semantics, missing or
-    /// over-bound lineage, and malformed authenticated state.
     pub async fn plan(self) -> Result<JoinPlan<A, O>, WorkspaceError> {
         self.validate_workspaces()?;
         let cancellation = CancellationToken::new();
@@ -6492,13 +5982,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     }
 
     /// Plans a join from exact immutable endpoints while requiring `target`
-    /// to remain the target workspace's current published generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError::ForeignGeneration`] for an endpoint from the
-    /// wrong workspace, or [`WorkspaceError::StaleTarget`] if the target has
-    /// advanced. Lineage and semantic failures match [`Self::plan`].
     pub async fn plan_at(
         self,
         source: &Generation<A, O>,
@@ -6513,8 +5996,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     }
 
     /// Plans the same bounded join on the caller's original native invocation.
-    /// The returned plan shares existing endpoint handles; its guard owns no
-    /// new heap backing after the temporary lineage buffers have been retired.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn plan_at_with_native_work(
         self,
@@ -6559,10 +6040,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
     }
 
     /// Plans against caller-pinned immutable source and target generations.
-    ///
-    /// The target must still be current when planning begins. The source may
-    /// have advanced: publication deliberately retains the generation pinned
-    /// when the parent began inspecting the child.
     pub async fn plan_pinned(
         self,
         source_head: Generation<A, O>,
@@ -6677,7 +6154,6 @@ impl<A, O> JoinPlan<A, O> {
     }
 
     /// Captures exact provider-owned inputs for later verification of this
-    /// durable application, even after the mutable target head advances.
     pub fn commit_witness(
         &self,
         application: &JoinApplication<A, O>,
@@ -6692,7 +6168,6 @@ impl<A, O> JoinPlan<A, O> {
     }
 
     /// Copies the same durable witness fields on the original native invocation.
-    /// This fixed `Copy` value has no heap backing and retains a zero-byte guard.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn commit_witness_with_native_work(
         &self,
@@ -6782,8 +6257,6 @@ pub enum JoinOutcome<A, O> {
 }
 
 /// One durable join result together with its exact conflict-resolution input.
-/// The digest is generated inside Filesystem's publication path, so receipt
-/// producers cannot accidentally attest a different set of resolutions.
 pub struct JoinApplication<A, O> {
     generation: Generation<A, O>,
     resolutions_digest: crate::Digest,
@@ -6899,11 +6372,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Applies this immutable plan through one target-head CAS.
-    ///
-    /// # Errors
-    ///
-    /// Returns authenticated storage, compatibility, bound, or publication
-    /// failures. Semantic conflicts and races are typed outcomes.
     pub async fn apply(&self, options: ApplyOptions) -> Result<JoinOutcome<A, O>, WorkspaceError> {
         self.apply_with_permit(options, crate::PublicationPermit::Unrestricted)
             .await
@@ -6960,9 +6428,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Expands exact kernel conflicts into immutable, driver-ready values.
-    ///
-    /// This is side-effect free and lets adapters present the same typed paths
-    /// and alternatives used by [`Self::apply_with_drivers`].
     pub async fn describe_conflicts(
         &self,
         conflicts: &[MergeConflict],
@@ -6972,7 +6437,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Runs registered immutable-input drivers for real join conflicts and
-    /// publishes the validated candidate through the ordinary target CAS.
     pub async fn apply_with_drivers<C: MergeResolutionCache>(
         &self,
         options: ApplyOptions,
@@ -7026,7 +6490,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Applies caller-selected immutable sides after validating that they
-    /// exactly cover the conflicts produced by this join plan.
     pub async fn apply_sides(
         &self,
         options: ApplyOptions,
@@ -7064,17 +6527,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         self.apply_resolutions(options, resolutions, crate::PublicationPermit::Unrestricted)
             .await
             .map_err(Into::into)
-    }
-
-    /// Borrows caller-paid side choices and retains every new native result guard.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_sides_with_native_work(
-        &self, options: ApplyOptions, selections: &BTreeMap<MergeConflict, ConflictSide>,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(JoinOutcome<A, O>, crate::NativeAllocation), (DrivenJoinError, Option<crate::NativeAllocation>)> {
-        self.apply_sides_with_permit_with_native_work(
-            options, selections, crate::PublicationPermit::Unrestricted, original, cancellation,
-        ).await
     }
 
     /// Applies borrowed exact side choices under the supplied writer permit.
@@ -7132,7 +6584,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     }
 
     /// Validates caller-selected declarations against this exact immutable
-    /// join and publishes them through the same fenced compare-and-swap path.
     pub async fn apply_candidate(
         &self,
         options: ApplyOptions,
@@ -7736,17 +7187,6 @@ pub(crate) fn namespace_path_text_measured(
     path.unicode_text_with_ledger(allocations, work, budget, cancellation).map_err(namespace_path_error)
 }
 
-
-fn child_namespace_path(
-    directory: &NamespacePath,
-    name: LogicalName,
-    limits: crate::model::VolumeLimits,
-) -> Result<NamespacePath, WorkspaceError> {
-    directory.child_measured(
-        &name, limits, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), 0,
-    ).map(|receipt| receipt.value).map_err(|failure| namespace_path_error(failure.error))
-}
-
 fn kernel_conflict(
     key: &ConflictKey,
     maximum_component_bytes: u32,
@@ -7888,10 +7328,6 @@ impl<A, O> Generation<A, O> {
     }
 
     /// Returns the workspace capability that owns this immutable generation.
-    ///
-    /// The returned handle is cheap and retains the same authenticated storage
-    /// deployment. It is useful for composing generation-oriented algorithms
-    /// without an adapter-owned workspace registry.
     #[must_use]
     pub fn workspace(&self) -> Workspace<A, O> {
         self.workspace.clone()
@@ -7900,7 +7336,6 @@ impl<A, O> Generation<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// Verifies an initial fork against the same immutable selection builder used
-    /// for creation. May stage content-addressed objects; publishes no authority.
     pub async fn matches_fork_selection(
         &self,
         source: &Self,
@@ -7932,7 +7367,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Computes the exact normalized second-parent identity that a merge of
-    /// this source generation into `target` must retain. This is read-only.
     pub async fn normalized_join_parent_for(
         &self,
         target: &Generation<A, O>,
@@ -7955,16 +7389,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Opens one cheap immutable reader pinned to this exact generation.
-    ///
-    /// The generation root is authenticated once while the reader is opened;
-    /// descendant objects remain lazy and are fetched only by the operation
-    /// that needs them. Clone the returned reader to overlap independent
-    /// requests without reopening the generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unavailable, foreign, or corrupt generation state and bounded
-    /// backend failures.
     pub async fn reader(&self) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
         self.workspace
             .engine_checkout(
@@ -7977,7 +7401,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Computes one semantic delta to a compatible generation in any workspace
-    /// from the same filesystem deployment.
     pub async fn diff_to(
         &self,
         to: &Generation<A, O>,
@@ -7994,7 +7417,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Computes one semantic delta with explicit cumulative work and
-    /// cancellation bounds.
     pub async fn diff_to_bounded(
         &self,
         to: &Generation<A, O>,
@@ -8037,9 +7459,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Materializes this immutable generation into an existing empty host
-    /// directory using the SDK's native capability-rooted adapter. Unix ctime
-    /// and Linux birth time are host-generated view-local facts; their exact
-    /// canonical values remain in this generation, not in the host inode.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn materialize(
         &self,
@@ -8119,8 +7538,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Materializes one path from this generation below an existing empty
-    /// host directory. The same relative path is reproduced below the
-    /// destination, allowing callers to stage and atomically exchange it.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn materialize_path(
         &self,
@@ -8217,7 +7634,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Materializes multiple paths with one pinned checkout and shared
-    /// file-identity table, preserving hard links across selected paths.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn materialize_paths(
         &self,
@@ -8307,9 +7723,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Restores one path from this immutable generation into a host tree.
-    ///
-    /// Only the selected path is read and touched. Publication is same-volume
-    /// and atomic for an ordinary host tree, or mount-visible for a live mount.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn restore_host_path(
         &self,
@@ -8345,19 +7758,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         merge_workspace_work(checkout.work, receipt, budget)
     }
 
-    /// Restores a bounded sequence of paths through one pinned checkout.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-    pub async fn restore_host_paths(
-        &self,
-        paths: &[std::path::PathBuf],
-        replacement: crate::HostPathReplacement,
-        options: &crate::MaterializeOptions,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Vec<crate::HostPathRestore>, WorkspaceError> {
-        self.restore_host_paths_measured(paths, replacement, options, crate::WorkBudget::UNBOUNDED, cancellation)
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-    }
-
     /// Restores a sequence through one exact checkout with cumulative failure work.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn restore_host_paths_measured(
@@ -8390,10 +7790,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Returns the exact immutable parent generation identities.
-    ///
-    /// # Errors
-    ///
-    /// Returns an authenticated storage or identity failure for malformed state.
     pub async fn parents(&self) -> Result<Vec<GenerationId>, WorkspaceError> {
         self.workspace
             .volume
@@ -8412,11 +7808,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Reads at most `maximum_bytes` from one complete file in this exact
-    /// immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid, absent, non-file, oversized, or unauthenticated state.
     pub async fn read(&self, path: &str, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
         read_generation(
             &self.workspace,
@@ -8465,11 +7856,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Reads one exact range from this immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-file paths, invalid ranges, and authenticated
-    /// backend failures.
     pub async fn read_range(
         &self,
         path: &str,
@@ -8502,7 +7888,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Reads the same immutable range with intrinsic original-operation byte
-    /// custody. Returned aliases retain that custody until their physical drop.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_range_with_native_work(
         &self,
@@ -8532,7 +7917,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Opens an immutable root carrier on the original native scope, without
-    /// creating a retention label or consulting another generation.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn pinned_reader_with_native_work(
         &self,
@@ -8559,10 +7943,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Returns complete metadata for one path in this immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid or absent paths and authenticated backend failures.
     pub async fn stat(&self, path: &str) -> Result<WorkspaceStat, WorkspaceError> {
         stat_generation(&self.workspace, GenerationSelector::Exact(self.id), path).await
     }
@@ -8578,7 +7958,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Resolves the same exact no-follow identity on the original native scope.
-    /// Only an authenticated absent binding returns `NotFound`.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn stat_with_native_work(
         &self,
@@ -8608,13 +7987,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Resolves an ordered exact path batch while sharing authenticated directory and file-table
-    /// frontiers. Absence is returned as `None`; links are not followed and file bodies are not
-    /// read.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an empty or excessive batch, foreign path encodings, cancellation, and
-    /// authenticated backend failures.
     pub async fn lookup_paths(
         &self,
         paths: &[NamespacePath],
@@ -8670,11 +8042,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Returns one authenticated bounded directory page from this generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-directory paths, invalid cursors or bounds,
-    /// and authenticated backend failures.
     pub async fn list_directory(
         &self,
         path: &str,
@@ -8707,10 +8074,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Returns the same exact-generation tree page with original native custody.
-    ///
-    /// # Errors
-    ///
-    /// Preserves namespace, cursor, bounds, authentication, and cancellation errors.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_after_with_native_work(
         &self,
@@ -8749,9 +8112,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Finds portable paths bound to one stable file identity in this generation.
-    ///
-    /// The traversal is bounded by `maximum_entries`; results are sorted and
-    /// include every matching hard link encountered before that bound.
     pub async fn paths_for_file_id(
         &self,
         file_id: FileId,
@@ -8794,10 +8154,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Finds portable paths for multiple stable file identities in one namespace traversal.
-    ///
-    /// The traversal is bounded by `maximum_entries`; each result is sorted and includes every
-    /// matching hard link encountered before that bound. Identities without a matching binding
-    /// are omitted.
     pub async fn paths_for_file_ids(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
@@ -8883,7 +8239,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             return Ok(NamespaceRecordSearch { records: NamespaceRecords::default(), complete: ids.is_empty() });
         }
         // The ordinary exact checkout keeps its GC hold throughout the same
-        // borrowed-root engine used by an already-pinned original reader.
         let live = allocations.live_bytes();
         let remaining = workspace_remaining(*work, budget, live)?;
         let opened = merge_workspace_backend(self.workspace.engine_checkout_measured(
@@ -8935,21 +8290,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Reads one opaque symbolic-link target from this generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-symbolic-link paths and authenticated backend
-    /// failures.
     pub async fn read_symbolic_link(&self, path: &str) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
         read_generation_symbolic_link(&self.workspace, GenerationSelector::Exact(self.id), path)
             .await
     }
 
     /// Reads this exact generation's target under one measured work budget.
-    ///
-    /// # Errors
-    ///
-    /// Preserves actual authentication, lookup and target-read work on failure.
     pub async fn read_symbolic_link_measured(
         &self, path: &str, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -8998,11 +8344,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Plans sparse logical spans without reading content bodies.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid/absent/non-file paths, invalid ranges or bounds, and
-    /// authenticated backend failures.
     pub async fn plan_extents(
         &self,
         path: &str,
@@ -9022,11 +8363,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Retains this exact immutable generation under one opaque stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid identities, foreign or corrupt generation state, and
-    /// conflicting reuse of an existing pin identity.
     pub async fn pin(
         &self,
         identity: impl AsRef<str>,
@@ -9036,7 +8372,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Retains this original generation under the same permanent opaque label.
-    /// Shared clones consume the first publication proof slot exactly once.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn pin_with_native_work(
         &self,
@@ -9083,7 +8418,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Actual original publication payload still retained by this generation's shared slot.
-    /// Observes custody without consuming it or repinning the generation.
     pub(crate) fn publication_retained_bytes(&self) -> u64 {
         self.publication_closure.as_ref().map_or(0, |slot| {
             let publication = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -9138,7 +8472,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         allowance.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(live)
             .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::Work(crate::WorkError::Overflow), work))?;
         // Clones share one slot; consume before awaiting, releasing the
-        // historical closure after this pin attempt.
         let publication = self.publication_closure.as_ref().and_then(|slot| {
             slot.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -9198,15 +8531,12 @@ impl<A, O> ForkOptions<A, O> {
     }
 
     /// Keeps the pinned parent lineage but starts with an empty namespace.
-    /// The initial view is the child's merge baseline: excluded parent paths
-    /// are never interpreted as child-authored deletions.
     #[must_use]
     pub fn empty(self) -> Self {
         self.inherit_paths(Vec::new())
     }
 
     /// Carries only explicitly selected files or directory subtrees. Selection
-    /// is part of the initial fork, never an authored deletion after creation.
     #[must_use]
     pub fn inherit_paths(mut self, paths: Vec<String>) -> Self {
         self.paths = Some(paths);
@@ -9337,7 +8667,6 @@ impl WorkspaceError {
             return bounded;
         }
         // OperationFailure's display field is not an Error::source edge.
-        // Inspect the canonical SDK failure wrapper without cloning/boxing it.
         let erased = &error as &dyn std::any::Any;
         if let Some(failure) = erased.downcast_ref::<crate::OperationFailure<FsError>>() {
             if let Some(bounded) = workspace_bounded_error(&failure.error) {
@@ -9353,7 +8682,6 @@ impl WorkspaceError {
     }
 
     /// Only intentional human-authored semantic diagnostics use this buffer.
-    /// Canonical parser failures retain their typed `NamespacePath` cause.
     pub(crate) fn path(message: &'static str) -> Self {
         Self::Path(message.to_owned())
     }
@@ -9372,7 +8700,6 @@ impl From<crate::MaterializeError> for WorkspaceError {
 }
 
 /// Transparent error wrappers can hide leaf quota and unit cancellation
-/// variants from `Error::source`; inspect the canonical typed fields directly.
 pub(crate) fn workspace_bounded_error(
     error: &(dyn std::error::Error + 'static),
 ) -> Option<WorkspaceError> {
@@ -9511,7 +8838,6 @@ impl From<crate::kernel::NamespacePathError> for WorkspaceError {
 }
 
 /// Exact backing transferred by an owned string-vector input. This is ownership
-/// bookkeeping, not namespace examination; adoption performs no new allocation.
 pub(crate) fn workspace_owned_strings_bytes(values: &Vec<String>) -> Result<u64, WorkspaceError> {
     let vector_bytes = values.capacity().checked_mul(std::mem::size_of::<String>())
         .ok_or(crate::WorkError::Overflow)?;
@@ -9527,14 +8853,6 @@ pub(crate) fn workspace_vec_bytes<T>(values: &Vec<T>) -> u64 {
 
 fn workspace_allocation_error(error: crate::kernel::allocation::AllocationError) -> WorkspaceError {
     crate::collection::handle_allocation_error(error).into()
-}
-
-fn path_index_error(error: crate::path_index::PathIndexError) -> WorkspaceError {
-    match error {
-        crate::path_index::PathIndexError::Work(error) => WorkspaceError::Work(error),
-        crate::path_index::PathIndexError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
-        error => WorkspaceError::engine(error),
-    }
 }
 
 pub(crate) fn new_workspace_vec<T>(
@@ -9639,8 +8957,6 @@ pub(crate) fn customer_path(
 }
 
 /// Uses the caller's cumulative full budget and shared live ledger.
-/// Borrowed, already-retained checkout storage belongs to the containing
-/// operation; freshly opened checkouts must first be adopted into this ledger.
 pub(crate) fn customer_path_measured(
     path: &str,
     config: crate::model::VolumeConfig,
@@ -9655,7 +8971,6 @@ pub(crate) fn customer_path_measured(
 }
 
 /// Borrows the caller's original accounting owner; no SDK path producer is
-/// executed inside its ledger loan. The guard follows this new path's capacity.
 pub(crate) fn customer_path_with_accounting(
     path: &str,
     config: crate::model::VolumeConfig,
@@ -9673,19 +8988,6 @@ pub(crate) fn namespace_path_error(error: crate::kernel::NamespacePathError) -> 
         crate::kernel::NamespacePathError::Cancelled => WorkspaceError::Cancelled(crate::CancellationError),
         error => WorkspaceError::NamespacePath(error),
     }
-}
-
-fn path_remaining(
-    work: crate::WorkCounters,
-    budget: crate::WorkBudget,
-    path: &NamespacePath,
-) -> Result<crate::WorkBudget, crate::WorkError> {
-    let mut remaining = work.remaining(budget)?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
-        .checked_sub(path.retained_bytes())
-        .ok_or(crate::WorkError::BudgetExceeded { counter: "peak_allocation_bytes",
-            observed: path.retained_bytes(), maximum: remaining.peak_allocation_bytes })?;
-    Ok(remaining)
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -9751,13 +9053,3 @@ fn regular_file_bytes(record: crate::kernel::FileRecord) -> Result<u64, Workspac
 #[cfg(test)]
 #[path = "tests/workspace.rs"]
 mod tests;
-
-fn accumulate_workspace_failure<E>(
-    failure: crate::OperationFailure<E>,
-    work: &mut crate::WorkCounters,
-    map: impl FnOnce(E) -> WorkspaceError,
-) -> WorkspaceError {
-    let failure = failure.map_with_prior_work(*work, map);
-    *work = *failure.work;
-    failure.error
-}
