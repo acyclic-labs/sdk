@@ -48,7 +48,7 @@ fn sum(values: &[u64]) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("snapshot JSON admission overflow".into())))
 }
 
-/// Allocation-free lexical admission, followed by ONE concrete ownership quota.
+/// Same-pass lexical and selected Raw-Value admission, then ONE ownership quota.
 /// The callback must reserve `Admission` with a real RAII quota/highwater before
 /// the original Snapshot Deserialize runs, release it on failure/cancellation,
 /// and adopt actual retained capacities without double counting on success.
@@ -58,23 +58,21 @@ fn sum(values: &[u64]) -> Result<u64> {
 /// The pinned EventPayload audit and Snapshot's original closed slot inventory
 /// must be updated if a reachable type/custom converter changes. Caller-owned
 /// input and verifier credentials are not newly owned request memory.
+/// The sealed shape adds hidden Value nodes and live Raw buffers exactly once
+/// through EventPayload's shared overlap quota. Selection covers retained event
+/// resolutions and projection interaction resolutions, never arbitrary fields.
 pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + ?Sized>(
     bytes: &[u8], bounds: JsonBounds, charge: &mut F,
 ) -> Result<SnapshotJsonAdmission> {
     // A checkpoint spans bounded chunks and is not subject to ONE event's byte
     // ceiling. Preserve the caller's finite total checkpoint allowance instead.
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
-    let mut input_bytes = 0u64;
-    let mut lexical_items = 0u64;
-    super::json::admit_json(bytes, bounds, &mut |event| {
-        match event {
-            JsonCodecCharge::Read { bytes } => input_bytes = sum(&[input_bytes, bytes])?,
-            JsonCodecCharge::Work { items, .. } => lexical_items = sum(&[lexical_items, items])?,
-            _ => {}
-        }
-        charge(event)
-    })?;
-    let event = super::event_json::event_payload_ownership(input_bytes, lexical_items, bounds.maximum_depth)?;
+    let value_shape = super::json::admit_json_value_shape(
+        bytes, bounds, super::json::JsonValueSchema::Snapshot, charge,
+    )?;
+    let input_bytes = value_shape.input_bytes();
+    let lexical_items = value_shape.lexical_items();
+    let event = super::event_json::event_payload_ownership(value_shape, bounds.maximum_depth)?;
     let slots = multiply(lexical_items, 2 + 8)?;
     // Reuse core/snapshot.rs's actual reachable ABI inventory. Projection's
     // largest map entry has three components: e.g. String/(EventReference,
@@ -133,7 +131,7 @@ pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + 
         string_payload_bytes: event.string_payload_bytes, scratch_bytes: event.scratch_bytes,
         diagnostic_bytes, conversation_cache_bytes, conversation_canonical_scratch_bytes,
     };
-    charge(JsonCodecCharge::Admission { maximum_owned_bytes })?;
+    charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
     Ok(admission)
 }
 
@@ -161,6 +159,209 @@ mod tests {
         })?;
         Ok((reducer.snapshot()?, issuer))
     }
+    fn interaction_fixture() -> Result<Snapshot> {
+        use crate::interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionTicket};
+        let (snapshot, issuer) = fixture("interaction outcomes".into())?;
+        let mut reducer = Reducer::restore(snapshot, issuer.verifier(), SchemaRegistry::new())?;
+        let agent = AgentId::from_bytes([9; 16]);
+        let ticket = InteractionTicket {
+            id: uuid::Uuid::from_bytes([10; 16]),
+            kind: InteractionKind::Question,
+            request: FileRef::new(VolumeRef::new(
+                ProviderRef::new("acyclic", "filesystem", "2")?, "scratch",
+                VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?,
+                "request.json", "version-1",
+                FileDescriptor::from_bytes(b"{}", "application/json")?, "request.json")?,
+            deadline_unix_ms: None, approval: None,
+        };
+        let scope = issuer.root("snapshot-codec-interactions", Capabilities::new([
+            "event:append", "interaction:open", "interaction:resolve",
+            ticket.responder_grant().as_str(),
+        ]));
+        reducer.apply(Command {
+            operation_id: OperationId::from_bytes([8; 16]),
+            idempotency_key: IdempotencyKey::new("snapshot-codec-open")?,
+            expected_revision: 1, scope: scope.clone(), causal_parent: None,
+            action: Action::OpenInteraction { ticket: ticket.clone() },
+        })?;
+        reducer.apply(Command {
+            operation_id: OperationId::from_bytes([9; 16]),
+            idempotency_key: IdempotencyKey::new("snapshot-codec-resolve")?,
+            expected_revision: 2, scope, causal_parent: None,
+            action: Action::ResolveInteraction { resolution: InteractionResolution {
+                id: ticket.id, expected_version: 1,
+                outcome: InteractionOutcome::Declined, detail: None,
+            } },
+        })?;
+        reducer.snapshot()
+    }
+    // Only test controls construct wire variants. Production inspects the
+    // selected sources within its original lexer, never this resident tree.
+    fn raw_outcomes(snapshot: &Snapshot, raw: &str, event: bool, projection: bool) -> Vec<u8> {
+        let mut wire = serde_json::to_value(snapshot).unwrap();
+        let raw = serde_json::json!({ "$serde_json::private::RawValue": raw });
+        if event {
+            let payload = wire["events"].as_array_mut().unwrap().iter_mut()
+                .map(|event| &mut event["payload"])
+                .find(|payload| payload["kind"] == "interaction_resolved").unwrap();
+            payload["resolution"]["outcome"] = raw.clone();
+        }
+        if projection {
+            let interaction = wire["projection"]["interactions"].as_object_mut().unwrap()
+                .values_mut().next().unwrap();
+            interaction[1]["outcome"] = raw;
+        }
+        serde_json::to_vec(&wire).unwrap()
+    }
+
+    #[test]
+    fn ordinary_snapshot_preserves_normal_quota_policy() -> Result<()> {
+        for snapshot in [fixture("ordinary".into())?.0, interaction_fixture()?] {
+            let bytes = super::super::canonical_json_bytes(&snapshot)?;
+            let mut shape = None;
+            let mut inspected = 0;
+            let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |charge| {
+                match charge {
+                    JsonCodecCharge::Inspect { items } => inspected += items,
+                    JsonCodecCharge::Admission { value_shape, .. } => shape = Some(value_shape),
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            let shape = shape.unwrap();
+            assert_eq!(shape.virtual_items(), 0);
+            assert_eq!(inspected, 0);
+            assert_eq!(super::super::json::json_value_virtual_owned_bytes(shape)?, 0);
+            let slots = admission.lexical_items * 10;
+            let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
+            assert_eq!(admission.value_overlap_bytes, slots * value_slot);
+            assert_eq!(admission.typed_collection_bytes, slots * Snapshot::LOGICAL_SCHEMA_SLOT_BYTES * 3);
+            let event = super::super::event_json::event_payload_ownership(shape, 256)?;
+            assert_eq!(admission.serde_content_bytes, event.serde_content_bytes);
+            assert_eq!(admission.boxed_payload_bytes, admission.lexical_items * event.boxed_payload_bytes);
+            assert_eq!(admission.string_payload_bytes, event.string_payload_bytes);
+            assert_eq!(admission.scratch_bytes, event.scratch_bytes);
+            assert_eq!(admission.maximum_owned_bytes, sum(&[
+                admission.serde_content_bytes, admission.typed_collection_bytes,
+                admission.value_overlap_bytes, admission.boxed_payload_bytes,
+                admission.string_payload_bytes, admission.scratch_bytes,
+                admission.diagnostic_bytes, admission.conversation_cache_bytes,
+                admission.conversation_canonical_scratch_bytes,
+            ])?);
+            let decoded: Snapshot = super::super::json_from_slice(&bytes)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            assert_eq!(decoded, snapshot);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_raw_outcomes_decode_under_one_original_pass_and_quota() -> Result<()> {
+        let snapshot = interaction_fixture()?;
+        for (event, projection) in [(true, false), (false, true), (true, true)] {
+            let bytes = raw_outcomes(&snapshot, r#"{"kind":"declined"}"#, event, projection);
+            let live = Cell::new(0);
+            let mut quota = None;
+            let mut shape = None;
+            let (mut read, mut work, mut inspected, mut reservations) = (0, 0, 0, 0);
+            let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |charge| {
+                match charge {
+                    JsonCodecCharge::Read { bytes } => read += bytes,
+                    JsonCodecCharge::Work { items, .. } => work += items,
+                    JsonCodecCharge::Inspect { items } => inspected += items,
+                    JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+                        reservations += 1;
+                        shape = Some(value_shape);
+                        live.set(maximum_owned_bytes);
+                        quota = Some(Quota { bytes: maximum_owned_bytes, live: &live });
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            let shape = shape.unwrap();
+            assert_eq!(read, bytes.len() as u64);
+            assert_eq!(work, admission.lexical_items);
+            assert_eq!(shape.input_bytes(), read);
+            assert_eq!(shape.lexical_items(), work);
+            assert_eq!(shape.virtual_items(), 3 * (u64::from(event) + u64::from(projection)));
+            assert!(inspected > 0);
+            assert_eq!(reservations, 1);
+            let normal_slots = admission.lexical_items * 10
+                * size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
+            assert_eq!(admission.value_overlap_bytes,
+                normal_slots + super::super::json::json_value_virtual_owned_bytes(shape)?);
+            assert!(admission.value_overlap_bytes > normal_slots);
+            let decoded: Snapshot = super::super::json_from_slice(&bytes)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            // Admission is not authentication: the original serde conversion
+            // produces the same signed snapshot, whose restore still checks MACs.
+            assert_eq!(decoded, snapshot);
+            assert_eq!(live.get(), admission.maximum_owned_bytes);
+            drop(decoded);
+            drop(quota);
+            assert_eq!(live.get(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_raw_hidden_items_and_stack_reject_before_original_serde() -> Result<()> {
+        let snapshot = interaction_fixture()?;
+        let wide = format!(r#"{{"kind":"declined","hidden":[{}]}}"#, vec!["0"; 128].join(","));
+        let deep = format!(r#"{{"kind":"declined","hidden":{}0{}}}"#, "[".repeat(300), "]".repeat(300));
+        for (event, projection) in [(true, false), (false, true)] {
+            let bytes = raw_outcomes(&snapshot, &wide, event, projection);
+            let normal = snapshot_json_admission(&bytes, bounds(&bytes), &mut |_| Ok(()))?;
+            assert!(super::super::json_from_slice::<Snapshot>(&bytes).is_err());
+            let item_bounds = JsonBounds { maximum_items: normal.lexical_items, ..bounds(&bytes) };
+            let deep_bytes = raw_outcomes(&snapshot, &deep, event, projection);
+            for (bytes, limits) in [(&bytes, item_bounds), (&deep_bytes, bounds(&deep_bytes))] {
+                let mut reservations = 0;
+                let mut decoded = false;
+                let result = snapshot_json_admission(bytes, limits, &mut |charge| {
+                    if matches!(charge, JsonCodecCharge::Admission { .. }) { reservations += 1; }
+                    Ok(())
+                }).and_then(|_| {
+                    decoded = true;
+                    super::super::json_from_slice::<Snapshot>(bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))
+                });
+                assert!(result.is_err());
+                assert_eq!(reservations, 0);
+                assert!(!decoded);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_raw_callback_cancellation_preserves_original_first_cause() -> Result<()> {
+        let snapshot = interaction_fixture()?;
+        let bytes = raw_outcomes(&snapshot, r#"{"kind":"declined"}"#, true, true);
+        let mut callbacks = 0;
+        snapshot_json_admission(&bytes, bounds(&bytes), &mut |_| { callbacks += 1; Ok(()) })?;
+        let original = Error::Conflict("original snapshot Raw cancellation".into());
+        for cancel_at in 0..callbacks {
+            let mut index = 0;
+            let mut reservations = 0;
+            let mut decoded = false;
+            let error = snapshot_json_admission(&bytes, bounds(&bytes), &mut |charge| {
+                if index == cancel_at { return Err(original.clone()); }
+                index += 1;
+                if matches!(charge, JsonCodecCharge::Admission { .. }) { reservations += 1; }
+                Ok(())
+            }).and_then(|_| {
+                decoded = true;
+                super::super::json_from_slice::<Snapshot>(&bytes)
+                    .map_err(|error| Error::Storage(error.to_string()))
+            }).unwrap_err();
+            assert_eq!(error, original);
+            assert_eq!(reservations, 0);
+            assert!(!decoded);
+        }
+        Ok(())
+    }
     fn bounds(bytes: &[u8]) -> JsonBounds {
         JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 }
     }
@@ -178,7 +379,7 @@ mod tests {
         let highwater = Cell::new(0);
         let mut quota = None;
         let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                 assert!(quota.is_none());
                 live.set(maximum_owned_bytes);
                 highwater.set(maximum_owned_bytes);
@@ -239,7 +440,7 @@ mod tests {
         let live = Cell::new(0);
         let mut quota = None;
         let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                 live.set(maximum_owned_bytes);
                 quota = Some(Quota { bytes: maximum_owned_bytes, live: &live });
             }
@@ -312,7 +513,7 @@ mod tests {
         let limit = admission.maximum_owned_bytes - 1;
         let mut live = 0;
         let rejected = snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                 if maximum_owned_bytes > limit { return Err(Error::Invalid("snapshot logical quota exhausted".into())); }
                 live = maximum_owned_bytes;
             }
@@ -323,7 +524,7 @@ mod tests {
         let retained = Cell::new(0);
         let mut quota = None;
         snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                 retained.set(maximum_owned_bytes);
                 quota = Some(Quota { bytes: maximum_owned_bytes, live: &retained });
             }
@@ -349,7 +550,7 @@ mod tests {
             let live = Cell::new(0);
             let mut quota = None;
             snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-                if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+                if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                     live.set(maximum_owned_bytes);
                     quota = Some(Quota { bytes: maximum_owned_bytes, live: &live });
                 }
@@ -374,7 +575,7 @@ mod tests {
             let live = Cell::new(0);
             let mut quota = None;
             let admission = snapshot_json_admission(&bytes, bounds(&bytes), &mut |event| {
-                if let JsonCodecCharge::Admission { maximum_owned_bytes } = event {
+                if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event {
                     live.set(maximum_owned_bytes);
                     quota = Some(Quota { bytes: maximum_owned_bytes, live: &live });
                 }

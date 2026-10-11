@@ -6,6 +6,7 @@
 //! remains the only decoder; this module does not interpret event variants.
 
 use super::{Error, JsonBounds, JsonCodecCharge, Result};
+use super::json::{JsonValueSchema, JsonValueShape};
 use crate::{
     AgentId,
     conversation::{Attachment, ConversationMessage, FileRef, VolumeOperation},
@@ -180,20 +181,11 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
         maximum_depth: bounds.maximum_depth.min(256),
         ..bounds
     };
-    let mut input_bytes = 0u64;
-    let mut lexical_items = 0u64;
-    super::json::admit_json(bytes, bounds, &mut |event| {
-        match event {
-            JsonCodecCharge::Read { bytes } => input_bytes = input_bytes.checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("event JSON byte count overflow".into()))?,
-            JsonCodecCharge::Work { items, .. } => lexical_items = lexical_items.checked_add(items)
-                .ok_or_else(|| Error::Invalid("event JSON item count overflow".into()))?,
-            _ => {}
-        }
-        charge(event)
-    })?;
-    let admission = event_payload_ownership(input_bytes, lexical_items, bounds.maximum_depth)?;
-    charge(JsonCodecCharge::Admission { maximum_owned_bytes: admission.maximum_owned_bytes })?;
+    let value_shape = super::json::admit_json_value_shape(
+        bytes, bounds, JsonValueSchema::EventPayload, &mut |event| charge(event),
+    )?;
+    let admission = event_payload_ownership(value_shape, bounds.maximum_depth)?;
+    charge(JsonCodecCharge::Admission { maximum_owned_bytes: admission.maximum_owned_bytes, value_shape })?;
     Ok(admission)
 }
 
@@ -201,8 +193,10 @@ pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<(
 // times. Reuse their audited tagged buffers/Value/string/error overlap without
 // rerunning the lexer or issuing a second quota reservation.
 pub(super) fn event_payload_ownership(
-    input_bytes: u64, lexical_items: u64, maximum_depth: u32,
+    shape: JsonValueShape, maximum_depth: u32,
 ) -> Result<EventPayloadJsonAdmission> {
+    let input_bytes = shape.input_bytes();
+    let lexical_items = shape.lexical_items();
     // Across each concrete collection pass, total element count <= tokens and
     // nonempty collection count <= tokens. Standard Vec capacity is bounded by
     // two times its elements plus at most eight initial slots per collection.
@@ -212,11 +206,15 @@ pub(super) fn event_payload_ownership(
         .max(size_of::<Content<'static>>()) as u64;
     let serde_content_bytes = multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?;
     let typed_collection_bytes = multiply(slots, TYPED_COLLECTION_SLOT_BYTES as u64)?;
-    // InteractionOutcome buffers Value and then consumes its answer through
-    // from_value; provider join proofs also retain arbitrary Value. Cover that
-    // Value pass concurrently with Content and newly owned typed output.
+    // InteractionOutcome buffers one Value tree, then consumes answer as FileRef
+    // or operation_id as UUID. Those typed from_value converters do not decode
+    // another Value tree. Cover the one tree concurrently with Content and typed
+    // output; only selected Raw sources add hidden nodes and live buffers.
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
-    let value_overlap_bytes = multiply(slots, value_slot)?;
+    let value_overlap_bytes = sum(&[
+        multiply(slots, value_slot)?,
+        super::json::json_value_virtual_owned_bytes(shape)?,
+    ])?;
     let boxed_payload_bytes = BOXED_PAYLOAD_BYTES as u64;
     // Each Content pass, the Value pass, and typed output can own at most the
     // total decoded UTF-8 string bytes in the input. JSON escapes never expand
@@ -239,6 +237,7 @@ pub(super) fn event_payload_ownership(
 mod tests {
     use super::*;
     use crate::core::{EventPayload, LifecycleState};
+    use crate::interaction::{InteractionOutcome, InteractionResolution};
 
     fn bounds(bytes: &[u8]) -> JsonBounds {
         JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 }
@@ -251,7 +250,7 @@ mod tests {
         let bytes = super::super::canonical_json_bytes(&payload)?;
         let mut reserved = 0;
         let admission = event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes } = event { reserved = maximum_owned_bytes; }
+            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event { reserved = maximum_owned_bytes; }
             Ok(())
         })?;
         assert_eq!(admission.input_bytes, bytes.len() as u64);
@@ -289,6 +288,198 @@ mod tests {
             Err(error.take().expect("admission must stop after its first failure"))
         });
         assert!(matches!(result, Err(Error::Indeterminate(original)) if original == operation));
+    }
+
+    fn raw_event_bytes(raw: &str) -> Result<Vec<u8>> {
+        // Normal serde fixture construction, not another admission parser.
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "interaction_resolved",
+            "resolution": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "expected_version": 1,
+                "outcome": { "$serde_json::private::RawValue": raw },
+            },
+        })).map_err(|error| Error::Storage(error.to_string()))
+    }
+
+    fn assert_normal_quota(admission: EventPayloadJsonAdmission) -> Result<()> {
+        let slots = multiply(admission.lexical_items, 10)?;
+        let content_slot = size_of::<(Content<'static>, Content<'static>)>()
+            .max(size_of::<Content<'static>>()) as u64;
+        let expected = [
+            multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?,
+            multiply(slots, TYPED_COLLECTION_SLOT_BYTES as u64)?,
+            multiply(slots, size_of::<Value>().max(size_of::<(String, Value)>()) as u64)?,
+            BOXED_PAYLOAD_BYTES as u64,
+            multiply(admission.input_bytes, CONTENT_LAYERS + 2)?,
+            multiply(admission.input_bytes.max(8), 2)?,
+            audited_serde_diagnostic_bytes(admission.input_bytes, DIAGNOSTIC_LABEL_BYTES)?,
+        ];
+        assert_eq!([
+            admission.serde_content_bytes, admission.typed_collection_bytes,
+            admission.value_overlap_bytes, admission.boxed_payload_bytes,
+            admission.string_payload_bytes, admission.scratch_bytes, admission.diagnostic_bytes,
+        ], expected);
+        assert_eq!(admission.maximum_owned_bytes, sum(&expected)?);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_outcomes_keep_normal_quota_and_original_typed_converters() -> Result<()> {
+        use crate::{
+            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+            resources::ProviderRef,
+        };
+        let answer = FileRef::new(
+            VolumeRef::new(ProviderRef::new("test", "filesystem", "2")?,
+                "interaction-private", VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([8; 16])))?,
+            "answer.json", "immutable-1",
+            FileDescriptor::from_bytes(b"null", "application/json")?, "interaction.json",
+        )?;
+        for outcome in [
+            InteractionOutcome::Answered { answer: Box::new(answer) },
+            InteractionOutcome::Indeterminate { operation_id: crate::OperationId::from_bytes([1; 16]) },
+        ] {
+            let payload = EventPayload::InteractionResolved { resolution: InteractionResolution {
+                id: Uuid::from_bytes([2; 16]), expected_version: 1, outcome, detail: None,
+            } };
+            let bytes = serde_json::to_vec(&payload).map_err(|error| Error::Storage(error.to_string()))?;
+            let mut read = 0;
+            let mut work = 0;
+            let admission = event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
+                match event {
+                    JsonCodecCharge::Read { bytes } => read += bytes,
+                    JsonCodecCharge::Work { items, .. } => work += items,
+                    JsonCodecCharge::Inspect { .. } => panic!("ordinary outcome has no Raw inspection"),
+                    JsonCodecCharge::Admission { value_shape, .. } => {
+                        assert_eq!(value_shape.virtual_items(), 0);
+                        assert!(!value_shape.unresolved_raw());
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            assert_eq!(read, bytes.len() as u64);
+            assert_eq!(work, admission.lexical_items);
+            assert_normal_quota(admission)?;
+            // FileRef/UUID consume the existing Value, not another Value decoder.
+            let decoded: EventPayload = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            assert_eq!(decoded, payload);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn escaped_raw_outcome_is_guarded_before_original_serde() -> Result<()> {
+        let bytes = br#"{"kind":"interaction_resolved","resolution":{"id":"00000000-0000-0000-0000-000000000001","expected_version":1,"outcome":{"\u0024serde_json::private::RawValue":"{\"kind\":\"approved\"}"}}}"#;
+        let mut read = 0;
+        let mut work = 0;
+        let mut inspect = 0;
+        let mut admitted_shape = None;
+        let admission = event_payload_json_admission(bytes, bounds(bytes), &mut |event| {
+            match event {
+                JsonCodecCharge::Read { bytes } => read += bytes,
+                JsonCodecCharge::Work { items, .. } => work += items,
+                JsonCodecCharge::Inspect { items } => inspect += items,
+                JsonCodecCharge::Admission { value_shape, .. } => admitted_shape = Some(value_shape),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        let shape = admitted_shape.expect("actual production admission");
+        assert_eq!(read, bytes.len() as u64);
+        assert_eq!(work, shape.lexical_items());
+        assert_eq!(admission.lexical_items, work);
+        assert!(inspect > 0);
+        assert!(shape.virtual_items() > 0);
+        let normal_value = multiply(multiply(shape.lexical_items(), 10)?,
+            size_of::<Value>().max(size_of::<(String, Value)>()) as u64)?;
+        assert_eq!(admission.value_overlap_bytes,
+            sum(&[normal_value, super::super::json::json_value_virtual_owned_bytes(shape)?])?);
+        assert!(admission.value_overlap_bytes > normal_value);
+        let decoded: EventPayload = serde_json::from_slice(bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(decoded, EventPayload::InteractionResolved {
+            resolution: InteractionResolution { outcome: InteractionOutcome::Approved, .. },
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_raw_items_and_depth_reject_before_serde_and_reservation() -> Result<()> {
+        let wide = format!(r#"{{"kind":"approved","extra":[{}]}}"#, vec!["0"; 96].join(","));
+        let deep = format!(r#"{{"kind":"approved","extra":{}0{}}}"#, "[".repeat(40), "]".repeat(40));
+        for (raw, restrict_items) in [(wide, true), (deep, false)] {
+            let bytes = raw_event_bytes(&raw)?;
+            let mut shape = None;
+            event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
+                if let JsonCodecCharge::Admission { value_shape, .. } = event { shape = Some(value_shape); }
+                Ok(())
+            })?;
+            let shape = shape.expect("actual source shape");
+            assert!(shape.virtual_items() > 0);
+            let mut limited = bounds(&bytes);
+            if restrict_items { limited.maximum_items = shape.lexical_items(); }
+            else { limited.maximum_depth = 16; }
+            let mut reserved = false;
+            let mut decoded = false;
+            let result = event_payload_json_admission(&bytes, limited, &mut |event| {
+                reserved |= matches!(event, JsonCodecCharge::Admission { .. });
+                Ok(())
+            }).and_then(|_| {
+                decoded = true;
+                serde_json::from_slice::<EventPayload>(&bytes)
+                    .map_err(|error| Error::Storage(error.to_string()))
+            });
+            assert!(result.is_err());
+            assert!(!reserved);
+            assert!(!decoded);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raw_inspection_and_quota_callbacks_keep_original_first_cause() -> Result<()> {
+        let bytes = raw_event_bytes(r#"{"kind":"approved"}"#)?;
+        for stop_at_admission in [false, true] {
+            let original = Error::Conflict("original Raw callback cancellation".into());
+            let mut reached = false;
+            let mut reserved = false;
+            let result = event_payload_json_admission(&bytes, bounds(&bytes), &mut |event| {
+                let admission = matches!(event, JsonCodecCharge::Admission { .. });
+                reserved |= admission;
+                if (stop_at_admission && admission)
+                    || (!stop_at_admission && matches!(event, JsonCodecCharge::Inspect { .. })) {
+                    reached = true;
+                    return Err(original.clone());
+                }
+                Ok(())
+            });
+            assert!(reached);
+            assert_eq!(result.unwrap_err(), original);
+            assert_eq!(reserved, stop_at_admission);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raw_magic_in_ignored_non_value_field_is_not_interpreted() -> Result<()> {
+        let bytes = br#"{"kind":"lifecycle_transitioned","from":"pending","to":"active","ignored":{"$serde_json::private::RawValue":"not JSON"},"reason":"$serde_json::private::RawValue"}"#;
+        let admission = event_payload_json_admission(bytes, bounds(bytes), &mut |event| {
+            assert!(!matches!(event, JsonCodecCharge::Inspect { .. }));
+            if let JsonCodecCharge::Admission { value_shape, .. } = event {
+                assert_eq!(value_shape.virtual_items(), 0);
+                assert!(!value_shape.unresolved_raw());
+            }
+            Ok(())
+        })?;
+        assert_normal_quota(admission)?;
+        assert!(matches!(serde_json::from_slice::<EventPayload>(bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?,
+            EventPayload::LifecycleTransitioned { .. }));
+        Ok(())
     }
 }
 

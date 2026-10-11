@@ -61,7 +61,14 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 }
 
 mod json;
-pub(crate) use json::{admit_json, lexical_json_diagnostic_bytes};
+pub(crate) use json::{
+    admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
+    json_owned_value_shape_bounded, json_owned_value_conversion_additional_bytes,
+    json_typed_value_decode_owned_bytes,
+    json_value_virtual_owned_bytes,
+    json_from_slice_seed_bounded_trusted,
+    owned_logical_bytes,
+};
 mod event_json;
 pub(crate) use event_json::{
     EventPayloadJsonAdmission, audited_serde_diagnostic_bytes, event_payload_json_admission,
@@ -69,12 +76,19 @@ pub(crate) use event_json::{
 mod snapshot_json;
 pub(crate) use snapshot_json::{SnapshotJsonAdmission, snapshot_json_admission};
 pub use json::{
-    JsonBounds, JsonCodecCharge, canonical_json_bytes_bounded, json_bytes_bounded_trusted,
+    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
+    canonical_json_bytes_bounded, json_bytes_bounded_trusted,
     json_from_slice_bounded_trusted, json_value_bounded_trusted, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use json::json_from_slice_bounded_native_trusted;
+pub use json::{json_from_slice_bounded_native_trusted, json_value_bounded_native_trusted};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use json::{
+    json_from_value_bounded_native_trusted, validate_json_byte_bound_native_trusted,
+    json_from_slice_seed_bounded_native_trusted,
+    canonical_json_bytes_bounded_native_trusted, json_bytes_bounded_native_trusted,
+};
 
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// The canonical bounded serializer preserves Value integer/float and duplicate
