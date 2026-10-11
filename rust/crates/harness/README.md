@@ -254,6 +254,14 @@ reconciliation purpose. READ/query contexts cannot select a writer; selection
 does not mint a grant or bypass the current owner checks on actual publication.
 The root result destination remains a separate immutable binding.
 
+Root bootstrap source verification retains only the original canonical
+`BindConversation` cache alias. It is neither a lease nor a volume grant.
+The SDK authenticates the complete original root record against the protected
+workflow digest, separately from the tagged canonical resource-admission digest.
+Historical READ queries must carry the actual original reservation witness;
+they cannot become fresh creators or writers. A substituted admission, foreign
+original fence/agent, or cancelled query rejects before source-provider IO.
+
 Native preparation may attach one genuine `NativeTaskWorkingView` to that
 same issued dispatch context. Its retained physical view and original owner
 never capture the context. Builtin callbacks borrow it only after protected

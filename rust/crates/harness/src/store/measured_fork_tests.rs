@@ -497,6 +497,48 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     // every caller-owned result payload and its query custody have dropped.
     assert_eq!(aggregate.reducer().revision(), 1);
     owner.authenticate_fork_parent(&audience)?;
+    // Bootstrap source authority borrows this actual protected ROOT binding.
+    // Its workflow digest is deliberately not the tagged CreatedAccess digest.
+    let bootstrap = owner.root_bootstrap_binding_witness_with_native_work(&native).await?;
+    let (original_root, root_custody) = owner.original_root_admission_with_native_work(&native).await?;
+    owner.verify_root_bootstrap_context_with_native_work(
+        &original_root, bootstrap.binding(), &native,
+    ).await?;
+    assert_eq!(owner.root_bootstrap_owner(), &fixture.host.owner);
+    let query = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
+        .expect("independent original bootstrap READ query");
+    owner.authenticated_root_binding_for_read_with_native_work(&bootstrap, &query).await?;
+    let mut substituted_root = original_root.clone();
+    substituted_root.arguments = serde_json::json!({"substituted_original_root": true});
+    let before = query.receipt();
+    assert!(matches!(owner.verify_root_bootstrap_context_with_native_work(
+        &substituted_root, bootstrap.binding(), &query,
+    ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(query.receipt().backend_write_operations, before.backend_write_operations);
+    let foreign = crate::durable_host::tests::created_resource_access::CreationFixture::new_with_grants(
+        &["foreign:bootstrap"],
+    ).await?;
+    let foreign_owner = foreign.host.journal_owner(
+        foreign.root, (&foreign.root_lease.reservation).into(),
+    ).await?;
+    // These fixtures reuse task IDs, but have distinct genuine admissions.
+    // ID equality cannot replace protected original admission provenance.
+    let before = query.receipt();
+    assert!(matches!(foreign_owner.authenticated_root_binding_for_read_with_native_work(
+        &bootstrap, &query,
+    ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(query.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(query.receipt().backend_write_operations, before.backend_write_operations);
+    let before = cancelled.receipt();
+    assert!(matches!(owner.verify_root_bootstrap_context_with_native_work(
+        &original_root, bootstrap.binding(), &cancelled,
+    ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(cancelled.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(cancelled.receipt().backend_write_operations, before.backend_write_operations);
+    drop(substituted_root);
+    drop(original_root);
+    drop(root_custody);
     drop(aggregate);
     drop(owner);
     Ok(())

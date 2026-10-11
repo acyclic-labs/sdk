@@ -372,6 +372,21 @@ struct RetainedRootBinding {
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
+/// Retains the original SDK-verified root binding, not a lease or volume grant.
+/// Only the original root owner can issue this scoped immutable cache alias.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[derive(Clone)]
+pub struct RootBootstrapBindingWitness {
+    state: Arc<TaskRootBinding>,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl RootBootstrapBindingWitness {
+    pub(crate) fn binding(&self) -> &crate::store::VerifiedRootBinding {
+        &self.state.proof.get().expect("issued canonical root binding").proof
+    }
+}
+
 /// Canonical admission reader for protected preparation bootstrap. The issuer
 /// keeps its original metadata custody; this token cannot authorize a write.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1925,14 +1940,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&crate::store::VerifiedRootBinding> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if !self.input_is_root || self.verify_original_read_witness()? {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "root creation requires its original live root owner",
-            });
-        }
         let proof = self.root_binding.as_ref()
             .and_then(|state| state.proof.get())
             .map(|retained| &retained.proof)
@@ -1940,18 +1947,98 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root creation lacks its canonical committed binding",
             })?;
+        self.verify_root_binding_use_with_native_work(proof, false, work).await?;
+        Ok(proof)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_root_binding_identity_with_native_work(
+        &self, proof: &crate::store::VerifiedRootBinding, readonly: bool,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.input_is_root || (!readonly && self.verify_original_read_witness()?) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root creation requires its original live root owner" });
+        }
         if proof.original_task() != self.task_id
-            || proof.admission_digest() != self.admission_digest
+            || proof.admission_digest() != self.original_admission_digest
             || proof.fence() != &self.fence
             || Some(proof.agent()) != self.input_agent
         {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "root creation binding differs from its original owner",
-            });
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "root binding differs from its original owner" });
         }
-        self.verify_with_native_work(false, work).await?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn verify_root_binding_use_with_native_work(
+        &self, proof: &crate::store::VerifiedRootBinding, readonly: bool,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.verify_root_binding_identity_with_native_work(proof, readonly, work)?;
+        if readonly { self.verify_read_access_with_native_work(work).await }
+        else { self.verify_with_native_work(false, work).await }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn root_bootstrap_binding_witness_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<RootBootstrapBindingWitness> {
+        self.authenticated_root_binding_with_native_work(work).await?;
+        Ok(RootBootstrapBindingWitness {
+            state: Arc::clone(self.root_binding.as_ref().expect("verified root cache")),
+        })
+    }
+
+    /// Uses only the original committed binding and original READ witness;
+    /// expired historical custody never becomes a fresh creator or writer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn authenticated_root_binding_for_read_with_native_work<'a>(
+        &'a self, witness: &'a RootBootstrapBindingWitness,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a crate::store::VerifiedRootBinding> {
+        let proof = witness.binding();
+        self.verify_root_binding_use_with_native_work(proof, true, work).await?;
         Ok(proof)
+    }
+
+    pub(crate) fn root_bootstrap_owner(&self) -> &Authority { &self.host.owner }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn original_root_admission_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        if !self.input_is_root {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "bootstrap source requires an original root admission" });
+        }
+        self.verify_read_access_with_native_work(work).await?;
+        self.host.observe_admission_with_native_work(self.task_id, work).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn verify_root_bootstrap_context_with_native_work(
+        &self, root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.verify_root_binding_identity_with_native_work(binding, true, work)?;
+        if root.parent.is_some() || crate::runtime::task_id_for_admission(root.operation_id) != self.task_id {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "bootstrap admission differs from its actual root" });
+        }
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        // This is the exact original WorkflowAdmission.request_digest recipe.
+        // Root source canonical_payload() uses a separately tagged digest.
+        let digest = host_digest_with_work(root, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut io))?;
+        if digest != self.original_admission_digest {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "bootstrap admission differs from protected original workflow" });
+        }
+        self.verify_read_access_with_native_work(work).await
     }
 
     fn retain_root_binding_owned(&self, retained: RetainedRootBinding) -> Result<bool> {
