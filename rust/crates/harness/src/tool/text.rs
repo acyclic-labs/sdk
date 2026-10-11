@@ -71,7 +71,6 @@ pub struct TextSelection {
 }
 
 /// Selects exactly the requested interval, rejecting invalid UTF-8 boundaries.
-/// No implicit rounding, truncation or normalization changes the request.
 pub fn read_range(source: &str, range: TextRange, options: ReadOptions) -> Result<TextSelection> {
     options.validate()?;
     read_range_engine(source, range, options, &mut AlgorithmWork::ordinary())
@@ -176,10 +175,6 @@ pub struct SearchMatches {
 }
 
 /// Searches every legal candidate under an actual comparison counter.
-///
-/// Matching is case-sensitive, literal and includes overlaps. The source must
-/// be fully scanned to return successful complete accounting. Exhausted work
-/// returns an explicit error, never an incomplete result reported as complete.
 pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Result<SearchMatches> {
     options.validate()?;
     literal_search_engine(source, query, options, &mut AlgorithmWork::ordinary())

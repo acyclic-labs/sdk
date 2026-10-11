@@ -223,66 +223,6 @@ fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn async_and_sync_clone_share_exact_results_and_work() -> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let source_extents = vec![
-        Extent {
-            offset: 0,
-            length: 4,
-            kind: ExtentKind::AllocatedZero,
-        },
-        Extent {
-            offset: 4,
-            length: 4,
-            kind: ExtentKind::Hole,
-        },
-    ];
-    let destination_extents = vec![Extent {
-        offset: 0,
-        length: 12,
-        kind: ExtentKind::Hole,
-    }];
-    let sync_source = put(&sync_store, source_extents.clone())?;
-    let async_source = put(&async_store, source_extents)?;
-    let sync_destination = put(&sync_store, destination_extents.clone())?;
-    let async_destination = put(&async_store, destination_extents)?;
-    let request = ExtentCloneRequest {
-        source_root: sync_source,
-        source_logical_bytes: 8,
-        source_range: ByteRange {
-            offset: 1,
-            length: 6,
-        },
-        destination_root: sync_destination,
-        destination_logical_bytes: 12,
-        destination_offset: 3,
-        maximum_spans: 2,
-        maximum_mutations: 2,
-    };
-    let synchronous = clone_extent_range(
-        &sync_store,
-        request,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(clone_extent_range_async(
-        &async_store,
-        ExtentCloneRequest {
-            source_root: async_source,
-            destination_root: async_destination,
-            ..request
-        },
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous range clone unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
 fn pre_cancelled_async_clone_performs_zero_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(

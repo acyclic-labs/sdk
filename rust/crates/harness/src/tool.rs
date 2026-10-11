@@ -17,8 +17,6 @@ pub mod schema;
 pub mod text;
 pub mod text_files;
 
-// Decode the admitted JSON by reference: typed outputs own only their actual
-// fields, without first cloning the complete arguments or canonical result tree.
 fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T> {
     T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -114,8 +112,7 @@ pub(crate) fn value_with_native_work_bounded<T: Serialize>(
     Ok((value, custody))
 }
 
-/// Logical SDK-owned Value slots and actual deep buffer capacities, not serde
-/// allocator nodes, provider metadata, or resident process memory.
+/// Logical SDK-owned Value slots and actual deep buffer capacities, not serde allocator nodes, provider metadata, or resident process memory.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
     fn add(left: u64, right: u64) -> Result<u64> {
@@ -146,8 +143,7 @@ pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
     add(std::mem::size_of::<Value>() as u64, deep(value)?)
 }
 
-/// Static labels of the closed tool DTO graphs, extending the SDK profile with
-/// their actual derived type and field names before serde constructs an error.
+/// Static labels of the closed tool DTO graphs, extending the SDK profile with their actual derived type and field names before serde constructs an error.
 #[cfg(feature = "filesystem")]
 pub(crate) const fn tool_serde_diagnostic_label_bytes() -> u64 {
     const BYTES: u64 = {
@@ -257,9 +253,7 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    /// Constructs a definition from borrowed schema literals on the original
-    /// ledger. Schema parsing, SDK buffers and validation precede publication;
-    /// keep the returned guard after the definition through its physical drop.
+    /// Constructs a definition from borrowed schema literals on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "the complete pinned tool definition")]
     pub fn new_with_native_work(
@@ -378,7 +372,6 @@ impl ToolDefinition {
     }
 
     /// Validates and decodes the complete model-visible projection envelope.
-    /// Bare values are rejected even when an unconstrained schema accepts them.
     pub(crate) fn validate_projection(
         &self,
         value: &Value,
@@ -389,8 +382,7 @@ impl ToolDefinition {
         })
     }
 
-    /// Validates the same complete projection envelope through the original
-    /// schema and audited DTO codec, without an ordinary allocating decode.
+    /// Validates the same complete projection envelope through the original schema and audited DTO codec, without an ordinary allocating decode.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn validate_projection_with_native_work(
         &self,
@@ -417,7 +409,6 @@ impl ToolDefinition {
 }
 
 /// Declares an explicit JSON result envelope for the supplied value schema.
-/// The value schema is a child schema; local references resolve from the complete envelope.
 #[must_use]
 pub fn json_projection_schema(value_schema: Value) -> Value {
     let properties = serde_json::Map::from_iter([
@@ -436,8 +427,7 @@ pub fn json_projection_schema(value_schema: Value) -> Value {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolInvocation {
-    /// Runtime-owned identity for execution and reconciliation. A provider's
-    /// call ID alone is not unique across turns or tasks.
+    /// Runtime-owned identity for execution and reconciliation.
     pub operation_id: OperationId,
     /// Model-owned call identity.
     pub call_id: String,
@@ -473,8 +463,7 @@ impl ToolInvocation {
         }
     }
 
-    /// Moves an already-paid native provider call into the same deterministic
-    /// identity; the caller retains its original payload custody.
+    /// Moves an already-paid native provider call into the same deterministic identity; the caller retains its original payload custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn for_model_call_with_native_work(
         parent: OperationId,
@@ -499,8 +488,7 @@ impl ToolInvocation {
         Ok(Self::for_model_call(parent, step, call_id, name, arguments))
     }
 
-    /// Rejects identities that could execute successfully but fail later when
-    /// their canonical conversation record is published.
+    /// Rejects identities that could execute successfully but fail later when their canonical conversation record is published.
     pub fn validate(&self) -> Result<()> {
         Self::validate_identity(&self.call_id, &self.name)
     }
@@ -591,16 +579,12 @@ pub struct ToolResult {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
-    /// Identifies an adapter that always executes through this exact resumable
-    /// machine's admitted journal and committed outbox. This is not a fallback
-    /// flag: registries require full definition and machine identity equality.
+    /// Identifies an adapter that always executes through this exact resumable machine's admitted journal and committed outbox.
     fn resumable_machine_identity(&self) -> Option<crate::workflow::MachineIdentity> {
         None
     }
 
-    /// Borrows the same genuine adapter's pinned machine identity on the
-    /// original ledger. Native startup never calls the ordinary cloning hook.
-    /// An unaudited custom adapter rejects before any callback or allocation.
+    /// Borrows the same genuine adapter's pinned machine identity on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn resumable_machine_identity_with_native_work<'a>(
         &'a self,
@@ -612,8 +596,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Checks invocation-specific resource grants before a result is replayed,
-    /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
+    /// Checks invocation-specific resource grants before a result is replayed, dispatched, or reconciled.
     fn authorize(
         &self,
         _scope: Option<&crate::runtime::RuntimeScope>,
@@ -623,7 +606,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Checks original task-bound resources before replay, dispatch or reconciliation.
-    /// Context-independent adapters retain the same scoped authorization gate.
     fn authorize_with_context(
         &self,
         context: &crate::runtime::ToolContext,
@@ -636,7 +618,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
 
     /// Executes with the scoped task/tool context when admitted by the typed runtime.
-    /// Existing host adapters may delegate to `execute`; contextual tools override this.
     fn execute_with_context<'a>(
         &'a self,
         _context: crate::runtime::ToolContext,
@@ -651,9 +632,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         invocation: ToolInvocation,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
 
-    /// Reconciles under the same owner-authenticated task context used for
-    /// dispatch. Context-aware adapters override this rather than relying on
-    /// an invocation identity as a bearer authorization.
+    /// Reconciles under the same owner-authenticated task context used for dispatch.
     fn reconcile_with_context<'a>(
         &'a self,
         _context: crate::runtime::ToolContext,
@@ -662,8 +641,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         self.reconcile(invocation)
     }
 
-    /// Rejects an unaudited implementation before the caller constructs native
-    /// invocation metadata or a future. This conveys no resource authority.
+    /// Rejects an unaudited implementation before the caller constructs native invocation metadata or a future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
         &self,
@@ -676,8 +654,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Checks the same original context before native replay or dispatch.
-    /// A custom executor without an audited native gate rejects synchronously,
-    /// before any ordinary authorization callback or future allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn authorize_with_native_context(
         &self,
@@ -723,7 +699,6 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: acyclic_stream::ProviderPlatform {
     /// Produces the complete serialized `ToolResultContent` envelope without effects.
-    /// The independently pinned projection schema validates this full envelope.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 
     /// Rejects an unaudited projector before dispatch, not after its effects.
@@ -738,8 +713,7 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Produces a paid SDK projection without invoking an ordinary allocating
-    /// projector. Custom projectors must explicitly supply their audited body.
+    /// Produces a paid SDK projection without invoking an ordinary allocating projector.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn project_with_native_work(
         &self,
@@ -755,8 +729,6 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
 }
 
 /// First-party complete JSON projection for registered SDK tools, including MCP.
-/// This stateless producer owns no logical buffers or metadata; the native
-/// returned envelope retains its actual Self and deep storage until payload drop.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct JsonToolProjection;
 
@@ -795,8 +767,7 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
         definition_digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>>;
 
-    /// Optional actual bounded approval replay and artifact read. Missing
-    /// implementations reject before consulting any unmeasured journal.
+    /// Optional actual bounded approval replay and artifact read.
     #[cfg(feature = "filesystem")]
     fn verify_measured<'a>(
         &'a self, _interaction_id: InteractionId, _operation_id: OperationId,
@@ -808,9 +779,6 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Verifies that same retained approval on the original native ledger.
-    /// An unsupported provider rejects before future allocation or journal IO.
-    /// Stock implementations admit their actual concrete future frame through
-    /// NativeFutureBundle::new before constructing its body or allocating Box.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,
@@ -844,8 +812,7 @@ enum ModelSelection {
     Hidden,
 }
 
-/// Deterministic registry retaining every pinned revision. A model request
-/// exposes exactly one selected revision per logical tool name.
+/// Deterministic registry retaining every pinned revision.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     versions: BTreeMap<(String, String), Tool>,
@@ -911,7 +878,6 @@ impl ToolRegistry {
     }
 
     /// Creates the same empty registry with paid logical Self metadata.
-    /// The registry must be dropped before its returned custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         work: &acyclic_fs::NativeMaterializationWork,
@@ -927,10 +893,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Moves a paid definition and the original provider objects into this
-    /// registry. Provider payload custody belongs to those provider objects;
-    /// opaque Arc/BTree allocator backing is not claimed as SDK logical data.
-    /// Keep this registry's data before `custody` through its physical drop.
+    /// Moves a paid definition and the original provider objects into this registry.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "paid definition and original providers")]
     pub fn register_with_native_work(
@@ -987,7 +950,6 @@ impl ToolRegistry {
             let held = io.into_native_custody(extra)?;
             let mut prepared = NativeToolRegistration { value: prepared, custody: held };
             // Transfer every paid new field before the infallible publication.
-            // Failure drops prepared data before its guard; the old map is intact.
             custody.absorb(&mut prepared.custody)?;
             self.publish_registration(prepared.value);
             published = true;
@@ -1126,7 +1088,6 @@ impl ToolRegistry {
     }
 
     /// Pins complete dynamic installation identity, including empty visibility.
-    /// Callers mutate a cloned registry and publish it only after batch validation.
     pub(crate) fn pin_catalog_revision(
         &mut self,
         namespace: &str,
@@ -1142,9 +1103,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Removes a logical tool from future model catalogs without deleting its
-    /// immutable versions. Already admitted operations can still resolve their
-    /// pinned version; calling `select_model_version` explicitly restores it.
+    /// Removes a logical tool from future model catalogs without deleting its immutable versions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
         if !self.versions.keys().any(|(logical, _)| logical == name) {
             return Err(Error::NotFound(format!("tool {name}")));
@@ -1198,8 +1157,7 @@ impl ToolRegistry {
         self.versions.get(&(name.to_owned(), revision.to_owned()))
     }
 
-    /// Resolves the same selected or explicitly qualified tool with original
-    /// work and paid pinned-lookup keys, without an ordinary allocating lookup.
+    /// Resolves the same selected or explicitly qualified tool with original work and paid pinned-lookup keys, without an ordinary allocating lookup.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn get_with_native_work(
         &self,
@@ -1219,8 +1177,7 @@ impl ToolRegistry {
         self.get_version_with_native_work(name, revision, work)
     }
 
-    /// Uses the same logarithmic pinned registry lookup with funded temporary
-    /// key strings; no second registry or linear native lookup is introduced.
+    /// Uses the same logarithmic pinned registry lookup with funded temporary key strings; no second registry or linear native lookup is introduced.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn get_version_with_native_work(
         &self,
@@ -1242,8 +1199,7 @@ impl ToolRegistry {
         Ok(found)
     }
 
-    /// Copies only SDK-owned registry metadata on the original ledger. Executor
-    /// and projector Arcs remain the exact registered provider objects.
+    /// Copies only SDK-owned registry metadata on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn clone_with_native_work(
         &self,

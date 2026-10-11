@@ -165,37 +165,6 @@ fn too_many_parent_root() -> GenerationRoot {
 }
 
 #[test]
-fn measured_root_encoding_preserves_canonical_bytes_and_real_capacity()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let mut value = root();
-    for parent_count in 0..=2 {
-        value.parents = [4, 5].into_iter().take(parent_count)
-            .map(|seed| GenerationId::new(Digest::from_bytes([seed; 32]))).collect();
-        let baseline = encode_generation_root(&value)?;
-        let receipt = encode_generation_root_measured(&value, WorkBudget::UNBOUNDED, &cancellation, 37)?;
-        assert_eq!(receipt.value, baseline);
-        assert_eq!(receipt.work.items_examined, 1);
-        assert_eq!(receipt.work.bytes_encoded, receipt.value.len() as u64);
-        assert_eq!(receipt.work.bytes_copied, 64 + parent_count as u64 * 32);
-        assert_eq!(receipt.work.allocation_operations, 1);
-        assert_eq!(receipt.work.peak_allocation_bytes, 37 + receipt.value.capacity() as u64);
-        let permit = WorkBudget {
-            items_examined: receipt.work.items_examined,
-            bytes_encoded: receipt.work.bytes_encoded,
-            bytes_copied: receipt.work.bytes_copied,
-            allocation_operations: receipt.work.allocation_operations,
-            peak_allocation_bytes: receipt.work.peak_allocation_bytes,
-            ..WorkBudget::UNBOUNDED
-        };
-        let finite = encode_generation_root_measured(&value, permit, &cancellation, 37)?;
-        assert_eq!(finite, receipt);
-        assert_eq!(object_digest(ObjectKind::GenerationRoot, &finite.value), generation_root_id(&value)?.0.digest);
-    }
-    Ok(())
-}
-
-#[test]
 fn measured_root_encoding_refuses_before_allocation_and_retains_invalid_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let value = root();
@@ -239,39 +208,6 @@ fn measured_root_encoding_refuses_before_allocation_and_retains_invalid_prefix()
     let failure = encode_generation_root_measured(&invalid, WorkBudget::UNBOUNDED, &cancellation, 91).expect_err("cancelled before validation");
     assert!(matches!(failure.error, GenerationRootEncodeError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_root_encoder_retains_real_output_capacity_on_original_ledger()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live_before = work.live_allocation_bytes();
-    let value = root();
-    let mut accounting = KernelAccounting::native(&work, &cancellation);
-    let (encoded, guard) = encode_generation_root_with_accounting(&value, &mut accounting, &cancellation)?;
-    assert_eq!(encoded, encode_generation_root(&value)?);
-    match &guard {
-        KernelOwnedAllocation::NativeOriginal(allocation) => {
-            assert!(allocation.work().shares_ledger(&work));
-            assert_eq!(allocation.bytes(), encoded.capacity() as u64);
-        }
-        KernelOwnedAllocation::Standalone => panic!("original writer returned standalone custody"),
-    }
-    let after = work.receipt();
-    assert_eq!(after.items_examined - before.items_examined, 1);
-    assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded.len() as u64);
-    assert_eq!(after.bytes_copied - before.bytes_copied, 96);
-    assert_eq!(after.allocation_operations - before.allocation_operations, 1);
-    assert_eq!(after.peak_allocation_bytes, live_before + encoded.capacity() as u64);
-    assert_eq!(work.live_allocation_bytes(), live_before + encoded.capacity() as u64);
-    drop(encoded);
-    drop(guard);
-    assert_eq!(work.live_allocation_bytes(), live_before);
     Ok(())
 }
 

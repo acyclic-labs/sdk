@@ -1,5 +1,4 @@
-//! Streaming extension of the canonical lexical admission pass. This is a
-//! shape witness, not JSON validation: serde remains the syntax authority.
+//! Streaming extension of the canonical lexical admission pass.
 
 use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, Result, ShapeOrigin};
 
@@ -234,8 +233,6 @@ struct Layer {
     started: bool,
     finished: bool,
     broken: bool,
-    // Once fixed framing capacity is exceeded, keep lexical item/depth counts
-    // without retaining container state. A selected scope cannot be admitted.
     overflow_depth: usize,
 }
 impl Layer {
@@ -441,9 +438,6 @@ impl ValueInspector {
             (Node::ConfiguredRecursiveSourceCheckpoint, b"request") => (Node::ForkRequest, scope),
             (Node::RecursiveMergeToolPlan, b"authorized_source") => (Node::ProjectSourceAuthorization, scope),
             (Node::RecursivePlanPayload, b"authorized_source") => {
-                // The adjacent plan field can precede its kind tag. Its fork
-                // fields use branch zero; merge evidence belongs to branch one
-                // of the same outer discriminator, including through Raw frames.
                 let scope = match scope {
                     Scope::Gate(owner, _) => Scope::Gate(owner, 1),
                     _ => Scope::Ignore,
@@ -462,10 +456,6 @@ impl ValueInspector {
         Selection { node, scope }
     }
     fn item(&mut self, layer: usize, scope: Scope) {
-        // Global zero-based logical ancestry: a nested Raw from_str starts a
-        // fresh serde counter, but its outer map/array visitors remain live.
-        // Child layers therefore keep their parent's active frames, rather
-        // than laundering aggregate depth through a local-parser reset.
         let depth = self.frame_len;
         if let Some(stats) = self.stats(scope) {
             stats.depth = stats.depth.max(depth);
@@ -488,13 +478,6 @@ impl ValueInspector {
     }
     fn close_frame(&mut self) {
         let index = self.frame_len - 1;
-        // Copy only the selected small summary, not the complete container.
-        // Each object owns its own gated summaries: late/escaped tags in one
-        // Snapshot event cannot select fields in another. Duplicate tag keys
-        // invalidate serde's tagged representation. No successful conversion
-        // owns either candidate branch in that case. Unknown fields stay
-        // descriptor-free. Multiple bits select the shared waiting arguments
-        // and waiting-only plan/receipt summaries without copying the frame.
         let frame = &self.frames[index];
         let branches = if frame.tag_ambiguous { 0 } else { Self::tag_branches(frame.selection.node, frame.tag) };
         let scope = frame.selection.scope;
@@ -603,8 +586,6 @@ impl ValueInspector {
         if self.layers[layer].finished { self.broken(layer, scope); }
         if has_frame && !key && self.frames[self.frame_len - 1].phase != Phase::Value { self.broken(layer, scope); }
         self.layers[layer].started = true;
-        // Map keys belong to the containing Value, not the descriptor-selected
-        // child of that key. In particular unknown schema fields are not Value.
         let scope = if key { Self::value_scope(self.frames[self.frame_len - 1].selection) } else { scope };
         self.item(layer, scope);
         if byte == b'"' {
@@ -658,11 +639,7 @@ impl ValueInspector {
     fn push_layer<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, initial_layer: usize, byte: u8, charge: &mut F,
     ) -> std::result::Result<(), AdmissionFailure> {
-        // Each genuine nested Raw string must escape every child's quotes and
-        // backslashes. At each ancestor those escapes double; an addressable
-        // slice therefore has fewer than usize::BITS Raw layers. The explicit
-        // work stack accommodates four bytes from a Unicode escape without
-        // recursive calls, heap allocation, or rescanning any original bytes.
+        // Each genuine nested Raw string must escape every child's quotes and backslashes.
         let mut pending = [Pending::EMPTY; LAYERS];
         pending[0] = Pending { layer: initial_layer, bytes: [byte, 0, 0, 0], len: 1, position: 0 };
         let mut length = 1;
@@ -673,8 +650,6 @@ impl ValueInspector {
             let layer = current.layer;
             current.position += 1;
             if layer != 0 {
-                // Only actual decoded virtual bytes inspected below: not a
-                // second Read, backend read, or invented allocation observation.
                 charge(JsonCodecCharge::Inspect { items: 1 })?;
                 if let Some(stats) = self.stats(self.layers[layer].root.scope) { Stats::add(&mut stats.bytes, &mut stats.overflow); }
             }
@@ -717,8 +692,6 @@ impl ValueInspector {
         if tag {
             let mut matched = Match::new();
             if let serde_json::Value::String(string) = value {
-                // This key/tag is already UTF-8 decoded resident data: no
-                // fabricated quote/escape tokens and no extra input pass.
                 for &byte in string.as_bytes() { matched.push(byte); }
             }
             self.set_tag(if value.is_string() { matched.key() } else { b"" });
@@ -744,9 +717,6 @@ impl ValueInspector {
                     else {
                         if let Some(stats) = self.stats(scope) { Stats::add(&mut stats.raw_frames, &mut stats.overflow); }
                         self.layers[1] = Layer { base: self.frame_len, root: Selection { node: Node::Value, scope }, ..Layer::EMPTY };
-                        // RawBox's resident string is already decoded. Feed its
-                        // actual bytes directly to the SAME virtual lexer; only
-                        // deeper Raw strings need streaming string unescape.
                         for &byte in string.as_bytes() { self.push_layer(1, byte, charge)?; }
                         self.close_raw(0, scope);
                     }
@@ -766,10 +736,6 @@ impl ValueInspector {
             return Err(AdmissionFailure::Bound(DEPTH_LIMIT));
         }
         // RawBox consumes an entire decoded string before nested from_str.
-        // Ancestor Box payloads overlap child parsing, so the sum of *all*
-        // decoded payloads dominates peak active payloads. The parent's closed
-        // Value bound adds per-parser <=2*max(length,8) scratch and transient
-        // scratch/into_boxed_str overlap; no opaque node/RSS claim is made.
         Ok(JsonValueShape { input_bytes, lexical_items, virtual_items: stats.items,
             raw_bytes: stats.bytes, raw_frames: stats.raw_frames,
             unresolved_raw: stats.unresolved || (self.schema.is_none() && self.potential_raw), origin: ShapeOrigin::Slice })
@@ -802,21 +768,12 @@ impl OwnedMeter {
     }
 }
 
-/// Borrowed resident-tree witness immediately before a genuine from_value
-/// conversion. It creates neither another Value nor an encoded JSON buffer.
-/// `input_bytes` here means resident UTF-8 string/key payload plus ONE byte per
-/// visited value/key (a logical representation lower bound), NOT wire bytes.
-/// Numbers/null/bools need no new owned string payload. Original source
-/// capacity/custody stays with the converter's caller; this shape just factors
-/// the additional concrete closed Value/raw parser allowance.
+/// Borrowed resident-tree witness immediately before a genuine from_value conversion.
 pub(super) fn inspect_owned<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &serde_json::Value, bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
 ) -> std::result::Result<JsonValueShape, AdmissionFailure> {
     let mut inspector = ValueInspector::new(Some(schema), bounds);
     let mut meter = OwnedMeter { bounds, items: 0, bytes: 0 };
-    // Physical resident-tree depth has the same zero-based <=256 admission as
-    // the byte pass. Borrowed iterators occupy fixed slots; no recursive walk,
-    // heap stack, JSON serialization, or generic Deserialize heap theorem.
     let mut stack: [Option<OwnedFrame<'_>>; 257] = std::array::from_fn(|_| None);
     let mut length = 0;
     let mut next = Some(value);
@@ -837,9 +794,6 @@ pub(super) fn inspect_owned<F: FnMut(JsonCodecCharge) -> Result<()>>(
         if let Some((key, value)) = entry {
             if let Some(key) = key {
                 meter.visit(length, key.len(), charge)?;
-                // Follow ACTUAL map iterator order, not remembered wire order.
-                // A BTree/sorted map may make the private Raw key first even
-                // when it appeared later in the original JSON source.
                 inspector.owned_key(key);
             }
             next = Some(value);
