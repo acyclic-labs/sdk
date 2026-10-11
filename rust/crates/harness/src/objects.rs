@@ -223,7 +223,7 @@ impl ObjectContentStore {
                         ),
                     }),
                 },
-                bytes::Bytes::copy_from_slice(&intent),
+                acyclic_stream::OwnedBytes::copy_from_slice(&intent),
             )
             .await
         {
@@ -243,15 +243,15 @@ impl ObjectContentStore {
             )
             .await
             .map_err(storage)?;
-        if pinned.header.content_range.is_some()
-            || pinned.header.object.as_ref().is_none_or(|info| {
+        if pinned.header().content_range.is_some()
+            || pinned.header().object.as_ref().is_none_or(|info| {
                 info.size != 32
                     || info
                         .metadata
                         .as_ref()
                         .is_none_or(|metadata| metadata.content_type != content_type)
             })
-            || pinned.body.as_ref() != intent
+            || pinned.body().as_ref() != intent
         {
             return Err(Error::Conflict(
                 "upload identity belongs to different content".into(),
@@ -329,7 +329,7 @@ impl ObjectContentStore {
             .await
             .map_err(storage)?;
         let metadata = observed
-            .header
+            .header()
             .object
             .as_ref()
             .and_then(|object| object.metadata.as_ref())
@@ -338,7 +338,7 @@ impl ObjectContentStore {
             .user
             .get("harness-display-name")
             .ok_or_else(|| Error::Storage("Objects artifact display name is missing".into()))?;
-        let descriptor = FileDescriptor::from_bytes(&observed.body, &metadata.content_type)?;
+        let descriptor = FileDescriptor::from_bytes(observed.body(), &metadata.content_type)?;
         if content_identity(&descriptor, display_name)? != content {
             return Err(Error::Conflict(
                 "Objects artifact content identity does not match its bytes".into(),
@@ -568,7 +568,7 @@ impl ContentPublisher for ObjectContentStore {
                             idempotency_key: retry,
                         }),
                     },
-                    bytes::Bytes::copy_from_slice(bytes),
+                    acyclic_stream::OwnedBytes::copy_from_slice(bytes),
                 )
                 .await;
             let info = match published {
@@ -1103,7 +1103,7 @@ mod tests {
                     }),
                     ..Default::default()
                 },
-                bytes::Bytes::from_static(b"corrupt replacement"),
+                acyclic_stream::OwnedBytes::from_static(b"corrupt replacement"),
             )
             .await
             .map_err(storage)?;
