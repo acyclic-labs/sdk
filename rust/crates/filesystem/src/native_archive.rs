@@ -591,6 +591,13 @@ fn native_link_text(bytes: &[u8]) -> Result<String, NativeArchiveError> {
     { std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| NativeArchiveError::InvalidPath) }
 }
 
+fn native_link_bytes(target: String) -> Bytes {
+    #[cfg(windows)]
+    { Bytes::from(target.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()) }
+    #[cfg(not(windows))]
+    { Bytes::from(target) }
+}
+
 /// Encodes exact immutable SDK bytes, without rereading ambient host files.
 ///
 /// # Errors
@@ -812,7 +819,7 @@ async fn import_archive_into_empty_candidate<A: AsyncAuthorityStore, O: AsyncObj
             EntryType::Symlink => {
                 if size != 0 { return Err(NativeArchiveError::InvalidArchive); }
                 let target = link.ok_or(NativeArchiveError::InvalidArchive)?; validate_link(&name, &target, config.limits)?;
-                mutations.push(AuthoredMutation::CreateSymbolicLink { path: path.clone(), target: Bytes::from(target), metadata });
+                mutations.push(AuthoredMutation::CreateSymbolicLink { path: path.clone(), target: native_link_bytes(target), metadata });
                 semantic_kind = FileKind::SymbolicLink;
             },
             EntryType::Link => {
@@ -887,6 +894,13 @@ mod tests {
         std::fs::write(source.join("empty"), [])?;
         std::fs::hard_link(source.join("pkg/entry.sh"), source.join("pkg/second.sh"))?;
         symlink("entry.sh", source.join("pkg/link"))?;
+        let long_directory = "a".repeat(120);
+        let long_filename = "b".repeat(120);
+        let long_path = format!("{long_directory}/{long_filename}");
+        std::fs::create_dir(source.join(&long_directory))?;
+        std::fs::write(source.join(&long_path), b"actual long native bytes")?;
+        std::fs::hard_link(source.join(&long_path), source.join("pkg/long-second"))?;
+        symlink(format!("../{long_path}"), source.join("pkg/long-link"))?;
         let fs = crate::Fs::local(crate::LocalOptions::new(directory.path().join("sdk-store"))).await?;
         let workspace = fs.create_workspace("archive-original").await?;
         let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
@@ -919,7 +933,7 @@ mod tests {
         let target = fs.create_workspace("archive-imported").await?;
         let mut imported = target.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction()).await?;
         let result = import_native_directory_archive(&mut imported, received.reader(), WorkBudget::UNBOUNDED, &cancellation).await?;
-        assert_eq!(result.value.entries, 6);
+        assert_eq!(result.value.entries, 10);
         let reader = imported.snapshot_reader();
         let content = reader.read_file_range(&path("pkg/entry.sh", config)?, ByteRange { offset: 0, length: b"#!/bin/sh\nprintf actual-native-archive\n".len() as u64 }, WorkBudget::UNBOUNDED, &cancellation).await?.value;
         assert_eq!(content.bytes.as_ref(), b"#!/bin/sh\nprintf actual-native-archive\n");
@@ -931,6 +945,12 @@ mod tests {
         let first = listing.entries.iter().find(|entry| entry.name.unicode_text().as_deref() == Some("entry.sh")).ok_or("missing original file")?;
         let second = listing.entries.iter().find(|entry| entry.name.unicode_text().as_deref() == Some("second.sh")).ok_or("missing hardlink")?;
         assert_eq!(first.file.file_id(), second.file.file_id());
+        let long_link = reader.read_symbolic_link(&path("pkg/long-link", config)?, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        assert_eq!(long_link.as_ref(), format!("../{long_path}").as_bytes());
+        let long_listing = reader.resolve_directory_page(&path(&long_directory, config)?, None, 16, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let long_file = long_listing.entries.first().ok_or("missing long GNU-name file")?;
+        let long_alias = listing.entries.iter().find(|entry| entry.name.unicode_text().as_deref() == Some("long-second")).ok_or("missing long GNU-link alias")?;
+        assert_eq!(long_file.file.file_id(), long_alias.file.file_id());
         assert!(!captured.capture.original_preimages().contains_key(&path(".env", config)?));
         assert!(!captured.capture.original_preimages().contains_key(&path(".git", config)?));
         drop(captured.capture);
