@@ -5,13 +5,8 @@ use serde_json::{Value, json};
 use super::http::HttpMcpTransport;
 use super::rpc::{Dto, NativeWork, check_dto, checkpoint, protocol_error};
 
-/// Validates service input before network dispatch. The allowlist cannot be used
-/// to invoke arbitrary callbacks, continuations or remote effect methods.
-pub fn validate_params(method: &str, params: &Value) -> Result<()> {
-    validate_params_with_native_work(method, params, None)
-}
-
-pub(super) fn validate_params_with_native_work(
+/// Validates service input on the supplied work ledger.
+pub fn validate_params(
     method: &str, params: &Value, work: NativeWork<'_>,
 ) -> Result<()> {
     checkpoint(work, 1, 0)?;
@@ -27,16 +22,15 @@ pub(super) fn validate_params_with_native_work(
     check_dto(dto, params, work)
 }
 
-pub(super) fn validate_stdio_params_with_native_work(
+pub(super) fn validate_stdio_params(
     method: &str, params: &Value, work: NativeWork<'_>,
 ) -> Result<()> {
-    if method != "tools/call" { return validate_params_with_native_work(method, params, work); }
+    if method != "tools/call" { return validate_params(method, params, work); }
     checkpoint(work, 1, 0)?;
     if !params.is_object() {
         return Err(protocol_error(work, false, "MCP service parameters must be an object"));
     }
-    // Match the existing one-shot continuation policy, including explicit null
-    // and alternate spellings. Reject before the MRTR DTO can buffer its input.
+    // Match the existing one-shot continuation policy, including explicit null and alternate spellings.
     for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
         checkpoint(work, 1, 0)?;
         if params.get(key).is_some() {
@@ -46,8 +40,7 @@ pub(super) fn validate_stdio_params_with_native_work(
     check_dto(Dto::CallToolParams, params, work)
 }
 
-/// Validates protocol results using the maintained protocol library. Neither
-/// resources nor prompts are instructions or grants; hosts explicitly project them.
+/// Validates protocol results using the maintained protocol library.
 pub fn validate_result(method: &str, value: Value) -> Result<Value> {
     validate_result_with_native_work(method, value, None)
 }
@@ -91,13 +84,12 @@ impl HttpMcpTransport {
         self.service(operation, "prompts/get", json!({"name":name,"arguments":arguments})).await
     }
     /// Validated service operation with opt-in callbacks under this exact task.
-    /// The host admits the enclosing request; returned prompts/resources grant no authority.
     pub async fn service_with_context(&self, context: crate::runtime::ToolContext, method: &str, params: Value) -> Result<Value> {
-        validate_params(method, &params)?;
+        validate_params(method, &params, None)?;
         validate_result(method, self.rpc_with_context(context, method, params).await?)
     }
     async fn service<T: DeserializeOwned>(&self, operation: OperationId, method: &str, params: Value) -> Result<T> {
-        validate_params(method, &params)?;
+        validate_params(method, &params, None)?;
         serde_json::from_value(validate_result(method, self.rpc(operation, method, params).await?)?)
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -127,13 +119,13 @@ mod tests {
             assert!(validate_result(method, invalid).is_err(), "{method}");
         }
         assert!(validate_result("sampling/createMessage", json!({})).is_err());
-        assert!(validate_stdio_params_with_native_work("resources/read", &json!({"uri":9}), None).is_err());
-        assert!(validate_stdio_params_with_native_work("prompts/get", &json!({"name":"exact","arguments":{"input":9}}), None).is_err());
-        assert!(validate_stdio_params_with_native_work("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok());
+        assert!(validate_stdio_params("resources/read", &json!({"uri":9}), None).is_err());
+        assert!(validate_stdio_params("prompts/get", &json!({"name":"exact","arguments":{"input":9}}), None).is_err());
+        assert!(validate_stdio_params("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok());
         for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
             let mut params = json!({"name":"exact","arguments":{}});
             params.as_object_mut().expect("params").insert(key.into(), Value::Null);
-            assert!(matches!(validate_stdio_params_with_native_work("tools/call", &params, None), Err(Error::Unsupported(_))));
+            assert!(matches!(validate_stdio_params("tools/call", &params, None), Err(Error::Unsupported(_))));
         }
     }
 
@@ -164,7 +156,7 @@ mod tests {
         assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
         assert!(work.receipt().items_examined > before.items_examined);
         work.cancellation().cancel();
-        assert!(matches!(validate_stdio_params_with_native_work("tools/list", &json!({}), Some(&work)),
+        assert!(matches!(validate_stdio_params("tools/list", &json!({}), Some(&work)),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     }
 }

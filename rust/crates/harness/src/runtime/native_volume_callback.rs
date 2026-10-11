@@ -15,11 +15,6 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 }
 
 /// Original dispatched task authority for canonical native volume preparation.
-///
-/// The independent protected owner and immutable scope never retain a task
-/// context, directly or through its working-view attachment. Sharing aliases
-/// existing paid owner metadata; it does not reallocate that metadata or grant
-/// another capability. Logical Self/deep capacity excludes opaque Arc backing.
 pub struct NativeVolumeCallbackGuard<P: StreamProvider> {
     original: Arc<OriginalVolumeAuthority<P>>,
 }
@@ -27,7 +22,6 @@ pub struct NativeVolumeCallbackGuard<P: StreamProvider> {
 struct OriginalVolumeAuthority<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     scope: RuntimeScope,
-    // Both owned metadata and references drop before their original custody.
     custody: NativeAllocation,
 }
 
@@ -51,9 +45,7 @@ pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
 }
 
 impl NativeTaskContext {
-    /// Authenticates the actual SDK-issued fresh-dispatch context before copying
-    /// its immutable scope. READ and reconciliation contexts cannot issue this
-    /// preparation authority, even if they retain an original owner and budget.
+    /// Authenticates the actual SDK-issued fresh-dispatch context before copying its immutable scope.
     pub async fn volume_callback_guard_with_native_work<P: StreamProvider + 'static>(
         &self, owner: &Arc<TaskJournalOwner<P>>, work: &NativeMaterializationWork,
     ) -> Result<NativeVolumeCallbackGuard<P>> {
@@ -70,8 +62,6 @@ impl NativeTaskContext {
         owner.require_mail_scope_with_native_work(context.scope(), work)?;
         owner.verify_with_native_work(false, work).await?;
 
-        // The canonical Scope copier owns its complete inline header and deep
-        // copies. Only the enclosing known values remain to be funded here.
         let bytes = (std::mem::size_of::<NativeVolumeCallbackGuard<P>>()
             + std::mem::size_of::<OriginalVolumeAuthority<P>>()
             - std::mem::size_of::<RuntimeScope>()) as u64;
@@ -91,16 +81,11 @@ impl NativeTaskContext {
 
 impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     /// Selects one exact canonical preparation volume before any physical IO.
-    /// Per-volume resource views may differ from the metadata allocation view;
-    /// their original family must not. The returned callback retains that exact
-    /// selected view rather than manufacturing a fresh meter or root allowance.
     pub(crate) fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
     ) -> Result<NativeVolumeCallbackPorts> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
-        // Includes every inline reference, selected Work and volume header.
-        // The canonical reference copier separately admits its deep capacities.
         let mut custody = work.retain_owned(std::mem::size_of::<VolumeCallback<P>>() as u64)
             .map_err(native_error)?;
         let (volume, mut volume_custody) = volume.clone_with_native_work(work)?;
@@ -116,9 +101,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         Ok(NativeVolumeCallbackPorts { sdk: callback.clone(), publication: callback })
     }
 
-    /// Borrows the same declaration checks without allocating a callback that
-    /// preparation would immediately discard. Physical attachment constructs
-    /// the single paid callback with `for_volume` on its actual selected work.
+    /// Borrows the same declaration checks without allocating a callback that preparation would immediately discard.
     pub(crate) fn require_volume_with_native_work(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
@@ -162,7 +145,6 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         if !self.work.shares_allocation_context(work) || !self.custody.matches_work(work) {
             return Err(denied("native callback differs from its original per-volume work view"));
         }
-        // Exact declarations precede owner IO; the current full fence is never cached.
         require_volume(&self.original, &self.volume, self.writable, work)?;
         self.original.owner.verify_with_native_work(false, work).await?;
         require_volume(&self.original, &self.volume, self.writable, work)
@@ -171,7 +153,6 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
     fn sdk_check<'a>(
         &'a self, work: &'a NativeMountMeterWork, require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        // Both permission requests use this one concrete original-ledger future.
         NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
             let work = work.native_materialization_work();
             self.verify_with_native_work(&work, require_write).await
@@ -191,8 +172,6 @@ impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P>
     fn check<'a>(
         &'a self, work: &'a NativeMountMeterWork,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        // The SDK prepays the concrete future and typed original Error slot
-        // before building or polling it. No formatter or replacement carrier.
         self.sdk_check(work, false)
     }
 

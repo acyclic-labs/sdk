@@ -230,7 +230,6 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         host.admit_owned(proved_child, root_fence.clone()).await,
         Err(Error::Unsupported(_))
     ));
-    // Both ordinary task entries remain charged before any provider allocation.
     assert!(matches!(
         host.admit_owned(child.with_resource_proofs(Vec::new())?, root_fence)
             .await,

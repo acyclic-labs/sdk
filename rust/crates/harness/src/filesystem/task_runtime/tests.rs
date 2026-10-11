@@ -44,7 +44,6 @@ impl ToolExecutor for PendingTool {
         _: ToolInvocation,
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            // The provider effect exists, but its acknowledgement never arrives.
             self.executed.fetch_add(1, Ordering::SeqCst);
             self.clock.0.store(20, Ordering::SeqCst);
             futures::future::pending().await
@@ -327,8 +326,6 @@ impl TaskCommandHost for NativeAdmissionFailure {
         Box::pin(async move {
             assert_eq!(command.operation_id,OperationId::from_bytes([105;16]));
             self.calls.fetch_add(1,Ordering::SeqCst);
-            // A synchronously failed real ledger admission also crosses the
-            // deadline. Neither failure is evidence of a stopped effect.
             self.clock.0.store(20,Ordering::SeqCst);
             match self.work.charge(acyclic_fs::WorkCounters {items_examined:1,..Default::default()}) {
                 Err(cause) => Err(Error::NativeWork {cause,custody:None}),
@@ -613,7 +610,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
             ..Default::default()
         }, &cancellation,
     ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let custody = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let custody = work.retain_owned(0).map_err(Error::from)?;
     let prefix = work.receipt();
     fixture.clock.0.store(20, Ordering::SeqCst);
     assert!(matches!(session.step_with_native_work(
@@ -630,7 +627,6 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     assert!(!state.cancellation_requested);
     assert_eq!(state.reservation, Some(lease.reservation));
     assert!(state.outcome.is_none());
-    // The same custom state machine still works through ordinary None.
     fixture.clock.0.store(10, Ordering::SeqCst);
     let original_state = session.checkpoint().state.clone();
     session.step(
@@ -640,7 +636,6 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     ).await?;
     assert_eq!(session.checkpoint().revision, 1);
     assert_eq!(session.checkpoint().state, original_state);
-    // The real journal may rerun the callback to prove the committed record.
     assert!(fixture.machine.transitioned.load(Ordering::SeqCst) > 0);
     Ok(())
 }
@@ -679,8 +674,6 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
         let original = lease.clone();
         let recovered_bytes = recovery_custody.bytes();
         if !precancel {
-            // Exhaust the ORIGINAL allowance with actual paid SDK String
-            // productions; never reconstruct a meter from remaining limits.
             while work.receipt().allocation_operations < budget.allocation_operations {
                 let text = work.display(&"allocation denial control")?;
                 drop(text);
@@ -919,7 +912,6 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let fixture = Fixture::new().await?;
     fixture.machine.native.store(true, Ordering::SeqCst);
     let runtime = fixture.runtime().await?;
-    // Possessing the service volume and its grants is not a task creation proof.
     let input = super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("must not dispatch".into()),
         selected_context: None, max_steps: 1, max_output_tokens: None,

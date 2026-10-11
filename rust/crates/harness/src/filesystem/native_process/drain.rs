@@ -5,14 +5,11 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, NativeAllocation, Native
 use std::any::Any;
 
 /// SDK-issued physical process quiescence for one original accepted invocation.
-/// Fields, construction and view matching remain private; this is not a grant,
-/// an exhaustive-output claim, or authority to recreate a cold namespace.
 pub struct NativeProcessDrainProof {
     view: Arc<dyn Any + Send + Sync>,
     request: OriginalNativeRequest,
     receipt: NativeProcessReceipt,
     plan: Arc<TaskEffectPlan>,
-    // Derived by the canonical task/command binding before dispatch or recovery.
     effect_id: EffectId,
     _provider_custody: Arc<Mutex<NativeAllocation>>,
     _custody: NativeAllocation,
@@ -81,9 +78,7 @@ impl NativeProcessDrainProof {
     }
 }
 
-/// A borrowed SDK control gate. Only the authenticated original provider issues
-/// it after matching its held view, task/fence, request and process birth ledger.
-/// Cleanup accounting is independent; neither work ledger confers authority.
+/// A borrowed SDK control gate.
 pub(super) struct NativeCleanupControl<'a> {
     supervisor: &'a NativeSupervisorControl,
     original: &'a NativeMaterializationWork,
@@ -102,9 +97,7 @@ impl NativeCleanupControl<'_> {
 }
 
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
-    /// Drains the same owned process engine, or authenticates a physically quiet
-    /// retained result. Cold receipt absence/launch-only uncertainty is refused.
-    /// The existing prepared view is mandatory; no namespace or PID is adopted.
+    /// Drains the same owned process engine, or authenticates a physically quiet retained result.
     pub fn drain_with_native_work<'a, A, O>(
         &'a self, attempt: crate::EffectAttemptId,
         view: &'a Arc<NativeVolumeView<A, O>>,

@@ -180,7 +180,6 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         }))?);
         let target = if index == 0 { acyclic_stream::CommitCondition::Absent { path: mailbox.clone() } }
             else { acyclic_stream::CommitCondition::Tail { path: mailbox.clone(), expected: index as u64 } };
-        // Actual SDK atomic fixture publication, never a forged receipt/witness.
         let committed = StreamClient::new(Arc::clone(&fixture.sdk)).commit(acyclic_stream::CommitRequest {
             conditions: vec![target, acyclic_stream::CommitCondition::Absent { path: intent.clone() }],
             mutations: vec![

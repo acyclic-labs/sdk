@@ -97,9 +97,6 @@ fn definitions_to_js(definitions: Vec<crate::tool::ToolDefinition>) -> Result<Js
             projection_schema: definition.projection_schema,
         })
         .collect::<Vec<_>>();
-    // Definitions contain only admitted JavaScript JSON and added string/bool
-    // envelope fields. Preserve its number/object representation instead of
-    // converting JSON schema objects to Maps or integer literals to BigInts.
     wire.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }

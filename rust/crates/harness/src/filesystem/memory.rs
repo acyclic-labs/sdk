@@ -59,8 +59,7 @@ fn new_memory_store(
     )))
 }
 
-/// A fully bound in-process journal and owner-private file volume. Its data is
-/// deliberately ephemeral; durable deployments bind persistent providers.
+/// A fully bound in-process journal and owner-private file volume.
 pub struct MemoryHarnessStorage {
     journal: Arc<MemoryJournal>,
     content_verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
@@ -78,9 +77,6 @@ pub struct MemoryHarnessStorage {
 }
 
 /// Ready-to-run local Harness with an isolated conversation and private volume.
-///
-/// This preset is intentionally ephemeral. Its storage and bundle remain
-/// accessible so callers can stage attachments or use the full typed turn API.
 pub struct LocalHarness {
     storage: MemoryHarnessStorage,
     bundle: crate::bundle::HarnessBundle,
@@ -126,9 +122,7 @@ impl LocalHarness {
         )
     }
 
-    /// Starts a local agent with an explicitly selected, versioned tool set and
-    /// matching capability grants and compaction policy. Merely registering a tool does not authorize
-    /// its execution; callers must grant `tool:call:<name>` deliberately.
+    /// Starts a local agent with an explicitly selected, versioned tool set and matching capability grants and compaction policy.
     pub async fn with_tools(
         agent: AgentId,
         limits: Limits,
@@ -222,7 +216,6 @@ struct LocalListFilesTool {
 struct ListFilesObservation {
     admission_digest: [u8; 32],
     result: ToolResult,
-    // Logical key/value slots and result buffers, not opaque BTree node metadata.
     #[cfg(not(target_arch = "wasm32"))]
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -395,8 +388,6 @@ impl LocalListFilesTool {
         let digest = Self::native_admission_digest(invocation, work)?;
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
-        // Hold the operation lock through the actual provider read and cache
-        // admission so competing retries never mix directory generations.
         let mut observed = self.observed.lock().await;
         if let Some(original) = observed.get(&invocation.operation_id) {
             return if original.admission_digest == digest {
@@ -431,7 +422,6 @@ impl LocalListFilesTool {
         )?;
         let output = NativeListFilesResult { result: ToolResult { value }, custody };
         let mut cached = Self::native_result_copy(&output.result, maximum_bytes, work)?;
-        // Logical key/value tuple only; opaque BTree allocator nodes excluded.
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
         let retained = cached.custody.bytes().checked_add(slot_bytes)
@@ -440,10 +430,10 @@ impl LocalListFilesTool {
                 reason: "list_files cache ownership overflow",
             })?;
         cached.custody.resize_retained(retained)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..Default::default()
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }).map_err(Error::from)?;
         observed.insert(invocation.operation_id, ListFilesObservation {
             admission_digest: digest,
             result: cached.result,
@@ -624,11 +614,11 @@ impl ToolExecutor for LocalListFilesTool {
                         reason: "list_files observation ownership overflow",
                     })?;
                     output.custody.resize_retained(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                        .map_err(Error::from)?;
                     Ok((Some(output.result), output.custody))
                 }
                 None => Ok((None, work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?)),
+                    .map_err(Error::from)?)),
             }
         })
     }
@@ -641,7 +631,7 @@ impl ToolProjection for LocalListFilesTool {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining().map_err(Error::from)?;
         Ok(())
     }
 
@@ -821,7 +811,6 @@ impl MemoryContentPublisher {
 
 impl MemoryHarnessStorage {
     /// Assembles portable read/write/edit tools and this volume's directory tool.
-    /// Callers composing a custom builder can use this registry unchanged.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
         limits.validate()?;
         if limits.file_bytes > self.maximum_file_bytes {
@@ -889,8 +878,7 @@ impl MemoryHarnessStorage {
         }
     }
 
-    /// Creates an agent-owned private volume and a bound conversation before
-    /// any turn or interaction can publish a reference.
+    /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
         if maximum_file_bytes == 0 {
             return Err(Error::Invalid(
@@ -1036,8 +1024,7 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    /// Text convenience with ordered staged file refs; canonical history still
-    /// contains only refs and the complete list is manifest-backed if needed.
+    /// Text convenience with ordered staged file refs; canonical history still contains only refs and the complete list is manifest-backed if needed.
     pub async fn run_prompt_with_attachments(
         &self,
         bundle: &crate::bundle::HarnessBundle,
@@ -1060,7 +1047,6 @@ impl MemoryHarnessStorage {
             .await
     }
 
-
     #[cfg(test)]
     async fn open_conversation(
         &self,
@@ -1068,7 +1054,6 @@ impl MemoryHarnessStorage {
     ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<MemoryStream>>> {
         self.journal.conversation_projection(limits).await
     }
-
 
     /// Stages user content or an attachment before it is admitted to a turn.
     pub async fn stage(
@@ -1097,9 +1082,7 @@ impl MemoryHarnessStorage {
         self.content_verifier.read(file).await
     }
 
-    /// Lazily discovers this agent's private files under its existing signed
-    /// volume-read grant. Pages pin a generation; callers pass it back to
-    /// detect a changed directory instead of silently mixing two heads.
+    /// Lazily discovers this agent's private files under its existing signed volume-read grant.
     pub async fn list_private_directory(
         &self,
         path: &str,
@@ -1118,10 +1101,6 @@ impl MemoryHarnessStorage {
                 maximum_entries,
             )
             .await?;
-        // Exercise the same bounded path/generation core used by WASM for
-        // every native owner listing. The filesystem page remains the source
-        // of its provider generation proof; direct host-owned files may not
-        // exist in the ephemeral shared index and are retained in that page.
         let after_text = after.and_then(LogicalName::unicode_text);
         let core = self
             .memory_store
@@ -1137,8 +1116,7 @@ impl MemoryHarnessStorage {
         Ok(page)
     }
 
-    /// Publishes one owner-mediated exact-file read scope to another agent,
-    /// independent of any fork relationship. The file must be resident now.
+    /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
     pub async fn delegate_file_read(
         &self,
         reader: AgentId,
@@ -1155,8 +1133,7 @@ impl MemoryHarnessStorage {
         self.delegated_reader(scope)?.read(file).await
     }
 
-    /// Shares a private subtree with a named agent. An empty prefix grants
-    /// root discovery but never exposes internal storage receipts.
+    /// Shares a private subtree with a named agent.
     pub fn delegate_directory_read(
         &self,
         reader: AgentId,
@@ -1189,8 +1166,7 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    /// Reads a named file from a delegated private directory and pins its
-    /// observed version for later exact-reference use.
+    /// Reads a named file from a delegated private directory and pins its observed version for later exact-reference use.
     pub async fn read_delegated_path(
         &self,
         scope: &Scope,
@@ -1202,12 +1178,6 @@ impl MemoryHarnessStorage {
             .delegated_reader(scope)?
             .read_private_path(&self.volume, granted_prefix, path, expected_generation)
             .await?;
-        // A delegated read still uses the filesystem verifier for the signed
-        // scope and generation proof. When the path is also present in the
-        // shared core (all content staged through this storage), use the core
-        // path head and resident bytes for the returned payload. Direct
-        // provider files, such as host-owned manifests, intentionally fall
-        // back to the verifier result.
         let core = self
             .memory_store
             .lock()
@@ -1234,8 +1204,7 @@ impl MemoryHarnessStorage {
         )
     }
 
-    /// Resolves an addressable local interaction under a host-issued exact
-    /// responder grant. This method belongs to the local host, not the agent.
+    /// Resolves an addressable local interaction under a host-issued exact responder grant.
     pub async fn resolve_interaction(
         &self,
         id: InteractionId,
@@ -1281,7 +1250,6 @@ impl MemoryHarnessStorage {
         self.issuer.verifier()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1371,11 +1339,11 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let constructor_allocations = work.receipt().allocation_operations;
-        let baseline = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
+        let baseline = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
         storage.publisher.supports_native_stage(&work)?;
         assert_eq!(work.receipt().backend_write_operations, 0);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?
+        assert_eq!(work.remaining().map_err(Error::from)?
             .peak_allocation_bytes, baseline);
         struct OrdinaryOnlyPublisher {
             volume: VolumeRef,
@@ -1419,23 +1387,23 @@ mod tests {
             operation, "native.json", b"original", "application/json", "original.json", &work,
         )?.await?;
         assert_eq!(file_hold.bytes(), file.logical_owned_bytes()?);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline - file_hold.bytes());
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline - file_hold.bytes());
         assert!(work.receipt().backend_write_operations > 0);
-        let staged_allowance = work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes;
+        let staged_allowance = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
         let (bytes, bytes_hold) = storage.content_verifier.read_with_native_work(&file, 1024, &work)?.await?;
         assert_eq!(bytes, b"original");
         assert_eq!(bytes_hold.bytes(), bytes.capacity() as u64);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
         assert!(work.receipt().backend_read_operations > 0);
         drop(bytes);
         drop(bytes_hold);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, staged_allowance);
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance);
         assert!(storage.publisher.stage_once_with_native_work(
             operation, "native.json", b"original", "text/plain", "changed", &work,
         )?.await.is_err());
         drop(file);
         drop(file_hold);
-        assert_eq!(work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?.peak_allocation_bytes, baseline);
+        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline);
 
         cancellation.cancel();
         assert!(matches!(storage.publisher.stage_once_with_native_work(
@@ -1597,9 +1565,6 @@ mod tests {
                 Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
             assert_eq!(work.receipt(), before);
         }
-        // The original meter's own allocation is allowed; no genuine codec
-        // buffer allocation is. Logical Retain callbacks must not consume an
-        // allocator-operation allowance or bypass this next observed boundary.
         let mut budget = finite_content_budget();
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(
@@ -1633,8 +1598,6 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("unadmitted extra custody must fail"),
         };
-        // This tuple also drops the owned bytes before the error's existing
-        // guard during unwinding; no replacement guard is acquired.
         let failure = (bytes, error);
         assert!(matches!(&failure.1, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: Some(_),
@@ -1663,7 +1626,7 @@ mod tests {
         let bytes = producer_io.encode_json(&serde_json::Value::Null, 1024, true)?;
         drop(producer_io);
         let (metadata, incoming) = producing.display("source carrier metadata")
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .map_err(Error::from)?;
         let held = producing.live_allocation_bytes() - producer_baseline;
         let error = match receiver_io.absorb_native_custody(incoming) {
             Err(error) => error,
@@ -1749,7 +1712,6 @@ mod tests {
                 assert_eq!(audit.work.receipt().peak_allocation_bytes, live);
             }
         });
-        // Only observe admission; use the actual serde String implementation.
         <String as serde::Deserialize>::deserialize(decoder)
     }
 
@@ -1767,8 +1729,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     impl super::super::PreparationRecord for AuditedNativeDecodeRecord {
         fn diagnostic_label_bytes() -> u64 {
-            // The renamed field, derive's struct expectation, and String's
-            // type expectation are the complete closed visitor inventory.
             [
                 NATIVE_DECODE_FIELD,
                 "AuditedNativeDecodeRecord",
@@ -1776,7 +1736,6 @@ mod tests {
             ].iter().map(|label| label.len() as u64 + 4).sum()
         }
         fn maximum_slot_bytes() -> u64 {
-            // Closed single-String DTO: no flatten, ignored field, or Value tree.
             std::mem::size_of::<Self>() as u64
         }
     }
@@ -1785,7 +1744,6 @@ mod tests {
     fn assert_native_malformed_decode_custody(
         input: &[u8], diagnostic: &str, explicit_code: Option<crate::wire::ErrorCode>,
     ) -> Result<()> {
-        // The oracle is the real serde implementation, outside native accounting.
         let expected = serde_json::from_slice::<AuditedNativeDecodeRecord>(input).unwrap_err();
         let mut budget = finite_content_budget();
         budget.allocation_operations = 1; // Only the original SDK meter allocation.
@@ -1825,7 +1783,6 @@ mod tests {
         assert_eq!(receipt.backend_write_operations, 0);
         assert_eq!(receipt.source_bytes_read - before.source_bytes_read, input.len() as u64);
 
-        // Preserve source-before-guard drop order during this custody transfer.
         struct DecodeFailure {
             source: serde_json::Error,
             custody: acyclic_fs::NativeAllocation,
@@ -1843,7 +1800,6 @@ mod tests {
         assert_eq!(failure.source.classify(), serde_json::error::Category::Data);
         assert_eq!(failure.source.line(), expected.line());
         assert_eq!(failure.source.column(), expected.column());
-        // Test-only formatting is not claimed as SDK-owned payload or operations.
         assert_eq!(failure.source.to_string(), expected.to_string());
         assert!(failure.source.to_string().contains(diagnostic));
         drop(failure); // Source's final use precedes release of its existing guard.
@@ -1963,7 +1919,6 @@ mod tests {
     fn synthetic_token_count(
         request: &crate::model::PreparedModelRequest,
     ) -> Result<crate::context::ModelTokenCount> {
-        // These test providers use UTF-8 bytes as token units, including framing.
         let message_tokens = request
             .request()
             .messages
@@ -2273,7 +2228,6 @@ mod tests {
                     let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
                     assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
                 }
-                // General task staging retains its existing multi-path operation contract.
                 let ordinary = OperationId::new();
                 for path in ["multi/a.txt", "multi/b.txt"] {
                     task.stage_file(ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;

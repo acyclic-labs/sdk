@@ -2,13 +2,11 @@ use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_stream::OwnedBytes;
 
-// These callbacks borrow the original SDK owner. Metadata ledger membership is
-// a preflight, never a substitute for the owner's live READ or execution check.
 fn require_original<P: StreamProvider + 'static>(
     mailbox: &TaskJournalMailbox<P>, work: &NativeMaterializationWork,
 ) -> Result<()> {
     work.charge(acyclic_fs::WorkCounters::default())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        .map_err(Error::from)?;
     if !mailbox.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work))
         || !mailbox.owner.borrowed().native_shared_work_matches(work)
     {
@@ -77,18 +75,5 @@ pub(super) fn verify_read_access<'a, P: StreamProvider + 'static>(
     mailbox.owner.borrowed().require_mail_scope_with_native_work(scope, work)?;
     crate::NativeFutureBundle::new(work, || async move {
         mailbox.owner.borrowed().verify_read_access_with_native_work(work).await
-    })
-}
-
-pub(super) fn read_received_for_model<'a, P: StreamProvider + 'static>(
-    mailbox: &'a TaskJournalMailbox<P>, scope: &'a RuntimeScope, volume: &'a VolumeRef,
-    model: OperationId, receive: OperationId, work: &'a NativeMaterializationWork,
-) -> Result<crate::NativeFutureBundle<'a, (OwnedBytes, crate::runtime::ReceivedCopyReadWitness<'a>)>> {
-    require_original(mailbox, work)?;
-    mailbox.owner.borrowed().require_mail_scope_with_native_work(scope, work)?;
-    crate::NativeFutureBundle::new(work, || async move {
-        mailbox.host.read_received_for_model_from_owner_native(
-            mailbox.owner.borrowed(), mailbox, scope, volume, model, receive, work,
-        ).await
     })
 }

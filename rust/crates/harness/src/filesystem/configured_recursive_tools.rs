@@ -31,7 +31,6 @@ type ForkBinding<P, A, O> = RecursiveForkToolBinding<P, A, O>;
 type MergeBinding<P, A, O> = RecursiveMergeToolBinding<P, A, O>;
 
 /// Host-owned conversation signing credentials and its exact signed actor.
-/// These are configuration, never model arguments or a foreign scope import.
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
     issuer: AuthorityIssuer,
@@ -39,8 +38,7 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 }
 
 impl ConfiguredRecursiveAuthorityBinding {
-    /// Retains the original installed signer; setup authenticates its scope
-    /// through the same configured source validation used for wire bindings.
+    /// Retains the original installed signer; setup authenticates its scope through the same configured source validation used for wire bindings.
     #[must_use]
     pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
 
@@ -63,8 +61,6 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
             scope: Scope,
         }
         let wire = WireBinding::deserialize(deserializer)?;
-        // Move the already decoded finite credential fields into their original
-        // issuer. Deserialization neither verifies nor mints a replacement scope.
         Ok(Self { issuer: AuthorityIssuer::new(wire.issuer, wire.key, wire.authority), scope: wire.scope })
     }
 }
@@ -132,7 +128,6 @@ pub struct ConfiguredRecursiveToolsConfig {
     pub callers: Vec<ConfiguredRecursiveCaller>,
     pub forks: Vec<ConfiguredRecursiveFork>,
     /// Browser host's explicit actual graph root for the creator-only policy.
-    /// Native consumers may install their separately verified policy directly.
     #[serde(default)]
     pub project_policy_graph_root: Option<TaskId>,
     pub merges: Vec<ConfiguredRecursiveMerge>,
@@ -195,13 +190,9 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
                 reason: "configured source checkpoint ownership overflows" },
             None => Error::Invalid("configured source checkpoint ownership overflows".into()),
         };
-        // The original sealed shape covers all Snapshot caches, its one live
-        // canonical history converter, and the selected Value/Raw payloads.
         let snapshot = crate::contract::snapshot_json_ownership(
             shape, 128, native_code,
         )?;
-        // These are the containing DTO/ForkRequest's actual typed and Content
-        // containers and strings, not a second generic Value/Raw allowance.
         let outer = shape.lexical_items().checked_mul(10)
             .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
             .and_then(|bytes| input_bytes.checked_mul(4).and_then(|strings| bytes.checked_add(strings)))
@@ -217,7 +208,6 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
 struct BoundProjectSourcePolicy {
     issuer: AuthorityIssuer,
     provider: Arc<dyn RootProjectSourceProvider>,
-    // LAST: installed issuer/provider data drops before its native allowance.
     #[cfg(not(target_arch = "wasm32"))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -307,8 +297,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.runtime.set(Arc::downgrade(runtime)).map_err(|_| Error::Conflict("configured source runtime was already bound".into()))
     }
 
-    /// Installs actual coordinator credentials and an explicitly trusted read
-    /// policy. Missing approval denies foreign imports without widening callers.
+    /// Installs actual coordinator credentials and an explicitly trusted read policy.
     pub fn with_project_source_policy(&self, issuer: AuthorityIssuer,
         provider: Arc<dyn RootProjectSourceProvider>) -> Result<()> {
         self.project_policy.set(BoundProjectSourcePolicy { issuer, provider,
@@ -316,33 +305,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             custody: None,
         })
             .map_err(|_| Error::Conflict("configured source project policy was already bound".into()))
-    }
-
-    /// Installs one genuine native policy with metadata copied from the original
-    /// held issuer, retaining its original allowance through the immutable slot.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_project_source_policy_with_native_work(
-        &self, issuer: &AuthorityIssuer, provider: Arc<dyn RootProjectSourceProvider>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if self.project_policy.get().is_some() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "configured source project policy was already bound" });
-        }
-        if !provider.supports_native_source() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "configured Project policy has no genuine native verifier" });
-        }
-        let mut custody = work.retain_owned(std::mem::size_of::<BoundProjectSourcePolicy>() as u64)?;
-        let copied = issuer.clone_with_native_work(work)?;
-        let mut binding = BoundProjectSourcePolicy { issuer: copied.0, provider, custody: Some(copied.1) };
-        if let Some(incoming) = binding.custody.as_mut() { custody.absorb(incoming)?; }
-        binding.custody = Some(custody);
-        self.project_policy.set(binding).map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict,
-            reason: "configured source project policy was already bound",
-        })
     }
 
     /// Builds the real portable file and recursive durable tools over this source.
@@ -558,8 +520,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        // The durable workflow has already committed this intent. Reconstruct
-        // only its authoritative cut, never the current conversation tail.
         let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
             verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
@@ -584,8 +544,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             observed.value
         };
         let source_checkpoint = if let Some(checkpoint) = checkpoint { checkpoint } else {
-            // Absence of a receipt is not permission to select another cut.
-            // Repeated publication always carries the already committed intent.
             let capture = SourceCheckpoint { snapshot: pinned.reducer().snapshot_with_event_limit(1)?,
                 request: intent.request.clone(), caller: caller.task, arguments: arguments.clone() };
             let bytes = serde_json::to_vec(&capture).map_err(invalid_json)?;
@@ -1701,9 +1659,6 @@ fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVe
 }
 
 fn allocation_digest(allocation: &ConfiguredRecursiveFork, child: &TaskAdmissionRecord, scope: &Scope) -> Result<[u8; 32]> {
-    // Creation proofs are bound later to the engine's actual preparation
-    // identity. All independently selected admission/reader claims are fixed
-    // here, without hashing signed token bytes or random mint metadata.
     let mut admission = child.clone();
     admission.resource_proofs.clear();
     crate::contract::canonical_json_digest(&allocation_descriptor(allocation, &admission, scope))

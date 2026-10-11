@@ -167,8 +167,7 @@ pub struct ModelTaskCommand {
     /// Caller-selected output ceiling; absent uses the installed compaction policy's ceiling.
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
-    /// Sole receive command whose result was committed in the immediately prior
-    /// checkpoint. Its pinned file is appended before a new model admission.
+    /// Sole receive command whose result was committed in the immediately prior checkpoint.
     #[serde(default)]
     pub mailbox_operation: Option<OperationId>,
     /// Exact admitted created destination; absent retains the private writer.
@@ -212,9 +211,7 @@ struct NativePreparationCache {
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-/// Stock adapters borrowing the existing runtime. Tool dispatch uses its one
-/// registry; model dispatch uses the explicitly selected provider. Each command
-/// opens the mandatory task-owned execution journal rather than another ledger.
+/// Stock adapters borrowing the existing runtime.
 pub struct FilesystemTaskCommands<'a, P, A, O> {
     runtime: &'a FilesystemTaskRuntime<P, A, O>,
     model: Option<ModelBinding>,
@@ -243,7 +240,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     }
 
     /// Selects the model provider, context pipeline and compaction policy used by stock commands.
-    /// Their contracts remain bound by the existing executor request identity.
     #[must_use]
     pub fn with_model(
         mut self,
@@ -264,7 +260,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     }
 
     /// Copies the original selected model configuration on its native ledger.
-    /// Provider handles remain shared; configuration custody escapes last.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_model_with_native_work(
         mut self, model: &Model, provider: Arc<dyn ModelProvider>,
@@ -301,7 +296,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     }
 
     /// Explicitly selects effect providers assembled by the embedding host.
-    /// Native providers remain optional and enforce their own exact approval.
     #[must_use]
     pub fn with_effects(
         mut self,
@@ -312,7 +306,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     }
 
     /// Selects one exact parent/source snapshot for the preparation command.
-    /// Its authenticated task token is borrowed only for the current invocation.
     #[must_use]
     pub fn with_fork_preparer(mut self, preparer: Arc<super::FilesystemForkPreparer<A, O>>) -> Self {
         self.fork_preparer = Some(preparer);
@@ -754,7 +747,6 @@ where
         ready(Outcome::Succeeded(state))
     }
 
-
     async fn effect_command_with_io(
         &self,
         task: TaskId,
@@ -810,17 +802,6 @@ where
             | crate::core::EffectStatus::Dispatched
             | crate::core::EffectStatus::Indeterminate => Ok(TaskCommandProgress::Indeterminate),
         }
-    }
-
-    /// Checks only a retained passive wait. Never dispatches or reconciles a
-    /// provider while the task has no execution reservation.
-    pub(super) async fn wait_ready(
-        &self,
-        context: &TaskContext,
-        command: &WorkflowCommand,
-        payload: Value,
-    ) -> Result<bool> {
-        self.wait_ready_observed(context, command, payload, None).await
     }
 
     pub(super) async fn wait_ready_observed(
@@ -1010,7 +991,6 @@ where
                 crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
             }
         } else if reconciliation_only {
-            // Observations must not schedule or advance existing child state.
             mail::reconciled(io)
         } else {
             let input: TaskObserveCommand = if io.is_some() {
@@ -1028,7 +1008,6 @@ where
             }
         }
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn model_command_with_native_work(
@@ -1223,65 +1202,6 @@ where
         }
     }
 
-    async fn committed_mail_input(
-        &self,
-        task: TaskId,
-        fence: LeaseFence,
-        model_operation: OperationId,
-        receive_operation: OperationId,
-    ) -> Result<crate::scheduler::InboxItem> {
-        let journal = self.runtime.workflow_journal(task, fence).await?;
-        let latest = journal.observe_latest_record().await?
-            .ok_or_else(|| Error::Unauthorized("model steering has no committed checkpoint".into()))?;
-        if !latest.transition.commands.iter().any(|command|
-            command.operation_id == model_operation && command.kind == MODEL_TASK_COMMAND_KIND)
-        {
-            return Err(Error::Unauthorized("model is not in the committed steering outbox".into()));
-        }
-        let previous = journal.observe_transition(latest.prior.revision).await?;
-        let [receive] = previous.transition.commands.as_slice() else {
-            return Err(Error::Unauthorized("steering requires one committed receive".into()));
-        };
-        if receive.operation_id != receive_operation || receive.kind != MAIL_RECEIVE_TASK_COMMAND_KIND
-            || previous.next != latest.prior
-        {
-            return Err(Error::Unauthorized("steering checkpoint does not consume the receive".into()));
-        }
-        let commands = latest.input["commands"].as_array()
-            .ok_or_else(|| Error::Unauthorized("steering checkpoint has no command result".into()))?;
-        let [result] = commands.as_slice() else {
-            return Err(Error::Unauthorized("steering checkpoint consumes more than one item".into()));
-        };
-        if result["operation_id"] != serde_json::to_value(receive_operation)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-        {
-            return Err(Error::Unauthorized("steering result changed its operation".into()));
-        }
-        let outcome: Outcome<crate::scheduler::InboxItem> =
-            serde_json::from_value(result["value"].clone())
-                .map_err(|error| Error::Unauthorized(format!("invalid steering receipt: {error}")))?;
-        let Outcome::Succeeded(item) = outcome else {
-            return Err(Error::Unauthorized("steering receive did not succeed".into()));
-        };
-        if item.task_id != task || item.sequence == 0 {
-            return Err(Error::Unauthorized("steering item belongs to another recipient".into()));
-        }
-        let context = self.runtime.harness().durable_context(
-            task, OperationId::from_bytes(task.into_bytes()),
-        ).await?;
-        let selection: MailReceiveTaskCommand = crate::contract::json_from_slice(
-            &context.read_file(&receive.payload).await?,
-        ).map_err(|error| Error::Unauthorized(format!("invalid retained mail selection: {error}")))?;
-        if selection.after.checked_add(1) != Some(item.sequence) {
-            return Err(Error::Unauthorized("steering receipt changed the selected cursor".into()));
-        }
-        let retained = self.runtime.task_host().inbox(task, item.sequence - 1, 1).await?;
-        if retained.as_slice() != std::slice::from_ref(&item) {
-            return Err(Error::Conflict("steering item differs from the original mail".into()));
-        }
-        Ok(item)
-    }
-
     async fn model_command(
         &self,
         task: TaskId,
@@ -1374,9 +1294,6 @@ where
                 Ok(_) | Err(Error::Indeterminate(_)) => {}
                 Err(error) => return Err(error),
             }
-            // A reconciled turn may stop before an unstarted next step. The
-            // existing verified journal, not a successful loop return, proves
-            // that every original dispatched effect is now known.
             return Ok(if journal.is_quiescent().await? {
                 TaskCommandProgress::Ready(Value::Null)
             } else {
@@ -1535,16 +1452,6 @@ fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
         .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
 }
 
-pub(super) fn received_mail_copy_operation(task: TaskId, receive: OperationId) -> OperationId {
-    let mut digest = blake3::Hasher::new();
-    digest.update(b"harness/v2/received-mail-copy\0");
-    digest.update(&task.into_bytes());
-    digest.update(&receive.into_bytes());
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(identity)
-}
-
 fn child_operation(task: TaskId, command: OperationId) -> OperationId {
     let mut digest = blake3::Hasher::new();
     digest.update(b"harness/v2/task-child\0");
@@ -1568,7 +1475,6 @@ fn child_operation_with_io(
     }
     Ok(child_operation(task, command))
 }
-
 
 #[cfg(not(target_arch = "wasm32"))]
 fn tool_invocation_with_native_work(
