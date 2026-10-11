@@ -443,10 +443,10 @@ impl MemoryStream {
 
     async fn commit_inner(
         &self,
-        request: CommitRequest,
+        mut request: CommitRequest,
         deadline_unix_millis: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
-        let completion = self.commit_observed(request, deadline_unix_millis, &MemoryObserver::default()).await;
+        let completion = self.commit_observed(&mut request, deadline_unix_millis, &MemoryObserver::default()).await;
         ordinary(completion.map(|completion| {
             assert!(completion.error.is_none(), "ordinary commits have no fallible observer");
             completion.outcome
@@ -456,7 +456,19 @@ impl MemoryStream {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn native_commit_completion_inner(
         &self,
-        request: CommitRequest,
+        mut request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
+        self.native_commit_completion_borrowed_inner(&mut request, deadline_unix_millis, meter).await
+    }
+
+    /// Keeps caller-owned input vectors intact through the canonical decision so
+    /// a detached Local owner can retain their physical custody until its drain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn native_commit_completion_borrowed_inner(
+        &self,
+        request: &mut CommitRequest,
         deadline_unix_millis: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
@@ -490,17 +502,17 @@ impl MemoryStream {
 
     async fn commit_observed(
         &self,
-        mut request: CommitRequest,
+        request: &mut CommitRequest,
         deadline_unix_millis: Option<u64>,
         observer: &MemoryObserver,
     ) -> MemoryResult<MemoryCommitCompletion> {
         observer.check()?;
-        normalize_commit_with_observer(&mut request, observer)?;
-        validate_commit_shape_with_observer(&request, observer)?;
+        normalize_commit_with_observer(request, observer)?;
+        validate_commit_shape_with_observer(request, observer)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let digest = commit_digest_observed(&request, observer.meter.as_ref())?;
+        let digest = commit_digest_observed(request, observer.meter.as_ref())?;
         #[cfg(target_arch = "wasm32")]
-        let digest = commit_digest_with_observer(&request, observer)?;
+        let digest = commit_digest_with_observer(request, observer)?;
         let bytes = request.mutations.iter().map(|mutation| match mutation {
             CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                 records.iter().map(Bytes::len).sum::<usize>()
@@ -531,17 +543,17 @@ impl MemoryStream {
         let mut resident = observer.adopt(entry)?;
         let (outcome, envelope, paths, mutations, decision, committed_at_micros) = if conflicts.value.is_empty() {
             drop(conflicts);
-            validate_commit_authority(&state, &request, observer)?;
-            let missing = missing_commit_paths(&state, &request, observer)?;
-            if reserve_coordinated(&state, &request, &missing.value, self.limits).is_err() {
+            validate_commit_authority(&state, request, observer)?;
+            let missing = missing_commit_paths(&state, request, observer)?;
+            if reserve_coordinated(&state, request, &missing.value, self.limits).is_err() {
                 recount_observed(&mut state, observer)?;
-                reserve_coordinated(&state, &request, &missing.value, self.limits)?;
+                reserve_coordinated(&state, request, &missing.value, self.limits)?;
             }
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
             let commit_id = planned_commit_id(decision, digest, observer)?;
             let committed_at_micros = state.last_committed_at_micros
                 .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
-            let envelope = prepare_envelope(&state, &request, commit_id, committed_at_micros, observer)?;
+            let envelope = prepare_envelope(&state, request, commit_id, committed_at_micros, observer)?;
             let mutations = prepare_mutations(&state, &envelope.value, observer)?;
             let paths = prepare_paths(&missing.value, &envelope.value, observer)?;
             let retained = clone_envelope(&envelope.value, observer, false)?;
@@ -2686,6 +2698,57 @@ mod tests {
             assert_eq!(retained.outcome, IdempotencyOutcome::Commit(completion.outcome.value().clone()));
             assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             drop((completion.outcome, retained));
+            drop(provider);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn borrowed_completion_preserves_actual_input_vectors_until_owner_drop() -> MemoryResult<()> {
+            let provider = MemoryStream::default();
+            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
+            let request = commit_request()?;
+            let conditions = request.conditions.as_ptr() as usize;
+            let mutations = request.mutations.as_ptr() as usize;
+            let bodies = match request.mutations.first().ok_or(StreamError::Unavailable)? {
+                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records.as_ptr() as usize,
+            };
+            let mut input_bytes = request.conditions.capacity()
+                .checked_mul(std::mem::size_of::<CommitCondition>()).ok_or(StreamError::Capacity)?;
+            input_bytes = input_bytes.checked_add(request.mutations.capacity()
+                .checked_mul(std::mem::size_of::<CommitMutation>()).ok_or(StreamError::Capacity)?)
+                .ok_or(StreamError::Capacity)?;
+            for mutation in &request.mutations {
+                let records = match mutation {
+                    CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records,
+                };
+                input_bytes = input_bytes.checked_add(records.capacity()
+                    .checked_mul(std::mem::size_of::<Bytes>()).ok_or(StreamError::Capacity)?)
+                    .ok_or(StreamError::Capacity)?;
+            }
+            // The fixture transfers its already allocated, exactly observable
+            // caller Vecs; the SDK must neither adopt nor consume them again.
+            let observer = MemoryObserver { meter: Some(meter.original()) };
+            let mut input = MemoryOutput { value: request, allocation: observer.adopt(input_bytes)? };
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+            let completion = provider.native_commit_completion_borrowed_inner(
+                &mut input.value, None, meter.original(),
+            ).await??;
+            assert!(matches!(completion.error.as_ref(), Some(error)
+                if error.kind() == std::io::ErrorKind::Interrupted));
+            assert!(matches!(completion.outcome.value(), CommitOutcome::Committed(_)));
+            assert_eq!(input.value.conditions.as_ptr() as usize, conditions);
+            assert_eq!(input.value.mutations.as_ptr() as usize, mutations);
+            let retained_bodies = match input.value.mutations.first().ok_or(StreamError::Unavailable)? {
+                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records,
+            };
+            assert_eq!(retained_bodies.as_ptr() as usize, bodies);
+            assert_eq!(retained_bodies.len(), 1);
+            assert_eq!(provider.tail(path("native/new")?).await?, 1);
+            drop(completion);
+            let before = meter.held.load(Ordering::SeqCst);
+            drop(input);
+            assert_eq!(before - meter.held.load(Ordering::SeqCst), input_bytes as u64);
             drop(provider);
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok(())
