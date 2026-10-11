@@ -68,7 +68,7 @@ pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + 
     // ceiling. Preserve the caller's finite total checkpoint allowance instead.
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
     let value_shape = super::json::admit_json_value_shape(
-        bytes, bounds, super::json::JsonValueSchema::Snapshot, charge,
+        bytes, bounds, super::json::JsonValueSchema::Snapshot, &mut |event| charge(event),
     )?;
     let input_bytes = value_shape.input_bytes();
     let lexical_items = value_shape.lexical_items();
