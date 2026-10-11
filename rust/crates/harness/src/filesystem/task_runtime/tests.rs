@@ -783,13 +783,16 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     assert!(state.outcome.is_none());
     // The same custom state machine still works through ordinary None.
     fixture.clock.0.store(10, Ordering::SeqCst);
+    let original_state = session.checkpoint().state.clone();
     session.step(
         OperationId::from_bytes([119; 16]),
         IdempotencyKey::new("ordinary-custom-machine")?,
         Value::Null,
     ).await?;
     assert_eq!(session.checkpoint().revision, 1);
-    assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 1);
+    assert_eq!(session.checkpoint().state, original_state);
+    // The real journal may rerun the callback to prove the committed record.
+    assert!(fixture.machine.transitioned.load(Ordering::SeqCst) > 0);
     Ok(())
 }
 

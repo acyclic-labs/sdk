@@ -188,10 +188,6 @@ impl MachineRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(MachineCheckpoint, MachineTransition, u64, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.is_some() {
-            self.require_native_work(&checkpoint.machine)?;
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let machine = if io.is_some() {
             self.native_machine(&checkpoint.machine)?
         } else {
