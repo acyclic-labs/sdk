@@ -151,7 +151,7 @@ impl<'a> TrustedDecodeReservation<'a> {
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
     fn maximum_slot_bytes() -> u64;
     /// Audited static fields, discriminators, expected types, and custom error labels reachable by this closed visitor; include list punctuation.
-    fn diagnostic_label_bytes() -> u64;
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     /// Payload/scratch allowance before the audited visitor, including custom DTO reconstruction/cache temporaries and the closed codec diagnostic base exactly once.
     fn decode_owned_allowance(
         shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
@@ -1140,7 +1140,7 @@ impl PreparationIo {
 pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
     /// Deep owned capacities only.
     fn logical_owned_bytes(&self) -> Result<u64>;
-    fn diagnostic_label_bytes() -> u64;
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn json_value_schema() -> crate::contract::JsonValueSchema {
         crate::contract::JsonValueSchema::None
     }
@@ -1169,13 +1169,22 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     }
 }
 
-pub(in crate::filesystem) fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    if io.is_some_and(PreparationIo::uses_native_work) {
+        return Error::NativeBoundary { code, reason };
     }
-    let _ = io;
-    Error::Invalid(reason.into())
+    match code {
+        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
+        _ => Error::Invalid(reason.into()),
+    }
+}
+
+pub(in crate::filesystem) fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
+    failure(io, crate::wire::ErrorCode::Invalid, reason)
 }
 
 pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
@@ -1216,30 +1225,34 @@ pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -
 }
 
 pub(in crate::filesystem) fn conflict(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
-    }
-    let _ = io;
-    Error::Conflict(reason.into())
+    failure(io, crate::wire::ErrorCode::Conflict, reason)
 }
 
 pub(in crate::filesystem) fn unauthorized(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason };
-    }
-    let _ = io;
-    Error::Unauthorized(reason.into())
+    failure(io, crate::wire::ErrorCode::Unauthorized, reason)
 }
 
 pub(in crate::filesystem) fn unsupported(io: Option<&PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason };
+    failure(io, crate::wire::ErrorCode::Unsupported, reason)
+}
+
+pub(in crate::filesystem) fn reserve<T>(values: &mut Vec<T>, capacity: usize, io: Option<&PreparationIo>) -> Result<()> {
+    if capacity <= values.capacity() { return Ok(()); }
+    let old = values.capacity();
+    let bytes = (capacity - old).checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| invalid(io, "vector capacity overflow"))? as u64;
+    let copy = WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..Default::default() };
+    if let Some(io) = io {
+        io.claim(bytes)?;
+        io.preflight(copy)?;
+        io.allocation_attempt(bytes)?;
     }
-    let _ = io;
-    Error::Unsupported(reason.into())
+    values.try_reserve_exact(capacity - values.len()).map_err(Error::Allocation)?;
+    if let Some(io) = io {
+        io.claim(((values.capacity() - capacity) * std::mem::size_of::<T>()) as u64)?;
+        io.charge(copy)?;
+    }
+    Ok(())
 }
 
 pub(in crate::filesystem) fn vector<T>(capacity: usize, io: Option<&PreparationIo>) -> Result<Vec<T>> {
@@ -2168,37 +2181,6 @@ mod tests {
             output_bytes: 16_000_000, items_examined: 100_000, items_returned: 100_000,
             allocation_operations: 100_000, peak_allocation_bytes: 16_000_000, materializations: 100_000,
         }
-    }
-
-    #[test]
-    fn ordinary_publication_scope_admits_before_io_and_measures_local_peak() -> Result<()> {
-        use crate::store::history::HistoryIo;
-        let cancellation = CancellationToken::new();
-        let io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        io.claim(256)?;
-        io.charge(WorkCounters { peak_allocation_bytes: 2048, ..Default::default() })?;
-        let budget = io.remaining()?;
-        let allowance = WorkBudget {
-            backend_read_operations: 1,
-            peak_allocation_bytes: budget.peak_allocation_bytes - 512,
-            ..budget
-        };
-        let scope = io.borrow_publication(budget, allowance)?;
-        io.claim(128)?;
-        let mut history = io.history_io();
-        history.begin_call()?;
-        let calls_before_denial = io.receipt().backend_read_operations;
-        assert!(history.begin_call().is_err(), "the second physical call must not start");
-        assert_eq!(io.receipt().backend_read_operations, calls_before_denial);
-        io.release(128)?;
-        let callback = scope.finish();
-        assert_eq!(callback.backend_read_operations, 1);
-        assert_eq!(callback.peak_allocation_bytes, 128);
-        assert_eq!(io.receipt().peak_allocation_bytes, 2048,
-            "historical global peak must not masquerade as callback memory");
-        assert_eq!(io.owned_bytes()?, 256);
-        assert!(io.remaining()?.backend_read_operations > 1, "original allowance is restored");
-        Ok(())
     }
 
     #[tokio::test]

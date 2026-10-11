@@ -487,7 +487,7 @@ impl Producer {
                 history_limits: HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 } },
             source_read, &self.cancellation,
         ).await?;
-        let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request).await?;
+        let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request, None).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
             project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()?,
             request: binding.request.clone() };
