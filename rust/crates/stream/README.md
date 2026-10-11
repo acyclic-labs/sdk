@@ -50,6 +50,22 @@ Replicated providers can use `request::append_digest`, `request::fork_digest`, a
 
 `preparation::append`, `preparation::fork`, and `preparation::commit` construct canonical outcomes and immutable envelopes from pre-commit existence/tails, an accepted commit ID and commit timestamp. Coordinated preparation requires explicit observations for every participant and fork source; missing observations are invalid. Forks always use the source's pre-commit prefix, including when that commit also appends to the source. The memory provider shares these condition, authority and record construction helpers. Providers must perform retry lookup first and obtain observations, authorize, reserve capacity and publish atomically; preparation itself performs no durable acceptance or retention.
 
+Native completion preparation accepts only two exact Tail conditions, one Append
+and one empty record slot, an immutable retry key, and a declared maximum record
+size. Memory creates the actual canonical result, replay and history controls
+before the source action and holds numeric resident-capacity reservations that
+ordinary and native mutations also honor. No Memory lock spans that action.
+Completion fills those existing slots, rechecks both tails and the original
+history/path visibility under the canonical CAS, and uses the normal Commit
+digest, ID and retry outcome. Changed history with unchanged tails fails with
+`PrefixNotRetained`; competing tails produce the canonical retained conflict.
+Completion performs only previously admitted work and records actual SDK
+attempts; it does not admit, allocate, stringify a cause, or create source
+authority after cancellation. Known SDK Vec/Arc payload controls retain their
+original allocation guards; opaque standard-library backing and runtime wait
+queues are not claimed as measured Root payload.
+
+
 `persistence::encode_observation` / `decode_observation` and `encode_envelope` / `decode_envelope` preserve complete terminal retry outcomes and immutable envelopes using existing generated Stream v1 protobuf messages. Each takes an explicit positive byte bound. Invalid facts, malformed bytes and noncanonical encodings fail closed, including unknown fields. The storage owner supplies its own checksum/container, account and request-digest binding, accepted ID/time durability and atomic publication; these codecs do not establish acceptance or authenticate stored bytes. No optional feature is required.
 
 Use `children_page` to discover large agent or stream hierarchies. Its ordered continuation carries the exact last hierarchy-changing commit ID; a concurrent path creation returns `HierarchyChanged`, so restart the traversal instead of silently missing or duplicating a child. Ancestor paths are materialized lazily when descendants are created; no fork lineage is required for discovery.

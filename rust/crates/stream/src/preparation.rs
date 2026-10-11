@@ -7,7 +7,7 @@
 //! observer funds actual output vector capacities before allocation.
 use std::collections::BTreeMap;
 
-use bytes::Bytes;
+use crate::OwnedBytes;
 
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, CommitCondition, CommitConflict, CommitId,
@@ -104,7 +104,7 @@ pub(crate) fn fork_cut(
 pub(crate) fn append_fact(
     path: StreamPath,
     start: u64,
-    bodies: Vec<Bytes>,
+    bodies: Vec<OwnedBytes>,
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<CommittedAppend, StreamError> {
@@ -122,7 +122,7 @@ pub(crate) fn append_fact_with_observer<I>(
     observer: &MemoryObserver,
 ) -> MemoryResult<MemoryOutput<CommittedAppend>>
 where
-    I: IntoIterator<Item = Bytes>,
+    I: IntoIterator<Item = OwnedBytes>,
     I::IntoIter: ExactSizeIterator,
 {
     let records = records_with_observer(start, bodies, commit_id, committed_at_micros, observer)?;
@@ -133,6 +133,47 @@ where
         },
         allocation: records.allocation,
     })
+}
+
+/// The closed completion ingress has one already allocated record slot. Its
+/// immutable arguments are normalized before the source action, not at finish.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn single_append_template(request: &CommitRequest) -> Result<(&StreamPath, u64), StreamError> {
+    let [CommitCondition::Tail { path: first, expected: first_tail },
+        CommitCondition::Tail { path: second, expected: second_tail }] = request.conditions.as_slice()
+        else { return Err(StreamError::InvalidArgument); };
+    let [CommitMutation::Append { path, records }] = request.mutations.as_slice()
+        else { return Err(StreamError::InvalidArgument); };
+    if records.len() != 1 || !records[0].is_empty() || first == second {
+        return Err(StreamError::InvalidArgument);
+    }
+    let start = if path == first { *first_tail } else if path == second { *second_tail } else {
+        return Err(StreamError::InvalidArgument);
+    };
+    start.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+    Ok((path, start))
+}
+
+/// Rebinds only scalar metadata and an immutable body alias in the real fact
+/// vector allocated by `mutations_with_observer`. No Vec or Arc is created here.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fill_single_append(
+    envelope: &mut CommittedEnvelope,
+    record: &Record,
+    mut visited: impl FnMut(),
+) -> Result<(), StreamError> {
+    let [CommittedMutation::Append(append)] = envelope.mutations.as_mut_slice()
+        else { return Err(StreamError::InvalidArgument); };
+    visited();
+    let [slot] = append.records.as_mut_slice() else { return Err(StreamError::InvalidArgument); };
+    visited();
+    let end = record.sequence.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+    *slot = record.clone();
+    append.start = record.sequence;
+    append.end = end;
+    append.tail = end;
+    envelope.commit_id = record.commit_id;
+    Ok(())
 }
 
 /// Normalizes and validates a commit, checks exact conditions and source authority, and
@@ -313,7 +354,7 @@ pub(crate) fn mutations_with_observer(
 
 pub(crate) fn records(
     start: u64,
-    bodies: Vec<Bytes>,
+    bodies: Vec<OwnedBytes>,
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<Vec<Record>, StreamError> {
@@ -330,7 +371,7 @@ pub(crate) fn records_with_observer<I>(
     observer: &MemoryObserver,
 ) -> MemoryResult<MemoryOutput<Vec<Record>>>
 where
-    I: IntoIterator<Item = Bytes>,
+    I: IntoIterator<Item = OwnedBytes>,
     I::IntoIter: ExactSizeIterator,
 {
     let mut bodies = bodies.into_iter();
@@ -361,7 +402,7 @@ mod tests {
     use crate::{IdempotencyKey, MemoryStream, StreamProvider};
 
     fn key(value: &'static [u8]) -> Result<IdempotencyKey, StreamError> {
-        IdempotencyKey::new(Bytes::from_static(value))
+        IdempotencyKey::new(OwnedBytes::from_static(value))
     }
 
     #[tokio::test]
@@ -369,7 +410,7 @@ mod tests {
         let provider = MemoryStream::default();
         let request = AppendRequest {
             path: StreamPath::new("source")?,
-            records: vec![Bytes::from_static(b"one")],
+            records: vec![OwnedBytes::from_static(b"one")],
             if_tail: Some(0),
             idempotency_key: Some(key(b"append")?),
         };
@@ -425,7 +466,7 @@ mod tests {
         provider
             .append(AppendRequest {
                 path: source.clone(),
-                records: vec![Bytes::from_static(b"before")],
+                records: vec![OwnedBytes::from_static(b"before")],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -443,13 +484,13 @@ mod tests {
             mutations: vec![
                 CommitMutation::Append {
                     path: source.clone(),
-                    records: vec![Bytes::from_static(b"new-source")],
+                    records: vec![OwnedBytes::from_static(b"new-source")],
                 },
                 CommitMutation::Fork {
                     source: source.clone(),
                     destination: destination.clone(),
                     at_tail: 1,
-                    records: vec![Bytes::from_static(b"new-fork")],
+                    records: vec![OwnedBytes::from_static(b"new-fork")],
                 },
             ],
             idempotency_key: key(b"coordinated")?,
@@ -492,7 +533,7 @@ mod tests {
     fn preparation_rejects_unrepresentable_exclusive_tails() -> Result<(), StreamError> {
         let request = AppendRequest {
             path: StreamPath::new("full")?,
-            records: vec![Bytes::from_static(b"overflow")],
+            records: vec![OwnedBytes::from_static(b"overflow")],
             if_tail: Some(u64::MAX),
             idempotency_key: None,
         };
