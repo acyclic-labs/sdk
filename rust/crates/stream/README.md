@@ -98,6 +98,9 @@ provider clock; cached replay facts retain their original timestamp and digest.
 No new namespace authority or work meter is created. The already preaccepted
 physical-completion ingress deliberately does not acquire fresh task authority
 after its source action.
+Guard denial preserves the original typed cause, leaves the full physical
+journal unchanged and publishes no retry outcome. The SDK write-call counter
+can still advance on entry; it is not evidence of physical journal mutation.
 
 `persistence::encode_observation` / `decode_observation` and `encode_envelope` / `decode_envelope` preserve complete terminal retry outcomes and immutable envelopes using existing generated Stream v1 protobuf messages. Each takes an explicit positive byte bound. Invalid facts, malformed bytes and noncanonical encodings fail closed, including unknown fields. The storage owner supplies its own checksum/container, account and request-digest binding, accepted ID/time durability and atomic publication; these codecs do not establish acceptance or authenticate stored bytes. No optional feature is required.
 
