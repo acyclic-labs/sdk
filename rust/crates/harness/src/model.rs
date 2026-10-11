@@ -2527,6 +2527,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Pure capability query; custom ordinary providers do not opt in implicitly.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, _work: &NativeMaterializationWork) -> Result<bool> {
+        _work.remaining()?;
         Ok(false)
     }
 
@@ -2535,6 +2536,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn context_capacity_with_native_work(
         &self, _model: &Model, _work: &NativeMaterializationWork,
     ) -> Result<crate::context::ModelContextCapacity> {
+        _work.remaining()?;
         Err(native_model_unsupported())
     }
 
@@ -2543,6 +2545,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn count_tokens_with_native_work(
         &self, _request: &PreparedModelRequest, _work: &NativeMaterializationWork,
     ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
+        _work.remaining()?;
         Err(native_model_unsupported())
     }
 
@@ -2552,6 +2555,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &'a self, _request: &'a PreparedModelRequest, _dispatch: ModelDispatch,
         _work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
+        _work.remaining()?;
         Err(native_model_unsupported())
     }
 
@@ -2560,6 +2564,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn reconcile_with_native_work<'a>(
         &'a self, _attempt: NativeModelAttempt<'a>, _work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
+        _work.remaining()?;
         Err(native_model_unsupported())
     }
 
