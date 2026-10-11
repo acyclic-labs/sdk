@@ -152,6 +152,100 @@ impl ResumableTool {
         })
     }
 
+    /// Produces the same owner admission using the issued native context and
+    /// original work. The returned guard covers its complete Self and deep data.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn workflow_admission_with_native_work(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(WorkflowAdmission, acyclic_fs::NativeAllocation)> {
+        work.remaining()?;
+        if !context.native_metadata_matches(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "resumable tool context has no original native custody" });
+        }
+        if !self.machine.supports_native_work() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "resumable tool has no native machine producer" });
+        }
+        let identity = self.machine.identity_with_native_work(work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let built = self.build_native_admission(context, invocation, identity, &io, work)?;
+        drop(built.registry);
+        drop(built.registry_custody);
+        Ok((built.admission.value, built.admission.custody
+            .expect("native admission retains its original custody")))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn build_native_admission(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        identity: &crate::workflow::MachineIdentity,
+        io: &crate::executor::PreparationIo,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<NativeWorkflowAdmission> {
+        self.definition.validate_with_io(Some(io))?;
+        validate_tool_identity(invocation, Some(io))?;
+        if identity.name != self.definition.name || identity.version != self.definition.revision
+            || invocation.name != self.definition.name
+        {
+            return Err(tool_error(Some(io), crate::wire::ErrorCode::Conflict,
+                "resumable tool identity differs from its admitted definition"));
+        }
+        if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id
+            || context.task().durable_task_id().is_none()
+        {
+            return Err(tool_error(Some(io), crate::wire::ErrorCode::Unauthorized,
+                "resumable tool requires its admitted task and exact call context"));
+        }
+        let grant_hold;
+        let (grant, hold) = work.display(&format_args!("tool:call:{}", self.definition.name))?;
+        grant_hold = hold;
+        let scope = context.effective_scope();
+        if !scope.grants().contains(&grant) {
+            return Err(tool_error(Some(io), crate::wire::ErrorCode::Unauthorized,
+                "scope lacks resumable tool call grant"));
+        }
+        drop(grant);
+        drop(grant_hold);
+        tool_validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
+        let registry_custody;
+        let mut registry = MachineRegistry::default();
+        registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
+        let mut admission_custody;
+        let mut state_hold;
+        let (state, hold) = registry.initialize_with_native_work(identity, &invocation.arguments, work)?;
+        state_hold = hold;
+        admission_custody = work.retain_owned(
+            (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
+        admission_custody.absorb(&mut state_hold)?;
+        let mut name_hold;
+        let (name, hold) = work.display(&identity.name)?;
+        name_hold = hold;
+        admission_custody.absorb(&mut name_hold)?;
+        let mut version_hold;
+        let (version, hold) = work.display(&identity.version)?;
+        version_hold = hold;
+        admission_custody.absorb(&mut version_hold)?;
+        let initial = MachineCheckpoint {
+            machine: crate::workflow::MachineIdentity { name, version, digest: identity.digest },
+            revision: 0, state,
+        };
+        let request_digest = crate::executor::preparation_digest(&(
+            context.task().durable_task_id(), scope.grants(), scope.limits(),
+            scope.run_limits(), scope.extensions(), &self.definition, invocation, identity,
+        ), Some(io))?;
+        let admission = ToolPayload::native(WorkflowAdmission {
+            operation_id: invocation.operation_id, request_digest, initial,
+        }, admission_custody);
+        admission.value.validate_with_io(Some(io))?;
+        Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
+    }
+
     /// Admits the same exact workflow on its original native ledger. The
     /// returned session borrows the issued invocation and pinned definition.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -174,81 +268,35 @@ impl ResumableTool {
         let identity = self.machine.identity_with_native_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
-            self.definition.validate_with_io(Some(&io))?;
-            validate_tool_identity(invocation, Some(&io))?;
-            if identity.name != self.definition.name || identity.version != self.definition.revision
-                || invocation.name != self.definition.name
-            {
-                return Err(tool_error(Some(&io), crate::wire::ErrorCode::Conflict,
-                    "resumable tool identity differs from its admitted definition"));
-            }
-            if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id
-                || context.task().durable_task_id().is_none()
-            {
-                return Err(tool_error(Some(&io), crate::wire::ErrorCode::Unauthorized,
-                    "resumable tool requires its admitted task and exact call context"));
-            }
-            let grant_hold;
-            let (grant, hold) = work.display(&format_args!("tool:call:{}", self.definition.name))?;
-            grant_hold = hold;
-            let scope = context.effective_scope();
-            if !scope.grants().contains(&grant) {
-                return Err(tool_error(Some(&io), crate::wire::ErrorCode::Unauthorized,
-                    "scope lacks resumable tool call grant"));
-            }
-            drop(grant);
-            drop(grant_hold);
-            tool_validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(&io))?;
-            let registry_custody;
-            let mut registry = MachineRegistry::default();
-            registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
-            let mut admission_custody;
-            let mut state_hold;
-            let (state, hold) = registry.initialize_with_native_work(identity, &invocation.arguments, work)?;
-            state_hold = hold;
-            admission_custody = work.retain_owned(
-                (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
-            admission_custody.absorb(&mut state_hold)?;
-            let mut name_hold;
-            let (name, hold) = work.display(&identity.name)?;
-            name_hold = hold;
-            admission_custody.absorb(&mut name_hold)?;
-            let mut version_hold;
-            let (version, hold) = work.display(&identity.version)?;
-            version_hold = hold;
-            admission_custody.absorb(&mut version_hold)?;
-            let initial = MachineCheckpoint {
-                machine: crate::workflow::MachineIdentity { name, version, digest: identity.digest },
-                revision: 0, state,
-            };
-            let request_digest = crate::executor::preparation_digest(&(
-                context.task().durable_task_id(), scope.grants(), scope.limits(),
-                scope.run_limits(), scope.extensions(), &self.definition, invocation, identity,
-            ), Some(&io))?;
-            let admission = ToolPayload::native(WorkflowAdmission {
-                operation_id: invocation.operation_id, request_digest, initial,
-            }, admission_custody);
-            admission.value.validate_with_io(Some(&io))?;
+            let built = self.build_native_admission(context, invocation, identity, &io, work)?;
             context.authorize_tool_with_native_work(&self.definition, invocation, work).await?;
             let copied_custody;
-            let (copied, hold) = clone_admission_with_native_work(&admission.value, work)?;
+            let (copied, hold) = clone_admission_with_native_work(&built.admission.value, work)?;
             copied_custody = hold;
             let (observed, observed_custody) = journal.admit_with_native_work(copied, work)?.await?;
             let observed = ToolPayload::native(observed, observed_custody);
             drop(copied_custody);
-            if observed.value != admission.value {
+            if observed.value != built.admission.value {
                 return Err(tool_error(Some(&io), crate::wire::ErrorCode::Conflict,
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
             let metadata_custody = work.retain_owned(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64)?;
             let host = DurableWorkflowHost::open_with_native_work(
-                registry, admission.value.initial, journal, work).await?;
+                built.registry, built.admission.value.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
-                definition: &self.definition, invocation, host, registry_custody, metadata_custody,
+                definition: &self.definition, invocation, host,
+                registry_custody: built.registry_custody, metadata_custody,
             })
         })
     }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+struct NativeWorkflowAdmission {
+    admission: ToolPayload<WorkflowAdmission>,
+    registry: MachineRegistry,
+    registry_custody: acyclic_fs::NativeAllocation,
 }
 
 /// Owner-bound durable session for one exact tool invocation.
