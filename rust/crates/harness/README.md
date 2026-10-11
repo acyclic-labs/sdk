@@ -294,12 +294,23 @@ retains cleanup outcome and its original effect identity rather than launching a
 `NativeProcessProvider::new_with_native_work` uses the ordinary binding engine with
 the prepared view's original ledger: request/schema reads, closed DTO decoding,
 schema validation, approvals and provider-owned Arc payloads retain that custody.
+Its native entry borrows the plan; the admitted future copies closed metadata
+through the existing measured String/FileRef producer, never a caller-side clone.
 Legacy views and different ledger families are rejected before binding I/O;
 ledger identity is membership, not a replacement for current owner or grants.
+`NativeProcessRequest::approval_digest_with_native_work` uses the same canonical
+approval tuple and hash recipe with original-ledger encoding and hash admission.
 `into_arc_with_native_work` keeps registry ownership in the provider's last guard.
 `EffectProvider::dispatch_with_native_work` admits the actual launch future before
 construction and threads the caller's original work ledger through authenticated
 history, protected receipt encoding/appends, and the original process/view engine.
+Receipt paths use the original-meter intrinsic `StreamPath` constructor; append
+aliases that guarded path instead of allocating a second String-to-Arc copy.
+Operation-owned verifier and scope data move with
+`NativeProcessAuthority::authority_custody`, which drops after its capabilities.
+Sharing the authority retains that original claim even when a bound effect or
+provider reference retires; a pre-existing ordinary service authority owns no
+operation claim. Custody is accounting, not a grant or approval.
 The supervisor retains that ledger, original cancellation and cached payload custody
 after caller or registry/provider drop. The shared `NativeFutureBundle` drops its
 physical future before releasing the original frame guard; no second boxed adapter
@@ -320,6 +331,14 @@ Cold receipts never adopt process control. Every finite publication failure reta
 the original typed cause and cleanup ownership, completed destinations and staged
 diagnostic in a preadmitted error context; formatting never replaces that cause.
 Unfunded observation stays pending or uncertain rather than claiming a recorded result.
+`NativeProcessResult::decode_with_native_work` reads pinned result bytes through
+the same closed-record codec and retains the actual stdout, stderr and diagnostic
+capacities on the original ledger. Its source-byte custody remains with the caller;
+`mcp_response_with_native_work` returns the decoded protocol response with its guard.
+`NativeProcessRequest::decode_with_native_work` uses that same decoder with a closed
+profile selecting only `mcp_stdio.params` as arbitrary JSON. It retains the prepaid
+opaque decode reservation for its path/map/resource graph, not allocator or RSS
+estimates; the caller separately retains the pinned source bytes.
 These adapters are not a sandbox and do not promise cross-volume atomic publication.
 OS cooperation is a liveness assumption: capture, observation and cleanup bounds are
 not a hard wall-clock guarantee for an unresponsive operating system.

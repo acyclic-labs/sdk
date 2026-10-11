@@ -482,7 +482,7 @@ where
     let authority = || NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
     result_content: content.clone(),
     results: results.clone(),
-    approvals: approvals.clone(), };
+    approvals: approvals.clone(), authority_custody: None, };
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
@@ -781,7 +781,7 @@ where
         scope,
         1_000_000,
     )?),
-    approvals: execution_journal(stream, files, volume, issuer, scope)?, })
+    approvals: execution_journal(stream, files, volume, issuer, scope)?, authority_custody: None, })
 }
 
 async fn verify_publication<A, O>(

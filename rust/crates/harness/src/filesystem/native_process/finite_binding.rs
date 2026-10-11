@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::filesystem::{PreparationIo, PreparationRecord};
+use crate::filesystem::PreparationIo;
 
 // Reachable serde labels: native_contract.rs, mcp/stdio.rs, resources.rs,
 // conversation.rs; filesystem lazy_workspace.rs, demand.rs, workspace.rs,
@@ -41,28 +41,12 @@ const NATIVE_SERDE_LABELS: &str = concat!(
     "non-UTF8 input invalid length: found failed to parse a UUID ",
 );
 
-pub(super) struct BindingPayload {
-    pub(super) plan: TaskEffectPlan,
-    pub(super) _custody: Option<NativeAllocation>,
-}
 
 struct ContentPayload {
     bytes: Vec<u8>,
     _custody: Option<NativeAllocation>,
 }
 
-// This is the closed native request inventory, not arbitrary DeserializeOwned.
-// The shared decoder covers string bytes and internally tagged serde scratch;
-// these slots also cover its argv, byte input, mappings and MCP JSON values.
-impl PreparationRecord for NativeProcessRequest {
-    fn maximum_slot_bytes() -> u64 {
-        [std::mem::size_of::<Self>(), std::mem::size_of::<super::super::NativeVolumeMapping>(),
-            std::mem::size_of::<(String, String)>(), std::mem::size_of::<serde_json::Value>(),
-            std::mem::size_of::<(String, serde_json::Value)>(),
-            std::mem::size_of::<crate::mcp::stdio::McpStdioRequest>()]
-            .into_iter().max().unwrap_or(0) as u64
-    }
-}
 
 pub(super) fn require_family(
     bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
@@ -87,20 +71,26 @@ pub(super) fn require_view_family<P: StreamProvider>(
         .map_err(|cause| Error::NativeWork { cause, custody: None })
 }
 
-pub(super) fn binding_payload(
-    plan: TaskEffectPlan, work: Option<&NativeMaterializationWork>,
-) -> Result<BindingPayload> {
-    let _custody = work.map(|work| {
-        let request = plan.request.logical_owned_bytes()?;
-        let schema = plan.result_schema.logical_owned_bytes()?;
-        let bytes = (plan.provider.capacity() as u64).checked_add(plan.effect_kind.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(request))
-            .and_then(|bytes| bytes.checked_add(schema))
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native binding payload ownership overflow" })?;
-        work.retain_owned(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })
-    }).transpose()?;
-    Ok(BindingPayload { plan, _custody })
+pub(super) fn copy_plan_with_io(
+    plan: &TaskEffectPlan, io: &PreparationIo,
+) -> Result<TaskEffectPlan> {
+    let allowance = (plan.provider.capacity() as u64)
+        .checked_add(plan.effect_kind.capacity() as u64)
+        .ok_or_else(|| io.invalid("native binding plan ownership overflow"))?;
+    io.retain_owned(allowance)?;
+    let held = io.guard_owned(allowance)?;
+    let provider = crate::resources::copy_metadata_string(&plan.provider, io)?;
+    let effect_kind = crate::resources::copy_metadata_string(&plan.effect_kind, io)?;
+    let actual = (provider.capacity() as u64).checked_add(effect_kind.capacity() as u64)
+        .ok_or_else(|| io.invalid("native binding plan ownership overflow"))?;
+    io.release(allowance.checked_sub(actual)
+        .ok_or_else(|| io.invalid("native plan copy exceeded source capacity"))?)?;
+    held.into_retained();
+    Ok(TaskEffectPlan {
+        provider, guarantee: plan.guarantee, effect_kind,
+        request: plan.request.clone_with_io(io)?,
+        result_schema: plan.result_schema.clone_with_io(io)?,
+    })
 }
 
 pub(super) fn shared_custody(
@@ -152,11 +142,18 @@ fn arc<T>(value: T, io: Option<&PreparationIo>) -> Result<Arc<T>> {
 }
 
 pub(super) async fn bind_original<P: StreamProvider + 'static>(
-    owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
+    owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: Cow<'_, TaskEffectPlan>,
     view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: Option<&NativeMaterializationWork>,
 ) -> Result<NativeProcessProvider<P>> {
     let io = work.map(PreparationIo::from_native_work).transpose()?;
+    let plan = match plan {
+        Cow::Owned(plan) => plan,
+        Cow::Borrowed(plan) => copy_plan_with_io(plan, io.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage,
+            reason: "borrowed native plan requires original preparation IO",
+        })?)?,
+    };
     // All constructor diagnostics use the same admitted closed SDK inventory.
     // On failure the body drops its parsed/raw payloads before custody moves to
     // the original cause; no fresh error allowance is constructed afterward.

@@ -138,6 +138,10 @@ pub struct NativeProcessAuthority {
     pub results: Arc<dyn ContentPublisher>,
     /// Existing resolved-approval ledger verifier.
     pub approvals: Arc<dyn ToolApprovalVerifier>,
+    /// Original custody of operation-owned authority data. Shared provider aliases
+    /// retain it until the authority and all of its capability fields are dropped.
+    /// Pre-existing ordinary service capabilities carry no operation-owned claim.
+    pub authority_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Optional provider for one retained task command. Construction launches nothing.
@@ -576,7 +580,9 @@ where
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
         owner.verify(false).await?;
-        Self::bind(owner, command, plan, Some(view), approval, authority, None).await
+        finite_binding::bind_original(
+            owner, command, Cow::Owned(plan), Some(view), approval, authority, None,
+        ).await
     }
 
     /// Reopens receipt observation after provider drop or host restart, including
@@ -588,35 +594,25 @@ where
         approval: InteractionId,
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
-        Self::bind(owner, command, plan, None, approval, authority, None).await
+        finite_binding::bind_original(
+            owner, command, Cow::Owned(plan), None, approval, authority, None,
+        ).await
     }
 
-    async fn bind(
-        owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
-        view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
-        authority: NativeProcessAuthority,
-        work: Option<&acyclic_fs::NativeMaterializationWork>,
-    ) -> Result<Self> {
-        finite_binding::bind_original(owner, command, plan, view, approval, authority, work).await
-    }
 
     /// Binds this exact prepared namespace to its original finite work family.
     /// Admission precedes construction of the binding future and content reads.
     pub fn new_with_native_work<'a>(
-        owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
+        owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
         view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
         authority: NativeProcessAuthority, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Self>> {
         finite_dispatch::require_finite(work)?;
         finite_binding::require_view_family(view.as_ref(), work)?;
-        let payload = finite_binding::binding_payload(plan, Some(work))?;
         crate::NativeFutureBundle::new(work, || async move {
-            let finite_binding::BindingPayload { plan, _custody } = payload;
-            let provider = Self::bind(owner, command, plan, Some(view), approval, authority, Some(work)).await?;
-            if let Some(custody) = _custody {
-                finite_binding::absorb_shared(&provider._custody, custody)?;
-            }
-            Ok(provider)
+            finite_binding::bind_original(
+                owner, command, Cow::Borrowed(plan), Some(view), approval, authority, Some(work),
+            ).await
         })
     }
 
@@ -863,8 +859,8 @@ fn box_execution<F: Future>(
 fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
     use std::fmt::Write as _;
     let mut path = String::new();
-    // Both callers admit this one exact path buffer before construction.
-    // Avoid format!'s capacity estimate and possible second String growth.
+    // The ordinary path retains its exact String construction policy.
+    // Native callers use the intrinsically guarded StreamPath constructor.
     path.try_reserve_exact("harness/v2/native-process/".len() + 36)
         .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -872,7 +868,9 @@ fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
         .map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason: "native receipt path formatting failed",
         })?;
-    StreamPath::new(path).map_err(|source| Error::NativeStream { source, custody: None })
+    StreamPath::new(path).map_err(|source| Error::NativeStream {
+        code: crate::wire::ErrorCode::Storage, source, custody: None,
+    })
 }
 
 
