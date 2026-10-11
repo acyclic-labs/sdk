@@ -31,18 +31,18 @@ impl CommandDispatch {
         let value = match progress {
             TaskCommandProgress::Ready(value) => value,
             #[cfg(not(target_arch = "wasm32"))]
-            TaskCommandProgress::ReadyWithNativeCustody { value, custody: incoming } => {
+            TaskCommandProgress::ReadyWithNativeCustody { value, custody: mut incoming } => {
                 let Self::Ready { custody, additional_custody, .. } = self else { unreachable!() };
                 match custody {
                     None => *custody = Some(incoming),
                     Some(primary) if primary.shares_ledger(&incoming) => {
                         // prepare_custody_transfer checked this exact unchanged
                         // sum. absorb neither allocates nor checks cancellation.
-                        primary.absorb(incoming).map_err(native_error)?;
+                        primary.absorb(&mut incoming).map_err(native_error)?;
                     }
                     Some(_) => {
                         if let Some(existing) = additional_custody.iter_mut().find(|guard| guard.shares_ledger(&incoming)) {
-                            existing.absorb(incoming).map_err(native_error)?;
+                            existing.absorb(&mut incoming).map_err(native_error)?;
                         } else {
                             additional_custody.push(incoming);
                         }

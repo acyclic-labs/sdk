@@ -179,3 +179,26 @@ impl SchedulerEvent {
         Ok(inventory.owned)
     }
 }
+
+impl OperationSpec {
+    pub(crate) fn clone_with_work(
+        &self, work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let Some(io) = work.as_deref_mut() else { return Ok(self.clone()); };
+        let (owned, copied) = {
+            let mut inventory = Inventory { io: Some(&mut *io), live: false, owned: 0, copied: 0 };
+            inventory.spec(self)?;
+            (inventory.owned, inventory.copied)
+        };
+        io.admit_owned(owned)?;
+        io.copy_bytes(copied)?;
+        io.retain_owned(owned)?;
+        Ok(self.clone())
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let mut inventory = Inventory { io: None, live: true, owned: 0, copied: 0 };
+        inventory.spec(self)?;
+        Ok(inventory.owned)
+    }
+}

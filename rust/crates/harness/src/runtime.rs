@@ -413,18 +413,36 @@ pub fn task_admission_identities(
 }
 
 pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
-    for (name, schema) in [("input", input), ("output", output)] {
-        crate::contract::compile_json_schema(schema, &format!("task {name}"))?;
+    validate_task_schemas_with_work(input, output, resumable, &mut None)
+}
+
+fn validate_task_schemas_with_work(
+    input: &Value, output: &Value, resumable: bool,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<()> {
+    for (label, schema, refusal) in [
+        ("task input", input, "resumable task input schema cannot accept every value"),
+        ("task output", output, "resumable task output schema cannot accept every value"),
+    ] {
+        crate::contract::compile_json_schema_with_work(schema, label, work)?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))
         {
-            return Err(Error::Invalid(format!(
-                "resumable task {name} schema cannot accept every value"
-            )));
+            return Err(admission_contract_error(work, refusal));
         }
     }
     Ok(())
+}
+
+fn admission_contract_error(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary {code:crate::wire::ErrorCode::Invalid,reason};
+    }
+    Error::Invalid(reason.into())
 }
 
 fn validate_identity(name: &str, version: &str) -> Result<()> {
@@ -623,12 +641,39 @@ impl TaskRegistry {
         output_schema: &Value,
         input: Option<&Value>,
     ) -> Result<()> {
-        let entry = self
-            .0
-            .get(&(identity.name.clone(), identity.version.clone()))
-            .ok_or_else(|| {
-                Error::NotFound(format!("task {}@{}", identity.name, identity.version))
-            })?;
+        self.validate_durable_admission_with_work(
+            identity,machine,input_schema,output_schema,input,&mut None,
+        )
+    }
+
+    pub(crate) fn validate_durable_admission_with_work(
+        &self, identity: &ComponentIdentity, machine: &MachineIdentity,
+        input_schema: Option<&Value>, output_schema: &Value, input: Option<&Value>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work,0)?;
+        let name = match quota.work().as_deref_mut() {
+            Some(io) => io.clone_text(&identity.name)?,
+            None => identity.name.clone(),
+        };
+        quota.adopt(name.capacity() as u64)?;
+        let version = match quota.work().as_deref_mut() {
+            Some(io) => io.clone_text(&identity.version)?,
+            None => identity.version.clone(),
+        };
+        quota.adopt(version.capacity() as u64)?;
+        let lookup = (name,version);
+        let entry = match self.0.get(&lookup) {
+            Some(entry) => entry,
+            None => {
+                #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+                if quota.work().as_ref().is_some_and(|io| io.original_native_work().is_some()) {
+                    return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::NotFound,
+                        reason:"pinned durable task revision is unavailable"});
+                }
+                return Err(Error::NotFound(format!("task {}@{}",identity.name,identity.version)));
+            }
+        };
         if &entry.identity != identity
             || !entry.resumable
             || entry.machine.as_ref() != Some(machine)
@@ -640,7 +685,9 @@ impl TaskRegistry {
             ));
         }
         if let Some(input) = input {
-            validate_value(&entry.input_schema, input, "task input")?;
+            crate::contract::validate_json_schema_value_with_work(
+                &entry.input_schema,input,"task input",quota.work(),
+            )?;
         }
         Ok(())
     }
@@ -711,6 +758,13 @@ pub struct TaskAdmissionRecord {
     pub extensions: Option<ExtensionAdmission>,
     /// Qualified immutable execution route, or the bound local host.
     pub execution: Option<ExecutionPlacement>,
+}
+
+#[derive(Serialize)]
+struct CanonicalTaskAdmission<'a> {
+    contract: &'static str,
+    #[serde(flatten)]
+    admission: &'a TaskAdmissionRecord,
 }
 
 /// One owner-retained direct task child, independent of fork ancestry.
@@ -814,6 +868,13 @@ impl TaskAdmissionRecord {
     /// Validates the provider-neutral request independently of registration.
     /// The owner additionally checks the exact registered task and authority.
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         validate_identity(&self.task.name, &self.task.version)?;
         validate_component_label(&self.machine.name, "machine name")?;
         validate_component_label(&self.machine.version, "machine version")?;
@@ -831,17 +892,27 @@ impl TaskAdmissionRecord {
                 "resource-derived admission requires a parent".into(),
             ));
         }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
             proof.validate()?;
-            if !created.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
+            let bytes = crate::store::history::canonical_bytes_with_work(
+                &proof.resource, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
+            )?;
+            quota.adopt(bytes.capacity() as u64)?;
+            let slot = std::mem::size_of::<Vec<u8>>() as u64;
+            if let Some(io) = quota.work().as_deref_mut() { io.retain_owned(slot)?; }
+            quota.adopt(slot)?;
+            if !created.insert(bytes) {
                 return Err(Error::Invalid(
                     "task admission repeats a created resource proof".into(),
                 ));
             }
         }
-        validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
-        validate_value(&self.input_schema, &self.input, "task input")?;
+        validate_task_schemas_with_work(&self.input_schema, &self.output_schema, true, quota.work())?;
+        crate::contract::validate_json_schema_value_with_work(
+            &self.input_schema, &self.input, "task input", quota.work(),
+        )?;
         self.limits.validate()?;
         self.run_limits.validate()?;
         if let Some(policy) = &self.policy {
@@ -858,6 +929,10 @@ impl TaskAdmissionRecord {
             execution.validate()?;
         }
         Ok(())
+    }
+
+    pub(crate) fn canonical_payload(&self) -> impl Serialize + '_ {
+        CanonicalTaskAdmission {contract:"harness.task-admission.v2",admission:self}
     }
 
     /// Ref-only v2 envelope retained by the owner outside event history.
@@ -884,19 +959,45 @@ impl TaskAdmissionRecord {
 
     /// Rejects missing, extra, or noncanonical v2 admission fields.
     pub fn from_canonical_value(value: Value) -> Result<Self> {
-        let canonical = value.clone();
+        Self::from_canonical_value_with_work(value, &mut None)
+    }
+
+    pub(crate) fn from_canonical_value_with_work(
+        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let canonical = crate::store::history::canonical_bytes_with_work(
+            &value, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
+        )?;
+        quota.adopt(canonical.capacity() as u64)?;
         let mut body = value;
-        let fields = body
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("task admission must be an object".into()))?;
-        if fields.remove("contract") != Some(Value::String("harness.task-admission.v2".into())) {
-            return Err(Error::Invalid("unsupported task admission contract".into()));
+        let fields = match body.as_object_mut() {
+            Some(fields) => fields,
+            None => return Err(admission_contract_error(quota.work(), "task admission must be an object")),
+        };
+        if !matches!(fields.remove("contract"), Some(Value::String(contract)) if contract == "harness.task-admission.v2") {
+            return Err(admission_contract_error(quota.work(), "unsupported task admission contract"));
         }
-        let admission: Self =
-            serde_json::from_value(body).map_err(|error| Error::Invalid(error.to_string()))?;
-        admission.validate()?;
-        if admission.canonical_value() != canonical {
-            return Err(Error::Invalid("task admission is not canonical v2".into()));
+        let decoded = serde_json::from_value(body);
+        let admission: Self = match decoded {
+            Ok(admission) => admission,
+            Err(source) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if quota.work().as_ref().is_some_and(|io| io.original_native_work().is_some()) {
+                    return Err(Error::NativeDecode {
+                        code: crate::wire::ErrorCode::Invalid, source, custody: None,
+                    });
+                }
+                return Err(Error::Invalid(source.to_string()));
+            }
+        };
+        admission.validate_with_work(quota.work())?;
+        let expected = crate::store::history::canonical_bytes_with_work(
+            &admission.canonical_payload(), acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
+        )?;
+        quota.adopt(expected.capacity() as u64)?;
+        if expected != canonical {
+            return Err(admission_contract_error(quota.work(), "task admission is not canonical v2"));
         }
         Ok(admission)
     }
@@ -918,6 +1019,17 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
                 "durable dispatch ownership is not bound".into(),
             ))
         })
+    }
+
+    /// Checks the same original dispatch lease on the caller's native ledger.
+    /// Unsupported custom hosts reject before creating a future or doing IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_dispatch_owner_with_native_work<'a>(
+        &'a self, _task: TaskId, _fence: &'a crate::scheduler::LeaseFence,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unsupported,
+            reason:"durable host has no original-ledger dispatch verifier"})
     }
 
     /// Checks that this lease still owns execution or reconciliation. A retained
@@ -4579,6 +4691,34 @@ impl TaskContext {
     pub async fn read_file(&self, file: &FileRef) -> Result<Vec<u8>> {
         self.read_bound_file(self.content_binding(Some(file.volume())), file)
             .await
+    }
+
+    /// Verifies whole-volume READ under this issued context and its original
+    /// owner. It constructs no authority, lease, filesystem path, or grant.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn verify_original_volume_read_with_native_work<P: acyclic_stream::StreamProvider>(
+        &self, owner: &crate::durable_host::TaskJournalOwner<P>, volume: &VolumeRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork {cause,custody:None})?;
+        let (task, fence) = owner.task_binding();
+        if !self.original_task_binding_matches(task, fence) {
+            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
+                reason:"project READ context differs from its original task owner"});
+        }
+        owner.require_volume_grant_with_native_work(volume, crate::conversation::VolumeOperation::Read, work)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let granted = io.contains_capability(&self.scope.grants, volume, "volume:read:")?
+            || match self.scope.created_grants() {
+                Some(grants) => io.contains_capability(grants, volume, "volume:read:")?,
+                None => false,
+            };
+        if !granted {
+            return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,
+                reason:"issued task context does not retain whole-project READ"});
+        }
+        owner.verify_read_access_with_native_work(work).await
     }
 
     /// Reads through the original bound provider on the caller's native ledger.
