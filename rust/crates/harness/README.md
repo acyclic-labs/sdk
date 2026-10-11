@@ -934,8 +934,9 @@ Warm cleanup waits for the original supervisor and physical process/stdio quiesc
 cold cleanup authenticates the original accepted receipt, approval and pinned quiet
 result. Missing or launch-only cold receipts remain uncertain. A separately admitted
 cleanup span does not reset the cancelled execution token or migrate its custody.
-The proof retains its actual view, request, receipt and guards; it is not namespace
-write, retirement or deletion authority.
+The proof retains its actual view, request, receipt, original canonical command/effect
+binding and guards. Disposal validation checks that binding without re-encoding or
+rehashing JSON; the proof is not namespace write, retirement or deletion authority.
 `NativeProcessResult::decode_with_native_work` reads pinned result bytes through
 the same closed-record codec and retains the actual stdout, stderr and diagnostic
 capacities on the original ledger. Its source-byte custody remains with the caller;

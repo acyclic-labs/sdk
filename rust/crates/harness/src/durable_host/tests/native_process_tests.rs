@@ -399,6 +399,13 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
         attempt, &fixture.view, &cleanup, &cleanup_cancellation,
     )?.await?;
     proof.require_view_binding(fixture.view.as_ref(), fixture.owner.as_ref(), &original)?;
+    let command_check_prefix = cleanup.receipt();
+    proof.require_command_binding(fixture.command)?;
+    assert!(matches!(
+        proof.require_command_binding(OperationId::from_bytes([63; 16])),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })
+    ));
+    assert_eq!(cleanup.receipt(), command_check_prefix);
     assert!(fixture.view.operation_cancellation().is_cancelled());
     assert_eq!(original.receipt(), original_prefix);
     assert_eq!(cleanup.receipt().authority_records_appended, 0);
