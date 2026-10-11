@@ -92,6 +92,25 @@ pub trait EffectProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         attempt_id: EffectAttemptId,
     ) -> BoxFuture<'a, Result<Option<EffectObservation>>>;
+
+    /// Dispatches the same durable attempt on the supplied original ledger.
+    /// Unsupported providers reject before any provider work.
+    #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+    fn dispatch_with_native_work<'a>(
+        &'a self, _request: EffectDispatch,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<BoxFuture<'a,Result<(EffectObservation,acyclic_fs::NativeAllocation)>>> {
+        Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unsupported, reason:"effect provider has no native dispatch observer" })
+    }
+
+    /// Observes only the original attempt, retaining actual returned metadata.
+    #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+    fn reconcile_with_native_work<'a>(
+        &'a self, _attempt_id: EffectAttemptId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<BoxFuture<'a,Result<Option<(EffectObservation,acyclic_fs::NativeAllocation)>>>> {
+        Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unsupported, reason:"effect provider has no native reconciliation observer" })
+    }
 }
 
 /// Explicit registry; no ambient or process-global provider catalog exists.

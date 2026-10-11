@@ -279,6 +279,22 @@ pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
         Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
             "finite original approval verification is unavailable".into()))) })
     }
+
+    /// Verifies that same retained approval on the original native ledger.
+    /// An unsupported provider rejects before future allocation or journal IO.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_with_native_work<'a>(
+        &'a self,
+        _interaction_id: InteractionId,
+        _operation_id: OperationId,
+        _definition_digest: [u8; 32],
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<BoxFuture<'a, Result<()>>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "approval verifier has no native journal observer",
+        })
+    }
 }
 
 /// One tool assembled from three independently replaceable values.
