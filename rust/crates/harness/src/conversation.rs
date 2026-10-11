@@ -1433,6 +1433,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
                 reference, reference.descriptor().byte_length(), work,
             )?.await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            reference.descriptor().verify_with_io(&input.0, Some(&io))?;
             let items = decode_manifest_bounded(reference, &input.0, item_count as usize, &io)?;
             let retained = io.owned_bytes()?;
             let output = (items, io.into_native_custody(retained)?);
@@ -1482,6 +1483,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
                 let bytes = io.receive_content(self.read_measured(reference,
                     reference.descriptor().byte_length(), io.remaining()?, cancellation).await)?;
                 io.retain_owned(bytes.capacity() as u64)?;
+                reference.descriptor().verify_with_io(&bytes, Some(&io))?;
                 decode_manifest_bounded(reference, &bytes, maximum_members, &io)
             }.await;
             match result {
