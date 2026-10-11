@@ -121,6 +121,7 @@ pub use native_execution::{
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
     copy_native_mapping_with_work, copy_native_volume_with_work, copy_native_generation_with_work,
+    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,

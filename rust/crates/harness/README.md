@@ -585,6 +585,16 @@ Cold projection locators use one typed decode under the original lexical admissi
 
 Archived Full forks require an issuer-authenticated original-cut witness once the parent has retired history; Summary captures the parent's logical head, not the surviving cache tail. `verify_published_child_measured` checks the original canonical parent publication and child binding for either policy without a new publication lease or rebinding. ROOT binding uses the original admitted task owner, protected scope issuer, exact bind operation/intent and atomic owner/conversation fence; only a verified canonical binding can authorize its cached audience. Children instead use their sealed creation authority and canonical causal binding.
 ROOT bootstrap content uses its own explicit Project/Scratch source contract, authenticated original ROOT admission and canonical binding, and protected provider birth/selected-generation evidence. It never fabricates child creation provenance or a parent fence. Existing READ is mandatory before provider IO; WRITE remains limited to the original declared grant, and a readonly Scratch source cannot become the default writer or a ROOT result-creation receipt.
+
+`bind_original_root_conversation_with_native_work` authenticates or publishes
+that original protected ROOT binding through the same aggregate engine and
+returns the exact canonical SDK `Command` as intrinsically guarded `OwnedBytes`.
+The operation binds the configured audience and actual private-volume creation
+identity; a conversation ID need not equal the logical task ID. Reopen uses the
+original immutable binding revision, scope and operation, never the latest head.
+Those bytes and identifiers are not creation or WRITE authority: the original
+task owner authenticates the issuer, actor, scope and publication fence, and
+project/native source creation is verified independently.
 Native provider/volume constructors copy the original borrowed fields on that same ledger and return the identity before its custody guard. Creating a reference creates no access grant. Native fork-verifier registration preserves the original provider map and admission predicates; its owned labels and logical entry payloads stay under intrinsic custody, while private Arc/B-tree backing is not claimed as observed physical heap.
 Fork report/seed validation threads the same observer through captures, grants, omissions and inherited files. Native denial preserves the original error classification without allocating a replacement diagnostic string. Report-to-seed conversion reserves its real output Vec capacities under custody before allocator attempts, using the same physical factory as other SDK copies.
 `publish_fork_report_with_native_work` and `bind_published_child_with_native_work` consume the same canonical publication and child-binding engines on one original native ledger. Borrowed report/scope inputs are physically copied under temporary custody; cached reducer components own only their funded copies. Publication returns its `ApplyResult` before the output guard. Full-history issuer attestation observes the exact original parent cut, prefix ownership and unchanged proof computation on that ledger.
