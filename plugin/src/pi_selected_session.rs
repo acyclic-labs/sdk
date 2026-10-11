@@ -90,11 +90,11 @@ impl PiSession {
             };
             let observe_operation = pi_fork::derived_with_native_work(original, "observe-root-source", &work)?;
             let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone()).with_work(work.clone());
+                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
             let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
                 &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?
                 .with_invocation_cancellation(&cancellation);
-            let workflow = pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(),
+            let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                 self.stream.clone(), &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone());
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &observer, owner.policy().maximum_payload_bytes, &work)?;
@@ -121,20 +121,20 @@ impl PiSession {
             owner, &self.filesystem, operation, "command", &payload, &work).await?;
         let command = WorkflowCommand { operation_id: operation, kind: kind.to_owned(), payload: reference };
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone()).with_work(work.clone());
+            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
         let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?
             .with_root_source_cut(root_cut.as_ref()).with_invocation_cancellation(&cancellation);
         let (value, mut custody) = if caller == owner.policy().root_task {
-            pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
                 &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone())
                 .control_command_with_native_work(command).await?
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("selected caller has no current native owner".to_owned()))?;
-            let fence = live.context.owned_task_fence()?;
+            let fence = live.context.context().owned_task_fence()?;
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &payload, owner.policy().maximum_payload_bytes, &work)?;
-            let progress = selected.execute(live.context, fence, command, input).await?;
+            let progress = selected.execute_with_native_work(live.context, fence, command, input, &work)?.await?;
             match progress {
                 TaskCommandProgress::ReadyWithNativeCustody { value, mut custody } => {
                     if let Err(cause) = custody.absorb(&mut input_custody) {

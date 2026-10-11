@@ -168,7 +168,7 @@ impl<'a> PiSelectedHost<'a> {
         // sealed child scratch context. Never clone or rebind that context here.
         Ok((owner, decoded.0, decoded.1))
     }
-    async fn admission_input(&self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork)
+    pub(crate) async fn admission_input(&self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<(PiTaskInput, acyclic_fs::NativeAllocation)> {
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(task, work).await?;
         if admission.0.task_id() != task { return Err(denied("selected metadata substituted its actual admission task")); }
@@ -233,17 +233,17 @@ impl<'a> PiSelectedHost<'a> {
         let work = &work;
         let caller_custody = self.context(context, fence, cancellation, work).await?;
         let (context, owner, caller, _) = &caller_custody;
-        self.run_bound(context, owner, caller, command, payload, reconcile, cancellation, work).await
+        self.run_bound(context, None, owner, caller, command, payload, reconcile, cancellation, work).await
     }
     async fn run_native(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
         let caller_custody = self.native_caller(context.context(), fence, work).await?;
         let (owner, caller, _) = &caller_custody;
-        self.run_bound(context.context(), owner, caller, command, payload, reconcile,
+        self.run_bound(context.context(), Some(context.as_ref()), owner, caller, command, payload, reconcile,
             work.cancellation(), work).await
     }
-    async fn run_bound(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn run_bound(&self, context: &TaskContext, native_context: Option<&NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         caller: &PiTaskInput, command: WorkflowCommand, payload: Value, reconcile: bool,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<TaskCommandProgress> {
@@ -328,7 +328,7 @@ impl<'a> PiSelectedHost<'a> {
                 if command.kind == "acyclic.pi.writeback" && input.destination.is_some_and(|destination| destination != input.caller) {
                     return Err(denied("writeback destination must be the ORIGINAL Root caller"));
                 }
-                self.publish_selection(&context, &owner, &caller.binding, &input, &key, &selected,
+                self.publish_selection(&context, native_context, &owner, &caller.binding, &input, &key, &selected,
                     derived(operation, if command.kind == "acyclic.pi.writeback" { "selected-writeback" } else { "selected-import" }),
                     command.kind == "acyclic.pi.writeback", reconcile, cancellation, work).await
             }
@@ -476,12 +476,15 @@ impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceiptRef<'a> {
 }
 
 impl PiSelectedHost<'_> {
-    async fn publish_selection(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn publish_selection(&self, context: &TaskContext, native_context: Option<&NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         binding: &PiTaskBinding, input: &PiSelectedCommand, key: &str,
         selected: &PiNativeSelectedSource<'_, crate::LocalAuthorityBackend, crate::LocalObjectBackend,
             crate::LocalLazySource, crate::LocalCoreStateStore>,
         operation: OperationId, writeback: bool, reconcile: bool, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> { if writeback && (input.caller != self.protected.policy().root_task || input.source == input.caller) {
         return Err(denied("writeback requires the ORIGINAL Root caller and a separately selected child"));
+    }
+    if writeback && native_context.is_none() {
+        return Err(denied("original-root writeback requires the original native command context"));
     }
     if input.import_operation.is_some() {
         return Err(invalid("writeback imports under the same original SDK operation; external import keys are not accepted"));
@@ -616,7 +619,8 @@ impl PiSelectedHost<'_> {
         return ready(&PiImportResponse { status: "imported", source: input.source, destination,
             root: key, operation: &input.sdk_operation, original_operation: import_operation, snapshot: imported }, work);
     }
-    self.writeback(context, owner, input, key, volume, selected.volume(), imported, operation, publication,
+    self.writeback(context, native_context.ok_or_else(|| denied("writeback lost its original native command context"))?,
+        owner, input, key, volume, selected.volume(), imported, operation, publication,
         &verifier.0, scope, import_receipt, reconcile, cancellation, work).await }
     async fn read_import_intent(&self, context: &TaskContext, operation: OperationId, _cancellation: &CancellationToken,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<(SelectedImportIntent, acyclic_fs::NativeAllocation)>> {
@@ -625,7 +629,7 @@ impl PiSelectedHost<'_> {
             acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, context, work).await
     }
     #[allow(clippy::too_many_arguments, reason = "original owner, frozen evidence and prepared approval are independent")]
-    async fn writeback(&self, context: &TaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn writeback(&self, context: &TaskContext, native_context: &NativeTaskContext, owner: &Arc<TaskJournalOwner<LocalStream>>,
         input: &PiSelectedCommand, key: &str, volume: &VolumeRef, source_volume: &VolumeRef, imported: LazySnapshotRef,
         operation: OperationId, publication: acyclic_fs::PublicationPermit,
         verifier: &acyclic_harness::core::AuthorityVerifier, scope: &acyclic_harness::core::Scope,
@@ -685,7 +689,7 @@ impl PiSelectedHost<'_> {
                 || approved.imported != imported.authored_generation {
                 return Err(denied("applied writeback differs from its original ordinary approval"));
             }
-            crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, &approved).await?;
+            crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, &approved, work).await?;
             owner.native_view_owner().verify_with_native_work(work).await?;
             return ready(&PiWritebackResponse { status: "published", source: input.source,
                 root: key, paths: &input.paths, approval_digest: &approved.approval_digest,
@@ -711,7 +715,7 @@ impl PiSelectedHost<'_> {
         root_path: &root_display.0, source_path: source_display.as_ref().map_or("", |(value, _)| value),
     };
     crate::pi_operator_host::open_prepared_approval(&self.runtime, &self.filesystem, &self.protected,
-        context, owner, root_binding, &descriptor, work).await?;
+        native_context, owner, root_binding, &descriptor, work).await?;
     let Some(approval) = input.approval_digest.as_deref() else {
         return ready(&PiWritebackResponse { status: "prepared", source: input.source,
             root: key, operation: &input.sdk_operation, original_operation: operation,
@@ -722,7 +726,7 @@ impl PiSelectedHost<'_> {
     if approval != descriptor.approval_digest {
         return Err(denied("user approval does not match this exact prepared original-root plan"));
     }
-    crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor).await?;
+    crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor, work).await?;
     let published = consume_root(work, publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
         &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await)?;
     if published.phase != acyclic_fs::MaterializationPhase::Applied { return Ok(TaskCommandProgress::Pending); }

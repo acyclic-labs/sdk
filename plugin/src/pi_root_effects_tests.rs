@@ -213,6 +213,9 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
             .await
             .unwrap();
         let work = startup_work();
+        let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+            session.path(), &work,
+        ).unwrap();
         let staged = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
         let filesystem = Arc::new(filesystem);
         let stream = StreamClient::new(Arc::new(
@@ -270,7 +273,7 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
         drop(effects);
         drop(runtime);
         drop(owner);
-        let owner = PiOwnerConfig::load_with_native_work(session.path(), &work).unwrap();
+        let owner = PiOwnerConfig::load_with_native_work(&private_root, std::path::Path::new(""), &work).unwrap();
         let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
             stream.clone(), filesystem.clone(), &owner.policy.journal,
             owner.authority_with_native_work(&work).unwrap(), &work,

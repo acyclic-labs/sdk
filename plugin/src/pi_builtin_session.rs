@@ -32,8 +32,8 @@ impl PiSession {
                 operation_id: request.operation(owner.policy().root_task),
                 kind: PI_BUILTIN_COMMAND_KIND.into(), payload: reference,
             };
-            pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), self.resources.clone(), &self.state).with_builtin_controls(&host)
+            pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
+                self.stream.clone(), &self.resources, &self.state).with_builtin_controls(&host)
                 .with_work(work.clone()).control_command_with_native_work(command).await?
         } else { host.child_io(&request).await? };
         let binding = self.binding(caller)?;

@@ -361,9 +361,9 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
 
 // Only these three ServiceResources fields own backing storage. The existing
 // FS/store/root-registry clones are reference-counted handles with no growth.
-fn copy_service_resources_with_native_work(
+pub(crate) fn service_resources_with_native_work(
     resources: &ServiceResources, work: &NativeMaterializationWork,
-) -> Result<NativeOwned<ServiceResources>> {
+) -> Result<(ServiceResources, NativeAllocation)> {
     let native = |cause| Error::NativeWork { cause, custody: None };
     let (value, custody) = work.copy_path(&resources.data).map_err(native)?;
     let data = NativeOwned { value, _custody: custody };
@@ -375,13 +375,13 @@ fn copy_service_resources_with_native_work(
         value: ServiceResources {
             data: data.value, fs: resources.fs.clone(), store: resources.store.clone(),
             shared_roots: resources.shared_roots.clone(), binary_identity: binary.value,
-            instance_id: instance.value,
+            instance_id: instance.value, private_state_root: resources.private_state_root.clone(),
         },
         _custody: data._custody,
     };
     owned._custody.absorb(&mut binary._custody).map_err(native)?;
     owned._custody.absorb(&mut instance._custody).map_err(native)?;
-    Ok(owned)
+    Ok((owned.value, owned._custody))
 }
 
 #[allow(clippy::too_many_arguments, reason = "original protected owner and issued context remain explicit")]
@@ -441,7 +441,8 @@ fn root_provider_native_inner<P: StreamProvider + 'static>(
     drop(grant);
     drop(authority);
     let mut custody = original.retain_owned(std::mem::size_of::<PiRootProvider<P>>() as u64).map_err(native)?;
-    let mut resources = copy_service_resources_with_native_work(resources, &original)?;
+    let (value, resource_custody) = service_resources_with_native_work(resources, &original)?;
+    let mut resources = NativeOwned { value, _custody: resource_custody };
     custody.absorb(&mut resources._custody).map_err(native)?;
     original.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
     Ok(Arc::new(PiRootProvider {
@@ -861,7 +862,7 @@ async fn read_root_artifact_with_native_work<T: RootArtifact>(
     Ok(decoded)
 }
 
-async fn load_original_preparation_with_native_work(
+pub(crate) async fn load_original_preparation_with_native_work(
     owner: &PiOwnerConfig, filesystem: &Host, expected: &PiRootRequest,
     context: Arc<acyclic_harness::NativeTaskContext>, work: &NativeMaterializationWork,
 ) -> Result<PiRootPreparation> {

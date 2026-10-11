@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 pub(crate) struct Fixture {
     _directory: tempfile::TempDir,
-    pub(crate) owner: PiOwnerConfig,
+    pub(crate) owner: Arc<PiOwnerConfig>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) filesystem: Arc<Filesystem>,
     pub(crate) stream: StreamClient<LocalStream>,
@@ -29,6 +29,8 @@ pub(crate) struct Fixture {
     pub(crate) commit: RetainedSpawnCommit,
     pub(crate) root_request: PiRootRequest,
     pub(crate) root_allocation: crate::pi_root_allocation::PiRootAllocation,
+    pub(crate) private_root: acyclic_fs::NativeHostPrivateStateRoot,
+    pub(crate) relative_session: PathBuf,
     pub(crate) root_control: WorkflowCommand,
     _root_allocation_custody: acyclic_fs::NativeAllocation,
 }
@@ -80,6 +82,12 @@ impl Fixture {
             context_id: [164; 16], root_id: root,
             paths: BTreeMap::from([(hex::encode(root), native.to_str().unwrap().to_owned())]) } };
         let startup_work = acyclic_fs::NativeMaterializationWork::new(budget(), CancellationToken::new()).unwrap();
+        let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+            &resources.data, &startup_work).unwrap();
+        let relative_session = session.strip_prefix(&resources.data).unwrap().to_path_buf();
+        drop(owner);
+        let owner = PiOwnerConfig::load_with_native_work(&private_root, &relative_session, &startup_work).unwrap()
+            .into_native_shared(&startup_work).unwrap();
         let command = crate::pi_root_inputs::stage_root_command(&owner, &filesystem, &request, &startup_work).await.unwrap();
         let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
         let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
@@ -90,20 +98,20 @@ impl Fixture {
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
         let dispatch_fence = LeaseFence::from(&lease.reservation);
         let dispatch_context = runtime.runtime.task_context_with_native_work(task, &dispatch_fence, &startup_work).await.unwrap();
-        let (preparation, journal) = PiRootPreparation::load_for_dispatch(&session, &runtime, &filesystem,
+        let (preparation, journal) = PiRootPreparation::load_for_dispatch(&private_root, &relative_session, &runtime, &filesystem,
             &request, &dispatch_fence, dispatch_context.clone(), &startup_work).await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();
         let content = dispatch_context.content_residency_verifier_with_native_work(journal.clone(), &startup_work).unwrap();
         let effect_authorization = owner.effect_authority_with_native_work(&startup_work).unwrap();
-        let root_provider = crate::pi_root_provider::root_provider(owner.clone(), resources.clone(), filesystem.clone(),
+        let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(),
             stream.clone(), preparation, journal, dispatch_context, startup_work.clone()).unwrap();
         let effects = crate::pi_owner::root_effects_with_native_work(stream.clone(), effect_authorization.0,
             effect_authorization.1, content, root_provider.clone(), &startup_work).unwrap();
         let outcome = runtime.runtime.resume_task_with_native_work(lease, first.1,
             &runtime.runtime.commands().with_effects(effects), 8, &startup_work).await.unwrap();
         assert!(matches!(outcome.0, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended { .. })));
-        let original = PiRootPreparation::load(&session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
-        let observed = crate::pi_root_provider::observe_root_allocation(owner.clone(), resources.clone(),
+        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
+        let observed = crate::pi_root_provider::observe_root_allocation(owner.clone(), &resources,
             filesystem.clone(), stream.clone(), original, &startup_work).await.unwrap().unwrap();
         let root_allocation = observed.0.1;
         let mut handles = root_provider.take_created_handles().await;
@@ -137,8 +145,8 @@ impl Fixture {
         let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings {
             reader, writer: Some(writer),
         }).unwrap();
-        let original = PiRootPreparation::load(&session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
-        let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(owner.clone(), resources.clone(),
+        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
+        let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(owner.clone(), &resources,
             filesystem.clone(), stream.clone(), original, &startup_work).await.unwrap().unwrap();
         let (authority, issuer, scope) = owner.conversation_authority(task, agent, context.scope().grants().clone()).unwrap();
         crate::pi_conversation::bind_task_conversation_measured(&stream, &authority, &issuer, scope,
@@ -182,6 +190,7 @@ impl Fixture {
                 maximum_entries: 128, maximum_bytes: 1_048_576 } };
         Self { _directory: directory, owner, runtime, filesystem, stream, resources, source,
             parent, context, journal, fence, native, commit, physical, root_request: request, root_allocation, root_control,
+            private_root, relative_session,
             _root_allocation_custody: observed.1 }
     }
 
@@ -316,7 +325,7 @@ async fn cancellation_and_owner_replacement_never_admit_a_child() {
     assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
     let replacement = PiOwnerConfig::new(fixture.owner.policy().clone()).unwrap();
     assert!(PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
-        fixture.resources.clone(), replacement).is_err());
+        fixture.resources.clone(), Arc::new(replacement)).is_err());
     assert!(fixture.resources.fs.open_workspace(plan.commit.child.scratch.volume.storage_name().unwrap()).await.is_err());
 }
 
@@ -452,9 +461,9 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
     let writer = Arc::new(acyclic_harness::filesystem::FilesystemContentPublisher::new(fixture.filesystem.clone(),
         root.binding.scratch.volume, &authority.verifier, &authority.signed, fixture.owner.policy().maximum_payload_bytes).unwrap());
     let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings { reader, writer: Some(writer) }).unwrap();
-    let preparation = PiRootPreparation::load(&fixture.resources.session_directory("fork-root"), &runtime,
+    let preparation = PiRootPreparation::load(&fixture.private_root, &fixture.relative_session, &runtime,
         &fixture.filesystem, &fixture.root_request, &observation_work).await.unwrap();
-    let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), fixture.resources.clone(),
+    let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), stream.clone(), preparation, &observation_work).await.unwrap().unwrap();
     let (authority, issuer, scope) = fixture.owner.conversation_authority(journal.task_id(), root.binding.agent_id,
         context.scope().grants().clone()).unwrap();

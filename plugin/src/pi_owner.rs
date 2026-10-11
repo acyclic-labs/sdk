@@ -2,6 +2,9 @@
 //! Native decoding uses the SDK's original source-shape admission for this
 //! closed, Value/Raw-free DTO. Retained configuration drops before its custody;
 //! plaintext buffers and the fixed signing-key array are cleared on release.
+//! Native private-file access requires the service's genuine held namespace
+//! owner plus relative coordinates; accounting is never namespace authority.
+//! Readonly observers share the decoder but perform no durability barriers.
 
 use super::pi_runtime::PiRuntimeAuthority;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
@@ -166,6 +169,35 @@ impl PiOwnerConfig {
             .ok_or_else(|| invalid("Pi original bootstrap has no pinned native runtime"))
     }
 
+    /// Borrows the original protected runtime; no credential, scope, String or
+    /// guard is copied, and absence retains its genuine Invalid classification.
+    pub(crate) fn native_runtime_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<&super::pi_native::PiNativeHostRuntime> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
+        self.native_runtime.as_ref()
+            .ok_or_else(|| native_invalid("Pi original bootstrap has no pinned native runtime"))
+    }
+
+    /// Moves a genuinely native owner into shared host custody without copying
+    /// credentials. Ordinary preexisting DTOs cannot be adopted retrospectively.
+    pub(crate) fn into_native_shared(
+        self, work: &NativeMaterializationWork,
+    ) -> Result<Arc<Self>> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
+        if !self._native_custody.as_ref().is_some_and(|custody|
+            custody.matches_work(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64)
+        {
+            return Err(native_invalid("Pi owner sharing requires its original native metadata custody"));
+        }
+        // The existing guard already owns the complete payload. This is the
+        // actual Arc allocation attempt, not a second Self claim or a key copy.
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1, ..acyclic_fs::WorkCounters::UNCHARGED
+        }).map_err(native_work_error)?;
+        Ok(Arc::new(self))
+    }
+
     pub(crate) fn authority(&self) -> Result<PiRuntimeAuthority> {
         if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
             return Err(invalid("invalid Pi owner configuration"));
@@ -242,6 +274,29 @@ impl PiOwnerConfig {
         }, issuer.1, [verifier.1, signed.1, scope.1]);
         owned.0.validate_with_native_work(&self.policy.journal, work)?;
         combine_native_metadata(owned)
+    }
+
+    /// Authorizes through the SDK's original journal owner and protected-key
+    /// verifier. The issuer and its genuine custody remain private and live
+    /// until the original native authorization future settles.
+    #[allow(clippy::too_many_arguments, reason = "original source selection and owner remain explicit")]
+    pub(crate) async fn authorize_project_source_with_native_work<P: StreamProvider + 'static>(
+        &self,
+        caller_owner: &Arc<acyclic_harness::durable_host::TaskJournalOwner<P>>,
+        context: &acyclic_harness::runtime::TaskContext,
+        provider: &dyn acyclic_harness::source_authorization::RootProjectSourceProvider,
+        source_task: TaskId, operation: acyclic_harness::OperationId,
+        snapshot: &acyclic_harness::source_authorization::ProjectSourceSnapshot,
+        maximum_work: u64, maximum_bytes: u64, work: &NativeMaterializationWork,
+    ) -> Result<(acyclic_harness::source_authorization::ProjectSourceReadHandle, NativeAllocation)> {
+        let authority = self.authority_with_native_work(work)?;
+        let authorization = caller_owner.authorize_project_source_with_native_work(
+            context, &authority.0.issuer, provider, source_task, operation,
+            snapshot, maximum_work, maximum_bytes, work,
+        )?.await;
+        drop(authority.0);
+        drop(authority.1);
+        authorization
     }
 
     fn issuer_with_native_work(
@@ -385,16 +440,36 @@ impl PiOwnerConfig {
     /// Check the retained references before opening the owner's journals. The
     /// journal still authenticates the complete original admission afterward.
     pub(crate) fn validate_root(&self, binding: &super::PiTaskBinding) -> Result<()> {
-        binding.validate(
-            None,
-            binding.project_volumes.keys().map(String::as_str),
-            true,
-        )?;
+        self.validate_root_inner(binding, None)
+    }
+
+    pub(crate) fn validate_root_with_native_work(
+        &self, binding: &super::PiTaskBinding, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.validate_root_inner(binding, Some(work))
+    }
+
+    fn validate_root_inner(
+        &self, binding: &super::PiTaskBinding, work: Option<&NativeMaterializationWork>,
+    ) -> Result<()> {
+        if let Some(work) = work {
+            binding.validate_with_native_work(
+                None, binding.project_volumes.keys().map(String::as_str), true, work,
+            )?;
+        } else {
+            binding.validate(None, binding.project_volumes.keys().map(String::as_str), true)?;
+        }
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent
             || binding.scratch.volume.provider() != self.policy.journal.provider()
         {
-            return Err(Error::Unauthorized("Pi root binding differs from its original service owner".to_owned()));
+            return Err(match work {
+                Some(_) => Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                    reason: "Pi root binding differs from its original service owner",
+                },
+                None => Error::Unauthorized("Pi root binding differs from its original service owner".to_owned()),
+            });
         }
         Ok(())
     }
@@ -405,12 +480,13 @@ impl PiOwnerConfig {
     /// canonical encoding and actual held-file writes. No success is inferred
     /// from a path, and NoReplace preserves the original immutable credential.
     pub(crate) fn save_new_with_native_work(
-        &self, session: &Path, work: &NativeMaterializationWork,
+        &self, root: &acyclic_fs::NativeHostPrivateStateRoot,
+        session: &Path, work: &NativeMaterializationWork,
     ) -> Result<()> {
         let authority = self.authority_with_native_work(work)?;
         drop(authority.0);
         drop(authority.1);
-        protection::validate_directory(session).map_err(native_owner_io)?;
+        work.validate_private_state_directory(root, session).map_err(native_work_error)?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext { bytes: plain.0, _custody: plain.1 };
         let protected = protection::protect_with_copy(&plain.bytes, |bytes| work.copy_bytes(bytes));
@@ -432,22 +508,10 @@ impl PiOwnerConfig {
             .map_err(native_work_error)?;
         let temporary = work.join_path(session, Path::new(&leaf.0)).map_err(native_work_error)?;
         let destination = work.join_path(session, Path::new(OWNER_FILE)).map_err(native_work_error)?;
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        let mut file = protection::create_private(&temporary.0).map_err(native_owner_io)?;
-        let publish = (|| -> Result<()> {
-            work.write_owned_bytes(&mut file, OWNER_MAGIC).map_err(native_work_error)?;
-            work.write_owned_bytes(&mut file, digest.as_bytes()).map_err(native_work_error)?;
-            work.write_owned_bytes(&mut file, &protected.bytes).map_err(native_work_error)?;
-            work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-            sync_file(&file, Durability::Full).map_err(native_owner_io)?;
-            drop(file);
-            work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-            durable_rename(&temporary.0, &destination.0, RenameMode::NoReplace).map_err(native_owner_io)
-        })();
-        let _ = fs::remove_file(&temporary.0);
-        publish?;
-        sync_parent(session, Durability::Full).map_err(native_owner_io)?;
-        Ok(())
+        work.publish_private_state_file_with_native_work(
+            root, &temporary.0, &destination.0,
+            &[OWNER_MAGIC.as_slice(), digest.as_bytes().as_slice(), protected.bytes.as_slice()],
+        ).map_err(native_work_error)
     }
 
     pub(crate) fn save_new(&self, session: &Path) -> Result<()> {
@@ -483,14 +547,32 @@ impl PiOwnerConfig {
     /// same host authority boundary; all managed bytes and JSON ownership use
     /// actual SDK producers, never a restaged input or a fresh owner key.
     pub(crate) fn load_with_native_work(
+        root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, work: &NativeMaterializationWork,
     ) -> Result<Self> {
+        Self::load_native(root, session, work, false)
+    }
+
+    /// Observes the same immutable protected record without a durability write.
+    pub(crate) fn load_readonly_with_native_work(
+        root: &acyclic_fs::NativeHostPrivateStateRoot,
+        session: &Path, work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        Self::load_native(root, session, work, true)
+    }
+
+    fn load_native(
+        root: &acyclic_fs::NativeHostPrivateStateRoot,
+        session: &Path, work: &NativeMaterializationWork, readonly: bool,
+    ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        protection::validate_directory(session).map_err(native_owner_io)?;
+        work.validate_private_state_directory(root, session).map_err(native_work_error)?;
         let path = work.join_path(session, Path::new(OWNER_FILE)).map_err(native_work_error)?;
-        let file = protection::open_private(&path.0).map_err(native_owner_io)?;
-        let bytes = work.read_owned_bytes(&mut &file, MAXIMUM_OWNER_BYTES as usize)
-            .map_err(native_work_error)?;
+        let mode = if readonly { acyclic_fs::NativeStateFileMode::Readonly }
+            else { acyclic_fs::NativeStateFileMode::ReadWriteExisting };
+        let mut file = work.open_state_file_with_native_work(root, &path.0, mode).map_err(native_work_error)?;
+        file.validate_private_owner().map_err(native_work_error)?;
+        let bytes = file.read_owned(MAXIMUM_OWNER_BYTES as usize).map_err(native_work_error)?;
         let bytes = NativeOwnerPlaintext { bytes: bytes.0, _custody: bytes.1 };
         let (magic, rest) = bytes.bytes.split_first_chunk::<8>()
             .ok_or_else(|| native_invalid("Pi owner configuration is truncated"))?;
@@ -516,11 +598,12 @@ impl PiOwnerConfig {
         let authority = owner.authority_with_native_work(work)?;
         drop(authority.0);
         drop(authority.1);
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        // These flushes preserve the existing lost-publication recovery rule.
-        // Their OS internals are opaque host storage, not fabricated DTO work.
-        sync_file(&file, Durability::Full).map_err(native_owner_io)?;
-        sync_parent(session, Durability::Full).map_err(native_owner_io)?;
+        if !readonly {
+            // These exact held-file barriers preserve the existing interrupted
+            // publication recovery rule; readonly observers never flush.
+            file.sync_file().map_err(native_work_error)?;
+            file.sync_parent().map_err(native_work_error)?;
+        }
         Ok(owner)
     }
 

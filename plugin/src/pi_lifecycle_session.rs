@@ -9,21 +9,22 @@ use acyclic_harness::distributed::WorkPull;
 use acyclic_harness::{Error, Result as RootResult};
 
 impl PiSession {
-    pub(super) fn native_host(
-        &mut self,
+    pub(super) fn native_host_with_native_work(
+        &mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<Arc<pi_native_host::PiNativeCommandHost>> {
         if let Some(host) = &self.native {
             return Ok(host.clone());
         }
-        let protected = pi_owner::PiOwnerConfig::load(&self.directory)?;
+        let protected = pi_owner::PiOwnerConfig::load_with_native_work(
+            &self.resources.private_state_root, &self.relative_directory, work)?;
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid("Pi native lifetime has no original root binding".to_owned()));
         };
-        protected.validate_root(root)?;
-        self.runtime.verify_owner(&protected)?;
-        let host = pi_native_host::PiNativeCommandHost::new(
+        protected.validate_root_with_native_work(root, work)?;
+        self.runtime.verify_owner_with_native_work(&protected, work)?;
+        let host = pi_native_host::PiNativeCommandHost::new_with_native_work(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), protected,
+            &self.resources, protected, work,
         )?;
         self.native = Some(host.clone());
         Ok(host)
@@ -44,12 +45,12 @@ impl PiSession {
         self.binding(caller)?;
         self.authorize_subtree(caller, target)?;
         let caller_admission = self.runtime.runtime.task_host()
-            .observe_admission(caller).await?;
-        if !caller_admission.grants.contains("operation:cancel") {
+            .observe_admission_with_native_work(caller, query_work).await?;
+        if !caller_admission.0.grants.contains("operation:cancel") {
             return Err(Error::Invalid("Pi caller lacks its original cancellation grant".to_owned()));
         }
         let tasks = self.native_subtree(target)?;
-        let host = self.native_host()?;
+        let host = self.native_host_with_native_work(query_work)?;
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid("Pi cancellation lost its original root".to_owned()));
         };
@@ -64,7 +65,7 @@ impl PiSession {
         } else { None };
         let mut failure = None;
         retain_first_failure(&mut failure,
-            self.runtime.runtime.task_host().cancel(target).await);
+            self.runtime.runtime.task_host().cancel_with_native_work(target, &work).await.map(|_| ()));
         for route in self.state.routes.values_mut() {
             if let PluginTaskBinding::Pi(binding) = &route.task_binding
                 && tasks.contains(&binding.task_id) && !route.lifecycle.is_frozen()
@@ -73,32 +74,37 @@ impl PiSession {
             }
         }
         retain_first_failure(&mut failure,
-            self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(Error::Storage));
+            self.slots.save_with_native_work(&self.resources.private_state_root,
+                &self.relative_directory, &self.state, Survives::PowerLoss, &work));
 
         // Order every independent provider stop before awaiting any process
         // future. Those futures may still be waiting on an RPC to this actor.
         for task in &tasks {
-            let terminal = match self.runtime.runtime.task_host().outcome(*task).await {
-                Ok(Some(Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled)) => true,
-                Ok(_) => false,
+            let _outcome_receipt = match self.runtime.runtime.task_host()
+                .outcome_with_native_work(*task, &work).await {
+                Ok(receipt) => Some(receipt),
                 Err(error) => {
                     retain_first_failure(&mut failure, Err(error));
-                    false
+                    None
                 }
             };
+            let terminal = _outcome_receipt.as_ref().is_some_and(|receipt|
+                matches!(&receipt.0, Some(Outcome::Succeeded(_) | Outcome::Failed { .. } | Outcome::Cancelled)));
             if !terminal {
                 retain_first_failure(&mut failure,
-                    host.cancel_child(*task).await.map(|_| ()));
+                    host.cancel_child_with_native_work(*task, &work).await.map(|_| ()));
             }
             if !self.native_jobs.contains_key(task) {
-                match self.runtime.runtime.task_host().recover_work(*task).await {
-                    Ok(WorkPull::Claimed(_)) | Ok(WorkPull::Unresolved { .. }) => {
-                        let native = host.clone();
-                        let task = *task;
-                        self.native_jobs.insert(task,
-                            tokio::spawn(async move { native.recover_child(task).await }));
-                    }
-                    Ok(WorkPull::Idle) => {}
+                match self.runtime.runtime.task_host().recover_work_with_native_work(*task, &work).await {
+                    Ok(observed) => match &observed.0 {
+                        WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
+                            let native = host.clone();
+                            let task = *task;
+                            self.native_jobs.insert(task,
+                                tokio::spawn(async move { native.recover_child(task).await }));
+                        }
+                        WorkPull::Idle => {}
+                    },
                     Err(error) => retain_first_failure(&mut failure, Err(error)),
                 }
             }
@@ -112,7 +118,8 @@ impl PiSession {
         self.drain_native_tasks(&host, &tasks, NativeDrainMode::Cancel,
             &work, &mut failure).await;
         retain_first_failure(&mut failure,
-            self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(Error::Storage));
+            self.slots.save_with_native_work(&self.resources.private_state_root,
+                &self.relative_directory, &self.state, Survives::PowerLoss, &work));
         finish_native_drain(failure)
     }
 
@@ -125,14 +132,14 @@ impl PiSession {
         let _graph_receipt = pi_recovery::observe_pi_session_with_native_work(
             &self.runtime.runtime, &self.state, query_work).await?;
         if self.state.routes.is_empty() { return Ok(()); }
-        let protected = pi_owner::PiOwnerConfig::load(&self.directory)?;
-        self.runtime.verify_owner(&protected)?;
+        let native = self.native_host_with_native_work(query_work)?;
+        let protected = native.original_owner();
+        self.runtime.verify_owner_with_native_work(&protected, query_work)?;
         let root_task = protected.policy().root_task;
-        let native = self.native_host()?;
-        let coordinator = pi_fork::PiForkCoordinator::new(
+        let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            self.resources.clone(), protected.clone(),
-        )?.with_work(query_work.clone());
+            &self.resources, protected.clone(), query_work,
+        )?;
         let mut plans = BTreeMap::new();
         for route in self.state.routes.values() {
             let parent = self.alias_task(&route.parent_agent_id)?;
@@ -154,14 +161,17 @@ impl PiSession {
             while index < remaining.len() {
                 let task = remaining[index];
                 let (route, parent, plan) = &plans[&task];
-                let root_key = hex::encode(route.root_id);
+                let root_key = self.roots.keys()
+                    .find(|key| pi_root::root_identity_key_matches(key, &route.root_id))
+                    .ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?
+                    .as_str();
                 let source = if plan.commit.source_task == root_task {
-                    if let Some(source) = root_sources.get(&root_key) {
+                    if let Some(source) = root_sources.get(root_key) {
                         Arc::clone(source)
                     } else {
-                        let root = self.roots.get(&root_key).ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?;
+                        let root = self.roots.get(root_key).ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?;
                         let source = Arc::new(root.workspace.clone());
-                        root_sources.insert(root_key.clone(), source.clone());
+                        root_sources.insert(root_key, source.clone());
                         source
                     }
                 } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
@@ -178,10 +188,9 @@ impl PiSession {
                 native.register_observed_source(observed).await?;
                 let workspace = native.live_workspace(task).ok_or_else(|| Error::Invalid("Pi observed child lost its actual creator workspace".to_owned()))?;
                 child_sources.insert(task, workspace);
-                native.register_cold_locator(task, pi_native_host::PiNativeColdLocator {
-                    parent: *parent, sdk_operation: route.turn_id.clone(), root_key,
-                    selected_source: source,
-                }).await?;
+                native.register_cold_locator_with_native_work(
+                    task, *parent, &route.turn_id, root_key, source, query_work,
+                ).await?;
                 remaining.swap_remove(index);
             }
             if remaining.len() == before {
@@ -193,7 +202,8 @@ impl PiSession {
         // released to real native children. Reopen never waits on their tool RPC.
         for (task, (route, _, plan)) in &plans {
             if route.lifecycle.is_frozen() || self.native_jobs.contains_key(task) { continue; }
-            match self.runtime.runtime.task_host().recover_work(*task).await? {
+            let observed = self.runtime.runtime.task_host().recover_work_with_native_work(*task, query_work).await?;
+            match &observed.0 {
                 WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
                     let native = native.clone();
                     let task = *task;
@@ -201,7 +211,7 @@ impl PiSession {
                         tokio::spawn(async move { native.recover_child(task).await }));
                 }
                 WorkPull::Idle if original_native_first_dispatch_pending(
-                    &self.runtime, &self.stream, &protected, plan,
+                    &self.runtime, &self.stream, &protected, plan, query_work,
                 ).await? => {
                     let native = native.clone();
                     let task = *task;
@@ -247,7 +257,7 @@ impl PiSession {
         }
         let tasks: Vec<TaskId> = tasks.into_iter().collect();
         let native = if tasks.is_empty() { None } else {
-            match self.native_host() {
+            match self.native_host_with_native_work(&work) {
                 Ok(native) => Some(native),
                 Err(error) => { retain_first_failure(&mut failure, Err(error)); None }
             }
@@ -263,7 +273,7 @@ impl PiSession {
             }
             if let Some(root) = root {
                 retain_first_failure(&mut failure,
-                    self.runtime.runtime.task_host().cancel(root).await);
+                    self.runtime.runtime.task_host().cancel_with_native_work(root, &work).await.map(|_| ()));
             }
             for route in self.state.routes.values_mut() {
                 if !route.lifecycle.is_frozen() {
@@ -271,7 +281,8 @@ impl PiSession {
                 }
             }
             retain_first_failure(&mut failure,
-                self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(Error::Storage));
+                self.slots.save_with_native_work(&self.resources.private_state_root,
+                    &self.relative_directory, &self.state, Survives::PowerLoss, &work));
         }
         if let Some(native) = &native {
             // Never wait for a supervisor or a run mutex while another native
@@ -293,7 +304,8 @@ impl PiSession {
         }
         if deactivate && authenticated {
             retain_first_failure(&mut failure,
-                self.slots.save(&self.directory, &self.state, Survives::PowerLoss).map_err(Error::Storage));
+                self.slots.save_with_native_work(&self.resources.private_state_root,
+                    &self.relative_directory, &self.state, Survives::PowerLoss, &work));
         }
         // Normal close preserves the original route/effect. Releasing a lease
         // requires the native host's actual journal-quiescent tail CAS; an
@@ -431,18 +443,22 @@ fn validate_created_native_report(
 async fn original_native_first_dispatch_pending(
     runtime: &PiRuntime, stream: &StreamClient<LocalStream>,
     protected: &pi_owner::PiOwnerConfig, plan: &pi_fork::PiForkPlan,
+    work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<bool> {
     let task = plan.commit.child.task_id;
     let host = runtime.runtime.task_host();
-    let admission = host.observe_admission(task).await?;
-    if admission != plan.request.child {
+    let admission_receipt = host.observe_admission_with_native_work(task, work).await?;
+    let admission = &admission_receipt.0;
+    if admission != &plan.request.child {
         return Err(Error::Invalid("Pi first dispatch differs from its original sealed child admission".to_owned()));
     }
-    if !matches!(host.recover_work(task).await.map_err(display)?, WorkPull::Idle) {
+    let reservation = host.recover_work_with_native_work(task, work).await?;
+    if !matches!(&reservation.0, WorkPull::Idle) {
         return Ok(false);
     }
-    if host.observe_task(task).await?.cancellation_requested
-        || host.outcome(task).await?.is_some()
+    let outcome = host.outcome_with_native_work(task, work).await?;
+    if host.cancellation_requested_with_native_work(task, work).await?
+        || outcome.0.is_some()
     {
         return Ok(false);
     }
@@ -453,19 +469,21 @@ async fn original_native_first_dispatch_pending(
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
         return Err(Error::Invalid("Pi first dispatch has no original finite effect-history allowance".to_owned()));
     }
-    let (authority, issuer, _) = protected.conversation_authority(
-        task, plan.commit.child.agent_id, admission.grants,
+    let conversation = protected.conversation_authority_with_native_work(
+        task, plan.commit.child.agent_id, &admission.grants, work,
     )?;
-    let history = acyclic_harness::store::HistoryReader::new(stream, &authority,
-        issuer.verifier())?;
-    let pin = history.pin(0).await?;
-    let effect = acyclic_harness::effect_host::task_effect_id(
-        task, pi_fork::derived(plan.original, "native-effect"),
+    let verifier = conversation.0.1.verifier_with_native_work(work)?;
+    let history = acyclic_harness::store::HistoryReader::new_with_native_work(
+        stream, &conversation.0.0, &verifier.0, work)?;
+    let pin = history.0.pin_with_native_work(0, work).await?;
+    let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
+        task, pi_fork::derived(plan.original, "native-effect"), work,
     )?;
     // NativeProcessProvider can write its original launch receipt only after
     // the canonical effect intent/dispatch. Absence proves first dispatch,
     // never authority to repeat a dispatched or indeterminate process.
-    Ok(history.effect(&pin, effect, limits).await?.is_none())
+    let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
+    Ok(observed.0.is_none())
 }
 
 #[cfg(test)]

@@ -1011,17 +1011,28 @@ pub(crate) async fn run_service_with_identity(
     let Some(lock) = acquire_service_lock(&data).map_err(acyclic_harness::Error::Storage)? else {
         return Ok(SessionCloseState::Closed);
     };
-    let result = run_locked_service(data, identity_override, ready).await;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original_bootstrap_work = acyclic_fs::NativeMaterializationWork::new(
+        pi_root_provider::allocation_budget(), &cancellation,
+    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let private_root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        &data, &original_bootstrap_work,
+    ).map_err(native_control_error)?;
+    let result = run_locked_service(
+        data, identity_override, ready, private_root, &original_bootstrap_work,
+    ).await;
     drop(lock);
     result
 }
 
-pub(crate) async fn run_locked_service(
+async fn run_locked_service(
     data: PathBuf,
     identity_override: Option<String>,
     ready: Option<acyclic_native_runtime::ServiceReadySignal>,
+    private_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
+    original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<SessionCloseState> {
-    let mut service = ConcurrentServiceControl::open(data.clone()).await?;
+    let mut service = ConcurrentServiceControl::open(data.clone(), private_root, original_bootstrap_work).await?;
     if let Some(identity) = identity_override {
         service.resources.binary_identity = identity;
     }
@@ -1497,6 +1508,7 @@ fn native_control_codec_charge(
             spent.bytes_encoded = bytes;
             spent.items_examined = items;
         }
+        JsonCodecCharge::Inspect { items } => spent.items_examined = items,
         JsonCodecCharge::Read { .. } => {
             // The frame's actual transport read has its own admitted boundary.
             // A lexical scan of already held bytes is not a second I/O read.
@@ -2186,18 +2198,16 @@ fn decode_native_control_json<T: serde::de::DeserializeOwned>(
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let diagnostic = acyclic_harness::json_value_decode_owned_bytes(0, 0)?;
-    let mut allocation = work.retain_owned(diagnostic).map_err(native_control_error)?;
-    let mut items = 0_u64;
+    let mut allocation = work.retain_owned(0).map_err(native_control_error)?;
+    let value_schema = match schema {
+        NativeControlJsonSchema::Value => acyclic_harness::JsonValueSchema::Root,
+        NativeControlJsonSchema::Response => acyclic_harness::JsonValueSchema::ControlResponse,
+    };
     let decoded = acyclic_harness::json_from_slice_bounded_native_trusted(
-        bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid, &mut |charge| {
+        bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid, value_schema, &mut |charge| {
             match charge {
-                JsonCodecCharge::Work { items: examined, .. } => {
-                    items = items.checked_add(examined)
-                        .ok_or_else(|| native_control_error(acyclic_fs::WorkError::Overflow.into()))?;
-                }
-                JsonCodecCharge::Admission { .. } => {
-                    let value_owned = acyclic_harness::json_value_decode_owned_bytes(bytes.len() as u64, items)?;
+                JsonCodecCharge::Admission { value_shape, .. } => {
+                    let value_owned = acyclic_harness::json_value_decode_owned_bytes(value_shape)?;
                     // Value decoding already includes its scratch/diagnostic
                     // witness. Closed typed headers can additionally diagnose
                     // unexpected field values while a partial Value is live.

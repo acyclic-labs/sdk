@@ -7,7 +7,7 @@ use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandHost, TaskCommandProgress},
-    runtime::TaskContext,
+    runtime::NativeTaskContext,
     workflow::WorkflowCommand,
 };
 use serde::de::DeserializeOwned;
@@ -139,7 +139,7 @@ impl PiSession {
             None
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi recursive spawn requires its actual running caller owner".to_owned()))?;
-            if live.binding != *self.binding(caller).map_err(acyclic_harness::Error::Invalid)? || live.context.durable_task_id() != Some(caller) {
+            if live.binding != *self.binding(caller).map_err(acyclic_harness::Error::Invalid)? || live.context.context().durable_task_id() != Some(caller) {
                 return Err(acyclic_harness::Error::Invalid("Pi recursive spawn changed its original caller binding".to_owned()));
             }
             let cwd = Path::new(&commit.launch.source.parent_cwd);
@@ -455,10 +455,10 @@ impl PiSession {
         command: WorkflowCommand, wake_pending: bool, task: Option<TaskId>, work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone()).with_work(work.clone());
+            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
         let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
-        let workflow = pi_workflow::PiWorkflowHost::new(&self.directory, self.runtime.clone(), self.filesystem.clone(),
+        let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
             self.stream.clone(), &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone());
         let reply = workflow.control_step_with_native_work(command, wake_pending).await?;
         let pending = fork.pending_to_save()?;
@@ -468,18 +468,18 @@ impl PiSession {
 
     async fn spawn_child_step(
         &self, owner: &pi_owner::PiOwnerConfig, native: Arc<pi_native_host::PiNativeCommandHost>,
-        context: &TaskContext, command: WorkflowCommand, reconcile: bool, task: TaskId,
+        context: &Arc<NativeTaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Vec<PendingSpawn>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native).with_work(work.clone());
-        let fence = context.owned_task_fence()?;
+            &self.resources, native.original_owner(), &self.state, &self.roots, native);
+        let fence = context.context().owned_task_fence()?;
         let (payload, mut input_custody) = pi_root_provider::guarded_pi_value(
             input, owner.policy().maximum_payload_bytes, work)?;
         let progress = if reconcile {
-            fork.reconcile(context.clone(), fence, command, payload).await
+            fork.reconcile_with_native_work(context.clone(), fence, command, payload, work)?.await
         } else {
-            fork.execute(context.clone(), fence, command, payload).await
+            fork.execute_with_native_work(context.clone(), fence, command, payload, work)?.await
         }?;
         let reply = match progress {
             TaskCommandProgress::ReadyWithNativeCustody { value, mut custody } => {

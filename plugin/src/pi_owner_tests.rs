@@ -347,30 +347,23 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
             .await
             .unwrap(),
     ));
-    let runtime = crate::pi_runtime::PiTaskRuntime::open(
-        stream,
-        filesystem.clone(),
-        owner.policy.journal.clone(),
-        owner.authority().unwrap(),
+    let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
+        stream, filesystem.clone(), &owner.policy.journal,
+        owner.authority_with_native_work(&work).unwrap(), &work,
     )
     .await
     .unwrap();
-    assert!(matches!(
-        runtime
-            .admit_root(
-                request.binding.clone(),
-                request.root.clone(),
-                command.clone()
-            )
-            .await
-            .unwrap(),
-        Admission::Accepted(_)
-    ));
+    let admission = runtime.admit_root_with_native_work(
+        request.binding.clone(), request.root.clone(), command.clone(), &work,
+    ).await.unwrap();
+    assert!(matches!(admission.0, Admission::Accepted(_)));
+    drop(admission.0);
+    drop(admission.1);
     let mut changed = command.clone();
     changed.operation_id = OperationId::from_bytes([91; 16]);
     assert!(
         runtime
-            .admit_root(request.binding.clone(), request.root.clone(), changed)
+            .admit_root_with_native_work(request.binding.clone(), request.root.clone(), changed, &work)
             .await
             .is_err()
     );
@@ -856,4 +849,50 @@ async fn native_owner_authority_denial_does_not_write_original_storage() {
     assert_eq!(limited.live_allocation_bytes(), baseline);
     assert_eq!(raw.open_workspace(owner.policy.journal.storage_name().unwrap())
         .await.unwrap().head().await.unwrap().id(), original);
+}
+
+#[test]
+fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = PiOwnerConfig::new(policy()).unwrap();
+    owner.save_new(directory.path()).unwrap();
+    let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
+    let work = startup_work();
+    let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        directory.path(), &work,
+    ).unwrap();
+    let before = work.receipt();
+    let loaded = PiOwnerConfig::load_readonly_with_native_work(&root, Path::new(""), &work).unwrap();
+    assert!(loaded == owner);
+    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert_eq!(work.receipt().durability_operations, before.durability_operations);
+    assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), original);
+    let retained = work.live_allocation_bytes();
+    drop(loaded);
+    assert!(work.live_allocation_bytes() < retained);
+}
+
+#[test]
+fn native_owner_rooted_cancellation_precedes_record_read_or_publication() {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
+    let directory = tempfile::tempdir().unwrap();
+    let owner = PiOwnerConfig::new(policy()).unwrap();
+    owner.save_new(directory.path()).unwrap();
+    let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        crate::pi_root_provider::allocation_budget(), &cancellation,
+    ).unwrap();
+    let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        directory.path(), &work,
+    ).unwrap();
+    let before = work.receipt();
+    cancellation.cancel();
+    assert!(matches!(PiOwnerConfig::load_readonly_with_native_work(&root, Path::new(""), &work),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert!(matches!(owner.save_new_with_native_work(&root, Path::new(""), &work),
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+    assert_eq!(work.receipt(), before);
+    assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), original);
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
