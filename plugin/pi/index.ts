@@ -31,7 +31,7 @@ import { Type } from "typebox";
 const executable = "__ACYCLIC_EXECUTABLE__";
 const execute = promisify(execFile);
 
-export interface NativeSourceCut {
+interface NativeSourceCut {
   mode: "caller_tool" | "scratch";
   parentSessionId: string;
   parentSessionFile: string | null;
@@ -319,6 +319,7 @@ export async function observePiTaskUntilTerminal(
     while (observations < bounds.maximumObservations) {
       waiting.throwIfAborted();
       const result = await observe(waiting);
+      waiting.throwIfAborted();
       observations++;
       if (result.uncertain) return result;
       if (result.state === "completed") {
@@ -346,9 +347,9 @@ type PiWritebackRequest = {
   confirm: boolean;
 };
 
-export const writebackPreparedMessageType = "acyclic.writeback.prepared";
+const writebackPreparedMessageType = "acyclic.writeback.prepared";
 
-export interface PiWritebackObservation {
+interface PiWritebackObservation {
   prepared: (descriptor: Readonly<Record<string, unknown>>) => void;
   observe: (fields: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<Record<string, unknown>>;
   decide?: (operation: string, digest: string, decision: "approve" | "decline") => Promise<void>;
@@ -457,7 +458,7 @@ export async function approvePiWriteback(
 }
 
 /** One request through the owning service; never retry an uncertain effect. */
-export async function taskControl(
+async function taskControl(
   operation: PiControlOperation,
   ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
   fields: Readonly<Record<string, unknown>> = {},

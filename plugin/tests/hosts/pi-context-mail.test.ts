@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import test from "node:test";
+import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -74,7 +74,7 @@ function nativeMailDetails(entry: SessionEntry) {
   return { task_id: details.task_id, message_id: details.message_id, sequence: details.sequence, kind: details.kind };
 }
 
-test("installed root and child consume original mailbox messages through native SDK queues and persisted entries", { timeout: 240_000 }, async () => {
+test("installed root and child consume original mailbox messages through native SDK queues and persisted entries", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-mail-", import.meta.url)));
   let fixture: InstalledNativeFixture | undefined;
   try {
@@ -114,4 +114,4 @@ test("installed root and child consume original mailbox messages through native 
     if (fixture) await fixture.close();
     rmSync(directory, { recursive: true });
   }
-});
+}, { timeout: 240_000 });

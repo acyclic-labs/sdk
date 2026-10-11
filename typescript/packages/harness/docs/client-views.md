@@ -48,21 +48,6 @@ views.release(messageKey);
 views.dispose();
 ```
 
-The reducer-backed public message and Scheduler dequeue/claim example lives in
-[`rust/crates/harness/examples/client_views.rs`](../../../../rust/crates/harness/examples/client_views.rs).
-It runs the actual existing reducer and Scheduler on native and WASM, including a
-competing authoritative claim replacing the guess. JavaScript presently lacks a
-public Scheduler ready/lease snapshot bridge; the generic example's `host` must
-supply a real validated host projection. Task status alone cannot establish queue
-ownership. This binding introduces no Scheduler implementation.
-
-[`examples/client-message.ts`](../examples/client-message.ts) also runs a public
-TypeScript message prediction against the actual Rust-backed Harness reducer.
-Its private in-process observation envelopes pin audience, generation, revision
-and canonical reference content; no raw remote trust flag or hypothetical journal
-is used. The original command's admitted result confirms correspondence, and
-retrying that exact command leaves one canonical message.
-
 `select` caches one immutable snapshot for React, Svelte and other consumers.
 Reads allocate no new snapshot objects and start no effects. Narrow Rust changes
 refresh only relevant selections; unchanged evidence emits no notifications.
@@ -126,43 +111,3 @@ backing buffers and shared buffers are rejected before transfer/decode. This is 
 for snapshots, not a license to drop journal events. The receiver rejects sequence
 gaps/reordering and oversized frames before decoding. Dispose both endpoints;
 there is no liveness timer or automatic durable-effect recovery.
-
-## Simplification and limits
-
-The original eager ProjectionStore subscription and unconditional notifications
-were replaced, rather than retained behind a compatibility mode. One SnapshotStore
-implements reference equality, independent registrations, detachment, idempotent
-disposal and subscriber error isolation for both adapters and the worker receiver.
-Errors are reported on a microtask after all listeners observe publication, so a
-failed callback cannot leave other cached selections stale.
-
-The Rust adapter removed whole-object metadata deserialization and redundant
-metadata structs. Only small status/change metadata crosses serde; projection
-values remain shared JavaScript handles over the single Rust kernel. The binding
-copies immutable Limits solely for pre-allocation checks because the kernel keeps
-its configuration private. The view-cache set holds bounded active selections,
-not a second state, history, rollback or persistence engine. It scans bounded
-active selections instead of maintaining several additional routing indexes.
-
-Qualification covers bounded outcome exploration and real installed framework
-lifecycle/SSR/hydration controls. It is not an unrestricted proof of arbitrary
-host callbacks, network delivery, durable recovery or all JavaScript heap/RSS
-allocations. The durable extension uses the existing cursor/outbox transaction
-and Rust hypothesis indexes; it adds no journal transport or authority path.
-
-The temporary source-mutation runner was removed after its six focused fault
-controls detected equality, disposal, capacity, outcome routing, provenance and
-worker-byte failures. The retained tests cover those contracts directly; the
-existing hosted Chromium driver runs the real React/Svelte consumer without a
-new matrix or browser automation framework.
-
-The original framework qualification used the existing native client/public-consumer tests and
-strict Harness Clippy on Windows, Linux and macOS, plus the production WASM
-build/strict check. The affected Harness suite passed under repository-pinned
-Bun 1.4.2 on Linux. A fresh installed archive imported the optional core exports
-without React, passed strict declaration checking, and then passed actual React
-19.3.0/Svelte 5.57.2 Chromium SSR/hydration and lifecycle controls. Final WASM
-size was 5,494,230 bytes versus 5,394,559 bytes at main d86b660, an increment of
-99,671 bytes. Cached reads retain the same snapshot object; this does not claim
-zero engine allocations or bounded CPU for arbitrary host callbacks. The
-protected repository qualification remains the merge gate.

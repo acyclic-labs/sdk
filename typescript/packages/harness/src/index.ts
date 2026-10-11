@@ -546,7 +546,6 @@ export class Harness {
       : { result: "replayed", event, eventWire };
   }
 
-  /** Returns a versioned integrity-checked snapshot. */
   /** Read the authoritative command position without serializing history. */
   head(): readonly [authority: Authority, revision: bigint] {
     return this.#core.head() as readonly [Authority, bigint];
@@ -561,6 +560,7 @@ export class Harness {
     return this.#core.contextSelectionForOperation(operationId);
   }
 
+  /** Returns a versioned integrity-checked snapshot. */
   snapshot(): Snapshot {
     return this.#core.snapshot() as Snapshot;
   }

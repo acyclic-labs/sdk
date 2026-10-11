@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test } from "bun:test";
+import { piEnvironment } from "./pi-fixture.ts";
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 
 const execute = promisify(execFile);
@@ -26,14 +27,7 @@ test("public Pi installer pins a loadable extension and restores owned settings"
     for (const settings of [userSettings, projectSettings]) {
       writeFileSync(settings, JSON.stringify(prior));
     }
-    const environment: NodeJS.ProcessEnv = {
-      HOME: directory, USERPROFILE: directory, PI_CODING_AGENT_DIR: agent,
-      LOCALAPPDATA: join(directory, "local"), APPDATA: join(directory, "config"),
-      XDG_STATE_HOME: join(directory, "state"), XDG_CONFIG_HOME: join(directory, "config"),
-    };
-    for (const name of ["SystemRoot", "TEMP", "TMP"]) {
-      if (process.env[name]) environment[name] = process.env[name];
-    }
+    const environment = piEnvironment(directory);
     const command = (...args: string[]) => {
       const invocation = execute(binary, args, {
         cwd: project, env: environment, windowsHide: true,

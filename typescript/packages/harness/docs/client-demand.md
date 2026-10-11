@@ -126,32 +126,3 @@ commit to settle but stops the batch before preparing another event.
 its durable projection. Client disposal ends owned interest; started storage/send
 work retains its reservation until settlement and may have an indeterminate
 authoritative outcome. Recover through the original operation ID.
-
-## Simplification and evidence
-
-One request ledger owns admission/cancellation for both consumers; one existing
-LRU owns retention. Existing page windows, transports, reducers, cursor/outbox
-transactions, Rust speculation and CL2 snapshots retain their own semantics.
-There is no parallel retry engine, reducer, journal, page cache, lifecycle timer
-or framework store. Separate request and caller-demand bounds are necessary:
-deduplicated IO alone would allow unlimited promise/listener retention.
-
-Focused controls exercise distinct capacity/cancellation, selective hydration and
-transport failure classes with controlled pending providers. They establish
-finite modeled transitions, not a proof about arbitrary providers. Byte receipts
-and pre-work enforcement are host obligations; post-load checks alone are not a
-security boundary. The installed Chromium control combines verified FileRef
-hydration, atomic projection/cursor/outbox commit followed by a full document
-reload, and native-backed hypothesis recovery before network resume. A separate
-browser realm restores a stale cut and loses a same-cursor replacement CAS;
-delete/recreate ABA, deleted-tail fixed-cut paging, listener retry ordering and
-disposal during a started durable batch exercise the same production IDB path.
-Native and TypeScript controls exercise adapter drift, untrusted outcomes,
-dependency ordering, capacity failure, allocation exhaustion, late database
-handle cleanup and original-ID preservation. These controls do not authenticate
-arbitrary host decoders; the current source still requires aggregate qualification.
-The same controls detect the reviewed original source's two cancellation bugs:
-1,000 join/cancel operations retained 1,000 callbacks, and an abort during the
-connection handoff lost cleanup. Repaired code attaches no per-reader completion
-callbacks and closes the unreceived connection. These are focused reproductions,
-not an additional validation matrix.
