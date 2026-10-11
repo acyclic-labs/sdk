@@ -380,6 +380,8 @@ seal. Ordinary `Clone` preserves policy but does not propagate native origin.
 Borrowed native narrowing/run-limit validators apply those same attenuation
 checks without cloning a context; metadata custody and extension pinning are not
 issuer authentication.
+Shared auth producers extend their existing quota through that same physical
+proof copier, without another header allowance or post-copy graph inventory.
 
 Native scheduler validation borrows the current projection for every original
 event variant, including cancellation acknowledgement through

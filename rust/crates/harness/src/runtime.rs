@@ -3414,16 +3414,27 @@ impl RuntimeScope {
             return Ok(proofs.to_vec());
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let copied = crate::core::copy_vector(proofs, &mut quota, |proof, quota| {
+        let copied = Self::copy_resource_proofs(proofs, &mut quota)?;
+        quota.transfer();
+        Ok(copied)
+    }
+
+    /// Extends the caller's existing quota with the same physical proof copy.
+    pub(crate) fn copy_resource_proofs(
+        proofs: &[crate::resource_preparation::ResourceCreationProofRef],
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
+        if quota.work().is_none() {
+            return Ok(proofs.to_vec());
+        }
+        crate::core::copy_vector(proofs, quota, |proof, quota| {
             quota.work().as_deref_mut().expect("proof vector copy observer").items(1)?;
             let (copied, retained) = crate::core::resource_creation_proof_clone_with_custody(
                 proof, quota.work(),
             )?;
             quota.adopt(retained)?;
             Ok(copied)
-        })?;
-        quota.transfer();
-        Ok(copied)
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
