@@ -837,6 +837,136 @@ impl MemoryStream {
         }
     }
 
+    pub(crate) fn native_prepare_recovery_future(
+        &self, prepared: &NativeMemoryPreparedCommit,
+    ) -> MemoryResult<NativeProviderFuture<'static, Option<IdempotencyObservation>>> {
+        let meter = Arc::clone(&prepared.meter);
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        let output = clone_envelope(&prepared.output.value, &observer, false)?;
+        let conflicts = observer.vec(2)?;
+        let [CommittedMutation::Append(append)] = output.value.mutations.as_slice() else {
+            return Err(StreamError::InvalidArgument.into());
+        };
+        let target = append.path.clone();
+        let start = append.start;
+        let read_operation = OwnedNativeOperationReservation::new(
+            Arc::clone(&meter), NativeOperationKind::Read, 1,
+        )?;
+        let read_bytes = OwnedNativeByteReservation::new(
+            Arc::clone(&meter), NativeOperationKind::Read, prepared.maximum,
+        )?;
+        // Committed: lookup and two source/two output entries. Conflict:
+        // lookup, at most two conflicts and two held-condition comparisons each.
+        meter.admit_examination(1 + 2 + 2 * 2, 0)?;
+        let recovery = NativeMemoryPreparedRecovery {
+            output, conflicts, key: IdempotencyKey(prepared.key.clone()),
+            conditions: [
+                (prepared.observations[0].path.clone(), prepared.observations[0].expected),
+                (prepared.observations[1].path.clone(), prepared.observations[1].expected),
+            ],
+            target, start, maximum: prepared.maximum, read_operation, read_bytes,
+            meter: Arc::clone(&meter),
+        };
+        observer.check()?;
+        let provider = self.clone();
+        let failure_meter = Arc::clone(&meter);
+        Ok(NativeProviderFuture::try_new(&meter, async move {
+            match provider.native_finish_prepared_recovery_inner(recovery).await? {
+                Ok(output) => Ok(Ok(output)),
+                Err(error) => Ok(Err(NativeStreamFailure::new(
+                    error, ReadAllocation::empty(&failure_meter),
+                ))),
+            }
+        })?)
+    }
+
+    async fn native_finish_prepared_recovery_inner(
+        &self, mut prepared: NativeMemoryPreparedRecovery,
+    ) -> std::io::Result<Result<NativeStreamOutput<Option<IdempotencyObservation>>, StreamError>> {
+        let meter = Arc::clone(&prepared.meter);
+        let mut late = None;
+        let ((), recorded) = prepared.read_operation.attempt(|| ());
+        retain_prepared_error(&mut late, recorded);
+        let state = self.state.read().await;
+        let replay = state.replays.get(prepared.key.as_bytes());
+        record_prepared_work(&meter, &mut late, 1, 0);
+        let Some(replay) = replay else {
+            return match late {
+                Some(error) => Err(error),
+                None => Ok(Ok(NativeStreamOutput::new(None, ReadAllocation::empty(&meter)))),
+            };
+        };
+        let IdempotencyOutcome::Commit(outcome) = &replay.result else {
+            return prepared_failure(late, StreamError::IdempotencyMismatch);
+        };
+        let request_digest = replay.digest;
+        let mut outcome = match outcome {
+            CommitOutcome::Committed(envelope) => {
+                if envelope.mutations.len() != 1 {
+                    return prepared_failure(late, StreamError::LimitExceeded);
+                }
+                let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+                    return prepared_failure(late, StreamError::IdempotencyMismatch);
+                };
+                record_prepared_work(&meter, &mut late, 1, 0);
+                if append.records.len() != 1 {
+                    return prepared_failure(late, StreamError::LimitExceeded);
+                }
+                let [record] = append.records.as_slice() else { unreachable!("the record count was checked") };
+                record_prepared_work(&meter, &mut late, 1, 0);
+                if record.value.len() > prepared.maximum {
+                    return prepared_failure(late, StreamError::LimitExceeded);
+                }
+                if append.path != prepared.target || append.start != prepared.start
+                    || append.end != prepared.start + 1 || append.tail != append.end
+                    || record.sequence != prepared.start || record.commit_id != envelope.commit_id
+                    || record.value.is_empty()
+                {
+                    return prepared_failure(late, StreamError::IdempotencyMismatch);
+                }
+                crate::preparation::fill_single_append(&mut prepared.output.value, record, || {
+                    record_prepared_work(&meter, &mut late, 1, 0);
+                }).expect("the protected recovery output has one preallocated record");
+                retain_prepared_error(&mut late, prepared.read_bytes.record(record.value.len()));
+                MemoryOutput {
+                    value: CommitOutcome::Committed(prepared.output.value),
+                    allocation: prepared.output.allocation,
+                }
+            }
+            CommitOutcome::Conflict(conflicts) => {
+                if conflicts.len() > 2 {
+                    return prepared_failure(late, StreamError::LimitExceeded);
+                }
+                for conflict in conflicts {
+                    record_prepared_work(&meter, &mut late, 1, 0);
+                    let CommitConflict::Tail { path, expected, .. } = conflict else {
+                        return prepared_failure(late, StreamError::IdempotencyMismatch);
+                    };
+                    let mut matched = false;
+                    for (known, tail) in &prepared.conditions {
+                        record_prepared_work(&meter, &mut late, 1, 0);
+                        if path == known && expected == tail {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched { return prepared_failure(late, StreamError::IdempotencyMismatch); }
+                    prepared.conflicts.value.push(conflict.clone());
+                }
+                MemoryOutput {
+                    value: CommitOutcome::Conflict(prepared.conflicts.value),
+                    allocation: prepared.conflicts.allocation,
+                }
+            }
+        };
+        drop(state);
+        if let Some(error) = late { return Err(error); }
+        Ok(Ok(NativeStreamOutput::new(Some(IdempotencyObservation {
+            idempotency_key: prepared.key, request_digest,
+            outcome: IdempotencyOutcome::Commit(outcome.value),
+        }), outcome.allocation.allocation.take().unwrap_or_else(|| ReadAllocation::empty(&meter)))))
+    }
+
     pub(crate) async fn native_finish_prepared_commit_borrowed_inner(
         &self,
         mut prepared: NativeMemoryPreparedCommit,
@@ -1026,9 +1156,9 @@ fn record_prepared_work(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn prepared_failure(
+fn prepared_failure<T>(
     late: Option<std::io::Error>, error: StreamError,
-) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
+) -> std::io::Result<Result<T, StreamError>> {
     match late { Some(error) => Err(error), None => Ok(Err(error)) }
 }
 
@@ -1220,6 +1350,20 @@ pub(crate) struct NativeMemoryPreparedCommit {
     maximum: usize,
     replay_entry: MemoryAllocation,
     commit_entry: MemoryAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeMemoryPreparedRecovery {
+    output: MemoryOutput<CommittedEnvelope>,
+    conflicts: MemoryOutput<Vec<CommitConflict>>,
+    key: IdempotencyKey,
+    conditions: [(StreamPath, u64); 2],
+    target: StreamPath,
+    start: u64,
+    maximum: usize,
+    read_operation: OwnedNativeOperationReservation,
+    read_bytes: OwnedNativeByteReservation,
+    meter: Arc<dyn NativeReadMeter>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1764,6 +1908,13 @@ impl StreamProvider for MemoryStream {
                 Ok(prepared) => prepared,
                 Err(error) => return Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
             };
+            let recovery = match self.native_prepare_recovery_future(&prepared) {
+                Ok(future) => future,
+                Err(MemoryFailure::Observer(error)) => return Err(error),
+                Err(MemoryFailure::Provider(error)) => return Ok(Err(NativeStreamFailure::new(
+                    error, ReadAllocation::empty(&meter),
+                ))),
+            };
             let slot = crate::NativeCommitRecordSlot::new(&meter)?;
             let received = Arc::clone(&slot);
             let provider = self.clone();
@@ -1789,7 +1940,7 @@ impl StreamProvider for MemoryStream {
                 }
             })?;
             Ok(Ok(NativeStreamOutput::new(
-                crate::PreparedNativeCommit::new(future, slot, maximum_record_bytes),
+                crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
                 ReadAllocation::empty(&meter),
             )))
         })
@@ -3225,6 +3376,177 @@ mod tests {
         fn fill_prepared_fixture(request: &mut CommitRequest, body: &'static [u8]) {
             let CommitMutation::Append { records, .. } = &mut request.mutations[0] else { unreachable!() };
             records[0] = OwnedBytes::from_static(body);
+        }
+
+        #[tokio::test]
+        async fn public_prepared_future_keeps_original_payload_through_the_last_empty_alias() -> MemoryResult<()> {
+            struct PayloadGuard {
+                retired: Arc<AtomicBool>,
+                _allocation: ReadAllocation,
+            }
+            impl Drop for PayloadGuard {
+                fn drop(&mut self) { self.retired.store(true, Ordering::SeqCst); }
+            }
+            let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+            let meter = Arc::new(Meter::default());
+            let original = meter.original();
+            let retired = Arc::new(AtomicBool::new(false));
+            let mut allocation = ReadAllocation::new(&original, 64)?;
+            let mut data = Vec::new();
+            data.try_reserve_exact(64).map_err(|error| original.allocation_failed(error))?;
+            allocation.reconcile_capacity(data.capacity())?;
+            data.resize(data.capacity(), 0);
+            let mut builder = crate::PreparedOwnedBytes::new(data, PayloadGuard {
+                retired: Arc::clone(&retired), _allocation: allocation,
+            }, Arc::clone(&original)).map_err(|failure| match failure.into_error() {
+                crate::PreparedOwnedBytesError::Admission(error) => ControlFailure::Observer(error),
+                crate::PreparedOwnedBytesError::NotFullyInitialized
+                    | crate::PreparedOwnedBytesError::NotUnique => ControlFailure::Provider(StreamError::InvalidArgument),
+            })?;
+            let issued = provider.native_prepare_commit(request, 64, original).await??;
+            let (mut issued, packet_guard) = issued.into_parts();
+            let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
+            assert!(issued.take_recovery_future().is_none());
+            let allocations = meter.allocations.load(Ordering::SeqCst);
+            builder.writable()[..9].copy_from_slice(b"root-body");
+            meter.cancelled.store(true, Ordering::SeqCst);
+            let body = builder.freeze(9).map_err(|_| StreamError::InvalidArgument)?;
+            let last_empty_alias = body.slice(..0);
+            let output = issued.finish(body).await??;
+            let CommitOutcome::Committed(envelope) = output.value() else { panic!("canonical Commit result") };
+            let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { panic!("single append") };
+            assert_eq!(append.records[0].value.as_ref(), b"root-body");
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
+            let observed = recovery.await??;
+            let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
+            let IdempotencyOutcome::Commit(recovered) = &observation.outcome else { panic!("original Commit family") };
+            assert_eq!(recovered, output.value());
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
+            drop(observed);
+            assert!(!retired.load(Ordering::SeqCst));
+            drop(output);
+            drop(packet_guard);
+            drop(provider);
+            assert!(last_empty_alias.is_empty());
+            assert!(!retired.load(Ordering::SeqCst), "the empty view still owns its full physical backing");
+            assert!(meter.held.load(Ordering::SeqCst) > 0);
+            drop(last_empty_alias);
+            assert!(retired.load(Ordering::SeqCst));
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn prebuilt_recovery_reads_actual_publication_after_lost_ack() -> MemoryResult<()> {
+            let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
+            let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
+            let (mut issued, packet_guard) = issued.into_parts();
+            let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
+            let allocations = meter.allocations.load(Ordering::SeqCst);
+            meter.cancelled.store(true, Ordering::SeqCst);
+            let acknowledgement = issued.finish(OwnedBytes::from_static(b"whole-settled-prefix")).await;
+            assert!(matches!(acknowledgement, Err(error) if error.kind() == std::io::ErrorKind::Interrupted));
+            let observed = recovery.await??;
+            let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
+            let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &observation.outcome else {
+                panic!("recovery preserves the actual original Commit family")
+            };
+            let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { panic!("single append") };
+            assert_eq!(append.records[0].value.as_ref(), b"whole-settled-prefix");
+            assert_eq!(append.start, 1);
+            assert_eq!(append.tail, 2);
+            assert_eq!(provider.tail(path("completion/target")?).await?, 2);
+            assert_eq!(observation.request_digest,
+                provider.state.read().await.replays.get(observation.idempotency_key.as_bytes())
+                    .ok_or(StreamError::Unavailable)?.digest);
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
+            drop(observed);
+            drop(packet_guard);
+            drop(provider);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_without_growth() -> MemoryResult<()> {
+            for larger_commit in [false, true] {
+                let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+                let foreign_key = request.idempotency_key.clone();
+                let meter = Arc::new(Meter::default());
+                let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
+                let (mut issued, packet_guard) = issued.into_parts();
+                let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
+                if larger_commit {
+                    provider.commit(CommitRequest {
+                        conditions: vec![],
+                        mutations: vec![
+                            CommitMutation::Append { path: path("completion/owner")?,
+                                records: vec![OwnedBytes::from_static(b"foreign-owner")] },
+                            CommitMutation::Append { path: path("completion/target")?,
+                                records: vec![OwnedBytes::from_static(b"foreign-target")] },
+                        ],
+                        idempotency_key: foreign_key,
+                    }).await?;
+                } else {
+                    provider.append(AppendRequest {
+                        path: path("completion/target")?, records: vec![OwnedBytes::from_static(b"foreign-append")],
+                        if_tail: Some(1), idempotency_key: Some(foreign_key),
+                    }).await?;
+                }
+                let allocations = meter.allocations.load(Ordering::SeqCst);
+                meter.cancelled.store(true, Ordering::SeqCst);
+                let failure = match recovery.await? {
+                    Err(failure) => failure,
+                    Ok(_) => panic!("a closed recovery plan cannot pretend this foreign outcome is absent"),
+                };
+                assert!(if larger_commit {
+                    matches!(failure.source(), StreamError::LimitExceeded)
+                } else {
+                    matches!(failure.source(), StreamError::IdempotencyMismatch)
+                });
+                assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+                assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+                assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
+                drop(failure);
+                drop(issued);
+                drop(packet_guard);
+                drop(provider);
+                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            }
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn prebuilt_recovery_reports_real_absence_and_refunds_unused_preaccepted_work() -> MemoryResult<()> {
+            let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+            let meter = Arc::new(Meter::default());
+            let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
+            let (mut issued, packet_guard) = issued.into_parts();
+            let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
+            let allocations = meter.allocations.load(Ordering::SeqCst);
+            let examinations = meter.examined.load(Ordering::SeqCst);
+            meter.cancelled.store(true, Ordering::SeqCst);
+            let observed = recovery.await??;
+            assert!(observed.value().is_none());
+            assert_eq!(meter.examined.load(Ordering::SeqCst) - examinations, 1);
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
+            drop(observed);
+            drop(issued);
+            drop(packet_guard);
+            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
+            drop(provider);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
         }
 
         #[tokio::test]

@@ -65,6 +65,14 @@ authority after cancellation. Known SDK Vec/Arc payload controls retain their
 original allocation guards; opaque standard-library backing and runtime wait
 queues are not claimed as measured Root payload.
 
+The packet also owns one genuine, prebuilt recovery future. Taking it transfers
+that existing frame; polling it later observes the current canonical retry table,
+not a prefetched result. Its exact single-Append/single-record output and two
+conflict slots, original immutable key, and Read credits are funded before the
+source action. Foreign families or outcomes outside that closed shape fail with
+a static typed mismatch or bound error without allocating or reporting absence.
+The unified `OwnedBytes` record and key aliases retain their original payload
+custody through the last alias, including an empty sliced view.
 
 `persistence::encode_observation` / `decode_observation` and `encode_envelope` / `decode_envelope` preserve complete terminal retry outcomes and immutable envelopes using existing generated Stream v1 protobuf messages. Each takes an explicit positive byte bound. Invalid facts, malformed bytes and noncanonical encodings fail closed, including unknown fields. The storage owner supplies its own checksum/container, account and request-digest binding, accepted ID/time durability and atomic publication; these codecs do not establish acceptance or authenticate stored bytes. No optional feature is required.
 
