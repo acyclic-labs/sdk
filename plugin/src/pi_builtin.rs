@@ -288,7 +288,8 @@ struct PiBuiltinToolExecutor;
 pub(crate) fn builtin_tool_executor_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<std::sync::Arc<dyn acyclic_harness::tool::ToolExecutor>> {
-    work.remaining().map_err(native_error)?;
+    work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
+        .map_err(native_error)?;
     Ok(std::sync::Arc::new(PiBuiltinToolExecutor))
 }
 

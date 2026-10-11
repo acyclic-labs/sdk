@@ -7,6 +7,28 @@ fn request(io: PiBuiltinIo) -> PiBuiltinRequest {
         path: "file.txt".into(), io }
 }
 
+#[test]
+fn builtin_shared_executor_charges_its_real_arc_attempt_before_allocation() {
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    let before = work.receipt().allocation_operations;
+    let executor = builtin_tool_executor_with_native_work(&work).unwrap();
+    assert_eq!(work.receipt().allocation_operations, before + 1);
+    drop(executor);
+    let remaining = work.remaining().unwrap().allocation_operations;
+    work.charge(WorkCounters { allocation_operations: remaining, ..WorkCounters::default() }).unwrap();
+    let before = work.receipt().allocation_operations;
+    assert!(matches!(builtin_tool_executor_with_native_work(&work), Err(Error::NativeWork { .. })));
+    assert_eq!(work.receipt().allocation_operations, before);
+
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
+    cancellation.cancel();
+    let before = work.receipt().allocation_operations;
+    assert!(matches!(builtin_tool_executor_with_native_work(&work), Err(Error::NativeWork { .. })));
+    assert_eq!(work.receipt().allocation_operations, before);
+}
+
 async fn original_native_actor(
     fixture: &crate::pi_fork::tests::Fixture, work: &NativeMaterializationWork,
 ) -> (std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>, std::sync::Arc<Owner>) {

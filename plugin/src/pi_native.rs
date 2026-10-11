@@ -804,7 +804,7 @@ impl PiNativeLaunchIntent {
         let bytes = context.read_file_with_native_work(reference, work).await?;
         let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
         let intent = super::pi_root_provider::guarded_pi_decode::<Self>(
-            &bytes.0, maximum, std::mem::size_of::<Self>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
+            bytes.as_ref(), maximum, std::mem::size_of::<Self>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
         intent.0.validate_with_work(work)?;
         Ok(intent)
     }
@@ -1198,8 +1198,7 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
                 return Err(NativeReceiptError::Record("Pi cleanup result exceeds its original content allowance"));
             }
             let bytes = context.read_file_with_native_work(output, meter).await.map_err(NativeReceiptError::Owner)?;
-            let bytes = PiNativeEncodedBytes { bytes: bytes.0, _custody: bytes.1 };
-            if !process_cleanup_completed(&bytes.bytes, maximum_bytes, meter).map_err(NativeReceiptError::Owner)? {
+            if !process_cleanup_completed(bytes.as_ref(), maximum_bytes, meter).map_err(NativeReceiptError::Owner)? {
                 return Err(NativeReceiptError::Owner(Error::Indeterminate(self.command)));
             }
             if terminal {
@@ -1391,9 +1390,8 @@ impl PiNativeRootSeed {
             ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation)?;
             owner.require_volume_grant_with_native_work(&self.scratch, operation, meter)?;
         }
-        let read = shared.context().read_file_with_native_work(session, meter).await?;
-        let bytes = PiNativeEncodedBytes { bytes: read.0, _custody: read.1 };
-        if bytes.bytes.as_slice() != intent.session_bytes.as_bytes() {
+        let bytes = shared.context().read_file_with_native_work(session, meter).await?;
+        if bytes.as_ref() != intent.session_bytes.as_bytes() {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi original session publication differs from its immutable native cut" });
         }

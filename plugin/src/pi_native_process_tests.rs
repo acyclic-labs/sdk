@@ -353,7 +353,7 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
         return Err(invalid("native output absent from authentic successful receipt"));
     };
     let bytes = fixture.context.context().read_file_with_native_work(result_ref, &recovery_work).await?;
-    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(&bytes.0, &recovery_work)?;
+    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), &recovery_work)?;
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
@@ -381,7 +381,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert!(receipt.observed); assert!(matches!(receipt.effect.status, EffectStatus::Indeterminate));
     let output = receipt.diagnostic.as_ref().ok_or_else(|| invalid("native cleanup diagnostic absent from authentic receipt"))?;
     let bytes = fixture.context.context().read_file_with_native_work(output, runner.original_work()).await?;
-    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(&bytes.0, runner.original_work())?;
+    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), runner.original_work())?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("native cancellation lost stop observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "native cleanup must be observed, not inferred from the session path");
@@ -435,7 +435,7 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
         "stopping a warm native process must not retire the original mounted view");
     let diagnostic = observed.diagnostic.as_ref().ok_or_else(|| invalid("actual stop lacks its cleanup diagnostic"))?;
     let bytes = fixture.context.context().read_file_with_native_work(diagnostic, &work).await?;
-    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(&bytes.0, &work)?;
+    let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), &work)?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
