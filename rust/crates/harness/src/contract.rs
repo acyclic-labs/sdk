@@ -1113,6 +1113,10 @@ impl Capabilities {
         Self::new_with_native_work(self.iter(), work)
     }
 
+    pub(crate) fn from_owned_set(values: BTreeSet<String>) -> Self {
+        Self(values)
+    }
+
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {

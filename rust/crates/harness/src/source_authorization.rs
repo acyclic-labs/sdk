@@ -119,16 +119,30 @@ pub struct ProjectSourceAuthorization {
 impl ProjectSourceAuthorization {
     /// Checks structure only; callers cannot turn this into authority themselves.
     pub fn validate(&self) -> Result<()> {
-        self.project.validate()?;
-        self.generation.validate()?;
+        self.validate_with_work(&mut None)
+    }
+
+    pub(crate) fn validate_with_work(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.project.validate_with_work(work)?;
+        self.generation.validate_with_work(work)?;
         if self.project.class() != VolumeClass::Project
             || self.project.provider() != self.generation.as_resource().provider()
             || self.maximum_work == 0 || self.maximum_work == u64::MAX
             || self.maximum_bytes == 0 || self.maximum_bytes == u64::MAX
         {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.as_ref().is_some_and(|observer| observer.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "project source lacks an exact project or finite bounds",
+                });
+            }
             return Err(Error::Invalid("project source lacks an exact project or finite bounds".into()));
         }
-        crate::contract::validate_json_byte_bound(self, self.maximum_bytes)
+        crate::contract::validate_trusted_json_byte_bound_with_work(self, self.maximum_bytes, work)
     }
 
     pub(crate) fn scope_label(&self) -> Result<String> {

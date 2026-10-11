@@ -388,6 +388,74 @@ pub(crate) fn resource_creation_clone_reservation(
     Ok(bytes)
 }
 
+pub(crate) fn resource_creation_proof_clone_reservation(
+    proof: &crate::resource_preparation::ResourceCreationProofRef,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<u64> {
+    let mut inventory = CloneInventory {
+        work: work.as_deref_mut().map(|io| io as &mut dyn HistoryIo), ..Default::default()
+    };
+    let result = proof.serialize(&mut inventory);
+    if let Some(error) = inventory.failure.take() { return Err(error); }
+    result.map_err(|_| resource_creation_proof_inventory_error())?;
+    let bytes = inventory.bytes;
+    drop(inventory);
+    if let Some(io) = work.as_deref_mut() {
+        let mut buffers = [0_u64; 13];
+        let mut next = 0;
+        // The closed DTO owns nine provider Strings, two resource key Vecs and
+        // at most two version Strings. UUID inventory formatting is stack-only.
+        for provider in [&proof.provider, proof.resource.provider(), proof.evidence.provider()] {
+            for text in [provider.namespace(), provider.family(), provider.version()] {
+                buffers[next] = text.len() as u64;
+                next += 1;
+            }
+        }
+        for resource in [&proof.resource, &proof.evidence] {
+            buffers[next] = resource.key().len() as u64;
+            next += 1;
+            buffers[next] = resource.version().map_or(0, |version| version.len() as u64);
+            next += 1;
+        }
+        let copied = buffers.iter().try_fold(0_u64, |bytes, length|
+            bytes.checked_add(*length).ok_or_else(resource_creation_proof_inventory_error))?;
+        io.admit_owned(bytes)?;
+        io.admit_copy(copied)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = io.original_native_work() {
+            native.admit(acyclic_fs::WorkCounters {
+                allocation_operations: buffers.iter().filter(|length| **length != 0).count() as u64,
+                bytes_copied: copied, ..Default::default()
+            }).map_err(Error::from)?;
+        }
+        // No allocation/copy observation precedes retained quota admission.
+        io.retain_owned(bytes)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = io.original_native_work() {
+            native.charge(acyclic_fs::WorkCounters {
+                allocation_operations: buffers.iter().filter(|length| **length != 0).count() as u64,
+                bytes_copied: copied, ..Default::default()
+            }).map_err(Error::from)?;
+            return Ok(bytes);
+        }
+        for bytes in buffers.into_iter().filter(|length| *length != 0) {
+            io.codec_charge(crate::contract::JsonCodecCharge::AllocationOperation { bytes })?;
+        }
+        io.copy_bytes(copied)?;
+    }
+    Ok(bytes)
+}
+
+
+fn resource_creation_proof_inventory_error() -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    { Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid, reason: "closed creator proof clone inventory rejected",
+    } }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    { Error::Invalid("closed creator proof clone inventory rejected".into()) }
+}
+
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -3741,11 +3741,26 @@ impl RuntimeScope {
     pub(crate) fn with_created_publication_lease(
         mut self,
         lease: Arc<dyn crate::resource_preparation::CreatedTaskLease>,
-    ) -> Self {
+    ) -> Result<Self> {
         if let Some(access) = &mut self.created_access {
-            Arc::make_mut(access).publication_lease = Some(lease);
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let native = access.has_native_custody();
+            let access = match Arc::get_mut(access) {
+                Some(access) => access,
+                None => {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if native {
+                        return Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "created scope was shared before publication lease binding",
+                        });
+                    }
+                    return Err(Error::Unauthorized("created scope was shared before publication lease binding".into()));
+                }
+            };
+            access.publication_lease = Some(lease);
         }
-        self
+        Ok(self)
     }
 
     async fn verify_created_write(&self, volume: &VolumeRef) -> Result<()> {

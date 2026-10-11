@@ -264,6 +264,28 @@ original-ledger native settlement share the same task, agent, exact allocation,
 retained writer and current-fenced WRITE checks. Recheck before every namespace
 mutation; a READ-only historical owner cannot authorize cleanup, and a native
 physical leaf receipt remains separately required.
+`TaskContext::output_volume` borrows the actual publication writer's volume,
+including the configured default when no override is selected. It is metadata,
+not a write capability: native callers still verify their original current owner,
+write grant and exact protected created-resource binding before using that target.
+`ContentGrant::verify_original_volume_with_native_work` uses that same original
+signed scope and shared whole-volume verifier, returning the owned grant before
+its native allocation guard. The grant must be dropped before the guard.
+An opaque project-source policy attestation cannot mint a generic volume grant.
+Internal mailbox task bindings now borrow the original owner fence. Native
+validation does not copy a retry key or reconstruct a lease merely to inspect it;
+the public `owned_task_fence` still explicitly returns a copy of that exact fence.
+Native creator receipt sealing uses the same optional-observer engine as ordinary
+admission. It moves authenticated bindings, normalizes default/artifact roles
+against the verified current origin, and retains known SDK payload custody on the
+sealed access through its last owner. Logical bounds include owned field and
+buffer capacities, not opaque provider backing, BTree allocator nodes, Arc/Weak
+blocks or global RSS. Publication leases attach only before that access is shared;
+an already-shared scope is rejected rather than cloning authority or custody.
+Preparation requests decode from borrowed retained input using the existing
+audited preparation codec, bind the complete original command/input digest and
+reject omitted or changed fields on retries; their returned retained extent
+remains held until the request is dropped or transferred.
 
 The filesystem task runtime enforces the originally admitted absolute deadline
 through the host's current clock and native or browser-worker timers. Expiry
