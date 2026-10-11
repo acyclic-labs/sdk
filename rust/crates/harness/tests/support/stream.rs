@@ -3,8 +3,7 @@
     dead_code,
     reason = "shared fault fixtures expose controls used by different test modules"
 )]
-use acyclic_stream::{AppendOutcome, MemoryStream, StreamError, StreamProvider};
-use bytes::Bytes;
+use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -157,7 +156,7 @@ impl<P> LostSessionAck<P> {
             .receipt_bytes
             .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
-    fn measure_write(&self, records: &[Bytes]) {
+    fn measure_write(&self, records: &[OwnedBytes]) {
         use std::sync::atomic::Ordering;
         self.io
             .records
@@ -453,12 +452,12 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             3 => records.clear(),
             4 => {
                 if let Some(record) = records.first_mut() {
-                    record.value = Bytes::from_static(b"corrupt");
+                    record.value = OwnedBytes::from_static(b"corrupt");
                 }
             }
             5 => {
                 if let Some(record) = records.first_mut() {
-                    record.value = Bytes::from(vec![0; acyclic_stream::MAX_RECORD_BYTES + 1]);
+                    record.value = OwnedBytes::from(vec![0; acyclic_stream::MAX_RECORD_BYTES + 1]);
                 }
             }
             6 => {
@@ -534,7 +533,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             self.inner
                 .append(acyclic_stream::AppendRequest {
                     path: path.0,
-                    records: vec![Bytes::from_static(b"dispatch won")],
+                    records: vec![OwnedBytes::from_static(b"dispatch won")],
                     if_tail: Some(path.1),
                     idempotency_key: None,
                 })
@@ -821,17 +820,6 @@ struct NativeFaultRecordCursor {
     finished: bool,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeFixtureBytes {
-    bytes: Bytes,
-    _producer: acyclic_stream::NativeStreamOutput<()>,
-    _owner: acyclic_native_runtime::ReadAllocation,
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl AsRef<[u8]> for NativeFixtureBytes {
-    fn as_ref(&self) -> &[u8] { &self.bytes }
-}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_fixture_failure(
@@ -844,24 +832,37 @@ fn native_fixture_failure(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_fixture_record_owner(
-    output: acyclic_stream::NativeObservedRecord,
+enum NativeFixtureValue {
+    Corrupt,
+    Oversize,
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_fixture_value(
+    value: NativeFixtureValue,
     meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> std::io::Result<acyclic_stream::NativeObservedRecord> {
-    let (record, allocation) = output.into_parts();
-    if allocation.bytes() == 0 {
-        return Ok(acyclic_stream::NativeStreamOutput::new(record, allocation));
+) -> std::io::Result<OwnedBytes> {
+    let source = match value {
+        NativeFixtureValue::Corrupt => Some(b"corrupt".as_slice()),
+        NativeFixtureValue::Oversize => None,
+    };
+    let bytes = source.map_or(acyclic_stream::MAX_RECORD_BYTES + 1, <[u8]>::len);
+    let copied = source.map_or(0, |source| source.len() as u64);
+    meter.admit_examination(1, copied)?;
+    let reservation = acyclic_native_runtime::ReadAllocationReservation::new(meter, bytes as u64)?;
+    let allocation = reservation.allocate()?;
+    let mut data = Vec::new();
+    // Fresh u8 storage requests this exact capacity on the ordinary Global
+    // allocator. Its original credit precedes the allocator, not late adoption.
+    data.try_reserve_exact(bytes).map_err(|error| meter.allocation_failed(error))?;
+    meter.record_examination(1, copied)?;
+    if let Some(source) = source {
+        data.extend_from_slice(source);
+    } else {
+        data.resize(bytes, 0);
     }
-    let output = acyclic_stream::NativeStreamOutput::new(record, allocation);
-    let owner = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<NativeFixtureBytes>())?;
-    meter.allocate_refcount_header()?;
-    let (mut record, allocation) = output.into_parts();
-    record.value = Bytes::from_owner(NativeFixtureBytes {
-        bytes: record.value,
-        _producer: acyclic_stream::NativeStreamOutput::new((), allocation),
-        _owner: owner,
-    });
-    Ok(acyclic_stream::NativeStreamOutput::new(record, acyclic_native_runtime::ReadAllocation::empty(meter)))
+    OwnedBytes::from_vec_with_guard(data, allocation, meter.clone())
+        .map_err(|failure| failure.into_error())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -894,29 +895,28 @@ impl futures::Stream for NativeFaultRecordCursor {
         if this.index == 0 {
             match this.fault {
                 1 => output.value_mut().sequence += 1,
-                4 => output.value_mut().value = Bytes::from_static(b"corrupt"),
-                5 => {
-                    let bytes = acyclic_stream::MAX_RECORD_BYTES + 1;
-                    let allocation = match acyclic_native_runtime::ReadAllocation::new(&this.meter, bytes) {
-                        Ok(allocation) => allocation,
+                4 | 5 => {
+                    let value = if this.fault == 4 {
+                        NativeFixtureValue::Corrupt
+                    } else {
+                        NativeFixtureValue::Oversize
+                    };
+                    let value = match native_fixture_value(value, &this.meter) {
+                        Ok(value) => value,
                         Err(error) => return Poll::Ready(Some(Err(error))),
                     };
-                    if let Err(error) = this.meter.allocate_refcount_header() {
-                        return Poll::Ready(Some(Err(error)));
-                    }
-                    let mut record = output.value().clone();
-                    record.value = Bytes::from(vec![0; bytes]);
-                    drop(output);
-                    output = acyclic_stream::NativeStreamOutput::new(record, allocation);
+                    // Replace only the payload. The genuine SDK output keeps
+                    // its independent metadata custody; byte custody follows
+                    // the canonical carrier through every alias.
+                    output.value_mut().value = value;
                 }
                 _ => {}
             }
         }
         if this.fault == 2 {
-            output = match native_fixture_record_owner(output, &this.meter) {
-                Ok(output) => output,
-                Err(error) => return Poll::Ready(Some(Err(error))),
-            };
+            // Record's remaining fields are inline. This saved header occupies
+            // the already-funded cursor slot; its canonical payload clone is a
+            // shared alias, not another byte or metadata allocation.
             this.previous = Some(output.value().clone());
         }
         this.index += 1;
@@ -952,7 +952,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 };
                 // Separate competing writer: it never borrows the harness meter.
                 if let Err(error) = self.inner.append(acyclic_stream::AppendRequest {
-                    path, records: vec![Bytes::from_static(b"dispatch won")], if_tail: Some(tail), idempotency_key: None,
+                    path, records: vec![OwnedBytes::from_static(b"dispatch won")], if_tail: Some(tail), idempotency_key: None,
                 }).await { return Ok(Err(native_fixture_failure(error, &original))); }
             }
             let selected = request.conditions.iter().any(|condition| matches!(condition,
@@ -1079,9 +1079,72 @@ fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggreg
                         .starts_with("harness/v2/aggregate-operations/")
                     && let Some(record) = append.records.first_mut()
                 {
-                    record.value = Bytes::from_static(b"contradictory receipt");
+                    record.value = OwnedBytes::from_static(b"contradictory receipt");
                 }
             }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_fixture_tests {
+    use super::*;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            allocation_operations: 32,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 65_536,
+            items_examined: 32,
+            bytes_copied: 65_536,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[test]
+    fn native_fault_payload_empty_last_alias_keeps_original_custody() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite original fixture ledger");
+        let baseline = work.live_allocation_bytes();
+        let value = native_fixture_value(NativeFixtureValue::Corrupt, &work.runtime_meter_owner())
+            .expect("genuine native fixture buffer");
+        assert_eq!(value.as_ref(), b"corrupt");
+        assert_eq!(value.retained_capacity(), Some(7));
+        let allocations = work.receipt().allocation_operations;
+        let alias = value.clone();
+        let empty = alias.slice(0..0);
+        assert_eq!(alias.as_ptr(), value.as_ptr());
+        assert!(empty.is_empty());
+        assert_eq!(work.receipt().allocation_operations, allocations);
+        assert_eq!(work.receipt().bytes_copied, 7);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        drop(value);
+        drop(alias);
+        assert!(work.live_allocation_bytes() > baseline);
+        drop(empty);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+
+    #[test]
+    fn native_fault_payload_denial_does_not_allocate_or_copy() {
+        for cancelled in [false, true] {
+            let cancellation = CancellationToken::new();
+            let limits = if cancelled { budget() } else {
+                WorkBudget { allocation_operations: 1, ..budget() }
+            };
+            let work = NativeMaterializationWork::new(limits, &cancellation)
+                .expect("original meter allocation is admitted");
+            let before = work.receipt();
+            let live = work.live_allocation_bytes();
+            if cancelled { cancellation.cancel(); }
+            assert!(native_fixture_value(NativeFixtureValue::Oversize, &work.runtime_meter_owner()).is_err());
+            let after = work.receipt();
+            assert_eq!(after.allocation_operations, before.allocation_operations);
+            assert_eq!(after.bytes_copied, before.bytes_copied);
+            assert_eq!(after.items_examined, before.items_examined);
+            assert_eq!(work.live_allocation_bytes(), live);
         }
     }
 }
