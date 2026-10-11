@@ -1734,6 +1734,59 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok((applied, state))
     }
 
+    /// Requests a direct child's subtree to stop while its parent still owns
+    /// the exact uncancelled lease. The returned state proves cancellation intent.
+    #[allow(clippy::too_many_arguments, reason = "original owner, direct child and current parent lease")]
+    pub async fn cancel_child_operation(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        parent: OperationId,
+        fence: LeaseFence,
+    ) -> Result<OperationState> {
+        self.cancel_child_operation_with_work(
+            owner, scope, verifier, operation_id, idempotency_key, parent, &fence, &mut None,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "same direct-child cancellation and original borrowed parent fence")]
+    pub(crate) async fn cancel_child_operation_with_work(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        parent: OperationId,
+        fence: &LeaseFence,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<OperationState> {
+        Self::authorize_operation_scope_with_work(
+            owner, scope, verifier, capability::OPERATION_CANCEL, work,
+        )?;
+        self.refresh_with_work(work).await?;
+        let child = self.authorize_operation_owner_with_work(owner, verifier, operation_id, work)?;
+        if child.spec.parent.as_ref().map(|link| link.operation_id) != Some(parent) {
+            return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
+                "cancellation requires an authorized direct child"));
+        }
+        let parent_state = self.authorize_operation_owner_with_work(owner, verifier, parent, work)?;
+        crate::scheduler::require_execution_owner_with_work(parent_state, fence, false, work)?;
+        let verified_revision = self.revision;
+        self.apply_internal_guarded_with_work(
+            operation_id, idempotency_key,
+            SchedulerEvent::CancellationRequested { operation_id, recursive: true },
+            Some(fence), None, None, None, Some(verified_revision), work,
+        ).await?;
+        self.scheduler.operation(operation_id)
+            .ok_or_else(|| coordinator_error(work, wire::ErrorCode::NotFound,
+                "operation is absent after cancellation", || Error::NotFound(format!("operation {operation_id}"))))?
+            .clone_with_work(work)
+    }
+
     fn authorize_operation<'a>(
         &'a self,
         owner: &Authority,
@@ -2109,7 +2162,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let event = SchedulerEvent::Declared { spec: Box::new(spec) };
         if let Some(work) = work.as_deref_mut() { work.retain_owned(box_bytes)?; }
         let result = self.apply_internal_guarded_with_work(
-            operation_id, idempotency_key, event, parent_fence, None, None, None, None, work,
+            operation_id, idempotency_key, event, parent_fence.as_ref(), None, None, None, None, work,
         ).await;
         if let Some(work) = work.as_deref_mut() { work.release_owned(box_bytes)?; }
         result
@@ -2427,7 +2480,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idle_execution: Option<(OperationId, u64)>,
     ) -> Result<CoordinatorApply> {
         self.apply_internal_guarded_with_work(
-            operation_id, idempotency_key, event, parent_fence, waiting_command,
+            operation_id, idempotency_key, event, parent_fence.as_ref(), waiting_command,
             idle_execution, None, None, &mut None,
         ).await
     }
@@ -2441,7 +2494,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
-        parent_fence: Option<LeaseFence>,
+        parent_fence: Option<&LeaseFence>,
         waiting_command: Option<OperationId>,
         idle_execution: Option<(OperationId, u64)>,
         workflow_guard: Option<(&str, u64)>,
@@ -2453,7 +2506,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
                 "coordinator changed after owner verification"));
         }
-        self.require_parent_owner_with_work(&event, parent_fence.as_ref(), work)?;
+        self.require_parent_owner_with_work(&event, parent_fence, work)?;
         let validated = text_with_work(idempotency_key.as_str(), work)?;
         let validation_capacity = validated.capacity() as u64;
         let validation = checked_idempotency_key(validated, work).map(|_| ());
@@ -2526,7 +2579,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     self.refresh_with_work(work).await?;
                     if self.intent_matches_with_work(key, &event, &digest, work).await? == Some(true) {
                         self.require_command_wait_with_work(&event, waiting_command, true, work)?;
-                        self.require_parent_owner_with_work(&event, parent_fence.as_ref(), work)?;
+                        self.require_parent_owner_with_work(&event, parent_fence, work)?;
                         return self.replay_intent_with_work(&event, work);
                     }
                     return Err(error);
@@ -2534,7 +2587,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Err(error) => return Err(error),
             };
             let applied = self.finish_append_with_work(outcome, &event, key, &digest, revision, work).await?;
-            self.require_parent_owner_with_work(&event, parent_fence.as_ref(), work)?;
+            self.require_parent_owner_with_work(&event, parent_fence, work)?;
             Ok(applied)
         }.await;
         if let Some(work) = work.as_deref_mut() {
@@ -2593,17 +2646,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let Some(fence) = fence else {
             return Ok(());
         };
-        let SchedulerEvent::Declared { spec } = event else {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
-                "parent fence only applies to declaration"));
+        let parent = match event {
+            SchedulerEvent::Declared { spec } => spec.parent.as_ref()
+                .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Invalid,
+                    "child declaration has no parent"))?.operation_id,
+            SchedulerEvent::CancellationRequested { operation_id, recursive: true } => {
+                self.scheduler.operation(*operation_id)
+                    .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound,
+                        "cancellation child"))?
+                    .spec.parent.as_ref()
+                    .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Unauthorized,
+                        "cancellation requires an authorized direct child"))?.operation_id
+            }
+            _ => return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
+                "parent fence only applies to declaration or recursive child cancellation")),
         };
-        let parent = spec
-            .parent
-            .as_ref()
-            .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Invalid, "child declaration has no parent"))?;
-        let operation = self
-            .scheduler
-            .operation(parent.operation_id)
+        let operation = self.scheduler.operation(parent)
             .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound, "admitting parent"))?;
         crate::scheduler::require_execution_owner_with_work(operation, fence, false, work)
     }
@@ -6328,6 +6386,223 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn child_cancellation_fixture<P: StreamProvider>(
+        client: &StreamClient<P>,
+    ) -> Result<(DistributedCoordinator<P>, LeaseFence)> {
+        let mut coordinator = DistributedCoordinator::open(client, Arc::new(TestContentVerifier)).await?;
+        let parent = OperationId::from_bytes([44; 16]);
+        let child = OperationId::from_bytes([45; 16]);
+        let grandchild = OperationId::from_bytes([46; 16]);
+        declare(&mut coordinator, spec(parent, 0)?, "cancel-parent-declare").await?;
+        let worker = Worker {
+            id: "cancel-parent-worker".into(),
+            available: ResourceSnapshot::default(),
+            labels: BTreeMap::new(),
+        };
+        let lease = coordinator.pull(&worker).await?
+            .ok_or_else(|| Error::NotFound("parent lease".into()))?;
+        assert_eq!(lease.operation.operation_id, parent);
+        let parent_fence = LeaseFence::from(&lease.reservation);
+        coordinator.apply(parent, IdempotencyKey::new("cancel-parent-start")?,
+            SchedulerEvent::Started { operation_id: parent, fence: parent_fence.clone() }).await?;
+        for (operation_id, parent_id, key) in [
+            (child, parent, "cancel-child-declare"),
+            (grandchild, child, "cancel-grandchild-declare"),
+        ] {
+            let mut operation = spec(operation_id, 0)?;
+            operation.parent = Some(ParentLink { operation_id: parent_id, slot: "child".into() });
+            declare(&mut coordinator, operation, key).await?;
+        }
+        let lease = coordinator.pull(&worker).await?
+            .ok_or_else(|| Error::NotFound("child lease".into()))?;
+        assert_eq!(lease.operation.operation_id, child);
+        coordinator.apply(child, IdempotencyKey::new("cancel-child-start")?,
+            SchedulerEvent::Started { operation_id: child, fence: LeaseFence::from(&lease.reservation) }).await?;
+        Ok((coordinator, parent_fence))
+    }
+
+    #[tokio::test]
+    async fn child_cancellation_checks_full_parent_fence_and_replays_lost_ack() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        for lost_ack in [false, true] {
+            let provider = Arc::new(LostSessionAck::default());
+            let client = StreamClient::new(provider.clone());
+            let (mut coordinator, fence) = child_cancellation_fixture(&client).await?;
+            let parent = OperationId::from_bytes([44; 16]);
+            let child = OperationId::from_bytes([45; 16]);
+            let grandchild = OperationId::from_bytes([46; 16]);
+            let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
+            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+            let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+            let verifier = issuer.verifier();
+            let before = coordinator.revision();
+            let mut stale = fence.clone();
+            stale.placement.push_str("-stale");
+            assert!(matches!(coordinator.cancel_child_operation(
+                &owner, &scope, &verifier, child, IdempotencyKey::new("stale-parent-cancel")?,
+                parent, stale,
+            ).await, Err(Error::Unauthorized(_))));
+            assert!(matches!(coordinator.cancel_child_operation(
+                &owner, &scope, &verifier, grandchild, IdempotencyKey::new("indirect-child-cancel")?,
+                parent, fence.clone(),
+            ).await, Err(Error::Unauthorized(_))));
+            let foreign = Authority { kind: AggregateKind::Task, id: "foreign".into() };
+            let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
+            let foreign_scope = foreign_issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+            assert!(matches!(coordinator.cancel_child_operation(
+                &foreign, &foreign_scope, &foreign_issuer.verifier(), child,
+                IdempotencyKey::new("foreign-child-cancel")?, parent, fence.clone(),
+            ).await, Err(Error::NotFound(_))));
+            assert_eq!(coordinator.revision(), before);
+            let inspected = provider.io.inspections.load(Ordering::SeqCst);
+            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
+            let state = coordinator.cancel_child_operation(
+                &owner, &scope, &verifier, child, IdempotencyKey::new("owned-child-cancel")?,
+                parent, fence.clone(),
+            ).await?;
+            assert!(state.cancellation_requested);
+            assert!(state.outcome.is_none(), "running child retains uncertain provider work");
+            assert_eq!(coordinator.scheduler().operation(grandchild)
+                .and_then(|state| state.outcome.as_ref()), Some(&crate::Outcome::Cancelled));
+            assert_eq!(coordinator.revision(), before + 1);
+            assert_eq!(provider.io.inspections.load(Ordering::SeqCst), inspected + u64::from(lost_ack));
+            let writes = provider.io.writes.load(Ordering::SeqCst);
+            let replay = coordinator.cancel_child_operation(
+                &owner, &scope, &verifier, child, IdempotencyKey::new("owned-child-cancel")?,
+                parent, fence,
+            ).await?;
+            assert_eq!(replay, state);
+            assert_eq!(provider.io.writes.load(Ordering::SeqCst), writes);
+            let records = read_coordinator_event_page(&client, 0, 64).await?;
+            assert_eq!(records.iter().filter(|record| matches!(&record.event,
+                SchedulerEvent::CancellationRequested { operation_id, recursive: true } if *operation_id == child
+            )).count(), 1);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[derive(Default)]
+    struct PausedCancellationProvider {
+        inner: LostSessionAck,
+        armed: std::sync::atomic::AtomicBool,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_trait::async_trait]
+    impl StreamProvider for PausedCancellationProvider {
+        async fn inspect_idempotency(&self, key: StreamIdempotencyKey)
+            -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+        async fn tail(&self, path: acyclic_stream::StreamPath) -> std::result::Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+        async fn bounds(&self, path: acyclic_stream::StreamPath)
+            -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+        async fn append(&self, request: acyclic_stream::AppendRequest)
+            -> std::result::Result<AppendOutcome, StreamError> {
+            if request.path.as_str() == COORDINATOR_PATH
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.append(request).await
+        }
+        async fn fork(&self, request: acyclic_stream::ForkRequest)
+            -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+        async fn read(&self, request: acyclic_stream::ReadRequest)
+            -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+        async fn follow(&self, path: acyclic_stream::StreamPath, from: u64)
+            -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+        async fn children(&self, request: acyclic_stream::ChildrenRequest)
+            -> std::result::Result<acyclic_stream::ChildStream, StreamError> {
+            self.inner.children(request).await
+        }
+        async fn children_page(&self, request: acyclic_stream::ChildrenPageRequest)
+            -> std::result::Result<acyclic_stream::ChildrenPage, StreamError> {
+            self.inner.children_page(request).await
+        }
+        async fn commit(&self, request: acyclic_stream::CommitRequest)
+            -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+        async fn commit_before(&self, request: acyclic_stream::CommitRequest, deadline: u64)
+            -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
+            self.inner.commit_before(request, deadline).await
+        }
+        async fn read_commit(&self, commit_id: acyclic_stream::CommitId)
+            -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn child_cancellation_cas_rejects_parent_cancel_after_owner_verification() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(PausedCancellationProvider::default());
+        let client = StreamClient::new(provider.clone());
+        let (mut coordinator, fence) = child_cancellation_fixture(&client).await?;
+        let mut competing = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let parent = OperationId::from_bytes([44; 16]);
+        let child = OperationId::from_bytes([45; 16]);
+        let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+        let verifier = issuer.verifier();
+        let selected_revision = coordinator.revision();
+        provider.armed.store(true, Ordering::SeqCst);
+        let disturbance = async {
+            provider.entered.notified().await;
+            let result = competing.cancel_operation(
+                &owner, &scope, &verifier, parent, IdempotencyKey::new("parent-cancel-during-child")?, true,
+            ).await;
+            provider.release.notify_one();
+            result
+        };
+        let (attempt, disturbance) = tokio::join!(
+            coordinator.cancel_child_operation(
+                &owner, &scope, &verifier, child, IdempotencyKey::new("child-cancel-during-parent")?,
+                parent, fence.clone(),
+            ),
+            disturbance,
+        );
+        disturbance?;
+        assert!(matches!(attempt, Err(Error::Conflict(_))));
+        assert_eq!(coordinator.revision(), selected_revision + 1);
+        let writes = provider.inner.io.writes.load(Ordering::SeqCst);
+        assert!(matches!(coordinator.cancel_child_operation(
+            &owner, &scope, &verifier, child, IdempotencyKey::new("child-cancel-during-parent")?,
+            parent, fence.clone(),
+        ).await, Err(Error::Conflict(_))));
+        assert!(matches!(coordinator.apply_internal_guarded_with_work(
+            child, IdempotencyKey::new("stale-verified-child-cancel")?,
+            SchedulerEvent::CancellationRequested { operation_id: child, recursive: true },
+            Some(&fence), None, None, None, Some(selected_revision), &mut None,
+        ).await, Err(Error::Conflict(_))));
+        assert_eq!(provider.inner.io.writes.load(Ordering::SeqCst), writes);
+        let records = read_coordinator_event_page(&client, 0, 64).await?;
+        assert_eq!(records.iter().filter(|record| matches!(&record.event,
+            SchedulerEvent::CancellationRequested { operation_id, .. } if *operation_id == parent
+        )).count(), 1);
+        assert!(!records.iter().any(|record| matches!(&record.event,
+            SchedulerEvent::CancellationRequested { operation_id, .. } if *operation_id == child
+        )));
         Ok(())
     }
 
