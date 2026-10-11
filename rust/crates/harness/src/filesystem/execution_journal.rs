@@ -3118,7 +3118,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
-    let selection = crate::executor::clone_preparation(selection, io)?;
+    let selection = super::summary_fork::clone_selection(selection, io)?;
     let selected = match io {
         Some(io) => {
             let resolver = JournalSelectedResolver {
@@ -3132,7 +3132,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             &history, selection, verifier, limits.context_messages, limits.attachments,
             limits.render_bytes, limits.attachments).await?,
     };
-    let input = crate::executor::clone_preparation(&selected.messages.last()
+    let input = crate::model::model_content_clone_with_io(&selected.messages.last()
         .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
             "canonical input is missing"))?.content, io)?;
     let mut selected_delta = selected;

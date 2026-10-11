@@ -746,7 +746,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         if selection != &bound.selection {
             return Err(Error::Conflict("summary fork request differs from its original capture".into()));
         }
-        bound.source.prepare(&self.parent, crate::executor::clone_preparation(selection, io)?,
+        bound.source.prepare(&self.parent, super::summary_fork::clone_selection(selection, io)?,
             bound.journal.as_ref(), self.resolver.as_ref(), io).await.map(Some)
     }
 

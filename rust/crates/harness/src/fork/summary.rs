@@ -228,8 +228,23 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
     resolver: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<PreparedSummaryFork> {
+    #[cfg(feature = "filesystem")]
+    {
+        let mut observer = io.map(crate::executor::PreparationIo::history_io);
+        selection.validate_with_work(
+            &mut observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
+        )?;
+    }
+    #[cfg(not(feature = "filesystem"))]
     selection.validate()?;
     if parent.authority() != &cursor.authority || parent.revision() != cursor.through_revision {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "summary fork requires the exact pinned parent revision",
+            });
+        }
         return Err(Error::Conflict(
             "summary fork requires the exact pinned parent revision".into(),
         ));
@@ -237,7 +252,19 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
     let conversation = parent
         .conversation()
         .filter(|conversation| conversation.agent.is_some())
-        .ok_or_else(|| Error::Invalid("summary fork parent conversation is unbound".into()))?;
+        .ok_or_else(|| {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                return io.invalid("summary fork parent conversation is unbound");
+            }
+            Error::Invalid("summary fork parent conversation is unbound".into())
+        })?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        // This retained enclosing DTO owns its inline checkpoint/context/
+        // selection fields; their canonical copy helpers account deep storage.
+        io.retain_owned(std::mem::size_of::<PreparedSummaryFork>() as u64)?;
+    }
     let through_sequence = conversation.logical_revision();
     let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through_with_io(
         journal,
@@ -252,8 +279,17 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
         io,
     )
     .await?;
+    #[cfg(feature = "filesystem")]
+    let authority = match io {
+        Some(io) => {
+            crate::store::history::HistoryIo::clone_authority(&mut io.history_io(), parent.authority())?
+        }
+        None => parent.authority().clone(),
+    };
+    #[cfg(not(feature = "filesystem"))]
+    let authority = parent.authority().clone();
     Ok(PreparedSummaryFork {
-        parent: crate::executor::clone_preparation(parent.authority(), io)?,
+        parent: authority,
         parent_revision: parent.revision(),
         through_sequence,
         selection,

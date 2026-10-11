@@ -416,7 +416,7 @@ where
                 None => aggregate.reducer().revision(),
             };
             let scope = self.clone_scope_with_io(scope, io)?;
-            let command_ticket = crate::executor::clone_preparation(ticket, io)?;
+            let command_ticket = ticket.clone_with_work(&mut work)?;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
             attempt_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -621,8 +621,11 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
-            .map(|value| crate::executor::clone_preparation(value, io)).transpose()?;
+            .map(|value| crate::core::native_interaction_state_clone_with_custody(value, &mut work)
+                .map(|(value, _)| value)).transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(value)
@@ -637,9 +640,11 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let outcome = aggregate.reducer().interaction(&interaction_uuid(id)?)
             .and_then(|(_, resolution)| resolution.as_ref())
-            .map(|resolution| crate::executor::clone_preparation(&resolution.outcome, io))
+            .map(|resolution| resolution.outcome.clone_with_work(&mut work))
             .transpose()?;
         drop(aggregate);
         drop(aggregate_hold);

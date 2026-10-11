@@ -138,8 +138,7 @@ fn descriptor(bytes: &[u8], io: Option<&PreparationIo>) -> Result<FileDescriptor
     FileDescriptor::from_bytes_with_io(bytes, "application/json", io)
 }
 
-fn clone_selection(prepared: &PreparedSummaryFork, io: Option<&PreparationIo>) -> Result<crate::fork::SummaryForkSelection> {
-    let selection = prepared.selection();
+pub(super) fn clone_selection(selection: &crate::fork::SummaryForkSelection, io: Option<&PreparationIo>) -> Result<crate::fork::SummaryForkSelection> {
     Ok(crate::fork::SummaryForkSelection {
         checkpoint: fork_preparer_io::clone_file(&selection.checkpoint, io)?,
         limits: selection.limits,
@@ -295,7 +294,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::invalid(io, "summary fork context exceeds aggregate byte allowance"));
         }
         let planned_capture = SummaryForkCapture {
-            selection: clone_selection(prepared, io)?,
+            selection: clone_selection(prepared.selection(), io)?,
             context: fork_preparer_io::file_ref(child_private, ".system/inherited-conversation/summary-context.json",
                 ZERO_VERSION, &descriptor(&planned_bytes, io)?, "summary-context.json", io)?,
             payloads: into_files(planned, io)?,
@@ -388,7 +387,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::conflict(io, "summary fork retry changed its context"));
         }
         let capture = SummaryForkCapture {
-            selection: clone_selection(prepared, io)?,
+            selection: clone_selection(prepared.selection(), io)?,
             context,
             payloads: into_files(copies, io)?,
             references: into_files(references, io)?,
