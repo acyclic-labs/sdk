@@ -250,12 +250,6 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.bytes = remaining;
         Ok(())
     }
-    /// Transfers already-paid custody to its carrier without releasing the observer.
-    pub(crate) fn transfer_retained(&mut self, bytes: u64) -> Result<()> {
-        self.bytes = self.bytes.checked_sub(bytes)
-            .ok_or_else(|| boundary(self.work, "codec transfer exceeds custody"))?;
-        Ok(())
-    }
     pub(crate) fn retained(&self) -> u64 { self.bytes }
     pub(crate) fn transfer(&mut self) { self.bytes = 0; }
 }
