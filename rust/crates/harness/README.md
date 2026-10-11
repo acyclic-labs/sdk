@@ -600,3 +600,9 @@ An exact repeated association is idempotent; a foreign replacement is rejected.
 The source retains its original provider handles and custody without retaining
 the context itself. Native source and owned metadata qualifications compare the
 original root ledger and resource allowance, not merely the shared root counter.
+
+Native directory consumers revalidate the original issued execution owner
+through the configured durable host before SDK reads. This borrows the retained
+mailbox fence; it does not derive an owner from a task UUID. Historical READ
+sources cannot use this current-execution guard and instead retain their
+explicit original READ owner through the content facade.

@@ -104,6 +104,24 @@ impl TaskContext {
         Ok((task, fence))
     }
 
+    /// Revalidates the original issued execution owner before a native SDK read.
+    ///
+    /// This current-execution guard does not turn an historical READ context
+    /// into a dispatch owner. Such reads retain their explicit original READ
+    /// owner through the owner-bearing content facade instead.
+    pub fn verify_original_execution_owner_with_native_work<'a>(
+        &'a self, work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, ()>> {
+        self.require_original_native_dispatch(work)?;
+        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
+        let host = self.harness.host.as_ref().ok_or_else(|| boundary(
+            crate::wire::ErrorCode::Unsupported,
+            "native execution has no original durable owner callback",
+        ))?;
+        self.harness.assert_durable_policy_bindings_with_native_work(work)?;
+        host.verify_dispatch_owner_with_native_work(task, fence, work)
+    }
+
 
     /// Checks stock scope restrictions against the issued source before copying
     /// metadata or constructing a callback. Candidate metadata grants no issuer.

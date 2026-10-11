@@ -1323,3 +1323,23 @@ async fn registered_native_root_rejects_foreign_input_and_child_without_fence_be
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn original_read_source_cannot_become_native_directory_execution_owner() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        creation_control_budget(), &cancellation,
+    ).map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+    let (context, custody) = fixture.harness.durable_context_with_native_work(
+        fixture.root, fixture.root_lease.operation.operation_id, &work,
+    ).await?;
+    let before = work.receipt();
+    assert!(matches!(context.verify_original_execution_owner_with_native_work(&work),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(work.receipt(), before);
+    drop(context);
+    drop(custody);
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
