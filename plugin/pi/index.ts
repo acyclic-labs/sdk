@@ -311,8 +311,9 @@ export async function observePiTaskUntilTerminal(
     throw new Error("Pi native wait requires an original operation and finite observation bounds");
   }
   signal?.throwIfAborted();
-  const deadline = AbortSignal.timeout(bounds.timeoutMs);
-  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
+  const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   let last: Record<string, unknown> | undefined;
   let observations = 0;
   try {
@@ -334,9 +335,9 @@ export async function observePiTaskUntilTerminal(
     }
   } catch (error) {
     signal?.throwIfAborted();
-    if (!deadline.aborted) throw error;
+    if (!deadline.signal.aborted) throw error;
     if (!last) throw new PiControlAcknowledgementError(operation);
-  }
+  } finally { clearTimeout(timeout); }
   return { ...last, wait: { bounded: true, observations } };
 }
 
@@ -419,8 +420,9 @@ export async function approvePiWriteback(
       !Number.isSafeInteger(bounds.intervalMs) || bounds.intervalMs < 0) {
     throw new Error("Pi writeback requires finite passive observation bounds");
   }
-  const deadline = AbortSignal.timeout(bounds.timeoutMs);
-  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
+  const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   let observations = 0;
   let last: Record<string, unknown> = { ...descriptor, status: "pending", approval: "required" };
   try {
@@ -452,8 +454,8 @@ export async function approvePiWriteback(
     }
   } catch (error) {
     current();
-    if (!deadline.aborted) throw error;
-  }
+    if (!deadline.signal.aborted) throw error;
+  } finally { clearTimeout(timeout); }
   return { ...last, wait: { bounded: true, observations } };
 }
 
