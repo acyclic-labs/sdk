@@ -19,6 +19,10 @@ pub const PROXY_KEY_ENV: &str = "ACYCLIC_CODEX_PROXY_KEY";
 /// Environment variable carrying the bearer token Codex sends to the MCP endpoint.
 pub const MCP_TOKEN_ENV: &str = "ACYCLIC_CODEX_MCP_TOKEN";
 
+/// Pinned upstream remote builtin transport selector. Its private route is an
+/// original-scoped capability and must never enter a tool process environment.
+pub const EXEC_SERVER_URL_ENV: &str = "CODEX_EXEC_SERVER_URL";
+
 /// What goes into `CODEX_HOME/config.toml` for one turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HomeConfig {
@@ -45,7 +49,7 @@ impl HomeConfig {
         let mut root = Table::new();
         root.insert("model".into(), self.model.clone().into());
         root.insert("model_provider".into(), PROVIDER_ID.into());
-        // The sandbox box is the security boundary; Codex must never stop to ask.
+        // The configured tool transport, not an interactive CLI prompt, admits effects.
         root.insert("approval_policy".into(), "never".into());
         root.insert("sandbox_mode".into(), "danger-full-access".into());
         // Web access goes through our metered acyclic.web tool, not Codex's own.
@@ -53,6 +57,13 @@ impl HomeConfig {
         root.insert("check_for_update_on_startup".into(), false.into());
         root.insert("analytics".into(), table([("enabled", false.into())]));
         root.insert("feedback".into(), table([("enabled", false.into())]));
+        // Supported 0.155.1 keyed filters are applied before upstream constructs
+        // ExecParams. Do not silently edit a tool's accepted arguments later.
+        root.insert("shell_environment_policy".into(), table([("filters", table([
+            (PROXY_KEY_ENV, "exclude".into()),
+            (MCP_TOKEN_ENV, "exclude".into()),
+            (EXEC_SERVER_URL_ENV, "exclude".into()),
+        ]))]));
         root.insert(
             "features".into(),
             table([
@@ -183,6 +194,11 @@ name = "acyclic metered proxy"
 request_max_retries = 2
 stream_max_retries = 2
 wire_api = "responses"
+
+[shell_environment_policy.filters]
+ACYCLIC_CODEX_MCP_TOKEN = "exclude"
+ACYCLIC_CODEX_PROXY_KEY = "exclude"
+CODEX_EXEC_SERVER_URL = "exclude"
 "#;
         assert_eq!(config().render(), expected);
     }
