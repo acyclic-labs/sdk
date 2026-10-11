@@ -1182,7 +1182,7 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     }, work)
 }
 
-fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
+pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     value: &T,
     bounds: crate::contract::JsonBounds,
     work: &mut Option<&mut dyn HistoryIo>,
