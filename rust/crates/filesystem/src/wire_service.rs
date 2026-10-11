@@ -385,7 +385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         }
         let (current, head) = self
             .filesystem
-            .workspace_head_state(&target.volume)
+            .workspace_head_state(&target.volume, &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()), &crate::CancellationToken::new())
             .await
             .map_err(|error| status(&error))?;
         if current == expected {

@@ -2484,7 +2484,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> MeasuredResult<OperationReceipt<crate::PublicationHold>, WorkspaceError> {
-        self.volume.fs.make_records_durable_measured(
+        self.volume.fs.make_records_durable(
             self.volume.config, records, budget, cancellation,
         ).await.map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::engine))
     }
@@ -5973,7 +5973,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         );
         let source_head = self.source.head().await?;
         let (target_head_id, target_authority_head) = self.target.volume.fs
-            .workspace_head_state_with_accounting(&self.target.volume, &mut accounting, &cancellation)
+            .workspace_head_state(&self.target.volume, &mut accounting, &cancellation)
             .await?;
         let target_head = self.target.generation(target_head_id).await?;
         self.plan_generations_with_accounting(
@@ -6023,7 +6023,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         self.validate_endpoints(source, target)?;
         let allocation = accounting.claim_owned(0, 0)?;
         let (target_head_id, target_authority_head) = self.target.volume.fs
-            .workspace_head_state_with_accounting(&self.target.volume, accounting, cancellation).await?;
+            .workspace_head_state(&self.target.volume, accounting, cancellation).await?;
         if target.id != target_head_id { return Err(WorkspaceError::StaleTarget); }
         let copied = crate::WorkCounters {
             bytes_copied: (2 * std::mem::size_of::<Generation<A, O>>()) as u64,
@@ -6051,7 +6051,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             WorkBudget::UNBOUNDED, &cancellation,
         );
         let (current_target, target_authority_head) = self.target.volume.fs
-            .workspace_head_state_with_accounting(&self.target.volume, &mut accounting, &cancellation).await?;
+            .workspace_head_state(&self.target.volume, &mut accounting, &cancellation).await?;
         if current_target != target_head.id { return Err(WorkspaceError::StaleGeneration); }
         self.plan_generations_with_accounting(
             source_head, target_head, target_authority_head, &mut accounting, &cancellation,
@@ -6950,7 +6950,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         async {
             if options.if_target != self.target_head.id {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                let (id, _) = self.target.volume.fs.workspace_head_state_with_accounting(
+                let (id, _) = self.target.volume.fs.workspace_head_state(
                     &self.target.volume, &mut accounting, cancellation,
                 ).await?;
                 return Ok((JoinOutcome::StaleTarget(Generation {
@@ -7374,7 +7374,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         self.workspace
             .volume
             .fs
-            .workspace_normalized_join_parent(self, target)
+            .workspace_normalized_join_parent(self, target, &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()), &crate::CancellationToken::new())
             .await
     }
 
@@ -7383,8 +7383,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self, target: &Generation<A, O>,
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<GenerationId, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.workspace_normalized_join_parent_with_native_work(
-            self, target, original, cancellation,
+        self.workspace.volume.fs.workspace_normalized_join_parent(
+            self, target, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation,
         ).await.map_err(crate::facade::native_workspace_failure)
     }
 
