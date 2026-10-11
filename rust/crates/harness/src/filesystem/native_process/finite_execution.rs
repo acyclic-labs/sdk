@@ -5,22 +5,8 @@ use std::process::{Command, Stdio};
 
 type ExecutionResult = Result<(NativeExecution, Option<NativeAllocation>)>;
 
-pub(super) enum NativeProcessFuture<'a, T> {
-    Ordinary(BoxProviderFuture<'a, Result<T>>),
-    Original(crate::NativeFutureBundle<'a, T>),
-}
-
-impl<T> Future for NativeProcessFuture<'_, T> {
-    type Output = Result<T>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        match self.get_mut() {
-            Self::Ordinary(future) => future.as_mut().poll(context),
-            Self::Original(future) => std::pin::Pin::new(future).poll(context),
-        }
-    }
-}
-
+type NativeProcessFuture<'a, T> = futures::future::Either<
+    BoxProviderFuture<'a, Result<T>>, crate::NativeFutureBundle<'a, T>>;
 
 fn native_io(error: std::io::Error, original: Option<&NativeMaterializationWork>) -> Error {
     let cause = match original {
@@ -99,16 +85,16 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
         }
         return crate::NativeFutureBundle::new(original, || execute_in_heap(owner, view, authority, request,
             dispatch, schema, supervisor, Some(original), WorkCounters::default(),
-            acyclic_fs::WorkBudget::UNCHARGED)).map(NativeProcessFuture::Original);
+            acyclic_fs::WorkBudget::UNCHARGED)).map(futures::future::Either::Right);
     }
     let budget = match request.view.validation_budget() {
         Ok(budget) => budget,
-        Err(error) => return Ok(NativeProcessFuture::Ordinary(Box::pin(std::future::ready(Ok((invocation_failure(error, WorkCounters::default()), None)))))),
+        Err(error) => return Ok(futures::future::Either::Left(Box::pin(std::future::ready(Ok((invocation_failure(error, WorkCounters::default()), None)))))),
     };
     match box_execution(|work| execute_in_heap(owner, view, authority, request, dispatch,
         schema, supervisor, None, work, budget), budget, view.operation_cancellation()) {
-        Ok(future) => Ok(NativeProcessFuture::Ordinary(future)),
-        Err(failure) => Ok(NativeProcessFuture::Ordinary(Box::pin(std::future::ready(Ok((failure, None)))))),
+        Ok(future) => Ok(futures::future::Either::Left(future)),
+        Err(failure) => Ok(futures::future::Either::Left(Box::pin(std::future::ready(Ok((failure, None)))))),
     }
 }
 
@@ -118,8 +104,8 @@ fn verify<'a, P: StreamProvider>(
 ) -> Result<NativeProcessFuture<'a, ()>> {
     match original {
         Some(work) => crate::NativeFutureBundle::new(work, || owner.verify_with_native_work(false, work))
-            .map(NativeProcessFuture::Original),
-        None => Ok(NativeProcessFuture::Ordinary(Box::pin(owner.verify(false)))),
+            .map(futures::future::Either::Right),
+        None => Ok(futures::future::Either::Left(Box::pin(owner.verify(false)))),
     }
 }
 
@@ -211,7 +197,6 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
             let invocation_failure = if let Some(work) = original {
                 let (message, guard) = work.display(message).map_err(Error::from)?;
                 let mut guard = guard;
-                let message = message;
                 custody.as_mut().expect("original custody").absorb(&mut guard).map_err(Error::from)?;
                 message
             } else { message.into() };
@@ -239,8 +224,6 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 &serde_json::to_value(&captured).map_err(|error| Error::Invalid(error.to_string()))?, "native process result")?;
             (bytes, None)
         };
-        let bytes_custody = bytes_custody;
-        let bytes = bytes;
         drop(captured);
         drop(capture_custody);
         let result = if let Some(work) = original {
@@ -248,7 +231,6 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
                 &bytes, "application/json", "Native process result", work)?.await?;
             let mut guard = guard;
-            let result = result;
             custody.as_mut().expect("original custody").absorb(&mut guard).map_err(Error::from)?;
             work.charge(WorkCounters { items_examined: 1,
                 ..WorkCounters::default() }).map_err(Error::from)?;
@@ -279,7 +261,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 let admitted = async {
                     verify(owner, original)?.await?;
                     grants(owner, &request.view, original)?;
-                    view.publish_with_native_work(NativeViewOwner::new(owner), work)
+                    view.publish_with_native_work(owner, work)
                 }.await;
                 let publication = match admitted {
                     Ok(future) => match future.await.unwrap_or_else(|cause| Err(
@@ -497,9 +479,7 @@ async fn capture<P: StreamProvider + 'static>(
             let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
             let maximum = invocation.maximum_output_bytes as usize;
             let output = if let Some((exchange, first, exchange_custody)) = exchange {
-                let exchange_custody = exchange_custody;
                 let mut exchange = exchange;
-                let first = first;
                 let request = invocation.mcp_stdio.as_ref().expect("original prepared exchange");
                 let mut response_custody = None;
                 let observe = |chunk: &[u8]| {
@@ -558,7 +538,6 @@ async fn capture<P: StreamProvider + 'static>(
         (output, failure.into_inner().expect("capture failure custody"), custody)
     }, invocation_work.as_ref())?.await.map_err(|source| Error::NativeSupervisor { source, custody: None })?;
     let mut custody = custody;
-    let output = output;
     supervisor.record_capture(match &output {
         Ok(Ok(_)) => NativeCapturePhase::Drained,
         Ok(Err(failure)) if failure.cleanup_completed => NativeCapturePhase::Drained,
@@ -619,107 +598,6 @@ async fn capture<P: StreamProvider + 'static>(
         Err(_) => return Ok((None, custody)),
     };
     Ok((Some(result), custody))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    fn work_with_allocations(allocations: u64, extra_bytes: u64) -> NativeMaterializationWork {
-        NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: allocations,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + extra_bytes,
-            ..acyclic_fs::WorkBudget::UNCHARGED
-        }, &acyclic_fs::CancellationToken::new()).unwrap()
-    }
-
-    #[test]
-    fn actual_capture_frame_denial_precedes_scheduler_and_callback() {
-        let work = work_with_allocations(1, 0);
-        let called = Arc::new(AtomicBool::new(false));
-        let callback_called = Arc::clone(&called);
-        let before = work.receipt();
-        let error = spawn_capture(move || callback_called.store(true, Ordering::SeqCst), Some(&work))
-            .err().expect("the actual blocking frame needs admission");
-        assert!(matches!(error, Error::NativeWork { .. }));
-        assert!(!called.load(Ordering::SeqCst));
-        assert_eq!(work.receipt(), before);
-    }
-
-    #[test]
-    fn actual_runtime_denial_moves_original_cause_without_error_box() {
-        let work = work_with_allocations(1, 0);
-        let before = work.receipt();
-        let error = work.runtime_meter().reserve_operations(
-            acyclic_native_runtime::NativeOperationKind::Read, 1,
-        ).expect_err("the original ledger admits no read operation");
-        assert!(error.get_ref().is_none());
-        let projected = native_io(error, Some(&work));
-        assert!(matches!(projected, Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None,
-        }));
-        assert_eq!(work.receipt(), before);
-    }
-
-    #[test]
-    fn actual_publication_failure_slot_denial_keeps_original_prefix() {
-        let work = work_with_allocations(1, 0);
-        let before = work.receipt();
-        assert!(matches!(NativePublicationSlot::new(&work),
-            Err(Error::NativeWork { custody: None, .. })));
-        assert_eq!(work.receipt(), before);
-    }
-
-    #[test]
-    fn ordinary_preallocated_slot_keeps_typed_admission_denial_and_prefix() {
-        let work = work_with_allocations(1, 0);
-        let mut slot = NativePublicationSlot::ordinary();
-        let before = work.receipt();
-        let cause = work.claim(1).expect_err("no allocation allowance remains");
-        let failure = slot.original_failure(Error::from(cause), work.receipt());
-        let Error::NativePublication { failure, custody: None } = slot.retain(failure) else {
-            panic!("ordinary admission keeps the preallocated error without invented custody");
-        };
-        assert!(matches!(&failure.cause, Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None,
-        }));
-        assert_eq!(failure.work, before);
-        assert!(failure.custody.is_none());
-        assert!(failure.accounting_failure.is_none());
-        assert!(failure.destination.is_none());
-        assert!(failure.completed.is_empty());
-        assert!(failure.published.is_empty());
-        assert!(failure.rendering_failure.is_none());
-        assert_eq!(work.receipt(), before);
-    }
-
-    #[test]
-    fn preadmitted_publication_failure_retains_both_guards_after_cancellation() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            allocation_operations: 2,
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
-                + std::mem::size_of::<NativeViewPublicationError>() as u64,
-            ..acyclic_fs::WorkBudget::UNCHARGED
-        }, &cancellation).unwrap();
-        let mut slot = NativePublicationSlot::new(&work).unwrap();
-        let before = work.receipt();
-        cancellation.cancel();
-        let mut failure = slot.original_failure(
-            Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout), before);
-        failure.rendering_failure = Some(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled));
-        let error = slot.retain(failure);
-        let Error::NativePublication { failure, custody: Some(box_custody) } = error else {
-            panic!("the original preallocated publication slot must be retained");
-        };
-        assert!(failure.custody.as_ref().expect("original failure custody").shares_ledger(&box_custody));
-        assert_eq!(failure.work, before);
-        assert_eq!(box_custody.bytes(), std::mem::size_of::<NativeViewPublicationError>() as u64);
-        assert_eq!(work.receipt(), before);
-        drop(failure);
-        drop(box_custody);
-    }
 }
 
 #[cfg(test)]

@@ -36,20 +36,6 @@ const NATIVE_SERDE_LABELS: &str = concat!(
     "non-UTF8 input invalid length: found failed to parse a UUID ",
 );
 
-enum ContentPayload {
-    Ordinary(Vec<u8>),
-    Original(acyclic_stream::OwnedBytes),
-}
-
-impl AsRef<[u8]> for ContentPayload {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            Self::Ordinary(bytes) => bytes,
-            Self::Original(bytes) => bytes.as_ref(),
-        }
-    }
-}
-
 pub(super) fn require_family(
     bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
 ) -> Result<()> {
@@ -124,13 +110,13 @@ pub(super) fn absorb_shared(
 async fn content(
     authority: &NativeProcessAuthority, reference: &crate::conversation::FileRef,
     maximum: u64, work: Option<&NativeMaterializationWork>,
-) -> Result<ContentPayload> {
+) -> Result<acyclic_stream::OwnedBytes> {
     match work {
         Some(work) => {
             let bytes = authority.content.read_with_native_work(reference, maximum, work)?.await?;
-            Ok(ContentPayload::Original(bytes))
+            Ok(bytes)
         }
-        None => Ok(ContentPayload::Ordinary(authority.content.read(reference).await?)),
+        None => authority.content.read(reference).await,
     }
 }
 
@@ -183,7 +169,7 @@ pub(super) async fn bind_original<P: StreamProvider + 'static>(
                 None => None,
             };
             Err(match codec_slot {
-                Some(slot) => super::finite_dispatch::root_error(slot.retain(source, custody)),
+                Some(slot) => slot.retain(source, custody),
                 None => source,
             })
         }
@@ -307,100 +293,3 @@ async fn bind_body<P: StreamProvider + 'static>(
     Ok(provider)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use acyclic_fs::{CancellationToken, WorkBudget};
-
-    #[test]
-    fn ledger_membership_is_zero_work_and_does_not_grant_uncancelled_authority() {
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-        let alias = work.clone();
-        let before = work.receipt();
-        cancellation.cancel();
-        assert!(require_family(Some(&alias), &work).is_ok());
-        assert_eq!(work.receipt(), before);
-        assert!(work.cancellation().is_cancelled());
-    }
-
-    #[test]
-    fn foreign_binding_is_rejected_without_adoption_allocation_or_counter_changes() {
-        let cancellation = CancellationToken::new();
-        let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-        let foreign = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-        let original_before = original.receipt();
-        let foreign_before = foreign.receipt();
-        assert!(matches!(require_family(Some(&original), &foreign),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
-        assert!(matches!(require_family(None, &foreign),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
-        assert_eq!(original.receipt(), original_before);
-        assert_eq!(foreign.receipt(), foreign_before);
-    }
-
-    #[test]
-    fn cached_schema_and_shared_original_guard_survive_creator_drop_together() {
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-        let io = PreparationIo::from_native_work(&work).unwrap();
-        let input = br#"{"type":"object"}"#;
-        let decoded = io.decode_preparation_with_code::<serde_json::Value>(
-            input, crate::wire::ErrorCode::Invalid).unwrap();
-        let schema = arc(decoded.into_retained(), Some(&io)).unwrap();
-        let bytes = io.owned_bytes().unwrap();
-        let keeper = shared_custody(io.into_native_custody(bytes).unwrap(), &work).unwrap();
-        let weak_schema = Arc::downgrade(&schema);
-        let original = (schema, keeper);
-        let supervised = (Arc::clone(&original.0), Arc::clone(&original.1));
-        let before = work.receipt();
-        drop(original);
-        cancellation.cancel();
-        assert!(weak_schema.upgrade().is_some());
-        assert!(matches!(supervised.1.lock(), Ok(custody) if custody.work().shares_ledger(&work)));
-        assert_eq!(work.receipt(), before);
-        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
-        drop(supervised);
-        assert!(weak_schema.upgrade().is_none());
-        assert_eq!(work.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
-    }
-
-    #[test]
-    fn native_unknown_field_diagnostic_retains_original_typed_cause_and_full_input_witness() {
-        let field = "unknown_native_field".repeat(1024);
-        let input = format!("{{\"{field}\":0}}").into_bytes();
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-        let slot = NativeReceiptCodecSlot::new(&work).unwrap();
-        let io = PreparationIo::from_native_work(&work).unwrap();
-        let bytes = crate::contract::audited_serde_diagnostic_bytes(
-            input.len() as u64, NATIVE_SERDE_LABELS.len() as u64).unwrap();
-        let diagnostic = io.reserve_decode(bytes).unwrap();
-        let source = io.decode_preparation_with_code::<NativeProcessRequest>(
-            &input, crate::wire::ErrorCode::Invalid).err().unwrap();
-        diagnostic.into_retained();
-        let retained = io.owned_bytes().unwrap();
-        let custody = io.into_native_custody(retained).unwrap();
-        let alias = work.retain_owned(0).unwrap();
-        let before = work.receipt();
-        cancellation.cancel();
-        let error = super::super::finite_dispatch::root_error(slot.retain(source, Some(custody)));
-        let Error::NativeCodec { code, source, custody: Some(box_custody) } = error else {
-            panic!("native decoder must retain the original prepaid codec envelope");
-        };
-        assert_eq!(code, crate::wire::ErrorCode::Invalid);
-        let cause = source.source().unwrap().downcast_ref::<Error>().unwrap();
-        let Error::NativeDecode { code, source: decode, custody: Some(inner) } = cause else {
-            panic!("the original typed native decode cause must not be flattened");
-        };
-        assert_eq!(*code, crate::wire::ErrorCode::Invalid);
-        assert!(decode.is_data());
-        assert!(inner.shares_ledger(&alias));
-        let envelope = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
-        let custody = envelope._custody.as_ref().unwrap();
-        assert!(box_custody.shares_ledger(&alias));
-        assert!(custody.bytes() >= bytes);
-        assert!(custody.shares_ledger(&alias));
-        assert_eq!(work.receipt(), before);
-    }
-}

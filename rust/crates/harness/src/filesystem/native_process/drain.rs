@@ -148,7 +148,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 Some(_) => {
                     let control = NativeCleanupControl { supervisor: &self.supervisor, original, cleanup: work };
                     Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, Some(&control))
-                        .await.map_err(NativeReceiptError::into_root_error)?)
+                        .await?)
                 }
                 None => None,
             };
@@ -181,8 +181,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                         reference, u64::from(request.request().maximum_result_bytes), work,
                     )?.await?;
                     let (result, custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
-                    let custody = custody;
-                    let result = result;
                     if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
                         return Err(Error::Indeterminate(self.command));
                     }
@@ -209,8 +207,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 
     pub(super) async fn authenticate_cleanup_owner(&self, work: &NativeMaterializationWork) -> Result<()> {
         let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
-        let custody = custody;
-        let outcome = outcome;
         if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
         drop(outcome);
         drop(custody);
