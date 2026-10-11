@@ -2090,6 +2090,161 @@ impl RuntimeScope {
         Ok(())
     }
 
+    /// Copies existing grants and concrete metadata on the original ledger.
+    /// No authority, created-resource seal, or extension selection is minted.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        let grants = self.grants.clone_with_native_work(work)?;
+        self.clone_native_metadata(grants, self.limits, self.extensions_sealed, work)
+    }
+
+    /// Attenuates paid grants using the ordinary checks and native metadata copy.
+    /// Drop the returned scope before its metadata guard.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn narrow_with_native_work(
+        &self,
+        grants: (Capabilities, acyclic_fs::NativeAllocation),
+        limits: Limits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        self.validate_narrowing_with_native_work(&grants.0, &limits, work)?;
+        self.clone_native_metadata(grants, limits, true, work)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_metadata_overflow() -> Error {
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            custody: None,
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_proof_clone_recipe(
+        proofs: &[crate::resource_preparation::ResourceCreationProofRef],
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(u64, u64)> {
+        let mut allocations = u64::from(!proofs.is_empty());
+        let mut copied = 0_u64;
+        let mut buffer = |length: usize| -> Result<()> {
+            allocations = allocations.checked_add(u64::from(length != 0))
+                .ok_or_else(Self::native_metadata_overflow)?;
+            copied = copied.checked_add(length as u64)
+                .ok_or_else(Self::native_metadata_overflow)?;
+            Ok(())
+        };
+        for proof in proofs {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            for provider in [&proof.provider, proof.resource.provider(), proof.evidence.provider()] {
+                for text in [provider.namespace(), provider.family(), provider.version()] {
+                    buffer(text.len())?;
+                }
+            }
+            for resource in [&proof.resource, &proof.evidence] {
+                buffer(resource.key().len())?;
+                if let Some(version) = resource.version() {
+                    buffer(version.len())?;
+                }
+            }
+        }
+        Ok((allocations, copied))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn native_metadata_owned_bytes(&self) -> Result<u64> {
+        let proof_slots = self.resource_proofs.capacity()
+            .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
+            .ok_or_else(Self::native_metadata_overflow)? as u64;
+        let mut bytes = (std::mem::size_of::<Self>() as u64).checked_add(proof_slots)
+            .ok_or_else(Self::native_metadata_overflow)?;
+        for proof in &self.resource_proofs {
+            for owned in [
+                proof.provider.logical_owned_bytes()?,
+                proof.resource.logical_owned_bytes()?,
+                proof.evidence.logical_owned_bytes()?,
+            ] {
+                bytes = bytes.checked_add(owned).ok_or_else(Self::native_metadata_overflow)?;
+            }
+        }
+        if let Some(extension) = &self.extensions {
+            bytes = bytes.checked_add(extension.logical_owned_bytes()?)
+                .ok_or_else(Self::native_metadata_overflow)?;
+        }
+        Ok(bytes)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn clone_native_metadata(
+        &self,
+        grants: (Capabilities, acyclic_fs::NativeAllocation),
+        limits: Limits,
+        sealed: bool,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (mut allocations, mut copied) = Self::native_proof_clone_recipe(&self.resource_proofs, work)?;
+        let proof_slots = self.resource_proofs.len()
+            .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
+            .ok_or_else(Self::native_metadata_overflow)? as u64;
+        let mut owned = (std::mem::size_of::<Self>() as u64).checked_add(proof_slots)
+            .and_then(|bytes| bytes.checked_add(copied))
+            .ok_or_else(Self::native_metadata_overflow)?;
+        let mut items = 0_u64;
+        if let Some(extension) = &self.extensions {
+            let recipe = extension.clone_work_recipe()?;
+            allocations = allocations.checked_add(recipe.0).ok_or_else(Self::native_metadata_overflow)?;
+            copied = copied.checked_add(recipe.1).ok_or_else(Self::native_metadata_overflow)?;
+            let slots = extension.selected().len()
+                .checked_mul(std::mem::size_of::<crate::core::ExtensionDependency>())
+                .and_then(|bytes| extension.configurations().len()
+                    .checked_mul(std::mem::size_of::<crate::core::ExtensionConfiguration>())
+                    .and_then(|configured| bytes.checked_add(configured)))
+                .ok_or_else(Self::native_metadata_overflow)? as u64;
+            owned = owned.checked_add(recipe.1).and_then(|bytes| bytes.checked_add(slots))
+                .ok_or_else(Self::native_metadata_overflow)?;
+            items = items.checked_add(extension.selected().len() as u64)
+                .and_then(|count| count.checked_add(extension.configurations().len() as u64))
+                .ok_or_else(Self::native_metadata_overflow)?;
+        }
+        // Capacity custody precedes every metadata copy. One atomic observation
+        // prevents a later copy/cancellation check from charging phantom attempts.
+        let mut custody = work.retain_owned(owned)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: allocations,
+            bytes_copied: copied,
+            items_examined: items,
+            ..Default::default()
+        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let scope = Self {
+            grants: grants.0,
+            limits,
+            run_limits: self.run_limits,
+            extensions: self.extensions.clone(),
+            extensions_sealed: sealed,
+            extension_runtime: self.extension_runtime.clone(),
+            // The configured immutable registry shares its existing Arc: no
+            // registry map or schema values are cloned on this native path.
+            extension_schemas: self.extension_schemas.clone(),
+            resource_proofs: self.resource_proofs.clone(),
+            created_access: self.created_access.clone(),
+            _native_grants_custody: Some(grants.1),
+        };
+        let actual = scope.native_metadata_owned_bytes()?;
+        if let Err(cause) = custody.reconcile_capacity(actual) {
+            drop(scope);
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        Ok((scope, custody))
+    }
+
     /// Further bounds task concurrency, steps, and deadline for descendants.
     pub fn with_run_limits(mut self, limits: TaskRunLimits) -> Result<Self> {
         self.run_limits.allows(&limits)?;
@@ -7412,6 +7567,57 @@ mod tests {
         assert!(matches!(RuntimeScope::validate_limits_with_native_work(
             &Limits::default(), &construction,
         ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            allocation_operations: 8,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 8192,
+            bytes_copied: 64,
+            items_examined: 16,
+            ..WorkBudget::default()
+        }, &cancellation).expect("original ledger");
+        let (root, root_custody) = RuntimeScope::new_with_native_work(
+            Capabilities::new_with_native_work(["read"], &work).expect("paid read-only grants"),
+            Limits::default(), &work,
+        ).expect("read-only root");
+        let root = root.with_run_limits_with_native_work(
+            TaskRunLimits { max_steps: Some(2), ..TaskRunLimits::default() }, &work,
+        ).expect("original execution bound");
+        let (copy, copy_custody) = root.clone_with_native_work(&work).expect("native clone");
+        assert_eq!(copy.grants(), root.grants());
+        assert_eq!(copy.run_limits(), root.run_limits());
+        assert!(!copy.is_sealed());
+        assert!(copy.resource_proofs().is_empty());
+        assert!(copy.created_access().is_none());
+        assert!(!copy.grants().contains("write"));
+        assert!(copy._native_grants_custody.as_ref().unwrap().work().shares_ledger(&work));
+        let narrower = Limits { file_bytes: 1, ..Limits::default() };
+        let (child, child_custody) = root.narrow_with_native_work(
+            Capabilities::new_with_native_work(["read"], &work).expect("paid child grants"),
+            narrower, &work,
+        ).expect("native attenuation");
+        assert!(child.is_sealed());
+        assert_eq!(child.limits(), narrower);
+        assert_eq!(child.run_limits(), root.run_limits());
+        assert!(child.resource_proofs().is_empty());
+        assert!(!child.grants().contains("write"));
+        assert!(matches!(root.narrow_with_native_work(
+            Capabilities::new_with_native_work(["write"], &work).expect("requested widening"),
+            Limits::default(), &work,
+        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        assert_eq!(root.grants().iter().collect::<Vec<_>>(), ["read"]);
+        assert_eq!(root.limits(), Limits::default());
+        drop(child);
+        drop(child_custody);
+        drop(copy);
+        drop(copy_custody);
+        drop(root);
+        drop(root_custody);
     }
 
     fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
