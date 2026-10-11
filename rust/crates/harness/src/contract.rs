@@ -1333,6 +1333,18 @@ pub enum Error {
         /// Existing custody for SDK-owned decoder diagnostics.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An actual lexical or canonical codec failure in its original preallocated slot.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeCodec {
+        /// The original codec failure's classification.
+        code: crate::wire::ErrorCode,
+        /// The whole original cause; this slot was allocated before codec work.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        /// Existing slot custody, released after physical Box deallocation.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// An actual protobuf decode failure on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1433,6 +1445,8 @@ pub enum Error {
         /// The complete postpublication proof failure, including intrinsic custody.
         #[source]
         source: acyclic_fs::LazyWorkspaceError,
+        /// A distinct retention failure after the primary proof failure, if both occurred.
+        retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
         /// Existing additional custody, released after the original cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -1612,6 +1626,7 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. } | Self::NativeDiagnostic { code, .. }
             | Self::NativeDecode { code, .. } | Self::NativeProstDecode { code, .. }
+            | Self::NativeCodec { code, .. }
             | Self::NativeEncode { code, .. }
             | Self::NativeStream { code, .. } | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
@@ -1652,6 +1667,7 @@ impl Error {
             | Self::NativeBoundary { .. }
             | Self::NativeDiagnostic { .. }
             | Self::NativeDecode { .. }
+            | Self::NativeCodec { .. }
             | Self::NativeProstDecode { .. }
             | Self::NativeEncode { .. }
             | Self::NativeSchema { .. }
