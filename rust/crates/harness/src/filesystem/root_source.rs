@@ -16,18 +16,29 @@ use std::sync::Arc;
 /// independently verifies the original source read grant and immutable backend
 /// generation. Uncreated root bootstrap seeds are deliberately rejected: a path
 /// observation is not a protected successful bootstrap allocation record.
+///
+/// Native verification uses the same canonical namespace/read-capability codec
+/// and original backend policy on the supplied ledger. Native configuration
+/// copies only its known owner/project payloads; shared host/lazy Arc headers,
+/// pre-existing referents and opaque allocator metadata are not re-admitted.
 pub struct FsRootProjectSourceProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Authority,
     graph_root: TaskId,
     native: Option<(VolumeRef, Arc<LazyWorkspace<A, O>>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FsRootProjectSourceProvider<A, O> {
     /// Requires the actual service owner and exact configured graph root.
     pub fn new(host: Arc<FilesystemHost<A, O>>, owner: Authority, graph_root: TaskId) -> Result<Self> {
         host.provider.validate()?;
-        Ok(Self { host, owner, graph_root, native: None })
+        Ok(Self {
+            host, owner, graph_root, native: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_custody: None,
+        })
     }
 
     /// Binds the actual original lazy namespace; no descriptor creates a binding.
@@ -36,6 +47,71 @@ impl<A, O> FsRootProjectSourceProvider<A, O> {
         if project.class() != VolumeClass::Project || project.provider() != &self.host.provider {
             return Err(Error::Unauthorized("native source is not this provider's project".into()));
         }
+        self.native = Some((project, lazy));
+        Ok(self)
+    }
+
+    /// Copies the configured service owner on this original native ledger.
+    /// The provider's logical root and actual copied payload remain retained
+    /// until after every provider field has been dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>, owner: &Authority, graph_root: TaskId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        use crate::store::history::HistoryIo as _;
+        host.provider.validate_with_native_work(work)?;
+        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut owner_custody;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let owner = io.clone_authority(owner)?;
+        owner_custody = io.into_custody();
+        custody.absorb(&mut owner_custody).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(owner_custody),
+        })?;
+        Ok(Self {
+            host, owner, graph_root, native: None, _native_custody: Some(custody),
+        })
+    }
+
+    /// Binds and copies only the actual configured project identity, keeping
+    /// custody on the same ledger as the native configured owner/root.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_native_source_with_native_work(
+        mut self, project: &VolumeRef, lazy: Arc<LazyWorkspace<A, O>>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        project.validate_with_native_work(work)?;
+        if project.class() != VolumeClass::Project || project.provider() != &self.host.provider {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native source is not this provider's project",
+            });
+        }
+        if self._native_custody.as_ref().is_some_and(|custody| !custody.matches_work(work)) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native source configuration belongs to another allocation context",
+            });
+        }
+        if self._native_custody.is_none() {
+            // Ordinary startup metadata is already supplied, not copied here.
+            self._native_custody = Some(work.retain_owned(std::mem::size_of::<Self>() as u64)?);
+        }
+        let mut project_custody;
+        let copied = project.clone_with_native_work(work)?;
+        project_custody = copied.1;
+        let project = copied.0;
+        // The branch above establishes custody before copying or constructing
+        // the new binding. No optional-guard path can silently drop it.
+        let custody = self._native_custody.as_mut().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "native source configuration is missing its admitted custody",
+        })?;
+        custody.absorb(&mut project_custody).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(project_custody),
+        })?;
         self.native = Some((project, lazy));
         Ok(self)
     }
@@ -129,6 +205,170 @@ where
             Ok(())
         })
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn verify_with_native_work<'a>(
+        &'a self, context: RootProjectSourceContext<'a>,
+        snapshot: &'a ProjectSourceSnapshot,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        context.cancellation.check().map_err(|_| Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+        })?;
+        crate::NativeFutureBundle::new(work, || async move {
+            work.remaining()?;
+            context.cancellation.check().map_err(|_| Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+            })?;
+            if context.owner != &self.owner || context.graph_root != self.graph_root
+                || !context.created_project_authenticated
+            {
+                // There is no protected successful bootstrap allocation record
+                // supplied by this policy. Observing a root directory is not one.
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source lacks this graph's authenticated creator",
+                });
+            }
+            if context.maximum_work == 0 || context.maximum_work == u64::MAX
+                || context.maximum_bytes == 0 || context.maximum_bytes == u64::MAX
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "project source requires finite positive admission",
+                });
+            }
+            if snapshot.project.class() != VolumeClass::Project
+                || snapshot.project.provider() != &self.host.provider
+                || snapshot.generation.as_resource().provider() != &self.host.provider
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source belongs to another namespace or provider",
+                });
+            }
+            if self.native.as_ref().is_some_and(|(project, _)| project == &snapshot.project)
+                && snapshot.native_snapshot.is_none()
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "bound lazy project requires its original native snapshot",
+                });
+            }
+            // This adapter retains the SAME original ledger; it does not mint
+            // a SourceAdmission, meter or remaining-budget child operation.
+            let io = super::fork_preparer::PreparationIo::from_native_work(work)?;
+            let bounds = JsonBounds {
+                maximum_bytes: context.maximum_bytes,
+                maximum_items: context.maximum_work, maximum_depth: 32,
+            };
+            let encoded_hold;
+            let encoded = native_source_json(&snapshot.project, bounds, &io, work)?;
+            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+            let hashing = WorkCounters {
+                bytes_hashed: encoded.len() as u64, ..WorkCounters::default()
+            };
+            work.admit(hashing)?;
+            let digest = blake3::hash(&encoded);
+            work.spent(hashing)?;
+            drop(encoded);
+            drop(encoded_hold);
+            let copying = WorkCounters {
+                bytes_encoded: 64, bytes_copied: 148, ..WorkCounters::default()
+            };
+            work.admit(copying)?;
+            let digest = digest.to_hex();
+            let mut name = [0_u8; 72];
+            name[..8].copy_from_slice(b"harness-");
+            name[8..].copy_from_slice(digest.as_bytes());
+            let mut read = [0_u8; 76];
+            read[..12].copy_from_slice(b"volume:read:");
+            read[12..].copy_from_slice(digest.as_bytes());
+            work.spent(copying)?;
+            // These fixed ASCII digests use no String allocation.
+            let name = std::str::from_utf8(&name).map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "invalid source namespace digest",
+            })?;
+            let read = std::str::from_utf8(&read).map_err(|_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "invalid source read digest",
+            })?;
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            if !context.source.grants.contains(read) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "selected source admission lacks original project read authority",
+                });
+            }
+            let opened = self.host.filesystem.open_workspace_with_native_work(
+                name, work, context.cancellation,
+            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            let selected = super::fork_preparer::bounded_io::generation(
+                &self.host, &opened, &snapshot.generation, &io,
+            ).await?;
+            let generation_id = selected.id();
+            drop(selected);
+            if let Some(value) = &snapshot.native_snapshot {
+                let Some((project, lazy)) = &self.native else {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "native source has no original provider binding",
+                    });
+                };
+                if project != &snapshot.project || lazy.workspace().id() != opened.id() {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "native source names another original workspace",
+                    });
+                }
+                let encoded_hold;
+                let encoded = native_source_json(value, bounds, &io, work)?;
+                encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+                // The audited SnapshotRef is entirely fixed-size Copy fields.
+                // Admit its concrete root before parsing, retaining it through
+                // the actual frozen-source verification, not only the parser.
+                let _frozen_hold = work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?;
+                let frozen: LazySnapshotRef = crate::contract::json_from_slice_bounded_native_trusted(
+                    &encoded, bounds, 0, crate::wire::ErrorCode::Invalid,
+                    &mut |charge| io.codec_charge(charge, false),
+                )?;
+                drop(encoded);
+                drop(encoded_hold);
+                if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "native capture does not match the selected generation",
+                    });
+                }
+                lazy.validate_snapshot_with_native_work(frozen, work).await
+                    .map_err(|source| Error::NativeSource { source, custody: None })?;
+            }
+            context.cancellation.check().map_err(|_| Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None,
+            })?;
+            work.remaining()?;
+            Ok(())
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_source_json<T: serde::Serialize>(
+    value: &T, bounds: JsonBounds, io: &super::fork_preparer::PreparationIo,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<Vec<u8>> {
+    // Known SDK encoder diagnostic payload is admitted before serialization.
+    // Serde's private error wrapper and allocator nodes are not an RSS claim.
+    let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
+    crate::contract::canonical_json_bytes_bounded_native_trusted(
+        value, bounds, crate::wire::ErrorCode::Invalid,
+        &mut |charge| io.codec_charge(charge, true),
+    ).map_err(|error| match error {
+        Error::NativeEncode { code, source, custody: None } =>
+            Error::NativeEncode { code, source, custody: Some(diagnostic) },
+        error => error,
+    })
 }
 
 // One outer admission composes canonical codec storage and actual SDK receipts.

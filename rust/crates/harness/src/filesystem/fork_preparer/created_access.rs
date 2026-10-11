@@ -21,13 +21,45 @@ use acyclic_fs::{CancellationToken, MeasuredResult, OperationFailure, OperationR
 pub struct FilesystemResourceCreationProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityIssuer,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FilesystemResourceCreationProvider<A, O> {
     /// Binds the Filesystem host and the preparation coordinator's issuer.
     pub fn new(host: Arc<FilesystemHost<A, O>>, issuer: AuthorityIssuer) -> Result<Self> {
         host.provider.validate()?;
-        Ok(Self { host, issuer })
+        Ok(Self { host, issuer, #[cfg(not(target_arch = "wasm32"))] native_custody: None })
+    }
+
+    /// Copies the configured signing identity through the original ledger.
+    /// This neither issues a new scope nor treats raw allocation labels as proof.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_native_work(
+        host: Arc<FilesystemHost<A, O>>, issuer: &AuthorityIssuer,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        host.provider.validate_with_native_work(work)?;
+        let mut custody = work.claim_allocation(std::mem::size_of::<Self>() as u64, 0)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (issuer, mut issuer_custody) = issuer.clone_with_native_work(work)?;
+        custody.absorb(&mut issuer_custody)
+            .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
+        Ok(Self { host, issuer, native_custody: Some(custody) })
+    }
+
+    /// Shares the already paid logical creator Self with one SDK Arc attempt.
+    /// The stdlib's private allocator backing is excluded from payload custody.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
+        if !self.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "resource creator belongs to another original native resource" });
+        }
+        work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
+            ..acyclic_fs::WorkCounters::UNCHARGED })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Arc::new(self))
     }
 }
 

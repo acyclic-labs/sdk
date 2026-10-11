@@ -592,6 +592,21 @@ not a hard wall-clock guarantee for an unresponsive operating system.
 Bounded vector-slot collections and sorted native-health registries centralize
 bounded state in the canonical owners, not a second execution engine.
 
+Native filesystem hosts, source policies, resource creators, content verifiers,
+fork providers and parent-project controllers retain the original accounting
+custody of their owned configuration. Sharing a funded provider does not create
+namespace permission: current task, source selection, purpose and destination
+grants are checked separately. Selected-source imports consume the sealed
+original read handle rather than adding foreign READ to the caller's scope.
+Native directory inspection uses the actual dispatch owner and exact subtree
+grant, returns the immutable generation and original page custody, and excludes
+the internal `.system` entry without allocating a replacement name.
+
+Inherited reference projection and summary registration use the canonical
+history/content engines with the original native work observer. Reference and
+creation projections return their actual retained custody; ordinary summary
+registration cannot be reused as a funded native binding.
+
 ### Durable mailbox steering and subtree cancellation
 
 The retained task topology supplies the default parent↔direct-child mail route;
