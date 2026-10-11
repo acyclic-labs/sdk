@@ -2524,6 +2524,14 @@ where
         provider: Arc<dyn ModelProvider>,
         context: ContextPipeline,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
+        self.stock_execution_with_output(task, fence, turn, model, provider, context, None).await
+    }
+
+    pub(super) async fn stock_execution_with_output(
+        &self, task: TaskId, fence: LeaseFence, turn: OperationId,
+        model: Model, provider: Arc<dyn ModelProvider>, context: ContextPipeline,
+        output: Option<&VolumeRef>,
+    ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let admission = self.host.observe_admission(task).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
@@ -2536,6 +2544,10 @@ where
             ));
         }
         let task_context = self.task_context(task, fence.clone()).await?;
+        let task_context = match output {
+            Some(volume) => task_context.with_output_volume(volume)?,
+            None => task_context,
+        };
         let scope = task_context.scope().clone();
         let limits = scope.limits();
         let run_limits = scope.run_limits();

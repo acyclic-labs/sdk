@@ -149,6 +149,9 @@ pub struct ModelTaskCommand {
     /// checkpoint. Its pinned file is appended before a new model admission.
     #[serde(default)]
     pub mailbox_operation: Option<OperationId>,
+    /// Exact admitted created destination; absent retains the private writer.
+    #[serde(default)]
+    pub selected_output_volume: Option<crate::conversation::VolumeRef>,
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.
@@ -1074,6 +1077,10 @@ where
                 return mail::reconciled(Some(io));
             }
         }
+        let context = match &input.selected_output_volume {
+            Some(volume) => context.with_output_volume_with_native_work(volume, work).await?,
+            None => context,
+        };
         let executor = self.runtime.stock_executor_with_native_work(
             task, fence, operation, &context, &binding.model, Arc::clone(&binding.provider),
             &binding.context, &journal, work,
@@ -1311,13 +1318,14 @@ where
             .ok_or_else(|| Error::Unsupported("model command provider is not bound".into()))?;
         let execution = self
             .runtime
-            .stock_execution(
+            .stock_execution_with_output(
                 task,
                 fence,
                 turn,
                 binding.model.clone(),
                 binding.provider.clone(),
                 binding.context.clone(),
+                input.selected_output_volume.as_ref(),
             )
             .await?
             .with_compaction_policy(binding.compaction.clone());

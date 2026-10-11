@@ -814,6 +814,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let input = super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None, max_steps: 1, max_output_tokens: None,
+        selected_output_volume: None,
     };
     let (lease, custody) = fixture.native_lease_command(
         &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input)?, &work,
@@ -853,6 +854,43 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     assert!(work.receipt().backend_read_operations > before.backend_read_operations);
     assert!(custody.work().shares_ledger(&work));
     assert!(matches!(reopened.task_host().outcome(task).await?, Some(Outcome::Cancelled)));
+    drop(attempt);
+    drop(custody);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_model_selected_writer_requires_original_created_binding_before_provider() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
+    let runtime = fixture.runtime().await?;
+    // Possessing the service volume and its grants is not a task creation proof.
+    let input = super::super::ModelTaskCommand {
+        input: crate::model::ModelContent::Text("must not dispatch".into()),
+        selected_context: None, max_steps: 1, max_output_tokens: None,
+        selected_output_volume: Some(fixture.volume.clone()),
+    };
+    let payload = serde_json::to_value(input)?;
+    let provider = Arc::new(PendingModel {
+        clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
+    });
+    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let commands = runtime.commands().with_model(
+        model, provider.clone(), ContextPipeline::default(), crate::context::CompactionPolicy::Disabled,
+    );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (lease, custody) = fixture.native_lease_command(
+        &runtime, super::super::MODEL_TASK_COMMAND_KIND, payload, &work,
+    ).await?;
+    let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work).await?;
+    assert!(matches!(&attempt, TaskWorkerAttempt::Unresolved {
+        error: Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. }, ..
+    }));
+    assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciled.load(Ordering::SeqCst), 0);
+    assert!(custody.work().shares_ledger(&work));
     drop(attempt);
     drop(custody);
     Ok(())
