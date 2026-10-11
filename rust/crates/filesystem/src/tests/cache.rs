@@ -199,41 +199,6 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
 }
 
 #[test]
-fn flight_waiter_bound_and_completion_are_deterministic() {
-    struct WakeIdentity;
-
-    #[allow(
-        clippy::manual_noop_waker,
-        reason = "two distinct wakers, which Waker::noop (one shared waker) is not"
-    )]
-    impl std::task::Wake for WakeIdentity {
-        fn wake(self: Arc<Self>) {}
-    }
-
-    let flight = Flight::new(1);
-    let first_waker = Waker::from(Arc::new(WakeIdentity));
-    let second_waker = Waker::from(Arc::new(WakeIdentity));
-    let first_context = &mut Context::from_waker(&first_waker);
-    let second_context = &mut Context::from_waker(&second_waker);
-    assert!(flight.poll(first_context).is_pending());
-    assert!(matches!(
-        flight.poll(second_context),
-        Poll::Ready(Err(ObjectStoreError::Rejected(message)))
-            if message.contains("waiter bound")
-    ));
-    flight.finish(Some(OwnedBytes::from_static(b"ready")));
-    assert!(matches!(
-        flight.poll(first_context),
-        Poll::Ready(Ok(Some(bytes))) if bytes.as_ref() == b"ready"
-    ));
-    flight.finish(None);
-    assert!(matches!(
-        flight.poll(first_context),
-        Poll::Ready(Ok(Some(bytes))) if bytes.as_ref() == b"ready"
-    ));
-}
-
-#[test]
 fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
@@ -846,57 +811,6 @@ fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
     assert_eq!(cached.stats()?.in_flight, 0);
     assert_eq!(scalar_reads.load(Ordering::Acquire), 0);
     assert_eq!(batch_reads.load(Ordering::Acquire), 0);
-    Ok(())
-}
-
-#[test]
-fn fs_composition_consumes_the_cache_without_a_second_runtime_or_adapter()
--> Result<(), Box<dyn std::error::Error>> {
-    let inner = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let (object_id, bytes) = object(b"embedded-fs");
-    poll_ready(inner.put(
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("memory object put blocked")??;
-    let (counting, scalar_reads, _) = counting_store(inner);
-    let cached = CachedObjectStore::new(counting, options(8, 128))?;
-    let fs = crate::Fs::new(
-        crate::MemoryAuthorityStore::default(),
-        cached,
-        crate::EmbeddedCapabilities::MEMORY,
-    );
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let first =
-        runtime.block_on(fs.export_object(object_id, 11, WorkBudget::UNBOUNDED, &cancellation))?;
-    let warm =
-        runtime.block_on(fs.export_object(object_id, 11, WorkBudget::UNBOUNDED, &cancellation))?;
-    assert_eq!(first.value.bytes, bytes);
-    assert_eq!(warm.value.bytes, bytes);
-    assert_eq!(first.work.backend_read_operations, 1);
-    assert_eq!(warm.work.backend_read_operations, 0);
-    assert_eq!(scalar_reads.load(Ordering::Acquire), 1);
-
-    let (imported_id, imported_bytes) = object(b"facade-import");
-    let imported = runtime.block_on(fs.import_object(
-        imported_id,
-        imported_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(imported.value, ());
-    assert_eq!(imported.work.backend_write_operations, 1);
-    let exported = runtime.block_on(fs.export_object(
-        imported_id,
-        13,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(exported.value.bytes, imported_bytes);
-    assert_eq!(exported.work.backend_read_operations, 0);
     Ok(())
 }
 

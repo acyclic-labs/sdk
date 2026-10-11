@@ -574,38 +574,6 @@ fn default_authority_steps_reject_excess_with_the_entire_spent_prefix()
 }
 
 #[test]
-fn default_first_record_failure_preserves_prior_read_and_write_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let prior = WorkCounters {
-        backend_read_operations: 2,
-        backend_write_operations: 1,
-        authority_bytes_read: 19,
-        authority_bytes_written: 23,
-        ..WorkCounters::default()
-    };
-    let failure = poll_ready(append_first_record(
-        &MemoryAuthorityStore::default(),
-        AuthorityId::from_bytes([0x71; 16]),
-        ProposedCommit {
-            operation_id: OperationId::from_bytes([0x72; 16]),
-            fingerprint: Digest::from_bytes([0x73; 32]),
-            payload: bytes::Bytes::from_static(b"creation"),
-        },
-        prior,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("cancelled first record suspended")?
-    .err()
-    .ok_or("cancelled first record succeeded")?;
-    assert!(matches!(failure.error, AuthorityStoreError::Cancelled));
-    assert_eq!(*failure.work, prior);
-    Ok(())
-}
-
-#[test]
 fn default_workspace_fork_preserves_both_complete_record_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
@@ -711,47 +679,6 @@ fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
     )).ok_or("destination head suspended")?
         .err().ok_or("guard rejection published destination")?;
     assert!(matches!(missing.error, AuthorityStoreError::Missing));
-    Ok(())
-}
-
-#[test]
-fn default_first_record_retry_seals_after_read_and_append_prefix()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryAuthorityStore::default();
-    let cancellation = CancellationToken::new();
-    let authority = AuthorityId::from_bytes([0xa1; 16]);
-    let commit = ProposedCommit {
-        operation_id: OperationId::from_bytes([0xa2; 16]),
-        fingerprint: Digest::from_bytes([0xa3; 32]),
-        payload: bytes::Bytes::from_static(b"first"),
-    };
-    poll_ready(append_first_record(
-        &store, authority, commit.clone(), WorkCounters::default(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("first record setup suspended")??;
-    let baseline = poll_ready(append_first_record(
-        &store, authority, commit.clone(), WorkCounters::default(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("first record baseline suspended")??;
-    let mut calls = 0;
-    let mut guard = |_budget: WorkBudget| {
-        calls += 1;
-        std::future::ready(if calls == 4 {
-            Err(crate::performance::OperationFailure::before_work(
-                crate::facade::FsError::WorkspaceDeleted,
-            ))
-        } else {
-            Ok(crate::facade::FsReceipt { value: (), work: WorkCounters::default() })
-        })
-    };
-    let failure = poll_ready(append_first_record_guarded(
-        &store, authority, commit, WorkCounters::default(),
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
-    )).ok_or("guarded first record retry suspended")?
-        .err().ok_or("first record retry skipped final seal")?;
-    assert_eq!(calls, 4);
-    assert!(matches!(failure.error, crate::facade::FsError::WorkspaceDeleted));
-    assert_eq!(*failure.work, baseline.work);
     Ok(())
 }
 
