@@ -405,6 +405,8 @@ returns `None`. Backend failures do not trigger another staging operation.
 Custom providers without this capability reject before constructing a future
 or performing I/O. The native byte carrier remains intrinsic; the returned
 allocation covers only independently owned receipt metadata.
+Borrowed witness/source metadata incurs logical inspection work, not a second
+retained-memory claim.
 
 Root publication-lease verification borrows the publisher's original
 `PreparationIo`. Its ordinary verification future is admitted before boxing;

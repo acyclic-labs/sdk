@@ -3909,9 +3909,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(retry_hold);
         if let Some(file) = &file {
             let source = proof.source_file();
-            fork_preparer_io::item(Some(io),
-                source.descriptor().media_type().len() as u64
-                    + source.display_name().len() as u64)?;
+            crate::conversation::inspect_native_metadata(
+                work, source.descriptor().media_type().len())?;
+            crate::conversation::inspect_native_metadata(work, source.display_name().len())?;
             if file.descriptor() != source.descriptor()
                 || file.display_name() != source.display_name() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
