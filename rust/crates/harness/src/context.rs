@@ -947,10 +947,10 @@ impl DurableContextProvider {
                 compaction::compact_context_with_work(context, max_messages, summary, &retention,
                     &mut Some(&mut history))?.0
             } else {
-                compact_projection(context, max_messages, summary, &retention)?
+                compact_projection(context, max_messages, summary, &retention, None)?
             }
             #[cfg(not(feature = "filesystem"))]
-            { compact_projection(context, max_messages, summary, &retention)? }
+            { compact_projection(context, max_messages, summary, &retention, None)? }
         } else {
             context_clone_with_io(context, io)?
         };

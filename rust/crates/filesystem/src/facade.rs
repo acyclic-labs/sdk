@@ -2866,6 +2866,11 @@ pub enum FsError {
     /// The caller's original frozen source identity or epoch diverged before sealing.
     #[error("frozen source snapshot is stale")]
     SourceSnapshotStale,
+    /// The original native owner callback rejected the operation before publication.
+    /// The callback caller retains and restores its complete typed cause.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("native owner guard rejected the operation")]
+    NativeOwnerGuardRejected,
     /// An open handle's bounded proof, parent vector or collection-root registration could not allocate.
     #[error("filesystem handle allocation failed")]
     HandleAllocationFailed,

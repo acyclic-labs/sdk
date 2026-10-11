@@ -1450,6 +1450,16 @@ pub enum Error {
         /// Existing custody, released after the original cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// A driven workspace join failure with its complete original typed cause.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{source}")]
+    NativeDrivenJoin {
+        /// The complete planning, resolution or publication failure.
+        #[source]
+        source: acyclic_fs::DrivenJoinError,
+        /// Existing custody, released after the original cause.
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// A native reservation failure retaining its original physical cleanup owner.
     ///
     /// Its concrete source slot is admitted and allocated before reservation IO.
@@ -1584,6 +1594,7 @@ impl Error {
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. }
+            | Self::NativeDrivenJoin { .. }
             | Self::NativeFilesystem { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
@@ -1619,6 +1630,7 @@ impl Error {
             | Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. }
+            | Self::NativeDrivenJoin { .. }
             | Self::NativeReservation { .. }
             | Self::NativeFilesystem { .. } => true,
             #[cfg(feature = "filesystem-local")]

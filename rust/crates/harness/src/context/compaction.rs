@@ -362,7 +362,7 @@ pub(crate) fn compact_context_with_work(
 ) -> Result<(Context, u64)> {
     use crate::model::{ModelContent, ModelMessage, ModelRole};
     if work.is_none() {
-        return super::compact_projection(context, maximum, summary, retention).map(|context| (context, 0));
+        return super::compact_projection(context, maximum, summary, retention, None).map(|context| (context, 0));
     }
     if maximum < 2 {
         return Err(Error::Invalid("compaction must retain the current input and summary".into()));
@@ -834,7 +834,7 @@ mod tests {
         let summary = super::super::ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 3, source_digest: [0; 32], output: file };
         let retention = CompactionRetention { roles: vec![], native_media: false };
-        let expected = super::super::compact_projection(&context, 4, &summary, &retention)?;
+        let expected = super::super::compact_projection(&context, 4, &summary, &retention, None)?;
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget {
             allocation_operations: 1024, peak_allocation_bytes: 1_048_576,

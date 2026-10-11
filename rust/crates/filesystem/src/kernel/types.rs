@@ -56,6 +56,12 @@ pub struct LogicalName {
 }
 
 impl LogicalName {
+    /// Owned encoded-name buffer capacity; excludes inline and allocator storage.
+    #[must_use]
+    pub fn logical_owned_bytes(&self) -> u64 {
+        self.bytes.capacity() as u64
+    }
+
     /// Validates a bounded name in its declared host representation.
     ///
     /// # Errors

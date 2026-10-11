@@ -137,7 +137,7 @@ impl InteractionTicket {
         self.validate()?;
         request.validate()?;
         self.validate_request_binding(&request, &mut None)?;
-        Ok(request)
+        Ok(())
     }
 
     /// Validates the original typed request without letting its payload escape.

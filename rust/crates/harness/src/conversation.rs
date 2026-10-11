@@ -396,8 +396,9 @@ impl VolumeRef {
         Ok(())
     }
 
+    /// Validates source metadata on the original native ledger; conveys no grant.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_with_native_work(
+    pub fn validate_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         inspect_native_metadata(work, 0)?;
