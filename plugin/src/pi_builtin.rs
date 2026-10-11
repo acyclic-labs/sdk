@@ -272,7 +272,7 @@ impl<'a> PiBuiltinHost<'a> {
             Some(key), None, request.operation(self.protected.policy().root_task),
             self.work.cancellation(), &self.work).await?;
         let reader = crate::pi_inspection::PiNativeSelectedSource::select(&inspection, request.caller,
-            request.caller, &volume, &workspace, frozen)?;
+            request.caller, &volume, &workspace, frozen, &self.work)?;
         let mut last_absence = None;
         for (path, candidate) in std::iter::once(relative).chain(relatives.into_iter().flatten())
             .zip(std::iter::once(&request.path).chain(variants.iter())) {
