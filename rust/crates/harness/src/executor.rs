@@ -134,6 +134,23 @@ impl ModelPurpose {
         }
     }
 
+    fn attempt_operation_with_io(self, execution: OperationId, io: Option<&PreparationIo>) -> Result<OperationId> {
+        #[cfg(feature = "filesystem")]
+        let charge = acyclic_fs::WorkCounters {
+            bytes_hashed: if self == Self::Summary {
+                b"harness:summary-attempt:v1".len() as u64 + 16
+            } else { 0 }, ..Default::default()
+        };
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.preflight(charge)?; }
+        let operation = self.attempt_operation(execution);
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.spent(charge)?; }
+        #[cfg(not(feature = "filesystem"))]
+        let _ = io;
+        Ok(operation)
+    }
+
 }
 
 /// Canonical executor observation suitable for a durable journal.
@@ -2417,7 +2434,7 @@ impl StockExecution<'_> {
                 // borrows the original retained events above its actual last use.
                 let observed = replayed_model.clone();
                 Ok(ModelAttempt {
-                    operation_id: purpose.attempt_operation(input.operation_id),
+                    operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                     step,
                     request_digest,
                     observed,
@@ -2427,7 +2444,7 @@ impl StockExecution<'_> {
             let continuation = if let Some(work) = self.native_work() {
                 let (continuation, custody) = self.provider.reconcile_with_native_work(
                     crate::model::NativeModelAttempt {
-                        operation_id: purpose.attempt_operation(input.operation_id),
+                        operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                         step,
                         request_digest,
                         observed: &replayed_model,
@@ -2502,18 +2519,18 @@ impl StockExecution<'_> {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(work) = self.native_work() {
                     host.claim_model_dispatch_with_native_work(
-                        *task_id, purpose.attempt_operation(input.operation_id),
+                        *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                         step, request_digest, fence, work,
                     )?.await?;
                 } else {
                     host.claim_model_dispatch(
-                        *task_id, purpose.attempt_operation(input.operation_id),
+                        *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                         step, request_digest, fence.clone(),
                     ).await?;
                 }
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 host.claim_model_dispatch(
-                    *task_id, purpose.attempt_operation(input.operation_id),
+                    *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                     step, request_digest, fence.clone(),
                 ).await?;
             }
@@ -2536,7 +2553,7 @@ impl StockExecution<'_> {
                 Err(error) => return Err(error),
             }
             let dispatch = crate::model::ModelDispatch {
-                operation_id: purpose.attempt_operation(input.operation_id),
+                operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                 step,
                 request_digest,
             };
