@@ -239,11 +239,42 @@ publication lease, while inherited access preserves the original proof identity.
 `TaskJournalOwner::resource_preparation_with_native_work` consumes the complete
 paid request on its genuine SDK-shared owner and original ledger. The ordinary
 and native producers share one request/admission/session/fence engine; selected
-Project provenance uses the original native source sealing engine. The resulting
-token retains its owned request, original origin and source before intrinsic
-metadata custody. Native creation verification rejects ordinary or foreign
-tokens before funding its future; native reconciliation checks only the original
-retained settlement lease and cannot authorize another creation.
+Project provenance uses the original native source sealing engine. The native
+factory returns an SDK-funded `Arc<TaskResourcePreparation>`: complete known
+token Self and deep metadata precede its actual Arc allocation attempt, and owned
+request, original origin and source drop before intrinsic metadata custody.
+Opaque standard-library Arc/Weak backing and allocator RSS are excluded.
+`owned_creation_guard_with_native_work` retains that exact sealed token and
+original work without cloning request or source payloads. Its detached callback
+qualifies the same root/resource ledger and original owner before funding one
+concrete future, then rechecks the fresh original lease at use. Native creation
+rejects ordinary, foreign and non-creation-purpose tokens before future allocation;
+native reconciliation checks only the original retained settlement lease and
+cannot authorize another creation. The ordinary producer remains a directly
+owned token without an added shared allocation.
+`resource_preparation_reconciliation_with_native_work` restores only an original
+readonly owner's protected Started declaration, full historical fence and exact
+admitted request. It authenticates the current SDK query binding before IO and
+uses the same request, parent, child, grant, digest and source-MAC engines. The
+restored token cannot create or dispatch, and its native reconciliation verifier
+checks original READ evidence rather than obtaining a settlement/write lease.
+Historical source evidence is not a current query grant: the existing finite
+observation deadline contains restoration and reads, and each source/provider
+use must still enforce current query READ and physical namespace permission.
+Cold fork restoration first binds `task_preparation_readonly_witness_with_native_work`
+to the actual issued query and original host/task/allocation context. The witness
+checks the original canonical admission and sealed grants, limits and proofs
+before its funded original-input decoder or protected claim observation.
+`readonly_fork_journal_owner_with_native_work` consumes the genuine opaque fork
+claim, authenticates its exact full historical fence and original Started source
+through the canonical reservation-proof engine, and shares that original readonly
+owner. The claim's actual paid request transfers to the readonly token constructor
+without another decode or payload copy. No native-process journal or current lease
+is substituted for a missing fork claim.
+The existing preparation admission fixture exercises the genuine paid-input
+decoder and SDK owner/token producer, borrowed and detached lease verification,
+pre-IO ordinary/foreign-work denials, retained cancellation reconciliation, and
+original native cancellation without another backend operation.
 Workflow command and model inputs resolve through those same owner-authenticated
 bindings. Protected workflow and execution records remain in their original
 owner-controlled storage; ordinary content refs cannot substitute for them.

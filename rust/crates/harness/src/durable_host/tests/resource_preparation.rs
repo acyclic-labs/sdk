@@ -66,7 +66,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         signed,
         issuer.verifier(),
         scope.clone(),
-        tasks,
+        tasks.clone(),
         machines,
         Arc::new(SystemUnixMillisClock),
     )?;
@@ -79,6 +79,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         })?;
     }
     let host = Arc::new(host);
+    #[cfg(not(target_arch = "wasm32"))]
+    let harness = {
+        let mut bindings = crate::Bindings::local();
+        bindings.tasks = tasks;
+        bindings.scope = scope.clone();
+        bindings.durable_host = Some(host.clone());
+        bindings.build()?
+    };
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(),
         operation_id,
@@ -183,6 +191,9 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     }
     let token = owner.resource_preparation(request.clone()).await?;
     token.verify_creation().await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (native_token, native_work, native_cancellation) =
+        check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
     assert_eq!(token.origin().preparation_task, prep);
     assert_eq!(token.origin().parent_task, root);
     assert_eq!(token.origin().intended_child, child.operation_id);
@@ -279,4 +290,66 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     assert!(owner.resource_preparation(request).await.is_err());
     token.verify_reconciliation().await?;
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn check_native_preparation_authority(
+    host: &Arc<CoordinatorTaskHost<MemoryStream>>,
+    harness: &Arc<crate::runtime::AgentHarness>,
+    task: TaskId,
+    fence: &crate::scheduler::LeaseFence,
+    ordinary: &crate::resource_preparation::TaskResourcePreparation,
+) -> Result<(
+    Arc<crate::resource_preparation::TaskResourcePreparation>,
+    acyclic_fs::NativeMaterializationWork,
+    acyclic_fs::CancellationToken,
+)> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
+        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let before = work.receipt();
+    assert!(matches!(ordinary.verify_creation_with_native_work(&work),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(work.receipt(), before);
+
+    let owner = host.journal_owner_with_native_work(task, fence, &work).await?
+        .into_native_shared(&work)?;
+    let (context, custody) = harness.durable_context_with_native_work(
+        task, OperationId::from_bytes(task.into_bytes()), &work,
+    ).await?;
+    let query = context.into_native_shared(custody, &work)?;
+    let witness = host.task_preparation_readonly_witness_with_native_work(&query, &work)?.await?;
+    let request = witness.original_preparation_request_with_native_work(&query, &work)?.await?;
+    witness.verify_preparation_origin_with_native_work(
+        &query, &request.0, ordinary.origin(), &work,
+    )?;
+    let parent = ordinary.origin().parent_task;
+    let (other_context, other_custody) = harness.durable_context_with_native_work(
+        parent, OperationId::from_bytes(parent.into_bytes()), &work,
+    ).await?;
+    let other_query = other_context.into_native_shared(other_custody, &work)?;
+    let before = work.receipt();
+    assert!(matches!(witness.original_preparation_request_with_native_work(&other_query, &work),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(work.receipt(), before);
+    let token = owner.resource_preparation_with_native_work(request, &work)?.await?;
+    assert_eq!(token.origin(), ordinary.origin());
+    token.verify_creation_with_native_work(&work)?.await?;
+    let guard = token.owned_creation_guard_with_native_work(&work)?;
+    let owned_future: crate::NativeFutureBundle<'static, ()> =
+        guard.verify_creation_with_native_work(&work)?;
+    drop(guard);
+    owned_future.await?;
+
+    let foreign_cancellation = acyclic_fs::CancellationToken::new();
+    let foreign = acyclic_fs::NativeMaterializationWork::new(
+        native_lifecycle_budget(), &foreign_cancellation,
+    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let before = foreign.receipt();
+    assert!(matches!(token.verify_creation_with_native_work(&foreign),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(token.owned_creation_guard_with_native_work(&foreign),
+        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert_eq!(foreign.receipt(), before);
+    Ok((token, work, cancellation))
 }

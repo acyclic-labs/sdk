@@ -451,6 +451,107 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         }
         Ok(())
     }
+
+    fn require_query_with_native_work(
+        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.host.require_preparation_query_with_native_work(query, work)?;
+        let context = query.context();
+        let scope = context.scope();
+        if !self._native_custody.matches_work(work)
+            || context.durable_task_id() != Some(self.task)
+            || context.operation_id() != self.admission.operation_id
+            || scope.grants() != &self.admission.grants
+            || scope.limits() != self.admission.limits
+            || scope.resource_proofs() != self.admission.resource_proofs
+            || scope.extensions() != self.admission.extensions.as_ref()
+            || scope.run_limits() != self.admission.run_limits
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation query differs from its original witnessed admission" });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn verify_query_with_native_work(
+        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_query_with_native_work(query, work)?;
+        self.verify_with_native_work(work).await?;
+        self.require_query_with_native_work(query, work)
+    }
+
+    pub(crate) fn original_preparation_request_with_native_work<'a>(
+        &'a self, query: &'a Arc<crate::runtime::NativeTaskContext>,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (
+        crate::resource_preparation::ResourcePreparationRequest,
+        acyclic_fs::NativeAllocation,
+    )>> {
+        self.require_query_with_native_work(query, work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            self.verify_query_with_native_work(query, work).await?;
+            let mut io = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+            let mut encoded_quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+            let encoded = crate::store::history::canonical_bytes_with_work(
+                &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64,
+                encoded_quota.work(),
+            )?;
+            encoded_quota.adopt(encoded.capacity() as u64)?;
+            let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let pair = decode.decode_preparation_with_code::<
+                crate::resource_preparation::ResourcePreparationRequest,
+            >(&encoded, crate::wire::ErrorCode::Unauthorized)?.into_native_parts()?;
+            drop(encoded);
+            drop(encoded_quota);
+            drop(observer);
+            drop(io);
+            if let Err(error) = self.verify_query_with_native_work(query, work).await {
+                let (request, custody) = pair;
+                drop(request);
+                return Err(match error {
+                    Error::NativeWork { cause, custody: None } =>
+                        Error::NativeWork { cause, custody: Some(custody) },
+                    error => error,
+                });
+            }
+            Ok(pair)
+        })
+    }
+
+    pub(crate) fn verify_preparation_origin_with_native_work(
+        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        request: &crate::resource_preparation::ResourcePreparationRequest,
+        origin: &crate::resource_preparation::ResourceCreationOrigin,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_query_with_native_work(query, work)?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+        request.validate_with_work(&mut observer)?;
+        let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
+        let request_digest = host_digest_with_work(
+            &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
+        let supplied_digest = host_digest_with_work(
+            request, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
+        if origin.owner != self.host.owner || origin.preparation_task != self.task
+            || self.admission.parent != Some(origin.parent_task)
+            || request.child.parent != Some(origin.parent_task)
+            || origin.intended_child != request.child.operation_id
+            || origin.admission_digest != admission_digest
+            || origin.source_grants != self.admission.grants
+            || origin.request_digest != request_digest || supplied_digest != request_digest
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "protected fork origin differs from its original preparation admission" });
+        }
+        Ok(())
+    }
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
@@ -4185,6 +4286,39 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_preparation_query_with_native_work(
+        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<TaskId> {
+        query.context().require_original_native_work(work)?;
+        let task = query.context().durable_task_id().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "preparation query has no original SDK task binding",
+        })?;
+        if !query.native_metadata_matches(work)
+            || query.context().operation_id().into_bytes() != task.into_bytes()
+            || !query.context().original_host_binding_matches(self, self.policy.as_deref())
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "preparation query has no original SDK host and allocation source" });
+        }
+        Ok(task)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn task_preparation_readonly_witness_with_native_work<'a>(
+        self: &'a Arc<Self>, query: &'a Arc<crate::runtime::NativeTaskContext>,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, TaskAdmissionReadonlyWitness<P>>> {
+        let task = self.require_preparation_query_with_native_work(query, work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            let witness = self.task_admission_readonly_witness_with_native_work(task, work).await?;
+            witness.verify_query_with_native_work(query, work).await?;
+            Ok(witness)
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn task_admission_readonly_witness_with_native_work(
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskAdmissionReadonlyWitness<P>> {
@@ -4435,6 +4569,72 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.journal_owner_with_work(
             task, std::borrow::Cow::Borrowed(fence), None, &mut Some(&mut io),
         ).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn readonly_fork_journal_owner_with_native_work<'a>(
+        self: &'a Arc<Self>,
+        witness: &'a TaskAdmissionReadonlyWitness<P>,
+        query: &'a Arc<crate::runtime::NativeTaskContext>,
+        claim: crate::filesystem::OriginalForkAllocationClaim,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (
+        Arc<TaskJournalOwner<P>>,
+        (crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation),
+    )>> {
+        if !claim.matches_work(work) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "protected fork claim differs from its original allocation context" });
+        }
+        let qualified = self.require_preparation_query_with_native_work(query, work)
+            .and_then(|_| witness.require_query_with_native_work(query, work));
+        if let Err(error) = qualified {
+            return Err(match error {
+                Error::NativeWork { cause, .. } => claim.into_native_error(cause),
+                error => error,
+            });
+        }
+        let mut pending = Some(claim);
+        let bundle = crate::NativeFutureBundle::new(work, || {
+            let claim = pending.take().expect("funded original fork claim");
+            async move {
+                let result: Result<Arc<TaskJournalOwner<P>>> = async {
+                    witness.verify_query_with_native_work(query, work).await?;
+                    witness.verify_preparation_origin_with_native_work(
+                        query, claim.request(), claim.origin(), work,
+                    )?;
+                    let mut io = crate::store::history::native_work_io(work)
+                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                    let original = crate::distributed::original_reservation_proof_with_work(
+                        &self.stream, &self.owner, &self.owner_scope, &self.verifier,
+                        witness.admission_operation(), &claim.origin().creation_fence,
+                        &mut Some(&mut io),
+                    ).await?;
+                    let owner = self.journal_owner_with_work(
+                        witness.task(), std::borrow::Cow::Borrowed(&claim.origin().creation_fence),
+                        Some(original), &mut Some(&mut io),
+                    ).await?;
+                    if owner.original_admission_digest != claim.origin().admission_digest {
+                        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "original Started admission differs from the protected fork claim" });
+                    }
+                    owner.require_task_context_binding_with_native_work(query.context(), work)?;
+                    owner.verify_read_access_with_native_work(work).await?;
+                    witness.verify_query_with_native_work(query, work).await?;
+                    owner.into_native_shared(work)
+                }.await;
+                match result {
+                    Ok(owner) => Ok((owner, claim.into_request()?)),
+                    Err(Error::NativeWork { cause, .. }) => Err(claim.into_native_error(cause)),
+                    Err(error) => Err(error),
+                }
+            }
+        });
+        match bundle {
+            Err(Error::NativeWork { cause, .. }) => Err(pending.take()
+                .expect("unfunded original fork claim").into_native_error(cause)),
+            result => result,
+        }
     }
 
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
