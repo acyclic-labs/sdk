@@ -1519,6 +1519,16 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// A physical native action whose journal completion is uncertain.
+    ///
+    /// Its original cause slot and ownership were admitted before the action.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{failure}")]
+    NativeStageUncertain {
+        /// The original cause and durable/live work prefixes, with custody last.
+        #[source]
+        failure: acyclic_fs::NativeStageUncertainty<Error>,
+    },
     /// An actual native process timeout, without a new boxed IO error.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -1599,6 +1609,8 @@ impl Error {
             | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeFilesystem { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
             | Self::NativeWorkspacePublication { .. }
@@ -1635,7 +1647,8 @@ impl Error {
             | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeReservation { .. }
-            | Self::NativeFilesystem { .. } => true,
+            | Self::NativeFilesystem { .. }
+            | Self::NativeStageUncertain { .. } => true,
             #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
             Self::NativeLineage { .. } | Self::NativeContext { .. } => true,
             #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]

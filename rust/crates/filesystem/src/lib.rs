@@ -258,6 +258,7 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
+    MaterializationActionCompletion, NativeStageUncertainty, NativePrivateStateEntry,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation,
     NativeHostPrivateStateRoot, NativeStateFile, NativeStateFileMode,
