@@ -185,21 +185,6 @@ impl ProviderRef {
             })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_in_native_allocation(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-        allocation: &mut acyclic_fs::NativeAllocation,
-    ) -> Result<Self> {
-        Ok(Self {
-            namespace: crate::conversation::clone_native_reference_text_into(
-                &self.namespace, work, allocation)?,
-            family: crate::conversation::clone_native_reference_text_into(
-                &self.family, work, allocation)?,
-            version: crate::conversation::clone_native_reference_text_into(
-                &self.version, work, allocation)?,
-        })
-    }
-
     /// Globally unique provider namespace.
     #[must_use]
     pub fn namespace(&self) -> &str {

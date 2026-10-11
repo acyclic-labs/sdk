@@ -580,7 +580,8 @@ mod native {
     pub(crate) fn mandatory_positions_native(
         context: &Context, covered: usize, retention: &CompactionRetention, work: &NativeMaterializationWork,
     ) -> Result<(Vec<usize>, NativeAllocation)> {
-        let mut io = observer!(work);
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
         let (selected, pending) = mandatory_flags(context, covered, retention, &mut quota)?;
