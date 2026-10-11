@@ -21,6 +21,7 @@ use acyclic_stream::{
     LocalStream, LocalStreamLimits, MAX_RECORD_BYTES, MemoryLimits, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 struct Options {
     workers: usize,
@@ -101,10 +102,10 @@ fn commit(
     bytes: usize,
     key: String,
 ) -> Result<CommitRequest, String> {
-    let records: Vec<Bytes> = (0..bytes.div_ceil(MAX_RECORD_BYTES))
+    let records: Vec<OwnedBytes> = (0..bytes.div_ceil(MAX_RECORD_BYTES))
         .map(|index| {
             let length = (bytes - index * MAX_RECORD_BYTES).min(MAX_RECORD_BYTES);
-            Bytes::from(vec![b'r'; length])
+            OwnedBytes::from(vec![b'r'; length])
         })
         .collect();
     let condition = if *tail == 0 {

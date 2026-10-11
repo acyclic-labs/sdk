@@ -10,15 +10,17 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+
 use crate::OwnedBytes;
-use prost::Message as _;
 use tokio::sync::watch;
 
 use super::{History, MemoryStream, PathState, Replay, Retained, State, recount};
 use crate::wire_codec::{
     CanonicalWire, ObservedWire, WireFunding, WireMeter,
 };
-use crate::{CommitId, IdempotencyKey, Record, StreamError, StreamPath};
+use crate::{CommitId, Record, StreamError, StreamPath};
+#[cfg(test)]
+use crate::IdempotencyKey;
 
 const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V1\0";
 

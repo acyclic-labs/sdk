@@ -5,7 +5,7 @@ use acyclic_stream::{
     AppendRequest, LocalStream, LocalStreamLimits, ReadRequest, StreamPath, StreamProvider,
     deferring_durability,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use divan::counter::ItemsCount;
 use futures::TryStreamExt;
@@ -26,7 +26,7 @@ fn open(runtime: &Runtime) -> (tempfile::TempDir, LocalStream, StreamPath) {
 fn append(path: &StreamPath, records: usize) -> AppendRequest {
     AppendRequest {
         path: path.clone(),
-        records: vec![Bytes::from_static(&[0x5a; 64]); records],
+        records: vec![OwnedBytes::from_static(&[0x5a; 64]); records],
         if_tail: None,
         idempotency_key: None,
     }
