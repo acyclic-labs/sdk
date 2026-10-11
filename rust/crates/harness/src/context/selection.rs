@@ -513,7 +513,7 @@ pub fn apply_context_projection(
     limits: Limits,
 ) -> Result<Context> {
     let placement = projection_placement(mode, placement);
-    let context = place_messages(context, messages, placement, limits)?;
+    let context = place_messages_with_io(context, messages, placement, limits, None)?;
     validate_projected_context(&context, limits)?;
     Ok(context)
 }
@@ -534,15 +534,6 @@ pub(super) fn apply_context_projection_native(
 
 fn projection_placement(mode: ContextRenderMode, placement: ContextPlacement) -> ContextPlacement {
     if mode == ContextRenderMode::Update { ContextPlacement::Append } else { placement }
-}
-
-pub(crate) fn place_messages(
-    context: Context,
-    messages: Vec<ModelMessage>,
-    placement: ContextPlacement,
-    limits: Limits,
-) -> Result<Context> {
-    place_messages_with_io(context, messages, placement, limits, None)
 }
 
 pub(crate) fn place_messages_with_io(

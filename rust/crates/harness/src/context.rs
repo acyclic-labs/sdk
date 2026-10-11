@@ -22,7 +22,7 @@ use futures::StreamExt as _;
 mod accounting;
 pub use accounting::*;
 mod selection;
-pub(crate) use selection::{place_messages, place_messages_with_io};
+pub(crate) use selection::place_messages_with_io;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
@@ -459,7 +459,7 @@ impl DurableContextProvider {
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         if let Some(reference) = &compaction {
             let source = self.read_revision(expected_revision).await?;
-            validate_compaction(reference, &source.context, &context)?;
+            validate_compaction_with_io(reference, &source.context, &context, None)?;
         }
         let (record, encoded) = self
             .stage_revision(revision, context, compaction, &key_bytes)
@@ -507,7 +507,7 @@ impl DurableContextProvider {
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         validate_projected_context(&source, self.limits)?;
         validate_projected_context(&compacted, self.limits)?;
-        validate_compaction(&reference, &source, &compacted)?;
+        validate_compaction_with_io(&reference, &source, &compacted, None)?;
         validate_context_refs(&source, self.content_verifier.as_ref(), self.limits).await?;
         validate_context_refs(&compacted, self.content_verifier.as_ref(), self.limits).await?;
         let (source_record, source_bytes) = self
@@ -613,7 +613,7 @@ impl DurableContextProvider {
                 let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
                     crate::Error::Storage("context compaction source is absent".into())
                 })?;
-                validate_compaction(reference, &source.context, &revision.context)
+                validate_compaction_with_io(reference, &source.context, &revision.context, None)
                     .map_err(|error| crate::Error::Storage(error.to_string()))?;
             }
             revisions.push(revision);
@@ -726,7 +726,7 @@ impl DurableContextProvider {
         let record = self.read_revision_bounded(revision, limits).await?;
         if let Some(reference) = &record.compaction {
             let source = self.read_revision_bounded(revision - 1, limits).await?;
-            validate_compaction(reference, &source.context, &record.context)?;
+            validate_compaction_with_io(reference, &source.context, &record.context, None)?;
         }
         Ok(record)
     }
@@ -1255,21 +1255,6 @@ fn retain_compacted_messages(
     })
 }
 
-pub(crate) fn validate_compaction(
-    reference: &CompactionReference,
-    source: &Context,
-    compacted: &Context,
-) -> Result<()> {
-    let (reconstructed, proof) = DurableContextProvider::compact(
-        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone())?;
-    if reference.source_digest != proof.source_digest || reconstructed != *compacted {
-        return Err(crate::Error::Invalid(
-            "compaction reference does not bind the source and retained context".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn preparation_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -1321,7 +1306,14 @@ pub(crate) fn validate_compaction_with_io(
         return Ok(());
     }
     let _ = io;
-    validate_compaction(reference, source, compacted)
+    let (reconstructed, proof) = DurableContextProvider::compact(
+        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone())?;
+    if reference.source_digest != proof.source_digest || reconstructed != *compacted {
+        return Err(crate::Error::Invalid(
+            "compaction reference does not bind the source and retained context".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1772,7 +1764,7 @@ impl ContextStage for SourceStage {
         Box::pin(async move {
             validate_projected_context(&context, limits)?;
             let loaded = self.source.load(input, limits).await?;
-            selection::place_messages(context, loaded, self.placement, limits)
+            selection::place_messages_with_io(context, loaded, self.placement, limits, None)
         })
     }
 
@@ -3076,7 +3068,7 @@ mod tests {
                         .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?
                 )
             );
-            validate_compaction(&reference, &source, &compacted)?;
+            validate_compaction_with_io(&reference, &source, &compacted, None)?;
             validate_native_call_fixture(&compacted)?;
             assert!(
                 DurableContextProvider::compact(
@@ -3171,7 +3163,7 @@ mod tests {
             CompactionRetention::default(),
         )?;
         assert_eq!(prefix_compacted.messages.get(2..), source.messages.get(3..));
-        validate_compaction(&prefix_reference, &source, &prefix_compacted)?;
+        validate_compaction_with_io(&prefix_reference, &source, &prefix_compacted, None)?;
         assert!(
             DurableContextProvider::compact(
                 &source,
@@ -3214,14 +3206,14 @@ mod tests {
                 projected.messages.contains(&source.messages[3]),
                 projected.messages.contains(&source.messages[4])
             );
-            validate_compaction(&reference, &source, &projected)?;
+            validate_compaction_with_io(&reference, &source, &projected, None)?;
             let mut corrupt = projected;
             corrupt
                 .messages
                 .last_mut()
                 .ok_or_else(|| crate::Error::Invalid("empty context".into()))?
                 .content = ModelContent::Text("substitution".into());
-            assert!(validate_compaction(&reference, &source, &corrupt).is_err());
+            assert!(validate_compaction_with_io(&reference, &source, &corrupt, None).is_err());
         }
         assert!(
             DurableContextProvider::compact(&source, 3, None, CompactionRetention::default())
@@ -3277,9 +3269,9 @@ mod tests {
             )
         );
         assert_eq!(reference.retention, retention);
-        validate_compaction(&reference, &configurable, &projected)?;
+        validate_compaction_with_io(&reference, &configurable, &projected, None)?;
         reference.retention = CompactionRetention::default();
-        assert!(validate_compaction(&reference, &configurable, &projected).is_err());
+        assert!(validate_compaction_with_io(&reference, &configurable, &projected, None).is_err());
         assert!(
             CompactionRetention {
                 roles: vec![ModelRole::User, ModelRole::User],
@@ -3407,21 +3399,22 @@ mod tests {
         }];
         for placement in [ContextPlacement::Prepend, ContextPlacement::Append] {
             let joined =
-                selection::place_messages(base.clone(), contribution.clone(), placement, limits)?;
+                selection::place_messages_with_io(base.clone(), contribution.clone(), placement, limits, None)?;
             assert_eq!(
                 joined.current_input_index,
                 Some(u32::from(placement == ContextPlacement::Prepend))
             );
             let exact = crate::contract::canonical_json_bytes(&joined)?.len() as u64;
             assert_eq!(
-                selection::place_messages(
+                selection::place_messages_with_io(
                     base.clone(),
                     contribution.clone(),
                     placement,
                     Limits {
                         render_bytes: exact,
                         ..limits
-                    }
+                    },
+                    None,
                 )?,
                 joined
             );
@@ -3436,11 +3429,12 @@ mod tests {
                 },
             ] {
                 assert!(matches!(
-                    selection::place_messages(
+                    selection::place_messages_with_io(
                         base.clone(),
                         contribution.clone(),
                         placement,
-                        rejected
+                        rejected,
+                        None,
                     ),
                     Err(crate::Error::Invalid(_))
                 ));
@@ -3810,7 +3804,7 @@ mod tests {
             Some(first_summary.clone()),
             CompactionRetention::default(),
         )?;
-        validate_compaction(&reference, &source, &next)?;
+        validate_compaction_with_io(&reference, &source, &next, None)?;
         assert_eq!(next.messages[0].role, ModelRole::Assistant);
         next.messages.extend([
             message(ModelRole::Assistant, "later-answer")?,
@@ -3823,7 +3817,7 @@ mod tests {
             Some(make_summary(&next, "second-summary")?),
             CompactionRetention::default(),
         )?;
-        validate_compaction(&reference, &next, &compacted)?;
+        validate_compaction_with_io(&reference, &next, &compacted, None)?;
         assert_eq!(compacted.messages.len(), 3);
         assert!(compacted.messages.contains(&source.messages[0]));
         assert_eq!(compacted.messages.last(), next.messages.last());
@@ -3890,7 +3884,7 @@ mod tests {
             Some(summary),
             CompactionRetention::default(),
         )?;
-        validate_compaction(&reference, &source, &compacted)?;
+        validate_compaction_with_io(&reference, &source, &compacted, None)?;
         assert!(compacted.messages.contains(&source.messages[3]));
         assert_eq!(compacted.messages.last(), source.messages.last());
         assert!(compacted.messages.contains(&source.messages[4]));
@@ -4083,7 +4077,7 @@ mod tests {
             Some(summary),
             CompactionRetention::default(),
         )?;
-        validate_compaction(&reference, &projected, &compacted)?;
+        validate_compaction_with_io(&reference, &projected, &compacted, None)?;
         assert_eq!(compacted.current_input_index, Some(1));
         assert_eq!(compacted.messages[1].content, input.input);
         assert_eq!(compacted.messages.last(), projected.messages.last());

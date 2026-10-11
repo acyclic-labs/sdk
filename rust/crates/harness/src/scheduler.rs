@@ -1624,7 +1624,7 @@ impl Scheduler {
     }
 
     /// Returns the stable cancellation propagation order.
-    pub fn cancellation_frontier(
+    pub(crate) fn cancellation_frontier(
         &self, operation_id: OperationId, recursive: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Vec<OperationId>> {

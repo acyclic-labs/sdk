@@ -403,22 +403,13 @@ impl EffectRegistry {
     }
 
     /// Resolves and validates the provider-owned guarantee pinned by durable state.
-    pub fn resolve(&self, effect: &EffectState) -> Result<&Arc<dyn EffectProvider>> {
-        self.resolve_with_work(effect, &mut None)
-    }
-
-    pub(crate) fn resolve_with_work(
+    pub(crate) fn resolve(
         &self, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&Arc<dyn EffectProvider>> {
-        self.resolve_fields(
-            &effect.provider, &effect.effect_kind, effect.guarantee, work)
-    }
-
-    fn resolve_fields(
-        &self, provider_name: &str, effect_kind: &str, guarantee: EffectGuarantee,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<&Arc<dyn EffectProvider>> {
+        let provider_name = &effect.provider;
+        let effect_kind = &effect.effect_kind;
+        let guarantee = effect.guarantee;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             return self.resolve_fields_with_native_work(provider_name, effect_kind, guarantee, native);
@@ -470,11 +461,11 @@ impl EffectRegistry {
     }
 
     /// Validates the observation against durable dispatch.
-    pub fn validate_observation(
+    pub(crate) fn validate_observation(
         &self, effect_id: EffectId, effect: &EffectState, observation: &EffectObservation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.resolve_with_work(effect, work)?;
+        self.resolve(effect, work)?;
         if observation.provider != effect.provider || observation.effect_id != effect_id
             || effect.attempts.last() != Some(&observation.attempt_id)
             || observation.request_digest != effect.request_digest
@@ -531,7 +522,7 @@ impl EffectRegistry {
         dispatch: EffectDispatch,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
-        let provider = self.resolve_with_work(effect, work)?;
+        let provider = self.resolve(effect, work)?;
         self.validate_dispatch(effect_id, effect, &dispatch, work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
@@ -549,11 +540,11 @@ impl EffectRegistry {
     }
 
     /// Reconciles the pinned attempt without redispatching it.
-    pub async fn reconcile_and_attest(
+    pub(crate) async fn reconcile_and_attest(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<EffectAttestation>> {
-        let provider = self.resolve_with_work(effect, work)?;
+        let provider = self.resolve(effect, work)?;
         let attempt_id = effect.attempts.last().copied().ok_or_else(||
             crate::effect_host::effect_error(work, crate::wire::ErrorCode::Conflict,
                 "effect has no durable dispatch attempt"))?;

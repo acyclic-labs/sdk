@@ -578,7 +578,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         {
             return clone_status(&effect.status, work);
         }
-        self.providers.resolve_with_work(&effect, work)?;
+        self.providers.resolve(&effect, work)?;
         let dispatched = if effect.status == EffectStatus::Planned {
             matches!(self.task_action(owner, effect_id, "dispatch",
                 TaskEffectAction::Dispatch(EffectAttemptId::from_bytes(effect_id.into_bytes())),

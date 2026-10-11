@@ -1695,7 +1695,7 @@ pub struct AttestedBoundary {
 
 impl AttestedBoundary {
     /// Validates an attestation envelope without claiming to verify its proof.
-    pub fn validate(
+    pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.provider.validate_with_work(work)?;
@@ -2398,7 +2398,7 @@ pub struct ReferenceGrant {
 
 impl ReferenceGrant {
     /// Validates the standalone owner-mediated reference envelope.
-    pub fn validate(
+    pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.file.validate_with_work(work)?;
@@ -2423,7 +2423,7 @@ impl ReferenceGrant {
 
 impl SharedGrant {
     /// Validates the grant envelope; the seed checks selection and child binding.
-    pub fn validate(
+    pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.volume.validate_with_work(work)?;
@@ -2437,7 +2437,7 @@ impl SharedGrant {
 
 impl ForkOmission {
     /// Required captures and successful captures cannot become omissions.
-    pub fn validate(
+    pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.selection.revision.validate_with_work(work)?;
