@@ -152,10 +152,12 @@ impl HistoryIo for NativeHistoryIo<'_> {
         let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
         let retained = io.owned_bytes()?;
         let value = decoded.into_retained();
-        let incoming = io.into_native_custody(retained)?;
+        let mut incoming = io.into_native_custody(retained)?;
         // Both guards originate from this exact finite native ledger; merging
         // transfers already admitted custody, without another claim or copy.
-        self.custody.absorb(incoming).map_err(|cause| self.native_error(cause))?;
+        self.custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+            cause, custody: Some(incoming),
+        })?;
         Ok(value)
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> { self.charge(WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() }) }
@@ -204,10 +206,12 @@ impl HistoryIo for NativeHistoryIo<'_> {
             {
                 return Err(Error::Unsupported("content verifier does not expose the original native work boundary".into()));
             }
-            let (bytes, guard) = verifier.read_with_native_work(
+            let (bytes, mut guard) = verifier.read_with_native_work(
                 reference, reference.descriptor().byte_length(), self.work,
             ).await?;
-            self.custody.absorb(guard).map_err(|error| self.native_error(error))?;
+            self.custody.absorb(&mut guard).map_err(|cause| Error::NativeWork {
+                cause, custody: Some(guard),
+            })?;
             Ok(bytes)
         })
     }
