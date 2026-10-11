@@ -134,7 +134,7 @@ impl<T> RetainedBuffer<T> {
         if let Err(error) = custody.retain_admitted(bytes, work) {
             drop(value);
             work.release(bytes).map_err(detach_work_error)?;
-            return Err(error);
+            return Err(error.into());
         }
         Ok(Self { value: Some(value), custody, bytes, native_allocation: None, source_ownership: None })
     }
@@ -970,7 +970,7 @@ struct PhysicalEntry {
     controls: Mutex<crate::materializer::NativeWorkReservation>,
     temporary_close: Mutex<Option<crate::materializer::NativeWorkReservation>>,
     creator_transfer_close: Mutex<Option<crate::materializer::NativeWorkReservation>>,
-    close: crate::materializer::NativeWorkReservation,
+    close: Mutex<crate::materializer::NativeWorkReservation>,
 }
 
 impl PhysicalEntry {
@@ -998,7 +998,7 @@ impl PhysicalEntry {
             expected_reparse: std::sync::atomic::AtomicU32::new(0),
             delete_on_close: std::sync::atomic::AtomicBool::new(false),
             controls: Mutex::new(controls), temporary_close: Mutex::new(temporary_close),
-            creator_transfer_close: Mutex::new(None), close,
+            creator_transfer_close: Mutex::new(None), close: Mutex::new(close),
         }, custody, work)
     }
 
@@ -1026,7 +1026,7 @@ impl PhysicalEntry {
             FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
         };
         let mut transfer = lock_recover(&self.creator_transfer_close);
-        let Some(credit) = transfer.as_ref() else { return Ok(()); };
+        let Some(credit) = transfer.as_mut() else { return Ok(()); };
         let mut held = lock_recover(&self.file);
         let original = held.as_ref().expect("original creator remains held through transfer");
         let control = projection_native_call(work, false, || {
@@ -1058,7 +1058,7 @@ impl Drop for PhysicalEntry {
     fn drop(&mut self) {
         let file = self.file.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(file) = file {
-            self.close.started_drop_io(crate::WorkCounters {
+            self.close.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).started_drop_io(crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             });
             drop(file);
@@ -1088,7 +1088,7 @@ fn close_preserved_physical_entry(
     }
     let file = file.take();
     if let Some(file) = file {
-        owner.close.started_drop_io(crate::WorkCounters {
+        lock_recover(&owner.close).started_drop_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         });
         drop(file);
@@ -3359,7 +3359,7 @@ fn retire_physical_entry(
 fn release_link(
     projection: Projection<'_>, path: &MountPath, owner: &SdkPhysicalEntry,
 ) -> Result<Release, NativeMountError> {
-    if has_pending_capture(projection, path)? { return Ok(Release::Busy); }
+    if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
     projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
     match owner.retire(projection.context, Some(projection.work.native_materialization_work().cancellation())) {
         Ok(()) => Ok(Release::Done),
@@ -3647,7 +3647,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         let mut duplicate = duplicate;
         let loan = duplicate.cleanup_loan(materialization.cancellation());
         let writer_file = detach_attempt(&mut host_work, Some(&loan), false, ||
-            file.try_clone().map_err(NativeMountError::Io))?;
+            file.try_clone())?;
         drop(loan);
         drop(capability);
         if let Err(error) = owner.identify(work) {
@@ -3742,7 +3742,7 @@ fn finish_projected_file(
             (&raw const information).cast(), size_of::<FILE_BASIC_INFO>() as u32,
         ) }.map_err(projection_sdk_io_error)
     }, Arc::clone(&meter)).map_err(projection_io_error)?, work)?;
-    wait_native_unit_measured(file.sync_bounded_async(acyclic_native_runtime::Durability::Fsync, meter)
+    wait_native_unit_measured(file.sync_bounded_async(acyclic_native_runtime::Durability::Full, meter)
         .map_err(projection_io_error)?, work)
 }
 
@@ -4705,6 +4705,9 @@ pub(super) struct ProjFsSession {
 // preborn producer. Callback admission closes and accepted scopes physically
 // drain before SDK stop returns and the callback payload is dropped.
 unsafe impl Send for ProjFsSession {}
+// SAFETY: shared methods borrow synchronized controls; SDK stop and handle
+// retirement require exclusive session access. ProjFS tokens are thread-independent.
+unsafe impl Sync for ProjFsSession {}
 
 impl ProjFsSession {
     pub(super) fn start(
@@ -6746,7 +6749,7 @@ fn capture_missing_host_ancestors_measured(
     let work = meter.clone();
     for count in 1..path.components().len() {
         let (parent, allocation) = clone_mount_components_native(&path.components()[..count], meter)?;
-        let result = (|| {
+        let result: Result<(), NativeMountError> = (|| {
             if source.lookup_with_meter(&parent, &work).map_err(detach_source_error)?.is_none() {
                 verify_source_write_work(source, meter)?;
                 source.capture_host_paths_with_meter(
@@ -8007,7 +8010,7 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallbackGate, PostOperationFailures, ReadBasis, flush_callback_gate,
+        CallbackGate, PostOperationFailures, Projector, ReadBasis, flush_callback_gate,
         record_post_operation_failure,
         remove_authenticated_destination, source_hresult,
     };
@@ -8426,7 +8429,7 @@ mod tests {
         assert_eq!(meter.meter().lock().work.backend_write_operations, 1);
         assert_eq!(meter.meter().lock().work.output_bytes, 0);
         let flush = super::wait_native_unit_measured(file.sync_bounded_async(
-            acyclic_native_runtime::Durability::Fsync, native_meter,
+            acyclic_native_runtime::Durability::Full, native_meter,
         ).map_err(super::projection_io_error)?, &meter).expect_err("actual FlushFileBuffers requires write access");
         assert!(matches!(&flush, super::NativeMountError::Io(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied));

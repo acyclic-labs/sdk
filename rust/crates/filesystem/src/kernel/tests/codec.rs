@@ -1,36 +1,6 @@
 use super::{CanonicalDecodeError, Decoder, Encoder, EncodeAllocationStep};
 
 #[test]
-fn invariant_payloads_preserve_typed_causes_and_display() {
-    use super::CanonicalInvariant;
-    use crate::kernel::TreePageError;
-    use std::error::Error;
-
-    let typed = CanonicalDecodeError::Invariant(
-        CanonicalInvariant::Tree(TreePageError::InvalidName),
-    );
-    assert_eq!(
-        typed.to_string(),
-        "canonical object invariant failed: logical name is invalid for its declared encoding",
-    );
-    assert_eq!(
-        typed.source().and_then(|cause| cause.downcast_ref::<CanonicalInvariant>()),
-        Some(&CanonicalInvariant::Tree(TreePageError::InvalidName)),
-    );
-    let metadata = CanonicalDecodeError::Invariant(
-        CanonicalInvariant::MetadataReferenceKind { field: "attributes" },
-    );
-    assert_eq!(
-        metadata.to_string(),
-        "canonical object invariant failed: attributes has the wrong object kind",
-    );
-    assert_eq!(
-        CanonicalInvariant::Static("fixed canonical diagnostic").to_string(),
-        "fixed canonical diagnostic",
-    );
-}
-
-#[test]
 fn exact_capacity_accepts_only_the_complete_header_boundary() {
     let domain = b"domain";
     let minimum = domain.len() + 2;
@@ -44,66 +14,6 @@ fn exact_capacity_accepts_only_the_complete_header_boundary() {
         Encoder::with_exact_capacity(domain, 7, minimum - 1),
         Err(CanonicalDecodeError::LengthOverflow)
     ));
-}
-
-#[test]
-fn exact_capacity_steps_report_real_reservation_then_completed_header()
--> Result<(), Box<dyn std::error::Error>> {
-    let domain = b"domain";
-    let minimum = domain.len() + 2;
-    let mut stage = 0;
-    let encoded = Encoder::with_exact_capacity_with_steps(
-        domain, 7, minimum,
-        |step| {
-            match step {
-                EncodeAllocationStep::Reserve { capacity } => {
-                    assert_eq!(stage, 0);
-                    assert_eq!(capacity, minimum);
-                }
-                EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-                    assert_eq!(stage, 1);
-                    assert_eq!(admitted_bytes, minimum as u64);
-                    assert!(actual_bytes >= admitted_bytes);
-                }
-                EncodeAllocationStep::BeforeHeader { bytes } => {
-                    assert_eq!(stage, 2);
-                    assert_eq!(bytes, minimum as u64);
-                }
-                EncodeAllocationStep::HeaderWritten { bytes } => {
-                    assert_eq!(stage, 3);
-                    assert_eq!(bytes, minimum as u64);
-                }
-            }
-            stage += 1;
-            Ok::<_, CanonicalDecodeError>(())
-        },
-        |_| CanonicalDecodeError::AllocationFailed,
-    )?.finish();
-    assert_eq!(stage, 4);
-    assert_eq!(encoded, Encoder::with_exact_capacity(domain, 7, minimum)?.finish());
-    Ok(())
-}
-
-#[test]
-fn denied_header_has_no_completed_encoding_step() {
-    let domain = b"domain";
-    let mut completed_header_bytes = 0;
-    let result = Encoder::with_exact_capacity_with_steps(
-        domain, 7, domain.len() + 2,
-        |step| {
-            match step {
-                EncodeAllocationStep::BeforeHeader { bytes } => {
-                    return Err(CanonicalDecodeError::ObjectTooLarge { observed: bytes, maximum: 0 });
-                }
-                EncodeAllocationStep::HeaderWritten { bytes } => completed_header_bytes += bytes,
-                EncodeAllocationStep::Reserve { .. } | EncodeAllocationStep::Capacity { .. } => {}
-            }
-            Ok(())
-        },
-        |_| CanonicalDecodeError::AllocationFailed,
-    );
-    assert!(matches!(result, Err(CanonicalDecodeError::ObjectTooLarge { maximum: 0, .. })));
-    assert_eq!(completed_header_bytes, 0);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

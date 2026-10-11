@@ -1,10 +1,5 @@
-//! Canonical mutation facts prepared against one authority's pre-commit observations.
-//!
-//! These helpers do not authorize, publish, retain retry identities or reserve the
-//! provider's resident record quotas. Providers must hold one atomic authority's
-//! stable pre-commit observations for every tail lookup, including count passes.
-//! Ordinary and optional native-observer calls share these fact builders; the
-//! observer funds actual output vector capacities before allocation.
+//! Canonical mutation facts prepared against pre-commit observations.
+
 use std::collections::BTreeMap;
 
 use crate::OwnedBytes;

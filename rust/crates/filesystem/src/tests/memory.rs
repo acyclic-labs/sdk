@@ -1200,10 +1200,6 @@ fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     drop(state.objects.remove(index));
     drop(state);
     assert!(work.live_allocation_bytes() > baseline);
-    ImmediateObjectStore::flush_before_publish_with_native_work(
-        &store, crate::async_storage::PublicationScope::Everything,
-        &work, &cancellation,
-    )?;
     drop(store);
     assert!(work.live_allocation_bytes() < body_live);
     assert!(work.live_allocation_bytes() > baseline);
