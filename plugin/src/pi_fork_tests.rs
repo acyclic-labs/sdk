@@ -20,6 +20,7 @@ pub(crate) struct Fixture {
     pub(crate) resources: ServiceResources,
     pub(crate) source: Arc<LocalLazyWorkspace>,
     physical: Arc<crate::SharedPhysicalRoot>,
+    root_handle: crate::pi_root_provider::PiRootHandle,
     parent: StreamAggregate<LocalStream>,
     pub(crate) context: acyclic_harness::runtime::TaskContext,
     pub(crate) journal: Arc<TaskJournalOwner<LocalStream>>,
@@ -117,8 +118,8 @@ impl Fixture {
         let root_allocation = observed.0.1;
         let mut handles = root_provider.take_created_handles().await;
         let handle = handles.remove(&hex::encode(root)).unwrap();
-        let physical = handle.physical;
-        let source = Arc::new(handle.workspace);
+        let physical = Arc::clone(&handle.physical);
+        let source = Arc::clone(&handle.workspace);
         source.read("/observed.txt", 64).await.unwrap();
         let control_operation = OperationId::from_bytes([165; 16]);
         let payload = crate::pi_root_provider::stage_pi_input(&owner, &filesystem, control_operation,
@@ -190,7 +191,7 @@ impl Fixture {
                 session_path: "native-session.jsonl".into(), session_bytes,
                 maximum_entries: 128, maximum_bytes: 1_048_576 } };
         Self { _directory: directory, owner, runtime, filesystem, stream, resources, source,
-            parent, context, journal, fence, native, commit, physical, root_request: request, root_allocation, root_control,
+            parent, context, journal, fence, native, commit, physical, root_handle: handle, root_request: request, root_allocation, root_control,
             private_root, relative_session,
             _root_allocation_custody: observed.1, _resources_custody: resources_custody, _service_lock: service_lock }
     }
@@ -225,11 +226,9 @@ impl Fixture {
         let input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
         let key = input.0.binding.project_volumes.keys().next().unwrap();
-        let actual = crate::pi_root_provider::PiRootHandle::from_observed_with_native_work(
-            self.source.as_ref().clone(), self.physical.clone(), work.display(key).unwrap(), work).unwrap();
         let frozen = crate::pi_fork_host::freeze_created_root_source(self.owner.clone(), &self.resources,
             self.filesystem.clone(), self.stream.clone(), &context, &self.journal,
-            &input.0, &actual.0, &actual.1, work).await.unwrap();
+            &input.0, key, &self.root_handle, work).await.unwrap();
         let authority = self.owner.conversation_authority_with_native_work(self.journal.task_id(),
             self.owner.policy().agent, context.context().scope().grants(), work).unwrap();
         let verifier = authority.0.1.verifier_with_native_work(work).unwrap();
@@ -619,11 +618,9 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
     let input: PiDecodedInput<PiTaskInput> = coordinator.decode_input_value(&original.value.input,
         acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES).unwrap();
     let key = input.value.binding.project_volumes.keys().next().unwrap();
-    let actual = crate::pi_root_provider::PiRootHandle::from_observed_with_native_work(
-        fixture.source.as_ref().clone(), fixture.physical.clone(), work.display(key).unwrap(), &work).unwrap();
     let frozen = crate::pi_fork_host::freeze_created_root_source(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), &context, &fixture.journal,
-        &input.value, &actual.0, &actual.1, &work).await.unwrap();
+        &input.value, key, &fixture.root_handle, &work).await.unwrap();
     assert_eq!(frozen.0.workspace_id, fixture.source.workspace().id());
     fixture.source.validate_snapshot_with_native_work(frozen.0, &work).await.unwrap();
     assert!(crate::pi_lazy_capture::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
@@ -632,7 +629,7 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
     work.cancellation().cancel();
     assert!(crate::pi_fork_host::freeze_created_root_source(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), &context, &fixture.journal,
-        &input.value, &actual.0, &actual.1, &work).await.is_err());
+        &input.value, key, &fixture.root_handle, &work).await.is_err());
 }
 
 #[tokio::test]

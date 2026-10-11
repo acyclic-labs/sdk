@@ -192,8 +192,7 @@ impl<'a> PiSelectedHost<'a> {
     let mut key = work.display(&format_args!("{}", self.project_key(&input.binding, requested)?)).map_err(native_error)?;
     let project = &input.binding.project_volumes[&key.0];
     let workspace = if task == self.protected.policy().root_task {
-        self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?
-            .workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
+        Arc::clone(&self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?.workspace)
     } else { self.native.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
     let frozen_custody = if let Some(pinned) = pinned { (pinned, None) } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;

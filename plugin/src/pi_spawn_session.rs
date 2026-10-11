@@ -316,19 +316,32 @@ impl PiSession {
             return self.spawn_observation(&commit, operations, false, true, &work, owner.policy().maximum_payload_bytes, retained_custody).await;
         };
         if let Some((acknowledgement, custody)) = acknowledgement {
-            let acknowledged_task = TaskId::deserialize(acknowledgement.get("task").ok_or_else(|| acyclic_harness::Error::Invalid("Pi fork acknowledgement has no admitted child".to_owned()))?).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-            if acknowledged_task != task {
-                return Err(acyclic_harness::Error::Invalid("Pi fork acknowledgement changed its original admitted child".to_owned()));
-            }
+            // Reuse the genuine typed creator identity retained before the ACK
+            // projection; borrowed JSON never invokes an unfunded UUID decoder.
+            let rejection = match acknowledgement.get("task").and_then(Value::as_str) {
+                None => Some("Pi fork acknowledgement has no admitted child identity"),
+                Some(acknowledged_task) if prepared.binding.task_id != task
+                    || acknowledged_task != prepared.report.request.child.id =>
+                    Some("Pi fork acknowledgement changed its original admitted child"),
+                Some(_) => None,
+            };
             drop(acknowledgement);
             spawn_retain_custody(&mut retained_custody, custody)?;
+            if let Some(reason) = rejection {
+                return Err(acyclic_harness::Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Storage, reason,
+                });
+            }
         }
         if let Some(live) = &live { live.owner.verify_with_native_work(false, &work).await?; }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
         native.register_prepared(prepared).await?;
         // The stock task/effect future may block on native SessionStart, tools
         // and mail RPC. It must never hold the session actor during that wait.
-        self.native_jobs.insert(task, tokio::spawn(async move { native.run_child(task).await }));
+        let job = super::pi_lifecycle_session::spawn_native_job(&work, || async move {
+            native.run_child(task).await
+        })?;
+        self.native_jobs.insert(task, job);
         self.spawn_observation(&commit, operations, true, false, &work, owner.policy().maximum_payload_bytes, retained_custody).await
     }
 

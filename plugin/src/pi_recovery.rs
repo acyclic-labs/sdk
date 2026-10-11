@@ -639,7 +639,7 @@ fn transfer_custody<T>(
     Ok(())
 }
 
-fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
+pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;

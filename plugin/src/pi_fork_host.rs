@@ -231,7 +231,7 @@ impl<'a> PiForkHost<'a> {
             self.protected.policy().session_limits.depth, work).await?;
         let source = if command.commit.source_task == self.protected.policy().root_task {
             let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi original selected root has no actual lazy handle"))?;
-            actual.workspace.clone().into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?
+            Arc::clone(&actual.workspace)
         } else {
             self.native.live_workspace(command.commit.source_task)
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?

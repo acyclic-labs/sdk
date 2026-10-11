@@ -49,7 +49,7 @@ pub(crate) type PiMeasuredResult<T> = std::result::Result<T, (Error, WorkCounter
 
 /// Actual handles returned by dispatch, never reconstructed from route IDs.
 pub(crate) struct PiRootHandle {
-    pub(crate) workspace: LocalLazyWorkspace,
+    pub(crate) workspace: Arc<LocalLazyWorkspace>,
     pub(crate) physical: Arc<SharedPhysicalRoot>,
     _custody: Option<NativeAllocation>,
 }
@@ -67,6 +67,8 @@ impl PiRootHandle {
             return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
                 reason: "root index key custody differs from original source work" });
         }
+        let workspace = workspace.into_arc_with_native_work(work)
+            .map_err(|source| Error::NativeSource { source, custody: None })?;
         let mut entry = work.retain_owned(std::mem::size_of::<(String, Self)>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         key._custody.absorb(&mut entry)
@@ -1817,6 +1819,8 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 let mut slot = work.retain_owned(std::mem::size_of::<(String, PiRootHandle)>() as u64)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 slot.absorb(&mut owned_key._custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let workspace = workspace.into_arc_with_native_work(work)
+                    .map_err(|source| Error::NativeSource { source, custody: None })?;
                 state.handles.insert(owned_key.value, PiRootHandle { workspace, physical, _custody: Some(slot) });
                 #[cfg(test)]
                 self.test_fault_native("after-root-creation")?;

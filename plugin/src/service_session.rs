@@ -160,9 +160,9 @@ pub(crate) struct PiSession {
     resources: ServiceResources,
     roots: BTreeMap<String, pi_root_provider::PiRootHandle>,
     native: Option<Arc<pi_native_host::PiNativeCommandHost>>,
-    native_jobs: BTreeMap<TaskId, tokio::task::JoinHandle<acyclic_harness::Result<(
+    native_jobs: BTreeMap<TaskId, pi_lifecycle_session::PiNativeJob<(
         Option<acyclic_harness::filesystem::TaskWorkerAttempt>, acyclic_fs::NativeAllocation,
-    )>>>,
+    )>>,
     // Declaration order keeps startup-owned data alive before its actual guard
     // is released, including cancellation/error destruction of the actor.
     native_startup_custody: Option<acyclic_fs::NativeAllocation>,
