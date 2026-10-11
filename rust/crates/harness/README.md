@@ -261,6 +261,10 @@ workflow digest, separately from the tagged canonical resource-admission digest.
 Historical READ queries must carry the actual original reservation witness;
 they cannot become fresh creators or writers. A substituted admission, foreign
 original fence/agent, or cancelled query rejects before source-provider IO.
+The configured Task creator authenticates its existing owner-scope MAC
+separately from that conversation proof. Matching audience names are not enough:
+a different creator key rejects before filesystem IO, and the creator audience
+is never coerced into the root conversation audience.
 
 Native preparation may attach one genuine `NativeTaskWorkingView` to that
 same issued dispatch context. Its retained physical view and original owner

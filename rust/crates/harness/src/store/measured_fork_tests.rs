@@ -504,7 +504,23 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     owner.verify_root_bootstrap_context_with_native_work(
         &original_root, bootstrap.binding(), &native,
     ).await?;
-    assert_eq!(owner.root_bootstrap_owner(), &fixture.host.owner);
+    assert_ne!(owner.root_bootstrap_owner(), &audience);
+    let creator = AuthorityIssuer::new(
+        "created-owner", [80; 32], owner.root_bootstrap_owner().clone(),
+    );
+    owner.authenticate_root_bootstrap_creator_with_native_work(&creator.verifier(), &native).await?;
+    let wrong_creator = AuthorityIssuer::new(
+        "created-owner", [81; 32], owner.root_bootstrap_owner().clone(),
+    );
+    let creator_denied = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
+        .expect("independent configured creator verification");
+    let before = creator_denied.receipt();
+    let error = owner.authenticate_root_bootstrap_creator_with_native_work(
+        &wrong_creator.verifier(), &creator_denied,
+    ).await.err().expect("same audience with a different key is not the configured creator");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert_eq!(creator_denied.receipt().backend_read_operations, before.backend_read_operations);
+    assert_eq!(creator_denied.receipt().backend_write_operations, before.backend_write_operations);
     let query = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("independent original bootstrap READ query");
     owner.authenticated_root_binding_for_read_with_native_work(&bootstrap, &query).await?;

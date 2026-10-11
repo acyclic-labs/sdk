@@ -2007,6 +2007,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) fn root_bootstrap_owner(&self) -> &Authority { &self.host.owner }
 
+    /// Authenticates the configured Task creator's existing MAC. Its audience
+    /// is intentionally distinct from the canonical ROOT conversation binding.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn authenticate_root_bootstrap_creator_with_native_work(
+        &self, verifier: &AuthorityVerifier,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        if !self.input_is_root {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "bootstrap creator requires an original root admission" });
+        }
+        verifier.verify_audience_with_native_work(&self.host.owner, work)?;
+        verifier.verify_with_native_work(&self.host.owner_scope, work)?;
+        self.verify_read_access_with_native_work(work).await
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn original_root_admission_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
