@@ -889,9 +889,9 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     .chain(after.values().filter_map(|record| record.parent_context_id))
                     .collect::<BTreeSet<_>>();
                 let mut children = WorkspaceContextChildren::new();
-                for parent in affected_parents {
-                    let current = log.get::<ContextChildren>(root, parent)?;
-                    children.insert(parent, current.unwrap_or_default().0);
+                for parent in &affected_parents {
+                    let current = log.get::<ContextChildren>(root, *parent)?;
+                    children.insert(*parent, current.unwrap_or_default().0);
                 }
                 for (context_id, replacement) in &after {
                     update_context_children(
@@ -904,8 +904,8 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 for (context_id, record) in after {
                     change.put(context_id, Some(record));
                 }
-                for (parent, descendants) in children {
-                    change.put_children(parent, Some(descendants))?;
+                for parent in affected_parents {
+                    change.put_children(parent, children.remove(&parent))?;
                 }
                 log.commit(root, change)?;
                 Ok(true)
@@ -1271,23 +1271,22 @@ impl Change {
         parent: WorkspaceContextId,
         descendants: Option<BTreeSet<WorkspaceContextId>>,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let count = descendants
-            .as_ref()
-            .map(|descendants| {
-                u64::try_from(descendants.len())
-                    .map(ContextChildCount)
-                    .map_err(|_| {
-                        LocalCoreStateStoreError::ContextTransaction(
-                            "workspace-context child count exceeds durable representation"
-                                .to_owned(),
-                        )
-                    })
-            })
-            .transpose()?;
+        let count = child_bucket_count(descendants.as_ref().map(BTreeSet::len))?;
         self.put(parent, descendants.map(ContextChildren));
         self.put(parent, count);
         Ok(())
     }
+}
+
+/// Both ordinary and original-funded afterimages use the same absence/count policy.
+fn child_bucket_count(descendants: Option<usize>) -> Result<Option<ContextChildCount>, LocalCoreStateStoreError> {
+    descendants.map(|count| {
+        u64::try_from(count).map(ContextChildCount).map_err(|_| {
+            LocalCoreStateStoreError::MaterializationWork(
+                crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+            )
+        })
+    }).transpose()
 }
 
 /// Original after-images and their original-ledger payload/capacity custody.

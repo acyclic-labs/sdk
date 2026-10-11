@@ -12,6 +12,16 @@ Choose the backend for your deployment: embedded storage for local durability, h
 
 `WorkspaceContextRegistry` records the control-plane hierarchy of physical roots and their exact workspace identities without enumerating file contents. A context has one direct parent, but its roots can be independently adopted by another authorized context; ancestry is not a prerequisite for reference visibility. Native and browser bindings exchange the same bounded `WorkspaceContextRoot`, `WorkspaceContextRoots`, `WorkspaceContextSnapshot`, and `WorkspaceContextDiscard` protobuf records. The Rust codec rejects malformed identities, noncanonical paths, duplicate or unordered roots, invalid lifecycle states, and noncanonical encodings before adapters act on them. Context records convey routing and lineage, not permission to read or write another owner's bytes.
 
+The stock `LocalCoreStateStore` native lineage/context hooks use that same `CoreLog`
+and its canonical JSON afterimages, not the materialization journal. A funded blocking
+source retains the original resource view, cancellation and owned payload custody;
+incoming DTO capacities are checked before exchange. Resident and WAL vectors retain
+actual capacity guards, while ordinary public context maps account known logical
+entries and owned paths/names without claiming allocator-private tree-node layouts.
+Parent changes persist every affected child bucket and count together, including
+removal of the old parent's last child. A later checkpoint cannot erase a durable
+WAL acceptance; cold replay and ordinary readers observe the same records.
+
 Native materialization distinguishes an immutable `GenerationTransition { from, to }`
 from `NativePreparation`: preparation retains the actual qualified source selection
 and original full manifest/fence bytes rather than inventing a generation transition.

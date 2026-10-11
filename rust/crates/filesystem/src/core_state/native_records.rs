@@ -39,12 +39,16 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
     if needed <= values.capacity() { return Ok(()); }
     let old = values.capacity();
     let next = needed.max(old.checked_mul(2).ok_or_else(overflow)?).max(1);
-    let bytes = (next - old).checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
+    let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
+    let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0))?;
     let copying = work.reserve_copy((values.len() * std::mem::size_of::<T>()) as u64)?;
     values.try_reserve_exact(next - values.len()).map_err(NativeError::AllocationFailed)?;
     held.absorb(&mut claim)?;
-    let actual = ((values.capacity() - old) * std::mem::size_of::<T>()) as u64;
+    // The allocator has physically retired the old backing, not merely
+    // overwritten its handles. Until here BOTH full capacities were funded.
+    held.release(old_bytes)?;
+    let actual = values.capacity().checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let capacity_result = if actual > bytes {
         let (mut excess, result) = work.record_completed_allocation(actual - bytes);
         held.absorb(&mut excess)?;
@@ -441,10 +445,19 @@ fn put_buckets(change: &mut NativeChange, mut buckets: Vec<Bucket>, work: &Work)
         }
     }
     for bucket in buckets {
-        let count = u64::try_from(bucket.children.len()).map_err(|_| overflow())?;
-        let Bucket { parent, children, allocation } = bucket;
-        change.put_owned(RecordKey::Children(parent), Owned::from_parts(RecordValue::FlatChildren(children), allocation), work)?;
-        change.put_scalar(RecordKey::ChildCount(parent), Some(RecordValue::ChildCount(ContextChildCount(count))), work)?;
+        let parent = bucket.parent;
+        let count = child_bucket_count((!bucket.children.is_empty()).then_some(bucket.children.len()))?;
+        if count.is_none() {
+            // Retire the actual empty backing before its intrinsic guard; the
+            // afterimage removes BOTH bucket and count, just as ordinary CAS.
+            drop(bucket);
+            change.put_scalar(RecordKey::Children(parent), None, work)?;
+            change.put_scalar(RecordKey::ChildCount(parent), None, work)?;
+        } else {
+            let Bucket { parent, children, allocation } = bucket;
+            change.put_owned(RecordKey::Children(parent), Owned::from_parts(RecordValue::FlatChildren(children), allocation), work)?;
+            change.put_scalar(RecordKey::ChildCount(parent), count.map(RecordValue::ChildCount), work)?;
+        }
     }
     Ok(())
 }
@@ -614,12 +627,8 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
                     work.charge(crate::WorkCounters { bytes_copied: ((bucket.children.len() - position - 1) * std::mem::size_of::<WorkspaceContextId>()) as u64, ..Default::default() })?;
                     bucket.children.remove(position);
                 }
-                // Ordinary update_context_children removes the map entry when
-                // empty, so it emits no replacement bucket/count for that key.
-                if bucket.children.is_empty() {
-                    work.charge(crate::WorkCounters { bytes_copied: ((buckets.len() - index - 1) * std::mem::size_of::<Bucket>()) as u64, ..Default::default() })?;
-                    buckets.remove(index);
-                }
+                // Keep this affected parent even when its last child leaves.
+                // put_buckets emits the canonical absence/count afterimages.
             }
         }
         if let Some(parent) = replacement.parent_context_id {
@@ -644,4 +653,36 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
     drop(bucket_allocation);
     log.commit_native_change(root, change, work, cxl)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_record_vector_requires_full_old_and_new_capacity_before_reallocation() {
+        let cancellation = CancellationToken::new();
+        let element = std::mem::size_of::<u64>() as u64;
+        let budget = crate::WorkBudget {
+            peak_allocation_bytes: Work::accounting_state_bytes() + 5 * element,
+            ..crate::WorkBudget::UNBOUNDED
+        };
+        let work = Work::new(budget, &cancellation).expect("exact original capacity limit");
+        let mut held = work.claim(0).expect("original guard");
+        let mut values = Vec::new();
+        reserve(&mut values, 2, &work, &mut held).expect("actual original backing");
+        assert_eq!(values.capacity(), 2);
+        values.extend([11_u64, 13]);
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        let error = reserve(&mut values, 3, &work, &mut held).expect_err("delta-only funding would wrongly accept");
+        assert!(matches!(error, Error::MaterializationWork(NativeError::Work(_))));
+        assert_eq!(values, [11, 13]);
+        assert_eq!(values.capacity(), 2);
+        assert_eq!(work.receipt(), before);
+        assert_eq!(work.live_allocation_bytes(), live);
+        drop(values);
+        drop(held);
+        assert_eq!(work.live_allocation_bytes(), Work::accounting_state_bytes());
+    }
 }
