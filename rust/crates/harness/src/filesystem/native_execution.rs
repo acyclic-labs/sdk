@@ -41,7 +41,7 @@ trait NativeRootOutputOwner: Send + Sync {
     fn read<'a>(
         &'a self, source: &'a NativeRootOutputSource, reference: &'a FileRef, maximum: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>>;
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>>;
     fn verify_content<'a>(
         &'a self, source: &'a NativeRootOutputSource, reference: &'a FileRef, maximum: u64,
         work: &'a NativeMaterializationWork,
@@ -81,7 +81,7 @@ impl<P: StreamProvider + 'static> NativeRootOutputOwner for TaskJournalOwner<P> 
     fn read<'a>(
         &'a self, source: &'a NativeRootOutputSource, reference: &'a FileRef, maximum: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         crate::NativeFutureBundle::new(work, || async move {
             authorize_native_root_output(self, source, VolumeOperation::Read, work).await?;
             source.binding.reader.read_with_native_work(reference, maximum, work)?.await
@@ -235,14 +235,14 @@ impl ContentResidencyVerifier for NativeRootOutputSource {
         native_root_output_ordinary_denial()
     }
 
-    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         native_root_output_ordinary_denial()
     }
 
     fn read_private_prefix<'a>(
         &'a self, _volume: &'a VolumeRef, _prefix: &'a str, _path: &'a str,
         _generation: &'a GenerationRef, _maximum: u64,
-    ) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    ) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         native_root_output_ordinary_denial()
     }
 
@@ -256,7 +256,7 @@ impl ContentResidencyVerifier for NativeRootOutputSource {
     fn read_private_path<'a>(
         &'a self, _volume: &'a VolumeRef, _prefix: &'a str, _path: &'a str,
         _generation: Option<&'a GenerationRef>,
-    ) -> BoxProviderFuture<'a, Result<(FileRef, Vec<u8>)>> {
+    ) -> BoxProviderFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         native_root_output_ordinary_denial()
     }
 
@@ -282,7 +282,7 @@ impl ContentResidencyVerifier for NativeRootOutputSource {
     fn read_measured<'a>(
         &'a self, _reference: &'a FileRef, _maximum: u64, _budget: acyclic_fs::WorkBudget,
         _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         native_root_output_ordinary_denial()
     }
 
@@ -321,7 +321,7 @@ impl ContentResidencyVerifier for NativeRootOutputSource {
 
     fn read_with_native_work<'a>(
         &'a self, reference: &'a FileRef, maximum: u64, work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
         self.require_content_work(reference.volume(), work)?;
         self.owner.read(self, reference, maximum, work)
     }
