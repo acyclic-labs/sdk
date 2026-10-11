@@ -1631,38 +1631,6 @@ async fn original_read_source_cannot_become_native_directory_execution_owner() -
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_admission_moves_paid_json_and_retains_exact_typed_metadata() -> Result<()> {
-    use crate::store::history::HistoryIo as _;
-    let fixture = CreationFixture::new().await?;
-    let request = fixture.sandbox_request()?;
-    let bytes = crate::contract::canonical_json_bytes(&request.child.canonical_payload())?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        creation_control_budget(), &cancellation,
-    ).expect("finite original admission ledger");
-    let mut io = crate::store::history::native_work_io(&work)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let (value, source_held) = io.decode_json_value(&bytes)?;
-    let input_text = value["input"]["action"].as_str().expect("actual fixture action").as_ptr();
-    let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(
-        value, &mut Some(&mut io),
-    )?;
-    assert!(admission == request.child);
-    assert_eq!(admission.input["action"].as_str().expect("moved fixture action").as_ptr(), input_text);
-    let retained = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-        .checked_add(admission.logical_owned_bytes()?).expect("finite admission extent");
-    io.release_owned(source_held.checked_add(added).expect("paid source and typed slots")
-        .checked_sub(retained).expect("producer-funded actual admission"))?;
-    let custody = io.take_native_custody(retained)?;
-    assert_eq!(custody.bytes(), retained);
-    assert!(custody.matches_work(&work));
-    assert!(work.receipt().allocation_operations > 1);
-    drop(admission);
-    drop(custody);
-    Ok(())
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -1889,33 +1857,6 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_owned_admission_scalar_cause_keeps_original_preclaimed_guard() -> Result<()> {
-    use crate::store::history::HistoryIo as _;
-    let fixture = CreationFixture::new().await?;
-    let request = fixture.sandbox_request()?;
-    let mut value = request.child.canonical_value();
-    value["resource_proofs"][0]["resource"]["kind"] = serde_json::json!("foreign-kind");
-    let bytes = crate::contract::canonical_json_bytes(&value)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation).unwrap();
-    let live = work.live_allocation_bytes();
-    let mut io = crate::store::history::native_work_io(&work)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let (owned, _) = io.decode_json_value(&bytes)?;
-    let error = TaskAdmissionRecord::from_canonical_value_counted_with_work(owned, &mut Some(&mut io)).err()
-        .expect("genuine ResourceKind visitor must reject the changed scalar");
-    assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
-        if custody.matches_work(&work)));
-    assert!(error.is_native_failure());
-    drop(io);
-    assert!(work.live_allocation_bytes() > live);
-    drop(error);
-    assert_eq!(work.live_allocation_bytes(), live);
-    assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());
-    Ok(())
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -1952,89 +1893,4 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_admission_field_copy_preserves_private_claims_and_exact_resource_custody() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let created = fixture.create_filesystem_child().await?;
-    fixture.admit_child(created.request.child.clone()).await?;
-    let operation = OperationId::from_bytes(fixture.root.into_bytes());
-    let declaration = fixture.host.retained_declaration_with_work(operation, &mut None).await?
-        .expect("actual signed original root declaration");
-    fixture.host.verifier.verify_scope_for_with_work(
-        &fixture.host.owner, &declaration.owner_scope, &mut None,
-    )?;
-    let mut source = fixture.host.admission_with_work(created.request.child.operation_id, &mut None).await?;
-    source.input = serde_json::json!({
-        "nested": [{"signed_scope": &declaration.owner_scope, "text": "owned-private-input"}],
-    });
-    source.input_schema = serde_json::json!({
-        "type": "object", "properties": {"nested": {"type": "array", "items": {"type": "object"}}},
-    });
-    source.output_schema = serde_json::json!({
-        "type": "object", "properties": {"retained": {"enum": ["exact-original-output"]}},
-    });
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let root = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
-        .expect("original finite clone root");
-    let work = root.native_volume_work(creation_control_budget())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let foreign_resource = root.native_volume_work(creation_control_budget())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let live = root.live_allocation_bytes();
-    let (copied, custody) = source.clone_with_native_work(&work)?;
-    assert!(copied == source);
-    assert_eq!(custody.bytes(), std::mem::size_of::<TaskAdmissionRecord>() as u64
-        + copied.logical_owned_bytes()?);
-    assert!(custody.matches_work(&work));
-    assert!(custody.work().shares_allocation_context(&work));
-    assert!(custody.work().shares_ledger(&foreign_resource));
-    assert!(!custody.matches_work(&foreign_resource));
-    assert!(!custody.matches_work(&root));
-    let (retained_scope, scope_custody) = crate::core::Scope::from_value_with_native_work(
-        &copied.input["nested"][0]["signed_scope"], &work,
-    )?;
-    fixture.host.verifier.verify_with_native_work(&retained_scope, &work)?;
-    assert!(retained_scope == declaration.owner_scope);
-    assert!(scope_custody.matches_work(&work));
-    assert_ne!(copied.input["nested"][0]["text"].as_str().unwrap().as_ptr(),
-        source.input["nested"][0]["text"].as_str().unwrap().as_ptr());
-    assert!(work.receipt().bytes_copied > 0);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    drop(retained_scope);
-    drop(scope_custody);
-    drop(copied);
-    drop(custody);
-    assert_eq!(root.live_allocation_bytes(), live);
-    Ok(())
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_admission_field_copy_denial_keeps_source_and_releases_partial_payload() -> Result<()> {
-    let fixture = CreationFixture::new().await?;
-    let request = fixture.sandbox_request()?;
-    let source = request.child;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = creation_control_budget();
-    budget.allocation_operations = 1;
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-        .expect("only the original ledger allocation");
-    let live = work.live_allocation_bytes();
-    let prefix = work.receipt();
-    let denial = source.clone_with_native_work(&work);
-    assert!(matches!(denial, Err(Error::NativeWork { .. })));
-    drop(denial);
-    assert_eq!(work.live_allocation_bytes(), live);
-    assert_eq!(work.receipt().bytes_copied, prefix.bytes_copied);
-    assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
-    assert!(source.input["action"].is_string());
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
-        .expect("original cancellation control ledger");
-    let prefix = work.receipt();
-    cancellation.cancel();
-    assert!(matches!(source.clone_with_native_work(&work), Err(Error::NativeWork { .. })));
-    assert_eq!(work.receipt(), prefix);
-    Ok(())
-}

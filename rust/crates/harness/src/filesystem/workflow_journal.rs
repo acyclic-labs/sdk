@@ -1340,7 +1340,7 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed_with_work(
+                crate::distributed::append_keyed(
                     (&stream, &self.stream), body, Some(expected_revision), key,
                     record.operation_id, "workflow retry identity", &mut Some(&mut borrowed),
                 ).await
@@ -1490,7 +1490,7 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed_with_work(
+                crate::distributed::append_keyed(
                     (&stream, &self.stream), body, Some(0), key, admission.operation_id,
                     "workflow admission identity", &mut Some(&mut borrowed),
                 ).await

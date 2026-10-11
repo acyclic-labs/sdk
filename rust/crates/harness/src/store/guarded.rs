@@ -167,7 +167,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         fork_guard: Option<crate::fork::ObservedForkPublicationGuard>,
     ) -> Result<ApplyResult> {
         let applied = async {
-            let append = match request.commit_once_with_work(&self.client).await {
+            let append = match request.commit_once(&self.client, None).await {
                 Ok(append) => append,
                 Err(error) => {
                     if matches!(request.commit_phase(),
