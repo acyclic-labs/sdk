@@ -131,48 +131,8 @@ pub(super) fn root_error(error: NativeReceiptError) -> Error {
         NativeReceiptError::Decode { source, custody } => Error::NativeDecode {
             code: crate::wire::ErrorCode::Storage, source, custody,
         },
-        NativeReceiptError::Codec { source, custody: None } => source,
-        NativeReceiptError::Codec { source, custody: Some(mut outer) } => {
-            let code = source.code();
-            match source {
-                Error::NativeDecode { code, source, custody: None } =>
-                    Error::NativeDecode { code, source, custody: Some(outer) },
-                Error::NativeDecode { code, source, custody: Some(mut inner) } => {
-                    if outer.shares_ledger(&inner) {
-                        // The original outer inventory includes this concrete
-                        // DTO's diagnostic witness, not just decoder scratch.
-                        outer.absorb(&mut inner)
-                            .expect("same live finite ledger bounds the combined custody");
-                        Error::NativeDecode { code, source, custody: Some(outer) }
-                    } else {
-                        drop(outer);
-                        Error::NativeDecode { code, source, custody: Some(inner) }
-                    }
-                }
-                Error::NativeWork { cause, custody: None } =>
-                    Error::NativeWork { cause, custody: Some(outer) },
-                Error::NativeWork { cause, custody: Some(inner) } => {
-                    // This closed constructor receives an already guarded
-                    // complete NativeWork cause. The outer guard covers only
-                    // SDK codec buffers, physically dropped before the codec
-                    // returns. None of those buffers is borrowed by the cause.
-                    // Retire that dead inventory, even for a different ledger;
-                    // custody identity is not resource or mutation authority.
-                    drop(outer);
-                    Error::NativeWork { cause, custody: Some(inner) }
-                }
-                Error::NotFound(message) | Error::Conflict(message) | Error::Unsupported(message)
-                | Error::Invalid(message) | Error::Unauthorized(message) | Error::Storage(message) => {
-                    outer.substitute(message.capacity() as u64)
-                        .expect("closed SDK codec diagnostic fits its original audited quota");
-                    Error::NativeDiagnostic { code, message, custody: outer }
-                }
-                // These fixed or already independently guarded causes own no
-                // newly encoded payload. The codec's physical buffers have
-                // dropped before this branch retires their transient custody.
-                source => source,
-            }
-        }
+        NativeReceiptError::Codec { code, source, custody } =>
+            Error::NativeCodec { code, source, custody },
     }
 }
 
@@ -467,10 +427,13 @@ async fn append_receipt_original<P: StreamProvider>(
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
     work: Option<&NativeMaterializationWork>,
 ) -> NativeResult<bool> {
+    let codec_slot = work.map(NativeReceiptCodecSlot::new).transpose()?;
     let diagnostic_bytes = work.map_or(0, |_| crate::contract::sdk_json_diagnostic_bytes());
     let mut custody = work.map(|work| work.retain_owned(diagnostic_bytes)).transpose()?;
     let bytes = match work {
         Some(work) => {
+            let codec_slot = codec_slot.ok_or(NativeReceiptError::Record(
+                "native receipt codec slot is missing"))?;
             let remaining = work.remaining()?;
             let guard = custody.as_mut().ok_or(NativeReceiptError::Record("native receipt encode custody is missing"))?;
             crate::contract::canonical_json_bytes_bounded(receipt,
@@ -494,7 +457,7 @@ async fn append_receipt_original<P: StreamProvider>(
                         JsonCodecCharge::Release { bytes } => guard.release(bytes),
                     };
                     result.map_err(|cause| Error::NativeWork { cause, custody: None })
-                }).map_err(|source| NativeReceiptError::Codec { source, custody: custody.take() })?
+                }).map_err(|source| codec_slot.retain(source, custody.take()))?
         }
         None => crate::contract::canonical_json_bytes(receipt)?,
     };
@@ -753,23 +716,28 @@ mod tests {
     fn original_codec_diagnostic_moves_with_existing_custody_after_cancellation() {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let slot = NativeReceiptCodecSlot::new(&work).unwrap();
         let guard = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes()).unwrap();
         let alias = work.retain_owned(0).unwrap();
         let message = "original codec failure".to_owned();
         let pointer = message.as_ptr();
         let before = work.receipt();
         cancellation.cancel();
-        let error = root_error(NativeReceiptError::Codec {
-            source: Error::Invalid(message), custody: Some(guard),
-        });
-        let Error::NativeDiagnostic { code, message, custody } = error else {
-            panic!("original diagnostic carrier");
+        let error = root_error(slot.retain(Error::Invalid(message), Some(guard)));
+        let Error::NativeCodec { code, source, custody: Some(box_custody) } = error else {
+            panic!("original prepaid diagnostic carrier");
         };
+        let Error::Invalid(message) = source.source().unwrap().downcast_ref::<Error>().unwrap() else {
+            panic!("the original dynamic cause must remain intact");
+        };
+        let cause = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
+        let custody = cause._custody.as_ref().unwrap();
         assert_eq!(code, crate::wire::ErrorCode::Invalid);
         assert_eq!(message.as_ptr(), pointer);
         assert_eq!(message, "original codec failure");
-        assert_eq!(custody.bytes(), message.capacity() as u64);
+        assert!(custody.bytes() >= message.capacity() as u64);
         assert!(custody.shares_ledger(&alias));
+        assert!(box_custody.shares_ledger(&alias));
         assert_eq!(work.receipt(), before);
     }
 
@@ -777,30 +745,40 @@ mod tests {
     fn original_typed_decode_cause_keeps_code_and_admitted_guard_after_cancellation() {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let slot = NativeReceiptCodecSlot::new(&work).unwrap();
         let bytes = crate::contract::audited_serde_diagnostic_bytes(1, "serde_json::Value".len() as u64).unwrap();
         let custody = work.retain_owned(bytes).unwrap();
         let alias = work.retain_owned(0).unwrap();
         let source = serde_json::from_slice::<serde_json::Value>(b"[").unwrap_err();
         let before = work.receipt();
         cancellation.cancel();
-        let error = root_error(NativeReceiptError::Codec {
-            source: Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody: None },
-            custody: Some(custody),
-        });
-        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
-            panic!("original typed cause and diagnostic custody");
+        let error = root_error(slot.retain(
+            Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody: None },
+            Some(custody),
+        ));
+        let Error::NativeCodec { code, source, custody: Some(box_custody) } = error else {
+            panic!("original prepaid typed cause and diagnostic custody");
         };
+        let Error::NativeDecode { code: inner_code, source: decode, custody: None } =
+            source.source().unwrap().downcast_ref::<Error>().unwrap() else {
+                panic!("the original typed decode cause must remain intact");
+            };
         assert_eq!(code, crate::wire::ErrorCode::Invalid);
-        assert!(source.is_eof());
+        assert_eq!(*inner_code, crate::wire::ErrorCode::Invalid);
+        assert!(decode.is_eof());
+        let cause = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
+        let custody = cause._custody.as_ref().unwrap();
+        assert!(box_custody.shares_ledger(&alias));
         assert_eq!(custody.bytes(), bytes);
         assert!(custody.shares_ledger(&alias));
         assert_eq!(work.receipt(), before);
     }
 
     #[test]
-    fn guarded_native_cause_retires_only_dead_codec_inventory_without_new_claim() {
+    fn guarded_native_cause_keeps_all_prepaid_custody_without_new_claim() {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let slot = NativeReceiptCodecSlot::new(&work).unwrap();
         let outer = work.retain_owned(8).unwrap();
         let message = "original cause".to_owned();
         let bytes = message.capacity() as u64;
@@ -808,16 +786,20 @@ mod tests {
         let inner = work.retain_owned(bytes).unwrap();
         let before = work.receipt();
         cancellation.cancel();
-        let error = root_error(NativeReceiptError::Codec {
-            source: Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),
-                custody: Some(inner),
-            },
-            custody: Some(outer),
-        });
-        let Error::NativeWork { cause, custody: Some(custody) } = error else {
-            panic!("original native cause and custody");
+        let error = root_error(slot.retain(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),
+            custody: Some(inner),
+        }, Some(outer)));
+        let Error::NativeCodec { source, custody: Some(box_custody), .. } = error else {
+            panic!("original prepaid native cause and custody");
         };
+        let Error::NativeWork { cause, custody: Some(custody) } =
+            source.source().unwrap().downcast_ref::<Error>().unwrap() else {
+                panic!("the original guarded native cause must remain intact");
+            };
+        let envelope = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
+        assert_eq!(envelope._custody.as_ref().unwrap().bytes(), 8);
+        assert!(box_custody.work().shares_ledger(&work));
         let acyclic_fs::NativeTreeMaterializationError::Allocation(message) = cause else {
             panic!("original allocation cause");
         };
@@ -832,6 +814,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
         let foreign = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let slot = NativeReceiptCodecSlot::new(&original).unwrap();
         let buffer = vec![0u8; 8];
         let outer = original.retain_owned(buffer.capacity() as u64).unwrap();
         let message = "foreign original cause".to_owned();
@@ -842,23 +825,31 @@ mod tests {
         // This is the closed codec constructor's inventory: temporary SDK
         // buffers are gone, while the independently guarded cause still lives.
         drop(buffer);
-        let error = root_error(NativeReceiptError::Codec {
-            source: Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),
-                custody: Some(inner),
-            },
-            custody: Some(outer),
-        });
-        let Error::NativeWork { cause, custody: Some(custody) } = error else {
-            panic!("original cause guard retained");
+        let error = root_error(slot.retain(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Allocation(message),
+            custody: Some(inner),
+        }, Some(outer)));
+        let Error::NativeCodec { source, custody: Some(box_custody), .. } = &error else {
+            panic!("original prepaid cause guard retained");
         };
+        let Error::NativeWork { cause, custody: Some(custody) } =
+            source.source().unwrap().downcast_ref::<Error>().unwrap() else {
+                panic!("the original foreign guarded cause must remain intact");
+            };
+        let envelope = source.downcast_ref::<NativeReceiptCodecCause>().unwrap();
+        assert_eq!(envelope._custody.as_ref().unwrap().bytes(), 8);
+        assert!(box_custody.shares_ledger(&original_alias));
         let acyclic_fs::NativeTreeMaterializationError::Allocation(message) = cause else {
             panic!("original allocation cause");
         };
         assert_eq!(message.as_ptr(), pointer);
         assert_eq!(custody.bytes(), bytes);
         assert!(!custody.shares_ledger(&original_alias));
-        assert_eq!(original.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(original.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes() + 8 + box_custody.bytes());
         assert_eq!(foreign.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes() + bytes);
+        drop(error);
+        assert_eq!(original.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(foreign.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
     }
 }

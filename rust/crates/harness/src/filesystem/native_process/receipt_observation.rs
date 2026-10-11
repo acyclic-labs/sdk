@@ -183,6 +183,7 @@ pub(super) fn decode(
             .map_err(|source| NativeReceiptError::Decode { source, custody: None });
     };
     let remaining = work.remaining()?;
+    let codec_slot = NativeReceiptCodecSlot::new(work)?;
     let bounds = JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
         maximum_items: remaining.items_examined, maximum_depth: 256 };
     let mut items = 0u64;
@@ -211,7 +212,7 @@ pub(super) fn decode(
             _ => work.remaining().map(|_| ()),
         };
         result.map_err(|cause| Error::NativeWork { cause, custody: None })
-    }).map_err(|source| NativeReceiptError::Codec { source, custody: custody.take() })?;
+    }).map_err(|source| codec_slot.retain(source, custody.take()))?;
     custody.as_mut().ok_or(NativeReceiptError::Record("native receipt custody is missing"))?
         .substitute(previous)?;
     let slots = multiply(items, 10)?;
@@ -322,6 +323,7 @@ fn effect_identity(
     task: crate::TaskId, command: OperationId, work: &NativeMaterializationWork,
 ) -> std::result::Result<crate::EffectId, NativeReceiptError> {
     let remaining = work.remaining()?;
+    let codec_slot = NativeReceiptCodecSlot::new(work)?;
     let mut custody = work.retain_owned(0)?;
     let mut opaque_custody: Option<NativeAllocation> = None;
     let encoded = crate::contract::canonical_json_bytes_bounded(
@@ -356,7 +358,7 @@ fn effect_identity(
                 }),
                 JsonCodecCharge::Release { bytes } => custody.release(bytes),
                 JsonCodecCharge::Read { .. } => work.remaining().map(|_| ()),
-                JsonCodecCharge::Admission { maximum_owned_bytes } => {
+                JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
                     let mut reserved = work.retain_owned(maximum_owned_bytes)?;
                     if let Some(opaque) = opaque_custody.as_mut() {
                         opaque.absorb(&mut reserved)
@@ -373,9 +375,11 @@ fn effect_identity(
         Ok(bytes) => bytes,
         Err(source) => {
             if let Some(mut opaque) = opaque_custody.take() {
-                custody.absorb(&mut opaque)?;
+                // Both inventories were issued by this exact original work.
+                custody.absorb(&mut opaque)
+                    .expect("one live original ledger bounds its combined custody");
             }
-            return Err(NativeReceiptError::Codec { source, custody: Some(custody) });
+            return Err(codec_slot.retain(source, Some(custody)));
         }
     };
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;

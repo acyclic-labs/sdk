@@ -524,7 +524,9 @@ async fn capture<P: StreamProvider + 'static>(
                     None => process.wait_with_output_observed(timeout, maximum, poll),
                 }
             };
-            if original.is_some() && !process.is_reaped() {
+            if original.is_some() && (!process.is_reaped()
+                || output.as_ref().is_err_and(|failure| !failure.cleanup_completed))
+            {
                 let retained = NativeRetainedProcess { process,
                     _scopes: scopes.take(),
                     _custody: process_custody.expect("preadmitted original process alias") };
