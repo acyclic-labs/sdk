@@ -59,6 +59,8 @@ Completion fills those existing slots, rechecks both tails and the original
 history/path visibility under the canonical CAS, and uses the normal Commit
 digest, ID and retry outcome. Changed history with unchanged tails fails with
 `PrefixNotRetained`; competing tails produce the canonical retained conflict.
+An already retained receipt is checked first and remains replayable with the
+exact canonical digest even after its participant paths or history retire.
 Completion performs only previously admitted work and records actual SDK
 attempts; it does not admit, allocate, stringify a cause, or create source
 authority after cancellation. Known SDK Vec/Arc payload controls retain their

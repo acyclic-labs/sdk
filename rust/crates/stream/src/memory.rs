@@ -764,14 +764,16 @@ impl MemoryStream {
             let observe = |condition: &CommitCondition| -> MemoryResult<PreparedPathObservation> {
                 let CommitCondition::Tail { path, expected } = condition else { unreachable!() };
                 observer.admit_item()?;
-                let stream = state.paths.get(path).ok_or(StreamError::NotFound)?;
+                let stream = state.paths.get(path);
                 observer.record_item()?;
-                if !already_retained && stream.tail != *expected {
-                    return Err(StreamError::OutOfRange.into());
+                if !already_retained {
+                    let current = stream.ok_or(StreamError::NotFound)?;
+                    if current.tail != *expected { return Err(StreamError::OutOfRange.into()); }
                 }
                 Ok(PreparedPathObservation {
                     path: observer.retain_path(path)?, expected: *expected,
-                    history: stream.history.clone(), changed: stream.changed.clone(),
+                    history: stream.and_then(|stream| stream.history.clone()),
+                    changed: stream.map(|stream| stream.changed.clone()),
                 })
             };
             let observations = [observe(&request.conditions[0])?, observe(&request.conditions[1])?];
@@ -1081,7 +1083,7 @@ impl MemoryStream {
         }
         for observed in &prepared.observations {
             let stream = state.paths.get(&observed.path).expect("the tails were rechecked above");
-            let unchanged = stream.changed.same_channel(&observed.changed)
+            let unchanged = observed.changed.as_ref().is_some_and(|changed| stream.changed.same_channel(changed))
                 && same_history(stream.history.as_ref(), observed.history.as_ref());
             record_prepared_work(&meter, &mut late, 1, 0);
             if !unchanged {
@@ -1327,7 +1329,7 @@ struct PreparedPathObservation {
     path: StreamPath,
     expected: u64,
     history: Option<Arc<History>>,
-    changed: watch::Sender<u64>,
+    changed: Option<watch::Sender<u64>>,
 }
 
 /// Actual canonical controls, created before an external source action. No
@@ -3593,6 +3595,41 @@ mod tests {
             assert!(meter.held.load(Ordering::SeqCst) > 0, "published controls still own original custody");
             drop(provider);
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn retained_canonical_receipt_remains_replayable_after_path_history_retirement() -> MemoryResult<()> {
+            let (provider, template) = prepared_fixture(MemoryLimits::default()).await?;
+            let mut original = template.clone();
+            fill_prepared_fixture(&mut original, b"retained-completion");
+            let committed = provider.commit(original.clone()).await?;
+            {
+                let mut state = provider.state.write().await;
+                state.paths.remove("completion/owner");
+                state.paths.remove("completion/target");
+            }
+            let meter = Arc::new(Meter::default());
+            let mut repeat = template;
+            let prepared = provider.native_prepare_commit_borrowed_inner(&mut repeat, 64, meter.original()).await??;
+            let recovery = provider.native_prepare_recovery_future(&prepared)
+                .map_err(|failure| match failure {
+                    MemoryFailure::Observer(error) => ControlFailure::Observer(error),
+                    MemoryFailure::Provider(error) => ControlFailure::Provider(error),
+                })?;
+            fill_prepared_fixture(&mut repeat, b"retained-completion");
+            let allocations = meter.allocations.load(Ordering::SeqCst);
+            meter.cancelled.store(true, Ordering::SeqCst);
+            let replay = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut repeat).await??;
+            assert_eq!(replay.outcome.value(), &committed);
+            let observed = recovery.await??;
+            let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
+            let IdempotencyOutcome::Commit(recovered) = &observation.outcome else { panic!("original Commit family") };
+            assert_eq!(recovered, &committed);
+            assert_eq!(observation.request_digest, commit_digest(&original));
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             Ok(())
         }
 
