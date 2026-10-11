@@ -8771,7 +8771,7 @@ where
                 let candidate_path = work.namespace_owned(
                     &requested, self.workspace.profile(), self.workspace.limits(),
                 )?;
-                let candidate = self.selected_checkout_lookup_with_accounting(
+                let candidate = Self::selected_checkout_lookup_with_accounting(
                     checkout, &candidate_path, work, cancellation,
                 ).await?;
                 let candidate_path_bytes = candidate_path.retained_bytes();
@@ -13090,7 +13090,7 @@ where
     }
 
     async fn selected_checkout_lookup_with_accounting(
-        &self, checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
+        checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::kernel::PathLookup, LazyWorkspaceError> {
         match &accounting.meter {
@@ -13110,7 +13110,7 @@ where
     }
 
     async fn selected_checkout_metadata_with_accounting(
-        &self, checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
+        checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
         accounting: &LazyTreapWork<'_>, cancellation: &CancellationToken,
     ) -> Result<Option<crate::PathMetadataLookup>, LazyWorkspaceError> {
         match &accounting.meter {
@@ -13222,7 +13222,7 @@ where
                         path, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let current = self.selected_checkout_lookup_with_accounting(
+                    let current = Self::selected_checkout_lookup_with_accounting(
                         checkout, &namespace, accounting, cancellation,
                     ).await?;
                     drop(namespace);
@@ -13250,11 +13250,11 @@ where
                         path, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let before = self.selected_checkout_metadata_with_accounting(
+                    let before = Self::selected_checkout_metadata_with_accounting(
                         &mut baseline, &namespace, accounting, cancellation,
                     ).await?
                         .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                    let actual = self.selected_checkout_metadata_with_accounting(
+                    let actual = Self::selected_checkout_metadata_with_accounting(
                         checkout, &namespace, accounting, cancellation,
                     ).await?
                         .ok_or(LazyWorkspaceError::StaleIdentity)?;
@@ -13295,7 +13295,7 @@ where
                             &entry.path, self.workspace.profile(), self.workspace.limits(),
                         )?;
                         let namespace_bytes = namespace.retained_bytes();
-                        let actual = self.selected_checkout_lookup_with_accounting(
+                        let actual = Self::selected_checkout_lookup_with_accounting(
                             checkout, &namespace, accounting, cancellation,
                         ).await?;
                         if actual.record.is_some() {
@@ -13328,7 +13328,7 @@ where
                             parent, self.workspace.profile(), self.workspace.limits(),
                         )?;
                         let namespace_bytes = namespace.retained_bytes();
-                        let existing = self.selected_checkout_lookup_with_accounting(
+                        let existing = Self::selected_checkout_lookup_with_accounting(
                             checkout, &namespace, accounting, cancellation,
                         ).await?;
                         if let Some(record) = existing.record {
@@ -13347,7 +13347,7 @@ where
                             ).await?;
                             drop(original);
                             accounting.release(original_bytes)?;
-                            let staged = self.selected_checkout_lookup_with_accounting(
+                            let staged = Self::selected_checkout_lookup_with_accounting(
                                 checkout, &namespace, accounting, cancellation,
                             ).await?;
                             if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
