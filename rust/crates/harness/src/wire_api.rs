@@ -15,12 +15,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
 
-/// Complete application-facing wire API. Adapters own framing, never semantics.
-///
-/// Operation-control implementations must authenticate the decoded scope against
-/// the requested owner; [`crate::distributed::DistributedCoordinator::observe_operation`] and
-/// [`crate::distributed::DistributedCoordinator::cancel_operation`] provide the canonical checks.
-/// Wire validation alone deliberately cannot authenticate host-held key material.
+/// Complete application-facing wire API.
 pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
     /// Negotiates the exact protocol and required capabilities before other calls.
     fn handshake<'a>(

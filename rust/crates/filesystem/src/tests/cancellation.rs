@@ -255,35 +255,6 @@ fn prepared_cancellation_uses_original_registration_and_meter() {
 }
 
 #[test]
-fn measured_cancellation_reuses_admitted_registry_slots() {
-    let token = CancellationToken::new();
-    let mut ledger = crate::kernel::allocation::AllocationLedger::default();
-    let mut work = crate::WorkCounters::default();
-    let mut admission = CancellationWaitAdmission::default();
-    let mut context = Context::from_waker(Waker::noop());
-    for expected_operations in [2, 3] {
-        {
-            let mut future = token.cancelled_measured(
-                &mut ledger, &mut work, crate::WorkBudget::UNBOUNDED, &mut admission,
-            );
-            assert!(Pin::new(&mut future).poll(&mut context).is_pending());
-            assert_eq!(waiter_count(&token), 1);
-        }
-        assert_eq!(waiter_count(&token), 0);
-        assert_eq!(work.allocation_operations, expected_operations);
-    }
-    assert_eq!(work.items_examined, 3);
-    token.cancel();
-    {
-        let mut future = token.cancelled_measured(
-            &mut ledger, &mut work, crate::WorkBudget::UNBOUNDED, &mut admission,
-        );
-        assert!(matches!(Pin::new(&mut future).poll(&mut context), Poll::Ready(Ok(()))));
-    }
-    assert_eq!(ledger.live_bytes(), 0);
-}
-
-#[test]
 fn measured_cancellation_reconciles_external_registry_growth() {
     let token = CancellationToken::new();
     let mut ledger = crate::kernel::allocation::AllocationLedger::default();

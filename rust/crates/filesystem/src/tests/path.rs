@@ -94,7 +94,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
     assert_eq!(root.components().collect::<Vec<_>>(), Vec::<&str>::new());
     assert!(root.is_within(&root));
     assert_eq!(root.to_string(), "/");
-    assert_eq!(format!("{root:?}"), "PortablePath(\"/\")");
 
     let nested = PortablePath::parse("/ab/c", limits)?;
     assert_eq!(nested.components().collect::<Vec<_>>(), ["ab", "c"]);

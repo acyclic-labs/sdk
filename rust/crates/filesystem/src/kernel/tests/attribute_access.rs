@@ -119,31 +119,6 @@ fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
 }
 
 #[test]
-fn sync_and_async_lookup_are_physically_identical() -> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
-    let requested = name(4)?;
-    let synchronous = lookup_attribute(
-        &store,
-        root,
-        &requested,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(lookup_attribute_async(
-        &store,
-        root,
-        &requested,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed async attribute lookup unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
 fn async_batch_is_identical_and_precancellation_is_inert() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();

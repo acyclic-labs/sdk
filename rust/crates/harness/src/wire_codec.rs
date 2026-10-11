@@ -1,6 +1,4 @@
 //! Canonical typed wire conversions shared by native and WASM consumers.
-//! Native event decoding preclaims the closed prost/Serde carriers, preserves
-//! original typed causes, and transfers one measured event claim to readers.
 
 use crate::core::RecordedScope;
 use crate::{
@@ -66,9 +64,6 @@ pub(crate) fn encode_event_with_work(
     }
     metadata.adopt(output.capacity() as u64)?;
     let result = if native {
-        // Generated prost messages encode into a pre-reserved growable Vec;
-        // encode_raw is the same engine without the impossible BufMut bound
-        // failure (and therefore without manufacturing an encoded diagnostic).
         envelope.encode_raw(&mut output);
         Ok(())
     } else {
@@ -124,7 +119,6 @@ pub(crate) fn decode_event_with_work(
 }
 
 /// Returns the event's original retained claim, excluding the authority header.
-/// Readers transfer this scalar with the decoded event, without another walk.
 pub(crate) fn decode_event_with_work_and_custody(
     bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<((Authority, Event), u64)> {
@@ -134,8 +128,7 @@ pub(crate) fn decode_event_with_work_and_custody(
             "event exceeds SDK record boundary"));
     }
     let admitted = admission::decode_quota(bytes, work)?;
-    // FIRST: all physical carrier fields, partial payloads and canonical buffers
-    // declared below drop before this single original ownership reservation.
+    // Carrier fields and buffers must drop before this reservation.
     let mut payload_quota = admission::Quota::new(work, admitted)?;
     let diagnostic = admission::prost_diagnostic_preclaim(payload_quota.work())?;
     let mut envelope = wire::EventEnvelope::decode(bytes)
@@ -189,8 +182,7 @@ pub(crate) fn decode_event_with_work_and_custody(
             if let Error::NativeDecode { custody, .. } = &mut error
                 && custody.is_none()
             {
-                // Only split the already admitted original claim: a new quota
-                // check must never replace the actual foreign Serde cause.
+                // Only split the already admitted original claim: a new quota check must never replace the actual foreign Serde cause.
                 let retained = payload_quota.retained();
                 *custody = Some(payload_quota.work().as_deref_mut()
                     .expect("native event observer").take_native_custody(retained)
@@ -349,7 +341,6 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
 }
 
 /// Decodes an already framed command through the same validation as WASM.
-/// This authenticates no scope: the authoritative host must verify its issuer.
 pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Authority, Command)> {
     validate_protocol(
         envelope.protocol.as_ref(),
@@ -436,8 +427,7 @@ pub fn encode_error(error: &Error) -> wire::Error {
     }
 }
 
-/// Classifies malformed input: [`Error::Storage`] for persisted events,
-/// [`Error::Invalid`] for client requests.
+/// Classifies malformed input: [`Error::Storage`] for persisted events, [`Error::Invalid`] for client requests.
 pub(crate) type Fault = fn(String) -> Error;
 
 /// Requires the exact `expected` protocol identity; `missing` classifies its absence.
@@ -879,8 +869,7 @@ mod tests {
         fn native_prost_partial_carrier_retains_actual_decode_cause() -> Result<()> {
             let (authority, event) = fixture();
             let mut bytes = encode_event(&authority, &event)?;
-            // Duplicate operation_id with invalid UTF-8 fails inside the
-            // original prost engine after its preceding fields allocated.
+            // Duplicate operation_id with invalid UTF-8 fails inside the original prost engine after its preceding fields allocated.
             bytes.extend_from_slice(&[0x22, 0x01, 0xff]);
             let original = wire::EventEnvelope::decode(bytes.as_slice()).expect_err("original prost error");
             let cancellation = CancellationToken::new();

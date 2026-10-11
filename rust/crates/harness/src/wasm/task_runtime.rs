@@ -52,9 +52,7 @@ fn to_js<T: serde::Serialize>(value: &T) -> std::result::Result<JsValue, JsValue
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-// Project only the admitted state FileRef. Entrypoint schemas and generic
-// machine/model values must retain every literal, including descriptor-shaped
-// user objects, rather than undergoing a recursive structural rewrite.
+// Project only the admitted state FileRef.
 fn normalize_work_file(js: &JsValue, work: &WasmBrowserWork) -> std::result::Result<(), JsValue> {
     let (WasmBrowserWork::Unresolved { lease, .. }
     | WasmBrowserWork::Yielded { lease }
@@ -172,7 +170,6 @@ struct WasmBrowserTaskObservation {
     reservation: Option<WasmBrowserLeaseFence>,
 }
 
-
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
@@ -266,8 +263,7 @@ impl ResumableMachine for HostMachine {
     }
 }
 
-/// Trusted host effects are explicitly composed; rejection is an uncertain
-/// provider result, so the existing runner retains its reconciliation journal.
+/// Trusted host effects are explicitly composed; rejection is an uncertain provider result, so the existing runner retains its reconciliation journal.
 struct HostTool {
     execute: Function,
     reconcile: Function,
@@ -287,8 +283,6 @@ impl HostTool {
         let result = JsFuture::from(Promise::resolve(&result))
             .await
             .map_err(|_| Error::Storage("host tool result is uncertain".into()))?;
-        // The callback already ran; a malformed receipt cannot establish that
-        // execution was rejected. Retain the original attempt for reconciliation.
         from_js(result).map_err(|_| Error::Storage("host tool result is uncertain".into()))
     }
 }
@@ -428,8 +422,7 @@ impl ModelProvider for HostModel {
         dispatch: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         let request = Arc::new(request);
-        // Pull exactly one event per poll. The stock executor owns admission,
-        // event limits, cancellation, request identity and durable consumption.
+        // Pull exactly one event per poll.
         Box::pin(futures::stream::try_unfold(
             None,
             move |iterator: Option<HostModelIterator>| {
@@ -493,8 +486,7 @@ impl ModelProvider for HostModel {
     }
 }
 
-/// The existing typed registries, sealed into each opened runtime. Host callbacks
-/// are trusted pure machine implementations, with the same contract as Rust.
+/// The existing typed registries, sealed into each opened runtime.
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct WasmTaskRegistry {
@@ -509,8 +501,7 @@ impl WasmTaskRegistry {
         Self::default()
     }
 
-    /// Callbacks share one immutable definition revision and are trusted host
-    /// implementations. They receive runtime-owned invocation identities.
+    /// Callbacks share one immutable definition revision and are trusted host implementations.
     #[wasm_bindgen(js_name = registerTool)]
     pub fn register_tool(
         &mut self,
@@ -565,7 +556,6 @@ impl WasmTaskRegistry {
     }
 
     /// Registers the Rust stock-turn adapter over the ordinary model outbox.
-    /// Registration starts no worker and grants no model or task authority.
     #[wasm_bindgen(js_name = registerStockTurn)]
     pub fn register_stock_turn(&mut self) -> std::result::Result<(), JsValue> {
         let machine = Arc::new(StockTurnMachine::new());
@@ -580,9 +570,7 @@ impl WasmTaskRegistry {
         machine: Arc<dyn ResumableMachine>,
         task: TaskDefinition<Value, Value>,
     ) -> std::result::Result<(), JsValue> {
-        // Only NotFound means this exact task key is vacant, including when an
-        // occupied key has different Rust types. With exclusive synchronous
-        // access, task insertion cannot conflict after machine registration.
+        // Only NotFound means this exact task key is vacant, including when an occupied key has different Rust types.
         let identity = machine.identity();
         if !matches!(
             self.tasks
@@ -599,8 +587,7 @@ impl WasmTaskRegistry {
     }
 }
 
-/// Thin event-loop handle; scheduling, ownership, effects and recovery stay in
-/// `FilesystemTaskRuntime`. No worker starts when this handle is opened.
+/// Thin event-loop handle; scheduling, ownership, effects and recovery stay in `FilesystemTaskRuntime`.
 #[wasm_bindgen]
 pub struct WasmTaskRuntime {
     runtime: BrowserRuntime,
@@ -615,9 +602,6 @@ pub struct WasmTaskRuntime {
 #[wasm_bindgen]
 impl WasmTaskRuntime {
     /// Opens existing providers with caller-supplied limits and signed authority.
-    /// Volume creation and task admission remain separate explicit operations.
-    /// Canonical filesystem provider failures preserve their original browser
-    /// exception; obsolete databases are rejected without migration or deletion.
     pub async fn open(
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserTaskOptions")] options: JsValue,
         owner: &WasmReducer,
@@ -714,12 +698,6 @@ impl WasmTaskRuntime {
     }
 
     /// Composes an explicit provider with the stock model command executor.
-    /// Generate receives canonical request bytes, separate dispatch identity and
-    /// an `AbortSignal`, and returns an async iterator;
-    /// reconcile receives the exact retained attempt and never redispatches it.
-    /// Optional capacity/counting callbacks are synchronous, effect-free provider
-    /// operations. Counting receives exact canonical bytes and their Rust digest;
-    /// Rust validates the response binding and ordered message dimensions.
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
@@ -891,7 +869,6 @@ impl WasmTaskRuntime {
     }
 
     /// Executes one caller-bounded tick using the production command resolver.
-    /// Missing tool/model routes stay unavailable; no fabricated default swarm.
     #[wasm_bindgen(js_name = workerTick, unchecked_return_type = "WasmBrowserTick")]
     pub async fn worker_tick(
         &self,
@@ -951,8 +928,7 @@ impl WasmTaskRuntime {
         ))
     }
 
-    /// Reconciles original admitted effects only. The finite observation
-    /// allowance never resets the task's deadline or permits fresh dispatch.
+    /// Reconciles original admitted effects only.
     #[wasm_bindgen(unchecked_return_type = "WasmBrowserWork")]
     pub async fn reconcile(
         &self,
@@ -969,7 +945,6 @@ impl WasmTaskRuntime {
     }
 
     /// Reads the exact original admission deadline and current owner fence.
-    /// Observation does not dispatch, advance a machine or acquire capacity.
     #[wasm_bindgen(js_name = observeTask, unchecked_return_type = "WasmBrowserTaskObservation")]
     pub async fn observe_task(&self, task: String) -> std::result::Result<JsValue, JsValue> {
         let task = TaskId::parse(&task).map_err(js_error)?;
@@ -995,7 +970,6 @@ impl WasmTaskRuntime {
     }
 
     /// Admits one canonical record under the exact current parent lease.
-    /// The ordinary owner authenticates creation evidence before deriving access.
     #[wasm_bindgen(js_name = admitRecord, unchecked_return_type = "WasmBrowserAdmission")]
     pub async fn admit_record(
         &self,
@@ -1056,8 +1030,7 @@ impl WasmTaskRuntime {
         )
     }
 
-    /// Returns only after receiver-owned durable bytes are verified. A lost
-    /// acknowledgment permits exact redelivery; it grants no effect retry.
+    /// Returns only after receiver-owned durable bytes are verified.
     pub async fn send(
         &self,
         #[wasm_bindgen(unchecked_param_type = "WorkLease")] lease: JsValue,

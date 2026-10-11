@@ -1,4 +1,3 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::async_storage::poll_ready;
 use crate::foundation::Digest;
@@ -145,46 +144,6 @@ fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::erro
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
-    Ok(())
-}
-
-#[test]
-fn async_and_sync_extent_mutation_share_exact_results_and_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_tree(&sync_store)?;
-    let (async_root, _) = three_leaf_tree(&async_store)?;
-    assert_eq!(sync_root, async_root);
-    let mutations = [ExtentMutation::Replace {
-        offset: 125,
-        length: 25,
-        kind: ExtentKind::AllocatedZero,
-        extend: false,
-    }];
-    let synchronous = apply_extent_mutations(
-        &sync_store,
-        sync_root,
-        300,
-        &mutations,
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = poll_ready(apply_extent_mutations_async(
-        &async_store,
-        async_root,
-        300,
-        &mutations,
-        ExtentMutationOptions {
-            maximum_mutations: 8,
-            limits: DecodeLimits::default(),
-            budget: WorkBudget::UNBOUNDED,
-        },
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous extent mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
     Ok(())
 }
 

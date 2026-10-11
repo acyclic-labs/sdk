@@ -1,5 +1,4 @@
 //! Native composition of existing local providers, task admission and wire handles.
-//! No UI state is persisted; all admission, ownership and recovery are Harness-owned.
 #![allow(missing_docs, reason = "private binary configuration and composition, not a public SDK contract")]
 
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
@@ -50,8 +49,7 @@ impl AuthorityBinding {
     }
 }
 
-/// A producer-owned explicit local composition. Never derived from environment
-/// credentials, user-facing task labels, fork IDs or display cursor state.
+/// A producer-owned explicit local composition.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -101,7 +99,6 @@ pub(super) type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend
 pub(super) type Runtime = FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Producer-retained original caller checkpoint and its exact owner binding.
-/// Canonical restore authenticates it; presentation never infers child/task IDs.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkSourceConfig {
@@ -234,9 +231,7 @@ impl NativeSession {
             .ok_or_else(|| Error::Unauthorized("authority is not in this native composition".into()))
     }
 
-    /// Queue one typed stock task, inheriting from the actual retained parent
-    /// context when selected. Admission is separate from /run; no worker starts
-    /// as a side effect of displaying a prompt or reopening a provider.
+    /// Queue one typed stock task, inheriting from the actual retained parent context when selected.
     pub async fn queue(&self, operation: OperationId, command: WorkflowCommand,
         parent: Option<TaskId>) -> Result<Admission<RuntimeTask<TurnOutput>>>
     {
@@ -251,7 +246,6 @@ impl NativeSession {
     }
 
     /// Admit exact producer-authored preparation input under its retained caller.
-    /// This neither allocates resources nor invents the child agent/task relation.
     pub async fn queue_preparation(
         &self,
         operation: OperationId,
@@ -309,9 +303,6 @@ impl NativeSession {
             WorkPull::Claimed(lease) => lease,
             WorkPull::Unresolved { lease, error } => return render_attempt(TaskWorkerAttempt::Unresolved { lease, error }),
         };
-        // External callers can retain this exact original lease even if the
-        // process dies during dispatch. Hex preserves typed JSON without ever
-        // emitting provider-controlled terminal controls.
         writeln!(output, "worker-claim task={task} lease-json-hex={}", lease_hex(&lease)?)
             .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
         self.resume(lease).await
@@ -325,8 +316,7 @@ impl NativeSession {
         render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
     }
 
-    /// Resolve the caller through canonical admission and verify its actual
-    /// retained fence before granting any scoped file/mail/workflow handle.
+    /// Resolve the caller through canonical admission and verify its actual retained fence before granting any scoped file/mail/workflow handle.
     pub async fn caller_context(&self, caller: TaskId, lease: &WorkLease) -> Result<TaskContext> {
         let (retained, _) = self.runtime.harness()
             .reconcile_admission(lease.operation.operation_id).await?
@@ -337,8 +327,7 @@ impl NativeSession {
         self.runtime.task_context(caller, LeaseFence::from(&lease.reservation)).await
     }
 
-    /// Bind a conversation to the retained caller's authenticated allocation,
-    /// never to a display label or a newly chosen child agent UUID.
+    /// Bind a conversation to the retained caller's authenticated allocation, never to a display label or a newly chosen child agent UUID.
     pub async fn caller_binding(&self, caller: TaskId) -> Result<&AuthorityBinding> {
         let inspection = self.runtime.inspect_source(caller, caller).await?;
         let agent = inspection.agent()?;
@@ -362,8 +351,7 @@ impl NativeSession {
         self.caller_context(caller, lease).await?.admit(operation, &definition, input).await
     }
 
-    /// Publish only an authoritative successful preparation and admit exactly
-    /// its retained child, under the original caller fence and creator proofs.
+    /// Publish only an authoritative successful preparation and admit exactly its retained child, under the original caller fence and creator proofs.
     pub async fn publish_preparation(&self, caller: TaskId, lease: &WorkLease, preparation: TaskId) -> Result<String> {
         self.caller_context(caller, lease).await?;
         let admission = self.runtime.task_host().observe_admission(preparation).await?;
