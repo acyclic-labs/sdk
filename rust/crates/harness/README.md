@@ -624,9 +624,16 @@ before any selected-output projection, and content-part growth is pre-funded.
 Native command callbacks use `NativeFutureBundle` and the same issued shared
 `NativeTaskContext`. Custom hosts without a native observer reject before future
 construction or provider work; ordinary command methods retain their original
-behavior. Stock mail and effect branches accept the original preparation observer
-and encode ready results through its bounded JSON codec. Native first causes
-return before a subsequent owner/deadline check.
+behavior. Stock execution and reconciliation share one optional-observer command
+body; native mail, effects, tools, model turns and child admission use their
+original-ledger producers and bound ready JSON before growth. Native worker
+run, resume, wake, suspension and reconciliation use the original finite engine,
+retain the original lease, and never route a native command through an ordinary
+boxed callback. Native run-task, resume and reconciliation move the genuine
+recovered lease custody into their observer and return it with the original
+attempt, including pre-cancellation or quota denial. They do not create a new
+meter or drop the original lease at an outer error boundary. Native first
+causes return before a subsequent owner/deadline check.
 
 Measured conversation binding threads one optional SDK-work observer through the
 original coordinator refresh, bounds and conditional append/recovery engine.

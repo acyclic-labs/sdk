@@ -32,6 +32,7 @@ struct PendingTool {
     executed: AtomicUsize,
     reconciled: AtomicUsize,
     receipt_ready: AtomicBool,
+    native: AtomicBool,
 }
 impl ToolExecutor for PendingTool {
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -66,10 +67,48 @@ impl ToolExecutor for PendingTool {
             Ok(Some(ToolResult { value: json!("original receipt") }))
         })
     }
+    fn supports_native_execution(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if self.native.load(Ordering::SeqCst) { Ok(()) }
+        else { Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "control native tool disabled" }) }
+    }
+    fn execute_with_native_context<'a>(
+        &'a self, _: &'a ToolContext, _: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
+        self.supports_native_execution(work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            self.executed.fetch_add(1, Ordering::SeqCst);
+            self.clock.0.store(20, Ordering::SeqCst);
+            futures::future::pending().await
+        })
+    }
+    fn reconcile_with_native_context<'a>(
+        &'a self, _: &'a ToolContext, _: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
+        self.supports_native_execution(work)?;
+        crate::NativeFutureBundle::new(work, || async move {
+            self.reconciled.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(self.executed.load(Ordering::SeqCst), 1);
+            if !self.receipt_ready.load(Ordering::SeqCst) { return futures::future::pending().await; }
+            let (value, custody) = crate::tool::value_with_native_work(&"original receipt", work)?;
+            Ok((Some(ToolResult { value }), custody))
+        })
+    }
 }
 impl ToolProjection for PendingTool {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         Ok(json!({"kind":"json","value":result.value}))
+    }
+    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.supports_native_execution(work)
+    }
+    fn project_with_native_work(
+        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        #[derive(serde::Serialize)]
+        struct Projection<'a> { kind: &'static str, value: &'a Value }
+        crate::tool::value_with_native_work(&Projection { kind: "json", value: &result.value }, work)
     }
 }
 
@@ -77,6 +116,7 @@ struct Machine {
     identity: MachineIdentity,
     schema: Value,
     transitioned: AtomicUsize,
+    native: AtomicBool,
 }
 impl ResumableMachine for Machine {
     fn identity(&self) -> &MachineIdentity { &self.identity }
@@ -91,6 +131,42 @@ impl ResumableMachine for Machine {
             commands: vec![command],
             status: MachineStatus::Suspended,
         })
+    }
+    fn supports_native_work(&self) -> bool { self.native.load(Ordering::SeqCst) }
+    fn initialize_with_native_work(
+        &self, input: &Value, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        crate::tool::clone_value_with_native_work(input, work)
+    }
+    fn transition_with_native_work(
+        &self, state: &Value, _: Value, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        let io = super::super::PreparationIo::from_native_work(work)?;
+        let (state, custody) = crate::tool::clone_value_with_native_work(state, work)?;
+        io.absorb_native_custody(custody)?;
+        let command = {
+            let encoded_hold;
+            let encoded = io.encode_json(&state["command"], io.remaining()?.bytes_encoded, false)?;
+            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+            let command = io.decode_preparation::<WorkflowCommand>(&encoded)?.into_retained();
+            drop(encoded);
+            drop(encoded_hold);
+            command
+        };
+        io.retain_owned(std::mem::size_of::<MachineTransition>().saturating_sub(std::mem::size_of::<Value>()) as u64)?;
+        let bytes = std::mem::size_of::<WorkflowCommand>() as u64;
+        io.retain_owned(bytes)?;
+        io.allocation_attempt(bytes)?;
+        let mut commands = Vec::new();
+        commands.try_reserve_exact(1).map_err(|_| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage, reason: "control command vector allocation failed",
+        })?;
+        if commands.capacity() > 1 { io.retain_owned((commands.capacity() as u64 - 1) * bytes)?; }
+        commands.push(command);
+        self.transitioned.fetch_add(1, Ordering::SeqCst);
+        let transition = MachineTransition { state, commands, status: MachineStatus::Suspended };
+        let custody = io.take_native_custody(io.owned_bytes()?)?;
+        Ok((transition, custody))
     }
 }
 
@@ -137,6 +213,7 @@ impl Fixture {
             },
             schema: json!({"type":"object"}),
             transitioned: AtomicUsize::new(0),
+            native: AtomicBool::new(false),
         });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(
@@ -148,6 +225,7 @@ impl Fixture {
         let tool = Arc::new(PendingTool {
             clock: clock.clone(), executed: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
             receipt_ready: AtomicBool::new(false),
+            native: AtomicBool::new(false),
         });
         let mut tools = ToolRegistry::default();
         tools.register(Tool {
@@ -177,6 +255,16 @@ impl Fixture {
         ).map_err(|error| Error::Invalid(error.to_string()))?).await
     }
     async fn admit_command(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<WorkLease> {
+        self.admit_only(runtime, kind, command).await?;
+        match runtime.task_host().pull_work(&Worker {
+            id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+        }).await? {
+            WorkPull::Claimed(lease) => Ok(lease),
+            _ => Err(Error::NotFound("deadline lease".into())),
+        }
+    }
+
+    async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(
             self.filesystem.clone(), self.volume.clone(), &self.issuer.verifier(), &self.signed, 65_536,
@@ -192,11 +280,25 @@ impl Fixture {
             runtime.harness().admit(operation, &definition, input, None).await?,
             Admission::Accepted(_)
         ));
-        match runtime.task_host().pull_work(&Worker {
+        Ok(operation)
+    }
+
+    async fn native_lease(
+        &self, runtime: &Runtime, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
+        let operation = self.admit_only(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
+            &super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
+        )?).await?;
+        let pulled = runtime.task_host().pull_operation_with_native_work(&Worker {
             id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
-        }).await? {
-            WorkPull::Claimed(lease) => Ok(lease),
-            _ => Err(Error::NotFound("deadline lease".into())),
+        }, operation, work).await?;
+        match pulled {
+            (WorkPull::Claimed(lease), custody) => Ok((lease, custody)),
+            (other, custody) => {
+                drop(other);
+                drop(custody);
+                Err(Error::NotFound("native deadline lease".into()))
+            }
         }
     }
 }
@@ -515,5 +617,56 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
     assert_eq!(work.receipt().bytes_encoded, 0);
     assert_eq!(work.receipt().authority_records_acknowledged, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lease() -> Result<()> {
+    for precancel in [true, false] {
+        let fixture = Fixture::new().await?;
+        let runtime = fixture.runtime().await?;
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        fixture.tool.native.store(true, Ordering::SeqCst);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget { allocation_operations: 4096, ..Default::default() };
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
+        let original = lease.clone();
+        let recovered_bytes = recovery_custody.bytes();
+        if !precancel {
+            // Exhaust the ORIGINAL allowance with actual paid SDK String
+            // productions; never reconstruct a meter from remaining limits.
+            while work.receipt().allocation_operations < budget.allocation_operations {
+                let text = work.display(&"allocation denial control")?;
+                drop(text);
+            }
+        }
+        let before = work.receipt();
+        if precancel { cancellation.cancel(); }
+        let commands = runtime.commands();
+        let result = runtime.resume_task_with_native_work(lease, recovery_custody, &commands, 4, &work).await;
+        match result {
+            Ok((TaskWorkerAttempt::Unresolved { lease, error }, custody)) => {
+                assert_eq!(lease, original);
+                assert!(matches!(error, Error::NativeWork { .. }));
+                assert!(custody.work().shares_ledger(&work));
+                assert!(custody.bytes() >= recovered_bytes);
+                drop(lease);
+                drop(error);
+                drop(custody);
+            }
+            _ => return Err(Error::Invalid("native worker denial lost original attempt".into())),
+        }
+        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+        assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
+        let state = runtime.task_host().observe_task(TaskId::from_bytes(original.operation.operation_id.into_bytes())).await?;
+        assert_eq!(state.reservation, Some(original.reservation));
+        assert!(!state.cancellation_requested);
+        assert!(state.outcome.is_none());
+    }
     Ok(())
 }

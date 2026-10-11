@@ -20,38 +20,62 @@ pub(super) async fn run<P, T>(
 where
     P: StreamProvider + 'static,
 {
-    let Some(deadline) = deadline else {
-        return future.await;
-    };
+    run_observed(host, task, fence, deadline, operation, future, None, |_| false).await
+}
+
+pub(super) async fn run_observed<P, T>(
+    host: &CoordinatorTaskHost<P>,
+    task: TaskId,
+    fence: Option<&LeaseFence>,
+    deadline: Option<u64>,
+    operation: OperationId,
+    future: impl Future<Output = Result<T>>,
+    io: Option<&crate::filesystem::PreparationIo>,
+    has_native_failure: impl Fn(&T) -> bool,
+) -> Result<T>
+where
+    P: StreamProvider + 'static,
+{
+    if let Some(io) = io { io.check_cancellation()?; }
+    let Some(deadline) = deadline else { return future.await; };
     if host.now_unix_millis() >= deadline {
-        host.expire_task_deadline(task, fence.cloned()).await?;
+        expire_observed(host, task, fence, io).await?;
         return Err(Error::Indeterminate(operation));
     }
-    // Poll the timer first: unavailable timer machinery fails before any effect.
     let result = {
         let wait = pin!(wait_until(host, deadline));
         let future = pin!(future);
         match select(wait, future).await {
-            Either::Left((elapsed, _)) => {
-                elapsed?;
-                None
-            }
+            Either::Left((elapsed, _)) => { elapsed?; None }
             Either::Right((result, _)) => Some(result),
         }
     };
-    // Drop the invocation before cancellation: it may hold a coordinator guard.
-    // A synchronously-ready callback can cross the boundary within one poll.
     if let Some(result) = result {
-        // A failed native admission is not evidence of a timed-out effect.
-        // Preserve its cause/custody before clocks or cancellation perform IO.
-        #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if result.as_ref().is_err_and(|error| error.is_native_failure()) { return result; }
-        if host.now_unix_millis() < deadline {
-            return result;
-        }
+        // A native failed admission also has an exact attempted lease. Preserve
+        // that whole Unresolved pull before clocks or expiry can replace it.
+        if result.as_ref().is_ok_and(&has_native_failure) { return result; }
+        if host.now_unix_millis() < deadline { return result; }
     }
-    host.expire_task_deadline(task, fence.cloned()).await?;
+    expire_observed(host, task, fence, io).await?;
     Err(Error::Indeterminate(operation))
+}
+
+async fn expire_observed<P: StreamProvider + 'static>(
+    host: &CoordinatorTaskHost<P>, task: TaskId, fence: Option<&LeaseFence>,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io {
+        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native expiry requires original observer",
+        })?;
+        let fence = fence.map(|fence| super::observed::clone_fence(fence, Some(io))).transpose()?;
+        return host.expire_task_deadline_with_native_work(task, fence, work).await;
+    }
+    host.expire_task_deadline(task, fence.cloned()).await
 }
 
 /// Finite observation allowance, not a replacement execution deadline or grant.

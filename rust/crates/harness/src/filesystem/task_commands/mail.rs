@@ -73,9 +73,16 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
     Err(Error::Unsupported("mail result observer requires the original native work".into()))
 }
 
-fn reconciled(io: Option<&PreparationIo>) -> Result<TaskCommandProgress> {
+pub(super) fn reconciled(io: Option<&PreparationIo>) -> Result<TaskCommandProgress> {
     require_native_observer(io)?;
-    mail_ready(Value::Null, io)
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io {
+        // Null has no owned payload. Split its exact zero-byte share from the
+        // existing observer; do not allocate, encode, or claim a new marker.
+        let custody = io.take_native_custody(0)?;
+        return Ok(TaskCommandProgress::ReadyWithNativeCustody { value: Value::Null, custody });
+    }
+    Ok(TaskCommandProgress::Ready(Value::Null))
 }
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
