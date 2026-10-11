@@ -1064,6 +1064,8 @@ fn namespace_starts_with_host_measured<W: crate::demand::SourceDemandReadWork>(
 pub struct NativeWatch {
     watcher: NativeWatchDriver,
     root: PathBuf,
+    profile: FilesystemProfile,
+    limits: VolumeLimits,
     recursive: bool,
     watched_directories: Vec<PathBuf>,
     receiver: Mutex<Receiver<QueuedWatchChange>>,
@@ -1551,7 +1553,7 @@ impl NativeWatch {
             }
         };
         let watch = Self {
-            watcher, root, recursive: options.recursive, watched_directories,
+            watcher, root, profile, limits: options.limits, recursive: options.recursive, watched_directories,
             receiver: Mutex::new(receiver), held_root,
             #[cfg(windows)]
             windows_directories: Vec::new(),
@@ -1740,7 +1742,7 @@ impl NativeWatch {
                         .map_err(|_| NativeWatchError::UnrepresentablePath)?;
                     watcher.admit_with_work(relative, work)?;
                 }
-                NativeWatchDriver::Adapter(_) => {
+                NativeWatchDriver::Adapter(_) | NativeWatchDriver::StartupFailure(_) => {
                     return Err(NativeWatchError::BoundedObservationUnavailable.into());
                 }
             }
@@ -3714,6 +3716,8 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::NotDirectory => NativeWatchError::NotDirectory,
         crate::demand::DemandError::InvalidRequest => NativeWatchError::InvalidRequest,
         crate::demand::DemandError::WorkerUnavailable => NativeWatchError::WorkerUnavailable,
+        crate::demand::DemandError::OriginalWorkPoisoned => NativeWatchError::StatePoisoned,
+        crate::demand::DemandError::Allocation(_) => NativeWatchError::AllocationFailed,
         crate::demand::DemandError::NativeWorkUnavailable => NativeWatchError::NativeWorkUnavailable,
         #[cfg(feature = "native-mount")]
         crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),

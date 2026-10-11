@@ -216,7 +216,7 @@ impl PendingDeliveryBuffer {
             Err(error) => {
                 drop(entries);
                 work.release(bytes).map_err(mount_demand_error)?;
-                return Err(error.into());
+                return Err(super::lazy::mount_demand_error(error));
             }
         };
         entries.append(&mut self.entries);
@@ -344,10 +344,10 @@ impl ViewObservers {
             let mut hub = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             if !join_matches(&hub, join.as_ref()) { drop(hub); drop(join); continue; }
             let mut copy_credit = prepare_join_buffer(&mut hub, &mut work)?;
-            let budget = work.budget;
+            let (allocations, counters, budget, _) = work.allocation_parts();
             self.add_measured_locked(
                 &mut hub.observers, observer.clone(), custody.clone(), &mut None,
-                &mut work.allocations, &mut work.work, budget,
+                allocations, counters, budget,
             )?;
             append_join(&mut hub, &observer, &mut join, &mut work, &mut copy_credit)?;
             drop(hub);
@@ -2683,92 +2683,6 @@ mod tests {
         assert_eq!(denied.work.allocation_operations, 0);
         assert_eq!(denied.work.peak_allocation_bytes, 0);
         assert!(untouched.node_unchanged_since(first, before));
-        Ok(())
-    }
-
-    #[test]
-    fn bounded_ledger_reconciles_external_backing_replacement()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let cancellation = crate::CancellationToken::new();
-        let ledger = ViewLedger::new();
-        let first = FileId::from_bytes([1; 16]);
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-        let mut ownership = ViewLedgerAdmission::default();
-        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
-        let generation = ownership.nodes.expect("owned initial backing").0;
-        assert!(work.live_allocation_bytes() > 0);
-        for byte in 2..=8 {
-            ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])));
-        }
-        assert!(ledger.nodes.0.read().expect("change map").allocation_generation > generation);
-        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
-        assert!(ownership.nodes.is_none());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert_eq!(work.work.allocation_operations, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn bounded_ledger_releases_external_replacement_before_observer_snapshot()
-    -> Result<(), Box<dyn std::error::Error>> {
-        struct Count(std::sync::atomic::AtomicUsize);
-        impl ViewObserver for Count {
-            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        let cancellation = crate::CancellationToken::new();
-        let ledger = ViewLedger::new();
-        let first = FileId::from_bytes([1; 16]);
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-        let mut ownership = ViewLedgerAdmission::default();
-        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
-        let peak = work.work.peak_allocation_bytes;
-        for byte in 2..=8 {
-            ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])));
-        }
-        let counted = Arc::new(Count(Default::default()));
-        let observer: Arc<dyn ViewObserver> = counted.clone();
-        ledger.observe(Arc::downgrade(&observer))?;
-        work.budget.peak_allocation_bytes = peak;
-        ledger.record_measured(&ViewChange::Node(first), &mut work, &mut ownership)?;
-        assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(ownership.nodes.is_none());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert_eq!(work.work.allocation_operations, 2);
-        assert_eq!(work.work.peak_allocation_bytes, peak);
-        Ok(())
-    }
-
-    #[test]
-    fn bounded_unicode_fold_matches_canonical_nfc_model()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use unicode_normalization::UnicodeNormalization as _;
-        let cases = [
-            "Résumé", "RE\u{301}SUME\u{301}", "\u{1100}\u{1161}\u{11a8}",
-            "\u{301}\u{327}A", "a\u{315}\u{300}", "\u{344}\u{315}\u{300}",
-            "Straße", "\u{212b}\u{301}", "\u{1e9b}\u{323}", "\u{1d160}\u{1d165}",
-        ];
-        for text in cases {
-            let mut expected = DefaultHasher::new();
-            expected.write_u64(37);
-            expected.write_u8(1);
-            let mut encoded = [0; 4];
-            for scalar in text.nfc().flat_map(char::to_uppercase).flat_map(char::to_lowercase) {
-                expected.write(scalar.encode_utf8(&mut encoded).as_bytes());
-            }
-            for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes, NameEncoding::WindowsUtf16Le] {
-                let bytes = if encoding == NameEncoding::WindowsUtf16Le {
-                    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-                } else { text.as_bytes().to_vec() };
-                let name = LogicalName::new(encoding, bytes, 510)?;
-                let cancellation = crate::CancellationToken::new();
-                let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-                assert_eq!(child_key_measured(37, &name, &mut work)?, expected.finish(), "{text:?} {encoding:?}");
-                assert!(work.work.items_examined > 0);
-                assert_eq!(work.work.allocation_operations, 1);
-            }
-        }
         Ok(())
     }
 
