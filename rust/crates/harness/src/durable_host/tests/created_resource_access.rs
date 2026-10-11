@@ -283,6 +283,99 @@ pub(crate) struct CreationFixture {
     pub(crate) original_root_births: Option<[OriginalRootFilesystemBirth; 2]>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type NativeCustomerRuntime = crate::filesystem::FilesystemTaskRuntime<
+    MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
+>;
+
+/// One configured real customer, shared by native transport and stock controls.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NativeCustomerFixture {
+    pub(crate) creation: CreationFixture,
+    pub(crate) runtime: NativeCustomerRuntime,
+}
+
+/// Actual issued context and original recovered lease precede their custody.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NativeCustomerContext {
+    pub(crate) context: Arc<crate::NativeTaskContext>,
+    pub(crate) lease: crate::distributed::WorkLease,
+    pub(crate) fence: crate::scheduler::LeaseFence,
+    pub(crate) custody: acyclic_fs::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeCustomerFixture {
+    /// Setup is ordinary configured construction, before native observation.
+    /// The caller installs its actual catalog tools, rather than an empty driver.
+    pub(crate) async fn new_with_grants(
+        grants: &[&str], tools: crate::tool::ToolRegistry,
+    ) -> Result<Self> {
+        let creation = CreationFixture::new_with_grants(grants).await?;
+        // This is the scheduler volume configured by CreationFixture's real
+        // source constructor, not a grant or a derived task/signer authority.
+        let volume = VolumeRef::new(
+            creation.filesystem_provider.clone(), "scheduler",
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+        )?;
+        let runtime = NativeCustomerRuntime::from_host(
+            creation.stream.clone(), Arc::clone(&creation.harness),
+            Arc::clone(&creation.host), Arc::clone(&creation.filesystem), volume,
+            creation.host.verifier.clone(), creation.host.owner_scope.clone(),
+            tools, creation.root_scope.limits().file_bytes, None,
+        )?;
+        Ok(Self { creation, runtime })
+    }
+
+    pub(crate) async fn context_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<NativeCustomerContext> {
+        // Declare the fence's observer before any owned data it protects.
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut recovered = self.creation.host.recover_work_with_native_work(
+            self.creation.root, work,
+        ).await?;
+        if !recovered.1.work().shares_ledger(work) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native customer recovery differs from its original work",
+            });
+        }
+        if matches!(&recovered.0, crate::distributed::WorkPull::Unresolved { .. }) {
+            let crate::distributed::WorkPull::Unresolved { error, .. } = recovered.0 else {
+                unreachable!("the original recovery was unresolved")
+            };
+            return Err(error);
+        }
+        let lease = match &recovered.0 {
+            crate::distributed::WorkPull::Claimed(lease) => lease,
+            _ => return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "native customer requires its original admitted lease",
+            }),
+        };
+        if lease.reservation != self.creation.root_lease.reservation
+            || lease.operation.operation_id != self.creation.root_lease.operation.operation_id
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "native customer recovery changed its original lease",
+            });
+        }
+        let fence = NativeCustomerRuntime::original_lease_fence_with_io(lease, &io)?;
+        let context = self.runtime.task_context_with_native_work(
+            self.creation.root, &fence, work,
+        ).await?;
+        let mut fence_custody = io.take_native_custody(io.owned_bytes()?)?;
+        recovered.1.absorb(&mut fence_custody)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let crate::distributed::WorkPull::Claimed(lease) = recovered.0 else {
+            unreachable!("the borrowed original recovery was claimed")
+        };
+        Ok(NativeCustomerContext { context, lease, fence, custody: recovered.1 })
+    }
+}
+
 impl CreationFixture {
     pub(crate) async fn new() -> Result<Self> {
         Self::new_with_grants(&[]).await

@@ -39,6 +39,8 @@ mod inspection;
 pub use inspection::TaskSourceInspection;
 mod command_input;
 pub(super) mod observed;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_mailbox;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
@@ -320,6 +322,27 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         }
         self.owner.borrowed().require_mail_scope_with_native_work(scope, work)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn send_with_native_work<'a>(
+        &'a self, recipient: TaskId, operation: OperationId,
+        payload: &'a crate::conversation::FileRef,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+        native_mailbox::send(self, recipient, operation, payload, work)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn inbox_with_native_work<'a>(
+        &'a self, after: u64, maximum: usize, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::scheduler::InboxItem>, acyclic_fs::NativeAllocation)>> {
+        native_mailbox::inbox(self, after, maximum, work)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_received_with_native_work<'a>(
+        &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<u8>, acyclic_fs::NativeAllocation)>> {
+        native_mailbox::read_received(self, receive_operation, item, work)
+    }
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {
@@ -600,20 +623,10 @@ where
             policy: policy.clone(),
             ..crate::runtime::HarnessBuilder::local()
         }.build()?;
-        Ok(Self {
-            stream,
-            host,
-            harness,
-            filesystem,
-            volume,
-            verifier,
-            signed,
-            tools,
-            maximum_payload_bytes,
-            policy,
-            interaction_owner: None,
-            recursive_source: None,
-        })
+        Self::from_host(
+            stream, harness, host, filesystem, volume, verifier, signed, tools,
+            maximum_payload_bytes, policy,
+        )
     }
 
     /// Installs the same configured recursive source used by registered default
@@ -631,6 +644,38 @@ where
         &self,
     ) -> Option<&Arc<dyn super::RecursiveDefaultToolSource<P, A, O>>> {
         self.recursive_source.as_ref()
+    }
+
+    /// Attaches stock commands to the same already-configured host and harness.
+    /// This does not issue task authority; native contexts still require the
+    /// current original owner and fence through `task_context_with_native_work`.
+    #[allow(clippy::too_many_arguments, reason = "the original explicit configured provider and authority boundaries")]
+    pub fn from_host(
+        stream: StreamClient<P>, harness: Arc<AgentHarness>,
+        host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
+        tools: ToolRegistry, maximum_payload_bytes: u64,
+        policy: Option<Arc<dyn ToolPolicy>>,
+    ) -> Result<Self> {
+        if !harness.original_host_binding_matches(host.as_ref(), policy.as_deref()) {
+            return Err(Error::Invalid("stock runtime differs from the harness's original host or policy binding".into()));
+        }
+        volume.validate()?;
+        if maximum_payload_bytes == 0 {
+            return Err(Error::Invalid("stock runtime requires a positive payload limit".into()));
+        }
+        Ok(Self {
+            stream, host, harness, filesystem, volume, verifier, signed, tools,
+            maximum_payload_bytes, policy, interaction_owner: None, recursive_source: None,
+        })
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn original_lease_fence_with_io(
+        lease: &crate::distributed::WorkLease, io: &super::PreparationIo,
+    ) -> Result<LeaseFence> {
+        io.retain_owned(std::mem::size_of::<LeaseFence>() as u64)?;
+        observed::lease_fence(lease, Some(io))
     }
 
     /// Binds the existing conversation owner for task approval/question tickets.
