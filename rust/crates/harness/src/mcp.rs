@@ -716,6 +716,25 @@ impl ToolExecutor for RemoteTool {
                 reason: "MCP tool context identity mismatch",
             });
         }
+        let examined = (invocation.name.len() as u64)
+            .checked_add(self.server.len() as u64)
+            .and_then(|bytes| bytes.checked_add(self.remote.name.len() as u64))
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "MCP selected name comparison overflow",
+            })?;
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: examined, ..Default::default()
+        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let selected_name = invocation.name.strip_prefix("mcp.")
+            .and_then(|name| name.strip_prefix(self.server.as_str()))
+            .and_then(|name| name.strip_prefix('.'));
+        if selected_name != Some(self.remote.name.as_str()) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "MCP invocation names another selected remote tool",
+            });
+        }
         // Compare borrowed canonical grant spelling without building a string.
         for grant in context.task().scope().grants().iter() {
             let bytes = (grant.len() as u64).checked_add(self.server.len() as u64)
