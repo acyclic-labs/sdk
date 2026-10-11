@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{collections::BTreeMap, sync::Arc};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{kernel::NamespacePath, native_host::HostRoot};
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "materializer_native.rs"]
+mod native_entry;
 use thiserror::Error;
 
 const JOURNAL_VERSION: u32 = 1;
@@ -585,9 +592,18 @@ fn validate_materialization_path(path: &str) -> Result<(), ()> {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct NativeTreeMaterializationBackend {
-    root: PathBuf,
-    target: PathBuf,
-    backup: PathBuf,
+    root_path: Arc<PathBuf>,
+    root: Arc<HostRoot>,
+    target: Arc<HostRoot>,
+    backup: Arc<HostRoot>,
+    captured: Option<Arc<CapturedNativeSource>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CapturedNativeSource {
+    generation: GenerationId,
+    preimages: Arc<BTreeMap<NamespacePath, MaterializationPreimage>>,
+    config: crate::VolumeConfig,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -599,24 +615,9 @@ impl NativeTreeMaterializationBackend {
         root: impl Into<PathBuf>,
         operation_directory: impl Into<PathBuf>,
     ) -> Result<Self, NativeTreeMaterializationError> {
-        let root = root.into().canonicalize()?;
-        let operation_directory = operation_directory.into().canonicalize()?;
-        let target = operation_directory.join("target");
-        if !target.is_dir()
-            || operation_directory == root
-            || root.starts_with(&operation_directory)
-            || operation_directory.starts_with(&root)
-            || !same_native_volume(&root, &operation_directory)?
-        {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-        let backup = operation_directory.join("backup");
-        std::fs::create_dir_all(&backup)?;
-        Ok(Self {
-            root,
-            target,
-            backup,
-        })
+        let root_path = root.into().canonicalize()?;
+        let root = Arc::new(HostRoot::open(&root_path)?);
+        Self::with_root(root_path, root, operation_directory.into())
     }
 
     #[cfg(any(all(feature = "local", feature = "native-mount"), test))]
@@ -632,7 +633,7 @@ impl NativeTreeMaterializationBackend {
             .map(|path| {
                 validate_materialization_path(&path)
                     .map_err(|()| NativeTreeMaterializationError::InvalidPath(path.clone()))?;
-                if native_entry_exists(&self.target.join(&path))? {
+                if native_entry_exists_in(&self.target, Path::new(&path))? {
                     Ok(MaterializationEdit::Install {
                         path,
                         image: vec![1],
@@ -652,13 +653,199 @@ impl NativeTreeMaterializationBackend {
         Ok(plan)
     }
 
-    fn paths(&self, path: &str) -> (PathBuf, PathBuf, PathBuf) {
-        (
-            self.root.join(path),
-            self.target.join(path),
-            self.backup.join(path),
-        )
+    /// Uses the producer's original held root and immutable native preimages.
+    pub(crate) fn from_captured_root(
+        root_path: &Path,
+        root: Arc<HostRoot>,
+        generation: GenerationId,
+        preimages: Arc<BTreeMap<NamespacePath, MaterializationPreimage>>,
+        config: crate::VolumeConfig,
+        operation_directory: &Path,
+    ) -> Result<Self, NativeTreeMaterializationError> {
+        let mut backend = Self::with_root(root_path.to_path_buf(), root, operation_directory.to_path_buf())?;
+        backend.captured = Some(Arc::new(CapturedNativeSource { generation, preimages, config }));
+        Ok(backend)
     }
+
+    fn with_root(
+        root_path: PathBuf,
+        root: Arc<HostRoot>,
+        operation_directory: PathBuf,
+    ) -> Result<Self, NativeTreeMaterializationError> {
+        if HostRoot::open(&root_path)?.identity() != root.identity() {
+            return Err(NativeTreeMaterializationError::ExternalMutation(String::new()));
+        }
+        let operation_directory = operation_directory.canonicalize()?;
+        if operation_directory == root_path || root_path.starts_with(&operation_directory) || operation_directory.starts_with(&root_path) {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        let operation = HostRoot::open(&operation_directory)?;
+        operation.create_dir_all_held(Path::new("backup"))?;
+        let target = Arc::new(HostRoot::open(&operation_directory.join("target"))?);
+        let backup = Arc::new(HostRoot::open(&operation_directory.join("backup"))?);
+        if root.identity().device != target.identity().device || root.identity().device != backup.identity().device {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        if HostRoot::open(&operation_directory)?.identity() != operation.identity() {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        Ok(Self { root_path: Arc::new(root_path), root, target, backup, captured: None })
+    }
+
+    fn verify_root_binding(&self) -> Result<(), NativeTreeMaterializationError> {
+        if HostRoot::open(&self.root_path)?.identity() != self.root.identity() {
+            return Err(NativeTreeMaterializationError::ExternalMutation(String::new()));
+        }
+        Ok(())
+    }
+
+    fn verify_parent_bindings(&self, path: &Path) -> Result<(), NativeTreeMaterializationError> {
+        let Some(source) = &self.captured else { return Ok(()); };
+        for parent in path.ancestors().skip(1).filter(|parent| !parent.as_os_str().is_empty()) {
+            let original = source.original(parent)?.ok_or_else(|| native_external_mutation(parent))?;
+            let metadata = decode_native_preimage_metadata(&original.image)?.ok_or_else(|| native_external_mutation(parent))?;
+            let (before, _) = decode_native_witness(&original.image)?;
+            // Parent mode may legitimately change without changing its binding.
+            if native_entry_fingerprint_scoped(&self.root, parent, false, Some(&metadata))? != before {
+                return Err(native_external_mutation(parent));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_held_parent_binding(&self, path: &Path, parent: &cap_std::fs::Dir) -> Result<(), NativeTreeMaterializationError> {
+        let parent_path = path.parent().unwrap_or_else(|| Path::new(""));
+        let observed = parent.dir_metadata()?;
+        if parent_path.as_os_str().is_empty() {
+            if crate::NativeRootIdentity::from_metadata(&observed)? != self.root.identity() {
+                return Err(native_external_mutation(path));
+            }
+        } else if let Some(source) = &self.captured {
+            let original = source.original(parent_path)?.ok_or_else(|| native_external_mutation(parent_path))?;
+            let metadata = decode_native_preimage_metadata(&original.image)?.ok_or_else(|| native_external_mutation(parent_path))?;
+            let (expected, _) = decode_native_witness(&original.image)?;
+            if native_metadata_fingerprint(&observed, Some(&metadata))? != expected.ok_or(NativeTreeMaterializationError::InvalidPreimage)? {
+                return Err(native_external_mutation(parent_path));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_metadata(&self, path: &Path, desired: &NativeMetadataImage, expected: Option<NativeFingerprint>) -> Result<(), NativeTreeMaterializationError> {
+        let entry = native_entry::Entry::open(&self.root, path)?;
+        self.verify_root_binding()?;
+        self.verify_parent_bindings(path)?;
+        self.verify_held_parent_binding(path, &entry.parent)?;
+        let metadata = entry.metadata()?.ok_or_else(|| native_external_mutation(path))?;
+        if Some(native_metadata_fingerprint(&metadata, None)?) != expected {
+            return Err(native_external_mutation(path));
+        }
+        entry.set_metadata(desired.readonly, desired.posix_mode, desired.windows_attributes)?;
+        self.verify_root_binding()?;
+        self.verify_parent_bindings(path)
+    }
+
+    fn verify_original_entry(&self, path: &Path, descendants: bool) -> Result<(), NativeTreeMaterializationError> {
+        self.verify_original_entry_in(&self.root, path, descendants)
+    }
+
+    fn verify_original_entry_in(&self, root: &HostRoot, path: &Path, descendants: bool) -> Result<(), NativeTreeMaterializationError> {
+        let Some(source) = &self.captured else { return Ok(()); };
+        let Some(original) = source.original(path)? else {
+            return if native_entry_exists_in(root, path)? { Err(native_external_mutation(path)) } else { Ok(()) };
+        };
+        let metadata = decode_native_preimage_metadata(&original.image)?;
+        let (before, _) = decode_native_witness(&original.image)?;
+        if native_entry_fingerprint_scoped(root, path, metadata.is_none(), None)? != before {
+            return Err(native_external_mutation(path));
+        }
+        if metadata.is_some() && descendants {
+            let directory = root.open_dir_held(path)?;
+            let names = directory.entries()?.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>()?;
+            let namespace = source.namespace(path)?;
+            let expected_children = source.preimages
+                .range((std::ops::Bound::Included(&namespace), std::ops::Bound::Unbounded))
+                .take_while(|(candidate, _)| candidate.is_within(&namespace))
+                .filter(|(candidate, _)| candidate.depth() == namespace.depth() + 1)
+                .count();
+            if names.len() != expected_children { return Err(native_external_mutation(path)); }
+            for name in names {
+                let child = path.join(name);
+                // Unknown children are user data, not part of this structural replacement.
+                if source.original(&child)?.is_none() { return Err(native_external_mutation(&child)); }
+                self.verify_original_entry_in(root, &child, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn original_before_for_edit(&self, path: &Path, edit: &MaterializationEdit, current: Option<NativeFingerprint>) -> Result<Option<NativeFingerprint>, NativeTreeMaterializationError> {
+        let Some(source) = &self.captured else { return Ok(current); };
+        let Some(original) = source.original(path)? else { return Ok(None); };
+        let metadata_only = decode_native_preimage_metadata(&original.image)?.is_some();
+        if !metadata_only || matches!(edit, MaterializationEdit::SetMetadata { .. }) {
+            return Ok(decode_native_witness(&original.image)?.0);
+        }
+        // A structural directory journal carries its complete physical image. Its
+        // descendants remain independently bound to the original retained preimages,
+        // including after displacement into backup, rather than being adopted here.
+        Ok(current)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CapturedNativeSource {
+    fn namespace(&self, path: &Path) -> Result<NamespacePath, NativeTreeMaterializationError> {
+        let path = path.to_str().ok_or_else(|| NativeTreeMaterializationError::InvalidPath("<non-Unicode>".to_owned()))?;
+        let portable = crate::path::PortablePath::parse(&format!("/{path}"), self.config.limits)
+            .map_err(|_| NativeTreeMaterializationError::InvalidPath(path.to_owned()))?;
+        NamespacePath::from_portable_in_profile(&portable, self.config.profile, self.config.limits)
+            .map_err(|_| NativeTreeMaterializationError::InvalidPath(path.to_owned()))
+    }
+
+    fn original(&self, path: &Path) -> Result<Option<&MaterializationPreimage>, NativeTreeMaterializationError> {
+        Ok(self.preimages.get(&self.namespace(path)?))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn namespace_materialization_path(path: &NamespacePath) -> Result<PathBuf, NativeTreeMaterializationError> {
+    let mut host = PathBuf::new();
+    for component in path.components() {
+        host.push(component.unicode_text().ok_or_else(|| NativeTreeMaterializationError::InvalidPath("<non-Unicode>".to_owned()))?);
+    }
+    Ok(host)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_external_mutation(path: &Path) -> NativeTreeMaterializationError {
+    NativeTreeMaterializationError::ExternalMutation(path.to_string_lossy().into_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_entry_exists_in(root: &HostRoot, path: &Path) -> Result<bool, std::io::Error> {
+    match root.symlink_metadata_held(path) {
+        Ok(_) => Ok(true),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Retains original physical identity and content before any conditional host application.
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) fn capture_native_preimages(
+    root: &HostRoot,
+    paths: &[NamespacePath],
+) -> Result<BTreeMap<NamespacePath, MaterializationPreimage>, NativeTreeMaterializationError> {
+    paths.iter().map(|namespace| {
+        let path = crate::native_capture::namespace_to_host_path(namespace)
+            .map_err(|_| NativeTreeMaterializationError::InvalidPath("<unrepresentable>".to_owned()))?;
+        let metadata = root.symlink_metadata_held(&path)?;
+        let directory = metadata.is_dir();
+        let before = native_entry_fingerprint_scoped(root, &path, !directory, None)?;
+        let metadata = directory.then(|| native_metadata_held(&metadata));
+        Ok((namespace.clone(), MaterializationPreimage { image: encode_native_witness(before, None, metadata)? }))
+    }).collect()
 }
 
 #[cfg(all(
@@ -747,272 +934,197 @@ fn same_native_volume(_left: &Path, _right: &Path) -> Result<bool, std::io::Erro
 impl MaterializationBackend for NativeTreeMaterializationBackend {
     type Error = NativeTreeMaterializationError;
 
-    async fn capture(
-        &self,
-        edit: &MaterializationEdit,
-    ) -> Result<MaterializationPreimage, Self::Error> {
+    async fn verify_source(&self, from: GenerationId) -> Result<bool, Self::Error> {
+        let backend = self.clone();
+        acyclic_native_runtime::run_blocking_io(move || {
+            backend.verify_root_binding()?;
+            Ok(backend.captured.as_ref().is_none_or(|source| source.generation == from))
+        }).await?
+    }
+
+    async fn capture(&self, edit: &MaterializationEdit) -> Result<MaterializationPreimage, Self::Error> {
         let backend = self.clone();
         let edit = edit.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            let edit = &edit;
-            let path = edit_path(edit);
-            let (live, target, backup) = backend.paths(path);
-            if native_entry_exists(&backup)? {
-                return Err(NativeTreeMaterializationError::UnexpectedBackup(
-                    path.to_owned(),
-                ));
+            backend.verify_root_binding()?;
+            let path = Path::new(edit_path(&edit));
+            backend.verify_parent_bindings(path)?;
+            backend.verify_original_entry(path, !matches!(edit, MaterializationEdit::SetMetadata { .. }))?;
+            if native_entry_exists_in(&backend.backup, path)? {
+                return Err(NativeTreeMaterializationError::UnexpectedBackup(edit_path(&edit).to_owned()));
             }
-            let before = native_entry_fingerprint_for_edit(&live, edit)?;
-            let after = match edit {
-                MaterializationEdit::Install { .. } => native_entry_fingerprint(&target)?
-                    .ok_or_else(|| NativeTreeMaterializationError::MissingTarget(path.to_owned()))?
-                    .into(),
+            let current = native_entry_fingerprint_for_edit(&backend.root, path, &edit)?;
+            let before = backend.original_before_for_edit(path, &edit, current)?;
+            let after = match &edit {
+                MaterializationEdit::Install { .. } => Some(native_entry_fingerprint(&backend.target, path)?
+                    .ok_or_else(|| NativeTreeMaterializationError::MissingTarget(edit_path(&edit).to_owned()))?),
                 MaterializationEdit::Remove { .. } => None,
                 MaterializationEdit::SetMetadata { image, .. } => {
-                    let desired = decode_native_metadata(image)?;
-                    native_entry_fingerprint_scoped(&live, false, Some(&desired))?
+                    native_entry_fingerprint_scoped(&backend.root, path, false, Some(&decode_native_metadata(image)?))?
                 }
-                MaterializationEdit::Rename { .. } => {
-                    return Err(NativeTreeMaterializationError::UnsupportedRename);
-                }
+                MaterializationEdit::Rename { .. } => return Err(NativeTreeMaterializationError::UnsupportedRename),
             };
             let metadata = if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
-                Some(native_metadata(&std::fs::symlink_metadata(&live)?))
-            } else {
-                None
-            };
-            Ok(MaterializationPreimage {
-                image: encode_native_witness(before, after, metadata)?,
-            })
-        })
-        .await?
+                Some(native_metadata_held(&backend.root.symlink_metadata_held(path)?))
+            } else { None };
+            backend.verify_root_binding()?;
+            Ok(MaterializationPreimage { image: encode_native_witness(before, after, metadata)? })
+        }).await?
     }
 
-    async fn observe(
-        &self,
-        edit: &MaterializationEdit,
-        preimage: &MaterializationPreimage,
-    ) -> Result<MaterializationObservation, Self::Error> {
+    async fn observe(&self, edit: &MaterializationEdit, preimage: &MaterializationPreimage) -> Result<MaterializationObservation, Self::Error> {
         let backend = self.clone();
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            let edit = &edit;
-            let preimage = &preimage;
+            backend.verify_root_binding()?;
+            let path = Path::new(edit_path(&edit));
+            backend.verify_parent_bindings(path)?;
             let (before, after) = decode_native_witness(&preimage.image)?;
-            let path = edit_path(edit);
-            let (live, target, backup) = backend.paths(path);
-            let current = native_entry_fingerprint_for_edit(&live, edit)?;
-            let target_current = if matches!(edit, MaterializationEdit::Install { .. }) {
-                native_entry_fingerprint(&target)?
-            } else {
-                None
-            };
-            let backup_current = native_entry_fingerprint(&backup)?;
-            let backup_exists = backup_current.is_some();
-            if current == before && current == after && target_current.is_none() && backup_exists {
+            let current = native_entry_fingerprint_for_edit(&backend.root, path, &edit)?;
+            let target = if matches!(edit, MaterializationEdit::Install { .. }) { native_entry_fingerprint(&backend.target, path)? } else { None };
+            let backup = native_entry_fingerprint(&backend.backup, path)?;
+            backend.verify_root_binding()?;
+            if current == before && current == after && target.is_none() && backup.is_some() {
                 return Ok(MaterializationObservation::Postimage);
             }
             if current == before {
-                if matches!(edit, MaterializationEdit::Install { .. }) && target_current != after {
-                    return Ok(MaterializationObservation::Diverged);
-                }
-                return Ok(MaterializationObservation::Preimage);
+                return Ok(if matches!(edit, MaterializationEdit::Install { .. }) && target != after {
+                    MaterializationObservation::Diverged
+                } else { MaterializationObservation::Preimage });
             }
             if current == after {
-                if target_current.is_some() && target_current != after {
-                    return Ok(MaterializationObservation::Diverged);
-                }
-                return Ok(MaterializationObservation::Postimage);
+                return Ok(if target.is_some() && target != after {
+                    MaterializationObservation::Diverged
+                } else { MaterializationObservation::Postimage });
             }
-
-            // A crash may land between the two renames used for an install. The
-            // durable backup proves the old binding was moved by this operation;
-            // the still-present staged target means forward application can resume.
-            if current.is_none()
-                && backup_current == before
-                && matches!(edit, MaterializationEdit::Install { .. })
-            {
-                return if target_current.is_none() || target_current == after {
-                    Ok(MaterializationObservation::Interrupted)
-                } else {
-                    Ok(MaterializationObservation::Diverged)
-                };
+            if current.is_none() && backup == before && matches!(edit, MaterializationEdit::Install { .. }) {
+                return Ok(if target.is_none() || target == after { MaterializationObservation::Interrupted } else { MaterializationObservation::Diverged });
             }
             Ok(MaterializationObservation::Diverged)
-        })
-        .await?
+        }).await?
     }
 
-    async fn apply(
-        &self,
-        edit: &MaterializationEdit,
-        preimage: &MaterializationPreimage,
-    ) -> Result<(), Self::Error> {
+    async fn apply(&self, edit: &MaterializationEdit, preimage: &MaterializationPreimage) -> Result<(), Self::Error> {
         let backend = self.clone();
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            let edit = &edit;
-            let preimage = &preimage;
-            let path = edit_path(edit);
-            let (live, target, backup) = backend.paths(path);
+            backend.verify_root_binding()?;
+            let path = Path::new(edit_path(&edit));
+            backend.verify_parent_bindings(path)?;
             let (before, after) = decode_native_witness(&preimage.image)?;
-            if let MaterializationEdit::SetMetadata { image, .. } = edit {
-                let current = native_entry_fingerprint_for_edit(&live, edit)?;
-                if current == after {
-                    return Ok(());
+            if let MaterializationEdit::SetMetadata { image, .. } = &edit {
+                let current = native_entry_fingerprint_for_edit(&backend.root, path, &edit)?;
+                if current == after { return Ok(()); }
+                if current != before { return Err(native_external_mutation(path)); }
+                backend.apply_metadata(path, &decode_native_metadata(image)?, before)?;
+                backend.verify_root_binding()?;
+                if native_entry_fingerprint_for_edit(&backend.root, path, &edit)? != after {
+                    return Err(native_external_mutation(path));
                 }
-                if current != before {
-                    return Err(NativeTreeMaterializationError::ExternalMutation(
-                        path.to_owned(),
-                    ));
-                }
-                return apply_native_metadata(&live, &decode_native_metadata(image)?);
+                return Ok(());
             }
             let target_expected = matches!(edit, MaterializationEdit::Install { .. });
-            let backup_exists = native_entry_exists(&backup)?;
-            let target_fingerprint = native_entry_fingerprint(&target)?;
-            let target_exists = target_fingerprint.is_some();
-            let live_fingerprint = native_entry_fingerprint(&live)?;
-            let live_exists = live_fingerprint.is_some();
-            if !backup_exists && !target_exists && live_fingerprint == after {
-                return Ok(());
+            let current = native_entry_fingerprint(&backend.root, path)?;
+            let target = native_entry_fingerprint(&backend.target, path)?;
+            let backup = native_entry_fingerprint(&backend.backup, path)?;
+            if current == after && target.is_none() { return Ok(()); }
+            if (backup.is_some() && backup != before) || (backup.is_none() && current != before)
+                || (backup.is_some() && current.is_some()) || (target_expected && target != after)
+            {
+                return Err(native_external_mutation(path));
             }
-            if backup_exists && !target_exists && live_fingerprint == after {
-                return Ok(());
-            }
-            if backup_exists && live_fingerprint.is_some() && live_fingerprint != after {
-                return Err(NativeTreeMaterializationError::ExternalMutation(
-                    path.to_owned(),
-                ));
-            }
-            if !backup_exists && live_fingerprint != before {
-                return Err(NativeTreeMaterializationError::ExternalMutation(
-                    path.to_owned(),
-                ));
-            }
-            if target_expected && target_fingerprint != after {
-                return Err(NativeTreeMaterializationError::ExternalMutation(
-                    path.to_owned(),
-                ));
-            }
-            if backup_exists {
-                if target_expected && target_exists {
-                    remove_native_entry_durable(&live)?;
-                    durable_native_rename(&target, &live)?;
-                } else if target_expected && !live_exists {
-                    return Err(NativeTreeMaterializationError::MissingTarget(
-                        path.to_owned(),
-                    ));
-                } else if !target_expected {
-                    remove_native_entry_durable(&live)?;
+            if backup.is_none() { backend.verify_original_entry(path, true)?; }
+            backend.backup.create_dir_all_held(path.parent().unwrap_or_else(|| Path::new("")))?;
+            backend.root.create_dir_all_held(path.parent().unwrap_or_else(|| Path::new("")))?;
+            // Keep this exact parent capability through both renames. Reopening
+            // the live path here would admit a replaced parent between steps.
+            let live = native_entry::Entry::open(&backend.root, path)?;
+            let saved = native_entry::Entry::open(&backend.backup, path)?;
+            backend.verify_held_parent_binding(path, &live.parent)?;
+            if backup.is_none() && current.is_some() {
+                backend.verify_root_binding()?;
+                backend.verify_parent_bindings(path)?;
+                backend.verify_held_parent_binding(path, &live.parent)?;
+                live.rename_to(&saved)?;
+                let original = backend.verify_original_entry_in(&backend.backup, path, true);
+                let binding = backend.verify_root_binding().and_then(|()| backend.verify_parent_bindings(path));
+                if native_entry_fingerprint(&backend.backup, path)? != before || original.is_err() || binding.is_err() {
+                    if !live.is_present()? { saved.rename_to(&live)?; }
+                    return Err(native_external_mutation(path));
                 }
-                return Ok(());
-            }
-            if live_exists {
-                if let Some(parent) = backup.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                durable_native_rename(&live, &backup)?;
             }
             if target_expected {
-                if !target_exists {
-                    return Err(NativeTreeMaterializationError::MissingTarget(
-                        path.to_owned(),
-                    ));
-                }
-                if let Some(parent) = live.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                if let Err(error) = durable_native_rename(&target, &live) {
-                    if native_entry_exists(&backup)? && !native_entry_exists(&live)? {
-                        durable_native_rename(&backup, &live)?;
-                    }
-                    return Err(error);
+                if target.is_none() { return Err(NativeTreeMaterializationError::MissingTarget(edit_path(&edit).to_owned())); }
+                let staged = native_entry::Entry::open(&backend.target, path)?;
+                backend.verify_root_binding()?;
+                backend.verify_parent_bindings(path)?;
+                backend.verify_held_parent_binding(path, &live.parent)?;
+                if let Err(error) = staged.rename_to(&live) {
+                    if saved.is_present()? && !live.is_present()? { saved.rename_to(&live)?; }
+                    return Err(error.into());
                 }
             }
+            backend.verify_root_binding()?;
+            backend.verify_parent_bindings(path)?;
+            if native_entry_fingerprint(&backend.root, path)? != after { return Err(native_external_mutation(path)); }
             Ok(())
-        })
-        .await?
+        }).await?
     }
 
-    async fn restore(
-        &self,
-        edit: &MaterializationEdit,
-        preimage: &MaterializationPreimage,
-    ) -> Result<(), Self::Error> {
+    async fn restore(&self, edit: &MaterializationEdit, preimage: &MaterializationPreimage) -> Result<(), Self::Error> {
         let backend = self.clone();
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            let edit = &edit;
-            let preimage = &preimage;
-            let path = edit_path(edit);
-            let (live, _, backup) = backend.paths(path);
+            backend.verify_root_binding()?;
+            let path = Path::new(edit_path(&edit));
+            backend.verify_parent_bindings(path)?;
             let (before, after) = decode_native_witness(&preimage.image)?;
-            let current = native_entry_fingerprint_for_edit(&live, edit)?;
+            let current = native_entry_fingerprint_for_edit(&backend.root, path, &edit)?;
             if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
-                if current == before {
-                    return Ok(());
-                }
-                if current != after {
-                    return Err(NativeTreeMaterializationError::ExternalMutation(
-                        path.to_owned(),
-                    ));
-                }
-                let metadata = decode_native_preimage_metadata(&preimage.image)?
-                    .ok_or(NativeTreeMaterializationError::InvalidPreimage)?;
-                return apply_native_metadata(&live, &metadata);
-            }
-            let backup_current = native_entry_fingerprint(&backup)?;
-            let backup_exists = backup_current.is_some();
-            if backup_exists && backup_current != before {
-                return Err(NativeTreeMaterializationError::ExternalMutation(
-                    path.to_owned(),
-                ));
-            }
-            if current == before && !backup_exists {
+                if current == before { return Ok(()); }
+                if current != after { return Err(native_external_mutation(path)); }
+                let metadata = decode_native_preimage_metadata(&preimage.image)?.ok_or(NativeTreeMaterializationError::InvalidPreimage)?;
+                backend.apply_metadata(path, &metadata, after)?;
+                backend.verify_root_binding()?;
                 return Ok(());
             }
-            if current != after && !(current.is_none() && backup_exists) {
-                return Err(NativeTreeMaterializationError::ExternalMutation(
-                    path.to_owned(),
-                ));
+            let backup = native_entry_fingerprint(&backend.backup, path)?;
+            if backup.is_some() && backup != before { return Err(native_external_mutation(path)); }
+            if current == before && backup.is_none() { return Ok(()); }
+            if current != after && !(current.is_none() && backup.is_some()) { return Err(native_external_mutation(path)); }
+            backend.target.create_dir_all_held(path.parent().unwrap_or_else(|| Path::new("")))?;
+            let live = native_entry::Entry::open(&backend.root, path)?;
+            let staged = native_entry::Entry::open(&backend.target, path)?;
+            let saved = native_entry::Entry::open(&backend.backup, path)?;
+            backend.verify_held_parent_binding(path, &live.parent)?;
+            if current.is_some() {
+                // Carry rather than delete; retain this same original parent through rollback.
+                live.rename_to(&staged)?;
+                let binding = backend.verify_root_binding().and_then(|()| backend.verify_parent_bindings(path));
+                if native_entry_fingerprint(&backend.target, path)? != after || binding.is_err() {
+                    if !live.is_present()? { staged.rename_to(&live)?; }
+                    return Err(native_external_mutation(path));
+                }
             }
             match before {
-                None => remove_native_entry_durable(&live),
-                Some(_) if backup_exists => {
-                    remove_native_entry_durable(&live)?;
-                    durable_native_rename(&backup, &live)
+                None => {},
+                Some(_) if backup.is_some() => {
+                    backend.verify_root_binding()?;
+                    backend.verify_parent_bindings(path)?;
+                    backend.verify_held_parent_binding(path, &live.parent)?;
+                    saved.rename_to(&live)?;
                 }
-                Some(expected) if current == Some(expected) => Ok(()),
-                Some(_) => Err(NativeTreeMaterializationError::MissingPreimage(
-                    path.to_owned(),
-                )),
+                Some(_) => return Err(NativeTreeMaterializationError::MissingPreimage(edit_path(&edit).to_owned())),
             }
-        })
-        .await?
+            backend.verify_root_binding()?;
+            backend.verify_parent_bindings(path)?;
+            if native_entry_fingerprint(&backend.root, path)? != before { return Err(native_external_mutation(path)); }
+            Ok(())
+        }).await?
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn durable_native_rename(from: &Path, to: &Path) -> Result<(), NativeTreeMaterializationError> {
-    acyclic_native_runtime::durable_rename(from, to, acyclic_native_runtime::RenameMode::NoReplace)
-        .map_err(Into::into)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn remove_native_entry_durable(path: &Path) -> Result<(), NativeTreeMaterializationError> {
-    let existed = native_entry_exists(path)?;
-    remove_native_entry(path)?;
-    if existed {
-        let parent = path
-            .parent()
-            .ok_or(NativeTreeMaterializationError::InvalidPreimage)?;
-        acyclic_native_runtime::sync_parent(parent, acyclic_native_runtime::Durability::Full)?;
-    }
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1022,15 +1134,6 @@ fn edit_path(edit: &MaterializationEdit) -> &str {
         | MaterializationEdit::Remove { path }
         | MaterializationEdit::SetMetadata { path, .. } => path,
         MaterializationEdit::Rename { from, .. } => from,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn native_entry_exists(path: &Path) -> Result<bool, std::io::Error> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
     }
 }
 
@@ -1135,72 +1238,47 @@ fn decode_native_metadata(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_entry_fingerprint(path: &Path) -> Result<Option<[u8; 32]>, std::io::Error> {
-    native_entry_fingerprint_scoped(path, true, None)
+fn native_entry_fingerprint(root: &HostRoot, path: &Path) -> Result<Option<[u8; 32]>, std::io::Error> {
+    native_entry_fingerprint_scoped(root, path, true, None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_entry_fingerprint_for_edit(
-    path: &Path,
-    edit: &MaterializationEdit,
-) -> Result<Option<[u8; 32]>, std::io::Error> {
-    native_entry_fingerprint_scoped(
-        path,
-        !matches!(edit, MaterializationEdit::SetMetadata { .. }),
-        None,
-    )
+fn native_entry_fingerprint_for_edit(root: &HostRoot, path: &Path, edit: &MaterializationEdit) -> Result<Option<[u8; 32]>, std::io::Error> {
+    native_entry_fingerprint_scoped(root, path, !matches!(edit, MaterializationEdit::SetMetadata { .. }), None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_entry_fingerprint_scoped(
-    path: &Path,
-    include_contents: bool,
-    override_metadata: Option<&NativeMetadataImage>,
-) -> Result<Option<[u8; 32]>, std::io::Error> {
-    let metadata = match std::fs::symlink_metadata(path) {
+fn native_entry_fingerprint_scoped(root: &HostRoot, path: &Path, include_contents: bool, override_metadata: Option<&NativeMetadataImage>) -> Result<Option<[u8; 32]>, std::io::Error> {
+    let metadata = match root.symlink_metadata_held(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(None),
         Err(error) => return Err(error),
     };
     let mut hasher = blake3::Hasher::new();
     if !include_contents {
-        hash_native_metadata_edit(&metadata, override_metadata, &mut hasher);
-        #[cfg(windows)]
-        {
-            // MetadataExt does not expose a stable Windows file identity.
-            // Hold an opened binding while obtaining the identity so a path
-            // replacement cannot masquerade as the same metadata-only edit.
-            let identity = if metadata.is_dir() {
-                let directory =
-                    cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
-                Some(crate::NativeRootIdentity::from_metadata(
-                    &directory.dir_metadata()?,
-                )?)
-            } else if metadata.is_file() {
-                let file = cap_std::fs::File::from_std(std::fs::File::open(path)?);
-                Some(crate::NativeRootIdentity::from_metadata(&file.metadata()?)?)
-            } else {
-                None
-            };
-            if let Some(identity) = identity {
-                hasher.update(&identity.to_bytes());
-            }
-        }
-        return Ok(Some(*hasher.finalize().as_bytes()));
+        return Ok(Some(native_metadata_fingerprint(&metadata, override_metadata)?));
     }
-    hash_native_entry(
-        path,
-        &metadata,
-        &mut hasher,
-        override_metadata,
-        include_contents,
-    )?;
+    let entry = native_entry::Entry::open(root, path)?;
+    let metadata = entry.metadata()?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "entry binding disappeared"))?;
+    let mut buffer = [0_u8; 64 * 1024];
+    hash_native_entry(&entry.parent, entry.name, &metadata, &mut hasher, override_metadata, &mut buffer)?;
     Ok(Some(*hasher.finalize().as_bytes()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn native_metadata_fingerprint(metadata: &cap_std::fs::Metadata, desired: Option<&NativeMetadataImage>) -> Result<NativeFingerprint, std::io::Error> {
+    let mut hasher = blake3::Hasher::new();
+    hash_native_metadata_edit(metadata, desired, &mut hasher);
+    #[cfg(windows)]
+    if metadata.is_dir() || metadata.is_file() {
+        hasher.update(&crate::NativeRootIdentity::from_metadata(metadata)?.to_bytes());
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn hash_native_metadata_edit(
-    metadata: &std::fs::Metadata,
+    metadata: &cap_std::fs::Metadata,
     desired: Option<&NativeMetadataImage>,
     hasher: &mut blake3::Hasher,
 ) {
@@ -1216,7 +1294,7 @@ fn hash_native_metadata_edit(
     });
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
+        use cap_std::fs::MetadataExt as _;
         for value in [metadata.dev(), metadata.ino()] {
             hasher.update(&value.to_le_bytes());
         }
@@ -1231,7 +1309,7 @@ fn hash_native_metadata_edit(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt as _;
+        use cap_std::fs::MetadataExt as _;
         let attributes = desired
             .and_then(|value| value.windows_attributes)
             .unwrap_or_else(|| {
@@ -1253,71 +1331,85 @@ fn hash_native_metadata_edit(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn hash_native_entry(
-    path: &Path,
-    metadata: &std::fs::Metadata,
+    parent: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+    metadata: &cap_std::fs::Metadata,
     hasher: &mut blake3::Hasher,
     override_metadata: Option<&NativeMetadataImage>,
-    include_contents: bool,
+    buffer: &mut [u8],
 ) -> Result<(), std::io::Error> {
+    use cap_fs_ext::{DirExt as _, OpenOptionsFollowExt as _};
     use std::io::Read as _;
-
     let file_type = metadata.file_type();
-    hasher.update(if file_type.is_symlink() {
-        b"link"
-    } else if file_type.is_dir() {
-        b"directory"
-    } else if file_type.is_file() {
-        b"file"
-    } else {
-        b"special"
-    });
-    if include_contents {
-        hasher.update(&metadata.len().to_le_bytes());
-    }
-    hasher.update(&[u8::from(override_metadata.map_or_else(
-        || metadata.permissions().readonly(),
-        |value| value.readonly,
-    ))]);
-    hash_native_metadata(metadata, override_metadata, include_contents, hasher);
-
-    if !include_contents {
-        return Ok(());
-    }
+    hasher.update(if file_type.is_symlink() { b"link" } else if file_type.is_dir() { b"directory" } else if file_type.is_file() { b"file" } else { b"special" });
+    hasher.update(&metadata.len().to_le_bytes());
+    hasher.update(&[u8::from(override_metadata.map_or_else(|| metadata.permissions().readonly(), |value| value.readonly))]);
+    hash_native_metadata(metadata, override_metadata, true, hasher);
     if file_type.is_symlink() {
-        hash_native_os_str(std::fs::read_link(path)?.as_os_str(), hasher);
+        hash_native_os_str(parent.read_link_contents(name)?.as_os_str(), hasher);
     } else if file_type.is_dir() {
-        let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            hash_native_os_str(&entry.file_name(), hasher);
-            let metadata = std::fs::symlink_metadata(entry.path())?;
-            hash_native_entry(&entry.path(), &metadata, hasher, None, true)?;
+        let directory = parent.open_dir_nofollow(name)?;
+        ensure_native_metadata_stable(metadata, &directory.dir_metadata()?)?;
+        let mut names = directory.entries()?.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>()?;
+        names.sort_unstable();
+        for name in names {
+            hash_native_os_str(&name, hasher);
+            let metadata = directory.symlink_metadata(&name)?;
+            hash_native_entry(&directory, &name, &metadata, hasher, None, buffer)?;
         }
+        ensure_native_metadata_stable(metadata, &directory.dir_metadata()?)?;
     } else if file_type.is_file() {
-        let mut file = std::fs::File::open(path)?;
-        let mut buffer = vec![0; 1024 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            let bytes = buffer
-                .get(..read)
-                .ok_or_else(|| std::io::Error::other("invalid read length"))?;
-            hasher.update(bytes);
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).follow(cap_primitives::fs::FollowSymlinks::No);
+        #[cfg(target_os = "linux")]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_NOATIME);
         }
+        let mut file = match parent.open_with(name, &options) {
+            #[cfg(target_os = "linux")]
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                use cap_std::fs::OpenOptionsExt as _;
+                options.custom_flags(0);
+                parent.open_with(name, &options)?
+            }
+            result => result?,
+        };
+        ensure_native_metadata_stable(metadata, &file.metadata()?)?;
+        loop {
+            let read = file.read(buffer)?;
+            if read == 0 { break; }
+            hasher.update(buffer.get(..read).ok_or_else(|| std::io::Error::other("invalid read length"))?);
+        }
+        ensure_native_metadata_stable(metadata, &file.metadata()?)?;
+    }
+    ensure_native_metadata_stable(metadata, &parent.symlink_metadata(name)?)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_native_metadata_stable(before: &cap_std::fs::Metadata, after: &cap_std::fs::Metadata) -> Result<(), std::io::Error> {
+    let mut old = blake3::Hasher::new();
+    let mut new = blake3::Hasher::new();
+    hash_native_metadata(before, None, true, &mut old);
+    hash_native_metadata(after, None, true, &mut new);
+    if before.file_type() != after.file_type() || before.len() != after.len()
+        || before.permissions().readonly() != after.permissions().readonly()
+        || crate::NativeRootIdentity::from_metadata(before)? != crate::NativeRootIdentity::from_metadata(after)?
+        || old.finalize() != new.finalize()
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "entry changed during fingerprint capture"));
     }
     Ok(())
 }
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn hash_native_metadata(
-    metadata: &std::fs::Metadata,
+    metadata: &cap_std::fs::Metadata,
     desired: Option<&NativeMetadataImage>,
     include_contents: bool,
     hasher: &mut blake3::Hasher,
 ) {
-    use std::os::unix::fs::MetadataExt as _;
+    use cap_std::fs::MetadataExt as _;
     for value in [
         metadata.dev(),
         metadata.ino(),
@@ -1345,12 +1437,12 @@ fn hash_native_metadata(
 
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 fn hash_native_metadata(
-    metadata: &std::fs::Metadata,
+    metadata: &cap_std::fs::Metadata,
     desired: Option<&NativeMetadataImage>,
     include_contents: bool,
     hasher: &mut blake3::Hasher,
 ) {
-    use std::os::windows::fs::MetadataExt as _;
+    use cap_std::fs::MetadataExt as _;
     let attributes = desired.map_or_else(
         || metadata.file_attributes(),
         |value| {
@@ -1373,7 +1465,7 @@ fn hash_native_metadata(
 
 #[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
 fn hash_native_metadata(
-    _metadata: &std::fs::Metadata,
+    _metadata: &cap_std::fs::Metadata,
     _desired: Option<&NativeMetadataImage>,
     _include_contents: bool,
     _hasher: &mut blake3::Hasher,
@@ -1381,19 +1473,19 @@ fn hash_native_metadata(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_metadata(metadata: &std::fs::Metadata) -> NativeMetadataImage {
+fn native_metadata_held(metadata: &cap_std::fs::Metadata) -> NativeMetadataImage {
     NativeMetadataImage {
         readonly: metadata.permissions().readonly(),
         #[cfg(unix)]
         posix_mode: {
-            use std::os::unix::fs::MetadataExt as _;
+            use cap_std::fs::MetadataExt as _;
             Some(metadata.mode())
         },
         #[cfg(not(unix))]
         posix_mode: None,
         #[cfg(windows)]
         windows_attributes: {
-            use std::os::windows::fs::MetadataExt as _;
+            use cap_std::fs::MetadataExt as _;
             Some(metadata.file_attributes())
         },
         #[cfg(not(windows))]
@@ -1401,27 +1493,11 @@ fn native_metadata(metadata: &std::fs::Metadata) -> NativeMetadataImage {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_native_metadata(
-    path: &Path,
-    desired: &NativeMetadataImage,
-) -> Result<(), NativeTreeMaterializationError> {
-    #[cfg(windows)]
-    if let Some(attributes) = desired.windows_attributes {
-        acyclic_native_runtime::set_file_attributes(path, attributes)?;
-        return Ok(());
-    }
-    let mut permissions = std::fs::symlink_metadata(path)?.permissions();
-    #[cfg(unix)]
-    if let Some(mode) = desired.posix_mode {
-        use std::os::unix::fs::PermissionsExt as _;
-        permissions.set_mode(mode);
-    }
-    #[cfg(not(unix))]
-    permissions.set_readonly(desired.readonly);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn native_metadata(metadata: &std::fs::Metadata) -> NativeMetadataImage {
+    native_metadata_held(&cap_std::fs::Metadata::from_just_metadata(metadata.clone()))
 }
+
 
 #[cfg(all(
     feature = "local",
@@ -1460,20 +1536,6 @@ fn hash_native_os_str(value: &std::ffi::OsStr, hasher: &mut blake3::Hasher) {
 #[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
 fn hash_native_os_str(value: &std::ffi::OsStr, hasher: &mut blake3::Hasher) {
     hasher.update(value.to_string_lossy().as_bytes());
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn remove_native_entry(path: &Path) -> Result<(), std::io::Error> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    }
 }
 
 /// Native tree publication failure.
@@ -1571,15 +1633,42 @@ where
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one transition plans, journals, and applies every host change between two generations"
-)]
 pub async fn publish_native_generation_transition<A, O>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
     publication: NativeWorkspacePublication<'_>,
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+{
+    publish_native_generation_transition_owned(from_generation, to_generation, state, publication, None).await
+}
+
+#[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
+pub(crate) async fn publish_captured_native_generation_transition<A, O>(
+    capture: &crate::native_archive::NativeDirectoryCapture,
+    from_generation: &crate::Generation<A, O>,
+    to_generation: &crate::Generation<A, O>,
+    state: &crate::LocalCoreStateStore,
+    publication: NativeWorkspacePublication<'_>,
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+{
+    publish_native_generation_transition_owned(from_generation, to_generation, state, publication, Some(capture.clone())).await
+}
+
+#[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
+#[allow(clippy::too_many_lines, reason = "one canonical planner stages and journals both ordinary and retained-capture publications")]
+async fn publish_native_generation_transition_owned<A, O>(
+    from_generation: &crate::Generation<A, O>,
+    to_generation: &crate::Generation<A, O>,
+    state: &crate::LocalCoreStateStore,
+    publication: NativeWorkspacePublication<'_>,
+    capture: Option<crate::native_archive::NativeDirectoryCapture>,
 ) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
 where
     A: crate::AsyncAuthorityStore,
@@ -1599,6 +1688,13 @@ where
     if from_generation.id() != from || to_generation.id() != to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
     }
+    if let Some(capture) = &capture
+        && (capture.original_generation() != from || capture.root_path() != root
+            || from_generation.workspace_id().volume_id() != capture.original_volume()
+            || to_generation.workspace_id().volume_id() != capture.original_volume())
+    {
+        return Err(NativeWorkspacePublicationError::MismatchedJournal);
+    }
     let root = root.to_path_buf();
     let operation_directory = operation_directory.to_path_buf();
     acyclic_native_runtime::run_blocking_io({
@@ -1612,7 +1708,7 @@ where
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
         let backend = acyclic_native_runtime::run_blocking_io(move || {
-            NativeTreeMaterializationBackend::new(root, operation_directory)
+            native_publication_backend(root, operation_directory, capture.as_ref())
         })
         .await??;
         return JournaledMaterializer::new(state.clone(), backend)
@@ -1635,6 +1731,13 @@ where
     let mut paths = Vec::with_capacity(changed.value.len());
     let mut structural_directories = Vec::new();
     let mut metadata_edits = Vec::new();
+    if let Some(capture) = &capture {
+        for change in &changed.value {
+            if change.path.components().is_empty() || capture.capture_policy().excludes(&change.path) {
+                return Err(NativeTreeMaterializationError::InvalidPath(namespace_materialization_path(&change.path)?.to_string_lossy().into_owned()).into());
+            }
+        }
+    }
     let excluded_names = excluded_names
         .iter()
         .copied()
@@ -1664,7 +1767,7 @@ where
         // give it and every file under it new host identities; it is kept,
         // takes the generation's metadata, and each descendant is reconciled
         // on its own.
-        let promoted_directory = change.before.is_none()
+        let promoted_directory = capture.is_none() && change.before.is_none()
             && after_directory
             && std::fs::symlink_metadata(root.join(&path))
                 .is_ok_and(|metadata| metadata.file_type().is_dir());
@@ -1672,7 +1775,7 @@ where
         // entries the source generation never held is a source directory
         // read through the source: removing it would take those along, so
         // it stays and only what the generation held beneath it goes.
-        if before_directory
+        if capture.is_none() && before_directory
             && change.after.is_none()
             && host_directory_holds_unknown_entries(&root, &path, from_generation).await?
         {
@@ -1709,7 +1812,7 @@ where
     // fork's promotion of that file is keyed by the identity it was read from.
     let mut retained = Vec::with_capacity(paths.len());
     for (path, install, fresh_regular) in paths {
-        if install
+        if capture.is_none() && install
             && fresh_regular
             && host_holds_generation_file(&root, &path, to_generation).await?
         {
@@ -1750,7 +1853,7 @@ where
             .await?;
     }
     let (backend, mut plan) = acyclic_native_runtime::run_blocking_io(move || {
-        let backend = NativeTreeMaterializationBackend::new(root, operation_directory)?;
+        let backend = native_publication_backend(root, operation_directory, capture.as_ref())?;
         let plan = backend.plan_paths(
             operation_id,
             from,
@@ -1765,6 +1868,25 @@ where
         .apply(plan)
         .await
         .map_err(Into::into)
+}
+
+#[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
+fn native_publication_backend(
+    root: PathBuf,
+    operation_directory: PathBuf,
+    capture: Option<&crate::native_archive::NativeDirectoryCapture>,
+) -> Result<NativeTreeMaterializationBackend, NativeTreeMaterializationError> {
+    match capture {
+        Some(capture) => NativeTreeMaterializationBackend::from_captured_root(
+            capture.root_path(),
+            Arc::clone(capture.held_root()),
+            capture.original_generation(),
+            capture.retained_preimages(),
+            capture.volume_config(),
+            &operation_directory,
+        ),
+        None => NativeTreeMaterializationBackend::new(root, operation_directory),
+    }
 }
 
 /// Largest host file compared against a generation before publication skips
