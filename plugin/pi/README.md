@@ -564,6 +564,11 @@ The protected conversation scope and verifier are funded before construction;
 their owned tuple transfers into the live mixed-view project binding with its
 original custody guard, rather than an external host cache. The separate
 filesystem mount source never derives task authority from that accounting guard.
+The current SDK-issued `NativeTaskContext` creates one opaque
+`NativeVolumeCallbackGuard` for each exact selected binding; preparation checks
+the ordered guard slice, and project mounting obtains its source Arc only through
+the guard's original owner/volume/fence verification. Pi does not implement a
+second callback-authority engine or convert a cold read context into dispatch.
 Task-backed scratch and project sources install their actual retained task
 owner, current fence and exact volume READ/WRITE purpose before preparation,
 source capture or watch startup. Every callback verifies that authority on the

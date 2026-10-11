@@ -40,7 +40,7 @@ struct Fixture {
     approvals: Arc<Journal>,
     runtime: Runtime,
     owner: Arc<TaskJournalOwner<LocalStream>>,
-    context: TaskContext,
+    context: Arc<NativeTaskContext>,
     fence: LeaseFence,
     binding: PiTaskBinding,
     invocation: PiNativeInvocation,
@@ -130,7 +130,6 @@ impl Fixture {
         };
         runtime.task_host().start_task(&lease).await?;
         let fence = LeaseFence::from(&lease.reservation);
-        let owner = Arc::new(runtime.task_host().journal_owner(task, fence.clone()).await?);
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
@@ -146,6 +145,9 @@ impl Fixture {
         let cancellation = CancellationToken::new();
         let budget = super::super::native_root_source::budget();
         let work = pi_meter(budget, &cancellation)?;
+        let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
+            .into_native_shared(&work)?;
+        let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
         let allocation = NativePreparationRoot::witness_with_native_work(&native, &operation_directory, &work)?.await?;
         let cwd = native.join("scratch");
         let source_entries = json!([{"type":"message","id":"original","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
@@ -166,10 +168,11 @@ impl Fixture {
             acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await
             .map_err(|failure| reservation_error(failure.error))?.value;
         let namespace = NativeVolumeNamespace::MaterializedDirectory;
-        let callback_guard: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard> =
-            PiNativeMountGuard::new(owner.clone(), &scratch, true, &work)?;
         let scratch_verifier = issuer.verifier_with_native_work(&work)?;
-        let view = prepare_scratch_with_work(owner.as_ref(), &callback_guard, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
+        let callback_guard = context.mount_callback_guard_with_native_work(
+            owner.clone(), &scratch, &scratch_verifier.0, &scope, true, &work)?.await?;
+        let callback_guards = [callback_guard];
+        let view = prepare_scratch_with_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
                 verifier: &scratch_verifier.0, scope: &scope, publication: reservation.permit(), namespace: &namespace }], &work)?.await?
             .into_arc_with_native_work(&work)?;
@@ -208,7 +211,6 @@ impl Fixture {
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(), scope.clone(), 1_048_576)?);
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
-        let context = runtime.harness().durable_context(task, command).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, grants, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan, results_volume,
             reservation: Some(reservation), reservation_cleanup: None })
     }
@@ -305,9 +307,10 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert!(receipt.observed); assert!(receipt.work.backend_read_operations > 0);
     drop(effects); drop(runner);
     let runtime = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.results_volume.clone(), &fixture.issuer, &fixture.scope, fixture.grants.clone()).await?;
-    let owner = Arc::new(runtime.task_host().journal_owner(fixture.binding.task_id, fixture.fence.clone()).await?);
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = pi_meter(super::super::native_root_source::budget(), &recovery_cancellation)?;
+    let owner = runtime.task_host().journal_owner_with_native_work(
+        fixture.binding.task_id, &fixture.fence, &recovery_work).await?.into_native_shared(&recovery_work)?;
     let recovered = Runner::recover(owner, fixture.command, &fixture.plan, fixture.approval, fixture.authority(&recovery_work)?, &recovery_work)
         .await.map_err(receipt_error)?;
     let effects = fixture.effects(&recovered)?;
@@ -325,13 +328,13 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     let EffectStatus::Succeeded { result: result_ref } = &recovered_receipt.effect.status else {
         return Err(invalid("native output absent from authentic successful receipt"));
     };
-    let bytes = fixture.context.read_file_with_native_work(result_ref, &recovery_work).await?;
+    let bytes = fixture.context.context().read_file_with_native_work(result_ref, &recovery_work).await?;
     let result = super::super::pi_root_provider::guarded_pi_decode::<acyclic_harness::filesystem::NativeProcessResult>(
         &bytes.0, 1_048_576, native_owned_bound::<acyclic_harness::filesystem::NativeProcessResult>(bytes.0.len())?, &recovery_work)?;
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
-    let drained = recovered.confirm_process_cleanup_with_work(&fixture.binding, &fixture.context, 1_048_576, &recovery_work).await
+    let drained = recovered.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &recovery_work).await
         .map_err(receipt_error)?;
     assert_eq!(drained.task, fixture.binding.task_id);
     assert_eq!(drained.command, fixture.command);
@@ -354,7 +357,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let receipt = runner.receipt().await.map_err(receipt_error)?.ok_or_else(|| invalid("cancelled native receipt absent"))?;
     assert!(receipt.observed); assert!(matches!(receipt.effect.status, EffectStatus::Indeterminate));
     let output = receipt.diagnostic.as_ref().ok_or_else(|| invalid("native cleanup diagnostic absent from authentic receipt"))?;
-    let bytes = fixture.context.read_file_with_native_work(output, runner.original_work()).await?;
+    let bytes = fixture.context.context().read_file_with_native_work(output, runner.original_work()).await?;
     let result = super::super::pi_root_provider::guarded_pi_decode::<acyclic_harness::filesystem::NativeProcessResult>(
         &bytes.0, 1_048_576, native_owned_bound::<acyclic_harness::filesystem::NativeProcessResult>(bytes.0.len())?, runner.original_work())?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("native cancellation lost stop observation"))?;
@@ -362,7 +365,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert!(stop.cleanup_completed, "native cleanup must be observed, not inferred from the session path");
     let cleanup_cancellation = CancellationToken::new();
     let cleanup_work = pi_meter(super::super::native_root_source::budget(), &cleanup_cancellation)?;
-    let cleanup = runner.confirm_process_cleanup_with_work(&fixture.binding, &fixture.context, 1_048_576, &cleanup_work).await
+    let cleanup = runner.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &cleanup_work).await
         .map_err(receipt_error)?;
     assert_eq!(cleanup.task, fixture.binding.task_id);
     assert_eq!(cleanup.command, fixture.command);
@@ -370,7 +373,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let mut forged_result_binding = fixture.binding.clone();
     forged_result_binding.results.as_mut().unwrap().volume = fixture.binding.scratch.volume.clone();
-    assert!(runner.confirm_process_cleanup_with_work(&forged_result_binding, &fixture.context,
+    assert!(runner.confirm_process_cleanup_with_work(&forged_result_binding, fixture.context.context(),
         1_048_576, &cleanup_work).await.is_err());
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = pi_meter(super::super::native_root_source::budget(), &recovery_cancellation)?;
@@ -409,13 +412,13 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     assert!(!<View as NativeProcessView<LocalStream>>::operation_cancellation(fixture.view.as_ref()).is_cancelled(),
         "stopping a warm native process must not retire the original mounted view");
     let diagnostic = observed.diagnostic.as_ref().ok_or_else(|| invalid("actual stop lacks its cleanup diagnostic"))?;
-    let bytes = fixture.context.read_file_with_native_work(diagnostic, &work).await?;
+    let bytes = fixture.context.context().read_file_with_native_work(diagnostic, &work).await?;
     let result = super::super::pi_root_provider::guarded_pi_decode::<acyclic_harness::filesystem::NativeProcessResult>(
         &bytes.0, 1_048_576, native_owned_bound::<acyclic_harness::filesystem::NativeProcessResult>(bytes.0.len())?, &work)?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
-    let drained = runner.confirm_process_cleanup_with_work(&fixture.binding, &fixture.context, 1_048_576, &work).await
+    let drained = runner.confirm_process_cleanup_with_work(&fixture.binding, fixture.context.context(), 1_048_576, &work).await
         .map_err(receipt_error)?;
     assert_eq!(drained.task, fixture.binding.task_id);
     assert_eq!(drained.command, fixture.command);
@@ -454,7 +457,10 @@ async fn required_pinned_pi_native_denies_forged_owner_request_approval_and_chan
         super::super::native_root_source::budget(), &CancellationToken::new()).await;
     assert!(failed.is_err(), "changed retry bytes reused the original actual upload operation");
     let original = fixture.runner().await?;
-    let callback_guard = PiNativeMountGuard::new(fixture.owner.clone(), &fixture.binding.scratch.volume, false, &fixture.work)?;
+    let callback_verifier = fixture.issuer.verifier_with_native_work(&fixture.work)?;
+    let sealed_guard = fixture.context.mount_callback_guard_with_native_work(
+        fixture.owner.clone(), &fixture.binding.scratch.volume, &callback_verifier.0, &fixture.scope, false, &fixture.work)?.await?;
+    let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
     let original_header = fixture.work.native_mount_work();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)
         .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await
