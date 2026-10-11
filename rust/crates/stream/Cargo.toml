@@ -35,7 +35,9 @@ default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
 http = ["dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
-wasm = ["dep:serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
+# Shared byte-array encoding; decoding alone never authenticates native custody.
+serde = ["dep:serde"]
+wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
 
 [dependencies]
 async-trait.workspace = true
@@ -47,6 +49,7 @@ fs2 = { workspace = true, optional = true }
 prost.workspace = true
 ruzstd.workspace = true
 serde_json.workspace = true
+serde = { workspace = true, optional = true }
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time"] }
@@ -60,7 +63,6 @@ libc = { version = "0.2.175", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 indexed_db_futures = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -78,6 +80,7 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 divan.workspace = true
+parking_lot.workspace = true
 proptest.workspace = true
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
