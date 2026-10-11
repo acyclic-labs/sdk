@@ -6,10 +6,8 @@ use thiserror::Error;
 
 use acyclic_native_runtime::durable_rename;
 
-#[cfg(feature = "native-watch")]
 use crate::native_host::NativeHostWork;
 
-#[cfg(feature = "native-watch")]
 impl From<crate::demand::DemandError> for NativeExchangeError {
     fn from(error: crate::demand::DemandError) -> Self {
         match error {
@@ -21,7 +19,6 @@ impl From<crate::demand::DemandError> for NativeExchangeError {
     }
 }
 
-#[cfg(feature = "native-watch")]
 impl From<crate::materializer::NativeTreeMaterializationError> for NativeExchangeError {
     fn from(error: crate::materializer::NativeTreeMaterializationError) -> Self {
         match error {
@@ -33,7 +30,6 @@ impl From<crate::materializer::NativeTreeMaterializationError> for NativeExchang
     }
 }
 
-#[cfg(feature = "native-watch")]
 impl From<NativeExchangeError> for crate::demand::DemandError {
     fn from(error: NativeExchangeError) -> Self {
         match error {
@@ -45,7 +41,6 @@ impl From<NativeExchangeError> for crate::demand::DemandError {
     }
 }
 
-#[cfg(feature = "native-watch")]
 impl From<NativeExchangeError> for crate::materializer::NativeTreeMaterializationError {
     fn from(error: NativeExchangeError) -> Self {
         match error {
@@ -57,7 +52,6 @@ impl From<NativeExchangeError> for crate::materializer::NativeTreeMaterializatio
     }
 }
 
-#[cfg(feature = "native-watch")]
 fn exchange_io_error(error: std::io::Error) -> NativeExchangeError {
     if error.get_ref().is_some_and(|inner| inner.is::<NativeExchangeError>()) {
         match error.into_inner() {
@@ -72,7 +66,6 @@ fn exchange_io_error(error: std::io::Error) -> NativeExchangeError {
     }
 }
 
-#[cfg(feature = "native-watch")]
 fn attempted<W: NativeHostWork, T>(
     work: &mut W,
     delta: crate::WorkCounters,
@@ -85,7 +78,6 @@ fn attempted<W: NativeHostWork, T>(
     operation().map_err(Into::into)
 }
 
-#[cfg(feature = "native-watch")]
 fn held_identity<W: NativeHostWork>(
     parent: &cap_std::fs::Dir,
     name: &Path,
@@ -96,7 +88,6 @@ fn held_identity<W: NativeHostWork>(
 
 /// Exchanges entries through their original held parents and the existing
 /// scratch/witness protocol. No lexical parent is reopened for a mutation.
-#[cfg(feature = "native-watch")]
 pub(crate) fn exchange_native_entries_held_measured<W: NativeHostWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
@@ -127,7 +118,6 @@ where W::Error: From<NativeExchangeError> {
     exchange_windows_held(left, left_name, right, right_name, work)
 }
 
-#[cfg(feature = "native-watch")]
 fn validate_leaf(path: &Path) -> Result<(), NativeExchangeError> {
     let mut components = path.components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -138,7 +128,7 @@ fn validate_leaf(path: &Path) -> Result<(), NativeExchangeError> {
     Ok(())
 }
 
-#[cfg(all(feature = "native-watch", unix))]
+#[cfg(unix)]
 #[allow(unsafe_code, reason = "atomic exchange uses live held parents and single native leaf names")]
 fn exchange_kernel_held<W: NativeHostWork>(
     left: &cap_std::fs::Dir, left_name: &Path,
@@ -166,7 +156,7 @@ fn exchange_kernel_held<W: NativeHostWork>(
     })
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn write_all_measured<W: NativeHostWork>(
     file: &mut std::fs::File, mut bytes: &[u8], work: &mut W,
 ) -> Result<(), W::Error> {
@@ -191,7 +181,7 @@ fn write_all_measured<W: NativeHostWork>(
     Ok(())
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn read_exact_measured<W: NativeHostWork>(
     file: &mut std::fs::File, mut bytes: &mut [u8], work: &mut W,
 ) -> Result<(), W::Error> {
@@ -215,7 +205,7 @@ fn read_exact_measured<W: NativeHostWork>(
     Ok(())
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn write_identity_measured<W: NativeHostWork>(
     file: &mut std::fs::File, identity: crate::NativeRootIdentity, work: &mut W,
 ) -> Result<(), W::Error> {
@@ -226,7 +216,7 @@ fn write_identity_measured<W: NativeHostWork>(
     write_all_measured(file, &bytes, work)
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn read_identity_measured<W: NativeHostWork>(
     file: &mut std::fs::File, work: &mut W,
 ) -> Result<crate::NativeRootIdentity, W::Error> {
@@ -235,7 +225,7 @@ fn read_identity_measured<W: NativeHostWork>(
     Ok(crate::NativeRootIdentity::from_bytes(bytes))
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn open_witness<W: NativeHostWork>(
     directory: &cap_std::fs::Dir, name: &Path, create: bool, work: &mut W,
 ) -> Result<std::fs::File, W::Error> {
@@ -249,10 +239,10 @@ fn open_witness<W: NativeHostWork>(
     })
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 const MEASURED_ENTRY_WITNESS: &[u8; 32] = b"acyclic-entry-exchange-v2\0\0\0\0\0\0\0";
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn with_service_name<W: NativeHostWork, T>(
     name: &Path, suffix: &str, work: &mut W,
     operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
@@ -275,7 +265,7 @@ fn with_service_name<W: NativeHostWork, T>(
     result
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn with_wide_leaf<W: NativeHostWork, T>(
     name: &Path, work: &mut W,
     operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
@@ -301,7 +291,7 @@ fn with_wide_leaf<W: NativeHostWork, T>(
     result
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn write_native_path<W: NativeHostWork>(
     file: &mut std::fs::File, path: &Path, work: &mut W,
 ) -> Result<(), W::Error> {
@@ -335,7 +325,7 @@ fn write_native_path<W: NativeHostWork>(
     result
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn with_read_native_path<W: NativeHostWork, T>(
     file: &mut std::fs::File, remaining: &mut u64, work: &mut W,
     operation: impl FnOnce(&Path, &mut std::fs::File, &mut u64, &mut W) -> Result<T, W::Error>,
@@ -364,7 +354,7 @@ where W::Error: From<NativeExchangeError> {
     result
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 #[allow(unsafe_code, reason = "initialized u16 storage has no padding and may be filled through its byte view")]
 fn utf16_bytes_mut(units: &mut [u16]) -> &mut [u8] {
     // SAFETY: a valid u16 slice owns exactly two initialized bytes per element.
@@ -373,50 +363,35 @@ fn utf16_bytes_mut(units: &mut [u16]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(units.as_mut_ptr().cast::<u8>(), units.len() * 2) }
 }
 
-#[cfg(all(feature = "native-watch", windows))]
-#[allow(unsafe_code, reason = "locally encoded WTF-8 is the Windows native OsString representation")]
+#[cfg(windows)]
 fn with_windows_path<W: NativeHostWork, T>(
     units: &[u16], work: &mut W,
     operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
-    let mut bytes = 0usize;
-    for scalar in char::decode_utf16(units.iter().copied()) {
-        work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        work.record(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        bytes = bytes.checked_add(scalar.map_or(3, char::len_utf8)).ok_or(crate::WorkError::Overflow)?;
-    }
-    let allocation = work.claim(bytes as u64)?;
+    use std::os::windows::ffi::OsStringExt as _;
+    let logical_max = units.len().checked_mul(3).ok_or(crate::WorkError::Overflow)?;
+    let mut allocation = work.reserve_opaque_decode(logical_max as u64)?;
     let result = (|| {
-        work.admit(crate::WorkCounters { bytes_encoded: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
-        let mut encoded = Vec::new();
-        encoded.try_reserve_exact(bytes).map_err(std::io::Error::other)?;
-        for scalar in char::decode_utf16(units.iter().copied()) {
-            match scalar {
-                Ok(scalar) => {
-                    let mut buffer = [0; 4];
-                    encoded.extend_from_slice(scalar.encode_utf8(&mut buffer).as_bytes());
-                }
-                Err(surrogate) => {
-                    let value = u32::from(surrogate.unpaired_surrogate());
-                    encoded.extend_from_slice(&[
-                        (0xe0 | (value >> 12)) as u8,
-                        (0x80 | ((value >> 6) & 0x3f)) as u8,
-                        (0x80 | (value & 0x3f)) as u8,
-                    ]);
-                }
-            }
-        }
-        work.record(crate::WorkCounters { bytes_encoded: bytes as u64, ..crate::WorkCounters::UNCHARGED })?;
-        // SAFETY: paired surrogates were encoded as their Unicode scalar and
-        // unpaired surrogates as well-formed WTF-8; no bytes came from a caller.
-        let path = PathBuf::from(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(encoded) });
+        work.admit(crate::WorkCounters {
+            bytes_encoded: logical_max as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let path = PathBuf::from(std::ffi::OsString::from_wide(units));
+        let encoded = path.as_os_str().as_encoded_bytes().len() as u64;
+        let reconciled = work.reconcile_allocation(&mut allocation, path.capacity() as u64);
+        let recorded = work.record(crate::WorkCounters {
+            bytes_encoded: encoded,
+            ..crate::WorkCounters::UNCHARGED
+        });
+        reconciled?;
+        recorded?;
         operation(&path, work)
     })();
     work.release(allocation)?;
     result
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 #[allow(unsafe_code, reason = "reads the physical path from a live held directory handle")]
 fn with_directory_path<W: NativeHostWork, T>(
     directory: &cap_std::fs::Dir, work: &mut W,
@@ -460,14 +435,14 @@ fn with_directory_path<W: NativeHostWork, T>(
     }
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn parent_identity<W: NativeHostWork>(
     directory: &cap_std::fs::Dir, work: &mut W,
 ) -> Result<crate::NativeRootIdentity, W::Error> {
     crate::native_host::directory_identity_with_work(directory, work)
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn rename_durable_held<W: NativeHostWork>(
     from: &cap_std::fs::Dir, from_name: &Path,
     to: &cap_std::fs::Dir, to_name: &Path, expected: crate::NativeRootIdentity, work: &mut W,
@@ -478,7 +453,7 @@ fn rename_durable_held<W: NativeHostWork>(
     crate::native_host::sync_directory_held_with_work(to, work)
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn remove_owned_witness<W: NativeHostWork>(
     parent: &cap_std::fs::Dir, name: &Path, identity: crate::NativeRootIdentity, work: &mut W,
 ) -> Result<(), W::Error>
@@ -492,7 +467,7 @@ where W::Error: From<NativeExchangeError> {
     crate::native_host::sync_directory_held_with_work(parent, work)
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn create_measured_entry_witness<W: NativeHostWork>(
     left: &cap_std::fs::Dir, left_name: &Path,
     right: &cap_std::fs::Dir, right_name: &Path,
@@ -519,7 +494,7 @@ fn create_measured_entry_witness<W: NativeHostWork>(
     }, || crate::NativeRootIdentity::from_file(&file))
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn exchange_windows_held<W: NativeHostWork>(
     left: &cap_std::fs::Dir, left_name: &Path,
     right: &cap_std::fs::Dir, right_name: &Path, work: &mut W,
@@ -566,7 +541,7 @@ where W::Error: From<NativeExchangeError> {
     })
 }
 
-#[cfg(all(feature = "native-watch", windows))]
+#[cfg(windows)]
 fn recover_entry_held<W: NativeHostWork>(
     left: &cap_std::fs::Dir, left_name: &Path,
     scratch_name: &Path, witness_name: &Path,
@@ -645,7 +620,6 @@ where W::Error: From<NativeExchangeError> {
 }
 
 /// Recovers only the physical preimages named by the surviving entry witness.
-#[cfg(feature = "native-watch")]
 pub(crate) fn recover_native_entry_exchange_held_measured<W: NativeHostWork>(
     parent: &cap_std::fs::Dir, name: &Path, work: &mut W,
 ) -> Result<(), W::Error>

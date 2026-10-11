@@ -163,6 +163,15 @@ and physically destroyed before its outer allocation custody is released.
 Directory pages are non-cloneable intrinsic owners of entry/name/cursor capacity.
 Physical projections transfer and split their existing custody for escaping data,
 without adopting that data again or creating another ledger.
+FUSE drivers reserve their own known retirement credits before SDK startup:
+one transient root-capability close, one session detach/join, and one invalidator
+join. The wait-only cleanup path borrows those original credits at the actual
+attempts; it does not replace the source's cancellation or callback authority.
+Ordinary no-argument stop uses the same accepted controls without creating a
+new unbounded ledger or cancellation token; it does not reset callback policy.
+A cancelled cleanup wait retains unattempted handles. Consumed failed SDK
+shutdowns remain failures, not absence or cleanup-complete evidence. These are
+SDK-observable control attempts, not inferred transport acknowledgements or RSS.
 
 Concurrent native read observers share the checkout's semantic proof but admit
 and report their own completed name/path DATA. Weak custody metadata follows
@@ -193,6 +202,12 @@ counters and custody bookkeeping. Allocation, serialization, physical I/O and
 observer callbacks run outside that lock. Native transaction frontdoors feed
 the same canonical authored-mutation compiler with the actual input custody;
 immutable borrowed `OwnedBytes` are not adopted as new allocations.
+
+Held native entry exchange and detached host attribution are available without
+the watch feature. Windows exchange paths use the standard-library UTF-16
+decoder after reserving a conservative three-byte-per-unit logical output bound.
+Actual encoded length and capacity are recorded before late refusal; hidden
+decoder allocation and CPU behavior are opaque, not fabricated SDK attempts.
 
 Lazy publication retains its original basis, source, overlay, shadows, configuration,
 candidate and permit in the same authenticated canonical DATA record. Pending and

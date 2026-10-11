@@ -79,11 +79,11 @@ impl StreamsDurableRecord {
     }
 
     /// The single canonical writer also accepts already borrowed proposal data.
-    pub(crate) fn encode_borrowed_with<E>(
+    pub(crate) fn encode_borrowed_with<E, T>(
         commit: &BorrowedStreamsDurableRecord<'_>,
         maximum_record_bytes: u64,
-        write: impl FnOnce(&[u8], &[&[u8]]) -> Result<Bytes, E>,
-    ) -> Result<Result<Bytes, E>, StreamsAuthorityRecordError> {
+        write: impl FnOnce(&[u8], &[&[u8]]) -> Result<T, E>,
+    ) -> Result<Result<T, E>, StreamsAuthorityRecordError> {
         let payload_bytes = u64::try_from(commit.payload.len())
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
         let encoded_bytes = (DURABLE_HEADER_BYTES as u64).checked_add(payload_bytes)
