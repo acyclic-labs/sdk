@@ -77,7 +77,7 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
     Ok(())
 }
 
-#[allow(unsafe_code, reason = "one admitted positional write on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn write_at_measured(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
 ) -> io::Result<usize> {
@@ -97,17 +97,17 @@ pub(super) fn write_at_measured(
     Ok(count)
 }
 
-#[allow(unsafe_code, reason = "one admitted resize on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: ftruncate only acts on the live descriptor.
     if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
     else { Err(io::Error::last_os_error()) }
 }
 
-#[allow(unsafe_code, reason = "one admitted durability request on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: both operations act only on the live descriptor.

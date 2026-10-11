@@ -9,13 +9,6 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 /// One child and descendants that remain in its operating-system containment.
-///
-/// Windows uses a Job object. Unix uses a process group, which cannot contain
-/// a descendant that deliberately creates a new process group or session.
-///
-/// Choosing measured control transfers cleanup responsibility to the
-/// caller: a failed bounded attempt retains custody, and Drop never hides an
-/// unmetered retry. Ordinary command owners keep their existing Drop cleanup.
 pub struct ProcessTree {
     child: Option<Child>,
     guard: platform::Guard,
@@ -30,9 +23,6 @@ pub struct ProcessTree {
 }
 
 /// Paid storage for a closed Unix spawn on the existing process-tree engine.
-/// It owns its birth environment snapshot; argument pointers are filled only
-/// during synchronous spawn while the caller's terminated arguments are live.
-/// This storage is not command, namespace, or cleanup authority.
 #[cfg(unix)]
 pub struct PreparedClosedProcess {
     arguments: PreparedProcessBuffer<std::mem::MaybeUninit<*mut libc::c_char>>,
@@ -128,9 +118,6 @@ fn prepare_closed_process(
 }
 
 /// A stopped capture, retaining its bounded output and observed cleanup state.
-/// Effects may have occurred regardless of whether cleanup completed.
-/// Measured failures retain every physically captured prefix. Unclosed pipes
-/// remain with the same ProcessTree when finite cleanup cannot be admitted.
 #[derive(Debug)]
 pub struct ProcessCaptureFailure {
     /// Capture error, or the cleanup error when cleanup could not be confirmed.
@@ -142,18 +129,15 @@ pub struct ProcessCaptureFailure {
     /// Bounded stderr prefix collected before capture stopped.
     pub stderr: Vec<u8>,
     /// Whether containment cleanup succeeded and the direct child was reaped.
-    /// Unix confirms group signal delivery, not reaping of every descendant.
     pub cleanup_completed: bool,
 }
 
 /// Transient protocol action within the existing process capture owner.
-/// It is not an admission, receipt, scheduler or recovery instruction.
 #[derive(Default)]
 pub struct ProcessInput {
     /// Exact additional bytes, ordered after all previously queued input.
     pub bytes: Vec<u8>,
     /// After queued input is written, close stdin and terminate containment.
-    /// Captured output is still drained within the original output/deadline bounds.
     pub complete: bool,
 }
 
@@ -173,7 +157,6 @@ struct PendingStdin<'a> {
 
 impl<'a> PendingStdin<'a> {
     /// Measured exchange storage was claimed and allocated by the caller.
-    /// Literal input remains borrowed: it does not acquire a second claim.
     fn new_with_buffer(
         input: CaptureInput<'a>,
         buffer: Option<Vec<u8>>,
@@ -322,7 +305,6 @@ impl ProcessTree {
     }
 
     /// Uses the original meter and the same spawn engine as ordinary commands.
-    /// Any native owner acquired before an error remains in `custody`.
     pub(crate) fn spawn_with_meter_custody(
         command: &mut Command, meter: &dyn crate::NativeReadMeter,
         custody: &mut Option<Self>,
@@ -336,9 +318,6 @@ impl ProcessTree {
     ) -> io::Result<()> {
         if custody.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
         if let Some(meter) = meter {
-            // These borrowed Command payloads are already prepared and claimed
-            // by the caller. This adapter allocates/copies no argument, env or
-            // cwd buffer; its actual visits are accounted independently.
             meter.examine(1, 0)?;
             for _ in command.get_args() { meter.examine(1, 0)?; }
             for _ in command.get_envs() { meter.examine(1, 0)?; }
@@ -356,16 +335,7 @@ impl ProcessTree {
         operation.scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
     }
 
-    /// Starts a closed-stream Unix child using borrowed, terminated arguments,
-    /// and retains it in this same process-tree owner before spawn cleanup.
-    /// `args` excludes argv[0]. The only Rust-owned spawn buffer is the admitted
-    /// pointer vector; opaque SDK/kernel storage is not guessed heap or RSS.
-    ///
-    /// # Errors
-    ///
-    /// Any denied leaf or native failure retains the exact spent prefix. If
-    /// spawn succeeded before a later cleanup error, `custody` still owns its
-    /// unreaped leader and guard. The caller must retain or explicitly clean it.
+    /// Starts a closed-stream Unix child using borrowed, terminated arguments, and retains it in this same process-tree owner before spawn cleanup.
     #[cfg(unix)]
     pub fn spawn_closed_measured(
         program: &std::ffi::CStr, args: &[&std::ffi::CStr],
@@ -375,9 +345,7 @@ impl ProcessTree {
         platform::spawn_closed(program, args, meter, custody)
     }
 
-    /// Snapshots the host's existing environment and pays known argument
-    /// storage before a driver starts. Host code must not mutate the native
-    /// process environment concurrently, as for the existing closed spawn.
+    /// Snapshots the host's existing environment and pays known argument storage before a driver starts.
     #[cfg(unix)]
     pub fn prepare_closed_process_measured(
         argument_count: usize, meter: std::sync::Arc<dyn crate::NativeReadMeter>,
@@ -386,8 +354,6 @@ impl ProcessTree {
     }
 
     /// Uses preowned storage on the same closed-stream Unix spawn engine.
-    /// Acquired PID/configuration custody takes the original frame before any
-    /// error returns; denial without a native owner leaves `frame` unchanged.
     #[cfg(unix)]
     pub fn spawn_closed_prepared(
         program: &std::ffi::CStr, args: &[&std::ffi::CStr],
@@ -432,8 +398,7 @@ impl ProcessTree {
         self.child.as_mut()?.stderr.take()
     }
 
-    /// Reads owned stdout without waiting for data. `None` means not ready;
-    /// `Some(0)` means EOF or no owned pipe. The host owns framing and bounds.
+    /// Reads owned stdout without waiting for data.
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         if buffer.is_empty() {
             return Err(io::Error::new(
@@ -447,10 +412,7 @@ impl ProcessTree {
         platform::read_pipe(pipe, buffer)
     }
 
-    /// Writes to owned stdin without waiting for pipe capacity. `None` means
-    /// backpressure; a positive count may be smaller than the supplied slice.
-    /// The host must retain the unwritten suffix and own admission, total input
-    /// bounds, deadlines, intent checks and mandatory tree cleanup.
+    /// Writes to owned stdin without waiting for pipe capacity.
     pub fn write_stdin(&mut self, bytes: &[u8]) -> io::Result<Option<usize>> {
         if bytes.is_empty() {
             return Err(io::Error::new(
@@ -478,10 +440,7 @@ impl ProcessTree {
         self.capture_try_wait(None)
     }
 
-    /// Observes the same unreaped owned leader, admitting every actual waitid
-    /// attempt (including EINTR retries). No meter is retained after this call.
-    /// The caller now owns explicit cleanup; Drop cannot substitute unbounded
-    /// termination after this measured observation.
+    /// Observes the same unreaped owned leader, admitting every actual waitid attempt (including EINTR retries).
     pub fn try_wait_measured(
         &mut self, meter: &dyn crate::NativeReadMeter,
     ) -> io::Result<Option<ExitStatus>> {
@@ -532,7 +491,6 @@ impl ProcessTree {
     }
 
     /// Observes direct-child exit within `timeout`, retaining descendant ownership.
-    /// On Unix the exited leader remains unreaped until containment cleanup.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
@@ -581,32 +539,12 @@ impl ProcessTree {
         }
     }
 
-    /// Collects at most `max_bytes` across both pipes, with a deadline measured
-    /// from this call. Closes stdin and terminates containment after child exit,
-    /// timeout, or capture failure. A timeout does not imply effects rolled back.
-    /// Cleanup has its own five-second observation window per platform phase;
-    /// OS calls and scheduling are assumed to progress. Cleanup errors take
-    /// precedence over capture errors. No rollback of child effects is implied.
+    /// Collects at most `max_bytes` across both pipes, with a deadline measured from this call.
     pub fn wait_with_output(&mut self, timeout: Duration, max_bytes: usize) -> io::Result<Output> {
-        self.wait_with_output_checked(timeout, max_bytes, || Ok(()))
+        self.wait_with_output_observed(timeout, max_bytes, || Ok(())).map_err(|failure| failure.error)
     }
 
-    /// Checks host intent before each bounded drain using the same cleanup owner.
-    /// A check error stops capture; cleanup failure takes precedence. The check
-    /// must return promptly. Cancellation does not establish effect rollback.
-    pub fn wait_with_output_checked(
-        &mut self,
-        timeout: Duration,
-        max_bytes: usize,
-        check: impl FnMut() -> io::Result<()>,
-    ) -> io::Result<Output> {
-        self.wait_with_output_observed(timeout, max_bytes, check)
-            .map_err(|failure| failure.error)
-    }
-
-    /// Uses the same bounded capture and cleanup loop, preserving collected
-    /// output on timeout, output overflow, intent failure or unresolved cleanup.
-    /// A stopped capture's output is a prefix, not a complete process transcript.
+    /// Uses the same bounded capture and cleanup loop, preserving collected output on timeout, output overflow, intent failure or unresolved cleanup.
     pub fn wait_with_output_observed(
         &mut self,
         timeout: Duration,
@@ -618,10 +556,7 @@ impl ProcessTree {
         }, None, None)
     }
 
-    /// Writes the exact admitted input, closes stdin after its final byte and
-    /// observes normal child completion in the existing bounded capture loop.
-    /// Empty input closes stdin immediately. Unlike protocol completion, EOF
-    /// does not terminate the process or its containment.
+    /// Writes the exact admitted input, closes stdin after its final byte and observes normal child completion in the existing bounded capture loop.
     pub fn wait_with_input_observed(
         &mut self,
         timeout: Duration,
@@ -636,11 +571,6 @@ impl ProcessTree {
     }
 
     /// Performs a bounded streaming exchange in the same capture/cleanup loop.
-    /// The host supplies an admitted protocol and checks durable intent. Neither
-    /// callback may block or perform unbounded work. Input bounds cover the
-    /// initial bytes plus every callback write, including already written bytes.
-    /// Completion closes stdin and terminates the owned tree; exit status may
-    /// therefore be unsuccessful even after the protocol received its result.
     pub fn wait_with_exchange_observed(
         &mut self,
         timeout: Duration,
@@ -661,8 +591,7 @@ impl ProcessTree {
         )
     }
 
-    /// Captures into the caller's already admitted concrete buffers using the
-    /// original invocation meter; no second capture or cleanup loop is created.
+    /// Captures into the caller's already admitted concrete buffers using the original invocation meter; no second capture or cleanup loop is created.
     pub fn wait_with_output_observed_with_meter(
         &mut self, timeout: Duration, max_bytes: usize,
         buffers: [Vec<u8>; 3], meter: &dyn crate::NativeReadMeter,
@@ -824,9 +753,7 @@ impl ProcessTree {
         result
     }
 
-    /// Terminates containment and reaps the direct child. Windows confirms the
-    /// Job is empty; Unix confirms signal delivery, not descendant reaping.
-    /// Repeated successful cleanup is a no-op. An error retains ownership.
+    /// Terminates containment and reaps the direct child.
     pub fn terminate(&mut self) -> io::Result<()> {
         let operation = obs::span!(
             INFO,
@@ -837,13 +764,7 @@ impl ProcessTree {
         operation.scope(|| operation.finish(self.capture_terminate(None)))
     }
 
-    /// Cleans up through the same containment/observation/reap engine, with
-    /// admission at each signal, membership probe and wait attempt. An error
-    /// retains identity and never launches an unmeasured cleanup retry in Drop.
-    /// Success closes every retained stdin/stdout/stderr handle; Windows also
-    /// retires setup, Child and Job handles. Capture uses synchronous polling,
-    /// not detached stdio workers. Explicitly transferred `take_*` streams
-    /// remain the receiving caller's lifecycle responsibility.
+    /// Cleans up through the same containment/observation/reap engine, with admission at each signal, membership probe and wait attempt.
     pub fn terminate_measured(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
         self.capture_terminate(Some(meter))
     }
@@ -927,9 +848,6 @@ impl ProcessTree {
     }
 
     /// Whether containment cleanup succeeded and the direct child was reaped.
-    /// Unix confirms group signal delivery, not reaping of every descendant;
-    /// descendants that deliberately leave containment remain outside this claim.
-    /// Any retained native spawn-configuration custody must also be released.
     #[must_use]
     pub const fn is_reaped(&self) -> bool {
         #[cfg(unix)]
@@ -940,9 +858,7 @@ impl ProcessTree {
         }
     }
 
-    /// Requests graceful Unix group termination, then performs mandatory tree
-    /// cleanup after direct-child exit or `grace`. Windows has no group-wide
-    /// graceful signal and uses Job termination immediately.
+    /// Requests graceful Unix group termination, then performs mandatory tree cleanup after direct-child exit or `grace`.
     pub fn terminate_after(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
@@ -974,8 +890,7 @@ impl ProcessTree {
         Ok(status)
     }
 
-    /// Signals termination to the entire tree while retaining the direct child
-    /// so its captured output can still be collected.
+    /// Signals termination to the entire tree while retaining the direct child so its captured output can still be collected.
     pub fn terminate_descendants(&mut self) -> io::Result<()> {
         self.capture_terminate_descendants(None)
     }
@@ -989,9 +904,6 @@ impl ProcessTree {
         return containment;
         #[cfg(windows)]
         {
-            // Assignment failure leaves a real suspended Child outside the
-            // Job. Independently admit its direct kill even if Job control
-            // failed, retaining both owners and the original native cause.
             let direct = if !self.guard.assigned && !self.guard.direct_termination_sent {
                 if let Some(child) = self.child.as_mut() {
                     process_control_attempt(meter, true, || {
@@ -1006,8 +918,7 @@ impl ProcessTree {
     }
 }
 
-/// Reads one chunk; returns whether the pipe produced data or reached EOF,
-/// so the caller sleeps only when both pipes are idle.
+/// Reads one chunk; returns whether the pipe produced data or reached EOF, so the caller sleeps only when both pipes are idle.
 fn drain_pipe<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
@@ -1037,7 +948,7 @@ fn drain_pipe<T: Read + platform::Pipe>(
         &mut probe[..]
     } else {
         output.spare_capacity_mut().get_mut(..admitted)
-            .ok_or_else(|| io::Error::other("invalid process output capacity"))?
+            .ok_or_else(|| io::Error::from(io::ErrorKind::Other))?
     };
     let transfer = platform::read_pipe_with_meter(reader, buffer, meter);
     let actual = transfer.as_ref().ok().and_then(|(read, _)| *read).unwrap_or(0);
@@ -1078,8 +989,7 @@ fn drain_pipe<T: Read + platform::Pipe>(
     Ok(true)
 }
 
-/// One pipe SDK call owns its own credit. A completed payload and a late
-/// accounting error travel separately until its physical prefix is published.
+/// One pipe SDK call owns its own credit.
 fn pipe_operation_attempt<T>(
     meter: Option<&dyn crate::NativeReadMeter>,
     kind: crate::NativeOperationKind,
@@ -1102,7 +1012,6 @@ impl Drop for ProcessTree {
 }
 
 /// One actual SDK/kernel attempt, not a prediction of its hidden internals.
-/// Accepted calls run even if their bookkeeping reports a late error.
 fn process_control_attempt<T>(
     meter: Option<&dyn crate::NativeReadMeter>, write: bool, call: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
@@ -1245,9 +1154,7 @@ mod platform {
         match written {
             Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) =>
                 Ok((None, recorded)),
-            Ok(0) => { recorded?; Err(io::Error::new(
-                io::ErrorKind::WriteZero, "process pipe write stopped",
-            )) }
+            Ok(0) => { recorded?; Err(io::Error::from(io::ErrorKind::WriteZero)) }
             Err(error) => { recorded?; Err(error) }
             Ok(written) => Ok((Some(written), recorded)),
         }
@@ -1282,8 +1189,6 @@ mod platform {
     }
 
     /// Native spawn objects that a failed SDK destroy did not release.
-    /// Inline custody retains their actual handles without an emergency heap
-    /// allocation after a bounded failure.
     #[derive(Default)]
     pub(super) struct SpawnResources {
         actions: Option<libc::posix_spawn_file_actions_t>,
@@ -1331,9 +1236,6 @@ mod platform {
         custody: &mut Option<super::ProcessTree>,
     ) -> io::Result<()> {
         command.process_group(0);
-        // std owns the prepared arguments, environment and pipe configuration.
-        // Command::spawn is one actual opaque SDK attempt; neither its private
-        // allocations nor its hidden kernel calls are fabricated as metrics.
         super::process_control_attempt(meter, true, || {
             let child = command.spawn()?;
             // A Unix Child ID originated as pid_t at this same SDK boundary.
@@ -1417,10 +1319,6 @@ mod platform {
                         if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
                     })
                 };
-                // Each SDK call below uses this frame's exclusive native
-                // storage. Initialization precedes setters and destruction;
-                // terminated argv strings and inherited environment remain
-                // borrowed and valid throughout synchronous posix_spawn.
                 native(&mut || unsafe {
                     let status = libc::posix_spawnattr_init(attributes.as_mut_ptr());
                     if status == 0 { attr_initialized = true; }
@@ -1556,11 +1454,6 @@ mod platform {
 
     #[cfg(target_vendor = "apple")]
     fn group_has_no_live_members(group: libc::pid_t, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<bool> {
-        // Terminated descendants can remain visible until the OS reaps them.
-        // Wait only for the same conservative membership proof; EPERM itself
-        // never establishes that any member has exited. Denial stays an error
-        // if this bounded observation does not establish an empty group or
-        // exactly the independently observed exited owned leader.
         let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
         loop {
             if group_snapshot_has_no_live_members(group, meter)? {
@@ -1578,13 +1471,6 @@ mod platform {
 
     #[cfg(target_vendor = "apple")]
     fn group_snapshot_has_no_live_members(group: libc::pid_t, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<bool> {
-        // XNU skips zombies in killpg1 and reports EPERM when none are signalled.
-        // Accept only an empty group or a snapshot containing exactly the owned,
-        // independently observed exited leader. Other members (even zombies)
-        // retain the error: no authority or descendant-completion claim is made.
-        // proc_listpids(PROC_PGRP_ONLY = 2) snapshots live and zombie membership
-        // under the kernel process-list lock. Two slots distinguish a sole
-        // leader from a larger, possibly truncated group without allocation.
         let mut members = [0_i32; 2];
         let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
         let id = u32::try_from(group).map_err(io::Error::other)?;
@@ -1617,664 +1503,28 @@ mod platform {
 mod tests {
     use super::ProcessTree;
 
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    #[derive(Default)]
-    pub(super) struct ControlCounts {
-        pub(super) reads: AtomicU64, pub(super) writes: AtomicU64,
-        allocations: AtomicU64, live: AtomicU64, peak: AtomicU64,
-        items: AtomicU64, copied: AtomicU64, write_limit: AtomicU64,
-        pub(super) reserved_reads: AtomicU64, pub(super) reserved_writes: AtomicU64,
-    }
-
-    pub(super) struct ControlMeter {
-        pub(super) counts: ControlCounts,
-        read_limit: u64,
-        allocation_limit: u64,
-        memory_limit: u64,
-        cancelled: std::sync::atomic::AtomicBool,
-        allocation_failure: std::sync::Mutex<Option<std::collections::TryReserveError>>,
-        allocation_reservations: std::sync::Mutex<(u64, u64)>,
-    }
-
-    impl ControlMeter {
-        pub(super) fn new(reads: u64, writes: u64, allocations: u64, memory: u64) -> Self {
-            Self {
-                counts: ControlCounts { write_limit: AtomicU64::new(writes), ..ControlCounts::default() },
-                read_limit: reads, allocation_limit: allocations, memory_limit: memory,
-                cancelled: std::sync::atomic::AtomicBool::new(false),
-                allocation_failure: std::sync::Mutex::new(None),
-                allocation_reservations: std::sync::Mutex::new((0, 0)),
-            }
-        }
-    }
-
-    impl crate::NativeReadMeter for ControlMeter {
-        fn check(&self) -> std::io::Result<()> {
-            if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                Err(std::io::ErrorKind::Interrupted.into())
-            } else { Ok(()) }
-        }
-        fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
-            let mut failure = self.allocation_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if failure.is_none() { *failure = Some(error); }
-            std::io::ErrorKind::OutOfMemory.into()
-        }
-        fn reserve_operations(&self, kind: crate::NativeOperationKind, count: u64) -> std::io::Result<()> {
-            let reserved = match kind {
-                crate::NativeOperationKind::Read => {
-                    self.admit_operations(count)?;
-                    &self.counts.reserved_reads
-                }
-                crate::NativeOperationKind::Write => {
-                    self.admit_write_operations(count)?;
-                    &self.counts.reserved_writes
-                }
-                crate::NativeOperationKind::Durability => return Err(std::io::ErrorKind::Unsupported.into()),
-            };
-            reserved.fetch_add(count, Relaxed);
-            Ok(())
-        }
-        fn cancel_reserved_operations(&self, kind: crate::NativeOperationKind, count: u64) {
-            let reserved = match kind {
-                crate::NativeOperationKind::Read => &self.counts.reserved_reads,
-                crate::NativeOperationKind::Write => &self.counts.reserved_writes,
-                crate::NativeOperationKind::Durability => unreachable!("process control cannot reserve durability"),
-            };
-            assert!(reserved.fetch_sub(count, Relaxed) >= count, "refund only owned unused reservations");
-        }
-        fn record_reserved_operation(&self, kind: crate::NativeOperationKind) -> std::io::Result<()> {
-            let (reserved, completed) = match kind {
-                crate::NativeOperationKind::Read => (&self.counts.reserved_reads, &self.counts.reads),
-                crate::NativeOperationKind::Write => (&self.counts.reserved_writes, &self.counts.writes),
-                crate::NativeOperationKind::Durability => return Err(std::io::ErrorKind::Unsupported.into()),
-            };
-            reserved.fetch_update(Relaxed, Relaxed, |count| count.checked_sub(1))
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-            completed.fetch_add(1, Relaxed);
-            Ok(())
-        }
-        fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
-            self.check()?;
-            if maximum == 0 { Ok(()) } else { Err(std::io::ErrorKind::Unsupported.into()) }
-        }
-        fn reserve_bytes(&self, kind: crate::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-            if kind == crate::NativeOperationKind::Durability { return Err(std::io::ErrorKind::Unsupported.into()); }
-            self.check()?;
-            // Process-control fixtures own no native payload I/O allowance.
-            if maximum == 0 { Ok(()) } else { Err(std::io::ErrorKind::Unsupported.into()) }
-        }
-        fn cancel_reserved_bytes(&self, kind: crate::NativeOperationKind, maximum: u64) {
-            assert_ne!(kind, crate::NativeOperationKind::Durability, "no process control durability byte token can exist");
-            assert_eq!(maximum, 0, "only an admitted zero-body control scope can be refunded");
-        }
-        fn record_reserved_bytes(
-            &self, kind: crate::NativeOperationKind, maximum: u64, actual: u64,
-        ) -> std::io::Result<()> {
-            if kind == crate::NativeOperationKind::Durability { return Err(std::io::ErrorKind::Unsupported.into()); }
-            if maximum == 0 && actual == 0 { Ok(()) }
-            else { Err(std::io::ErrorKind::InvalidInput.into()) }
-        }
-        fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
-            self.check()?;
-            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let operations = pending.0.checked_add(1).ok_or(std::io::ErrorKind::OutOfMemory)?;
-            let held_bytes = pending.1.checked_add(bytes).ok_or(std::io::ErrorKind::OutOfMemory)?;
-            if self.counts.allocations.load(Relaxed).checked_add(operations)
-                .is_none_or(|total| total > self.allocation_limit)
-                || self.counts.live.load(Relaxed).checked_add(held_bytes)
-                    .is_none_or(|total| total > self.memory_limit)
-            {
-                return Err(std::io::ErrorKind::OutOfMemory.into());
-            }
-            *pending = (operations, held_bytes);
-            Ok(())
-        }
-        fn cancel_reserved_allocation(&self, bytes: u64) {
-            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let operations = pending.0.checked_sub(1).expect("refund only an owned allocation credit");
-            let held_bytes = pending.1.checked_sub(bytes).expect("refund only owned allocation bytes");
-            *pending = (operations, held_bytes);
-        }
-        fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
-            let mut pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let operations = pending.0.checked_sub(1).ok_or(std::io::ErrorKind::InvalidInput)?;
-            let held_bytes = pending.1.checked_sub(bytes).ok_or(std::io::ErrorKind::InvalidInput)?;
-            let live = self.counts.live.load(Relaxed).checked_add(bytes).ok_or(std::io::ErrorKind::OutOfMemory)?;
-            let allocations = self.counts.allocations.load(Relaxed).checked_add(1).ok_or(std::io::ErrorKind::OutOfMemory)?;
-            *pending = (operations, held_bytes);
-            self.counts.allocations.store(allocations, Relaxed);
-            self.counts.live.store(live, Relaxed);
-            self.counts.peak.fetch_max(live, Relaxed);
-            Ok(())
-        }
-        fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-            self.reserve_allocation(bytes)?;
-            self.record_reserved_allocation(bytes)
-        }
-        fn allocate_refcount_header(&self) -> std::io::Result<()> { self.allocate(0) }
-        fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-            self.check()?;
-            let pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let counts = &self.counts;
-            if counts.live.load(Relaxed).checked_add(pending.1).and_then(|live| live.checked_add(bytes))
-                .is_none_or(|live| live > self.memory_limit) { return Err(std::io::ErrorKind::OutOfMemory.into()); }
-            let live = counts.live.fetch_add(bytes, Relaxed) + bytes;
-            counts.peak.fetch_max(live, Relaxed);
-            Ok(())
-        }
-        fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-            let pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let previous = match self.counts.live.fetch_update(Relaxed, Relaxed, |live| live.checked_add(bytes)) {
-                Ok(previous) => previous,
-                Err(_) => return (0, Err(std::io::ErrorKind::OutOfMemory.into())),
-            };
-            let live = previous + bytes;
-            self.counts.peak.fetch_max(live, Relaxed);
-            // Only already-observed capacity is retained. There is no
-            // allocation operation or fabricated successful native growth.
-            let result = self.check().and_then(|()| {
-                if live.checked_add(pending.1).is_none_or(|total| total > self.memory_limit) { Err(std::io::ErrorKind::OutOfMemory.into()) }
-                else { Ok(()) }
-            });
-            (bytes, result)
-        }
-        fn release(&self, bytes: u64) {
-            let _pending = self.allocation_reservations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.counts.live.fetch_sub(bytes, Relaxed);
-        }
-        fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-        fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
-            self.counts.items.fetch_add(items, Relaxed);
-            self.counts.copied.fetch_add(copied, Relaxed);
-            Ok(())
-        }
-        fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
-            self.admit_examination(items, copied)?; self.record_examination(items, copied)
-        }
-        fn admit_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
-        fn admit_read(&self, _: usize) -> std::io::Result<()> { self.admit_operations(1)?; self.record_operations(1) }
-        fn admit_operations(&self, additional: u64) -> std::io::Result<()> {
-            self.check()?;
-            if self.counts.reads.load(Relaxed)
-                .checked_add(self.counts.reserved_reads.load(Relaxed))
-                .and_then(|current| current.checked_add(additional))
-                .is_none_or(|total| total > self.read_limit) {
-                Err(std::io::ErrorKind::Other.into())
-            } else { Ok(()) }
-        }
-        fn record_operations(&self, completed: u64) -> std::io::Result<()> {
-            self.counts.reads.fetch_add(completed, Relaxed); Ok(())
-        }
-        fn record_read(&self, _: usize) -> std::io::Result<()> { Ok(()) }
-        fn admit_write(&self, _: usize) -> std::io::Result<()> { self.admit_write_operations(1)?; self.record_write_operations(1) }
-        fn record_write(&self, _: usize) -> std::io::Result<()> { Ok(()) }
-        fn admit_write_operations(&self, additional: u64) -> std::io::Result<()> {
-            self.check()?;
-            let counts = &self.counts;
-            if counts.writes.load(Relaxed)
-                .checked_add(counts.reserved_writes.load(Relaxed))
-                .and_then(|current| current.checked_add(additional))
-                .is_none_or(|total| total > counts.write_limit.load(Relaxed)) {
-                Err(std::io::ErrorKind::Other.into())
-            } else { Ok(()) }
-        }
-        fn record_write_operations(&self, completed: u64) -> std::io::Result<()> {
-            self.counts.writes.fetch_add(completed, Relaxed); Ok(())
-        }
-        fn admit_durability(&self) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
-        fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
-            self.admit_write_operations(1)?;
-            self.counts.write_limit.fetch_sub(1, Relaxed);
-            Ok(1)
-        }
-        fn cancel_cleanup_write(&self, reservation: u64) { self.counts.write_limit.fetch_add(reservation, Relaxed); }
-        fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
-            let counts = &self.counts;
-            counts.write_limit.fetch_add(reservation, Relaxed);
-            let writes = counts.writes.fetch_add(1, Relaxed) + 1;
-            assert!(writes <= counts.write_limit.load(Relaxed), "reserved cleanup never exceeds its exact budget");
-            Ok(())
-        }
-    }
-
+    use std::io;
+    #[cfg(unix)]
     #[test]
-    #[cfg(unix)]
-    fn measured_command_spawn_retains_original_child_and_counts_one_sdk_attempt() -> std::io::Result<()> {
-        let mut command = std::process::Command::new("/bin/sh");
-        command.args(["-c", "exit 7"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let mut custody = None;
-        let denied = ControlMeter::new(0, 0, 0, 0);
-        assert!(crate::spawn_process_tree_with_meter_custody(&mut command, &denied, &mut custody).is_err());
-        assert!(custody.is_none());
-        assert_eq!(denied.counts.writes.load(Relaxed), 0);
-        let spawn = ControlMeter::new(0, 1, 0, 0);
-        crate::spawn_process_tree_with_meter_custody(&mut command, &spawn, &mut custody)?;
-        assert_eq!(spawn.counts.writes.load(Relaxed), 1, "one actual opaque Command::spawn SDK attempt");
-        assert_eq!(spawn.counts.allocations.load(Relaxed), 0, "adapter neither copies nor predicts SDK heap");
-        assert_eq!(spawn.counts.items.load(Relaxed), 3, "program and two borrowed arguments");
-        let mut tree = custody.take().expect("original owned Child");
-        let id = tree.child.as_ref().expect("actual Child").id();
-        assert!(!tree.cleanup_on_drop);
-        let cancelled = ControlMeter::new(1, 0, 0, 0);
-        cancelled.cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert_eq!(tree.try_wait_measured(&cancelled).expect_err("cancellation is not an OS EINTR retry").kind(),
-            std::io::ErrorKind::Interrupted);
-        assert_eq!(cancelled.counts.reads.load(Relaxed), 0, "denied actual waitid never ran");
-        let stopped = ControlMeter::new(0, 0, 0, 0);
-        assert!(tree.terminate_measured(&stopped).is_err());
-        assert_eq!(tree.child.as_ref().expect("denial retains same Child").id(), id);
-        assert!(!tree.is_reaped());
-        assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
-        let terminal = ControlMeter::new(2, 1, 0, 0);
-        tree.terminate_measured(&terminal)?;
-        assert!(tree.is_reaped());
-        assert_eq!(terminal.counts.writes.load(Relaxed), 1, "actual group signal");
-        assert_eq!(terminal.counts.reads.load(Relaxed), 2, "actual waitid and physical reap");
-        assert_eq!(terminal.counts.reserved_reads.load(Relaxed), 0);
-        assert_eq!(terminal.counts.reserved_writes.load(Relaxed), 0);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    mod finite_data {
-        use super::{ControlMeter, AtomicU64, Relaxed};
-        use super::super::{CaptureInput, PendingStdin, ProcessInput, ProcessTree, drain_pipe, platform};
-        use crate::{NativeOperationKind, NativeReadMeter};
-        use std::io::{self, Write};
-        use std::os::unix::net::UnixStream;
-
-        struct DataMeter {
-            control: ControlMeter,
-            read_limit: u64,
-            write_limit: u64,
-            copy_limit: u64,
-            read_bytes: AtomicU64,
-            write_bytes: AtomicU64,
-            held_read: AtomicU64,
-            held_write: AtomicU64,
-        }
-
-        impl DataMeter {
-            fn new(read: u64, write: u64, copied: u64) -> Self {
-                Self {
-                    control: ControlMeter::new(1024, 1024, 0, 0),
-                    read_limit: read, write_limit: write, copy_limit: copied,
-                    read_bytes: AtomicU64::new(0), write_bytes: AtomicU64::new(0),
-                    held_read: AtomicU64::new(0), held_write: AtomicU64::new(0),
-                }
-            }
-            fn bytes(&self, kind: NativeOperationKind) -> (&AtomicU64, &AtomicU64, u64) {
-                match kind {
-                    NativeOperationKind::Read => (&self.read_bytes, &self.held_read, self.read_limit),
-                    NativeOperationKind::Write => (&self.write_bytes, &self.held_write, self.write_limit),
-                    NativeOperationKind::Durability => unreachable!("pipe data cannot reserve durability bytes"),
-                }
-            }
-        }
-
-        impl NativeReadMeter for DataMeter {
-            fn check(&self) -> io::Result<()> { self.control.check() }
-            fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
-                self.control.allocation_failed(error)
-            }
-            fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
-                if kind == NativeOperationKind::Durability {
-                    return Err(io::ErrorKind::Unsupported.into());
-                }
-                self.control.reserve_operations(kind, count)
-            }
-            fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64) {
-                assert_ne!(kind, NativeOperationKind::Durability, "no pipe durability token can exist");
-                self.control.cancel_reserved_operations(kind, count);
-            }
-            fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
-                if kind == NativeOperationKind::Durability {
-                    return Err(io::ErrorKind::Unsupported.into());
-                }
-                self.control.record_reserved_operation(kind)
-            }
-            fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()> {
-                if kind == NativeOperationKind::Durability {
-                    return Err(io::ErrorKind::Unsupported.into());
-                }
-                self.check()?;
-                let (spent, held, limit) = self.bytes(kind);
-                held.fetch_update(Relaxed, Relaxed, |current| {
-                    current.checked_add(maximum).filter(|total| {
-                        spent.load(Relaxed).checked_add(*total).is_some_and(|total| total <= limit)
-                    })
-                }).map(|_| ()).map_err(|_| io::ErrorKind::FileTooLarge.into())
-            }
-            fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
-                assert_ne!(kind, NativeOperationKind::Durability, "no pipe durability byte token can exist");
-                assert!(self.bytes(kind).1.fetch_sub(maximum, Relaxed) >= maximum);
-            }
-            fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()> {
-                if kind == NativeOperationKind::Durability {
-                    return Err(io::ErrorKind::Unsupported.into());
-                }
-                assert!(actual <= maximum);
-                self.cancel_reserved_bytes(kind, maximum);
-                self.bytes(kind).0.fetch_add(actual, Relaxed);
-                Ok(())
-            }
-            fn reserve_allocation(&self, bytes: u64) -> io::Result<()> { self.control.reserve_allocation(bytes) }
-            fn cancel_reserved_allocation(&self, bytes: u64) { self.control.cancel_reserved_allocation(bytes); }
-            fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> { self.control.record_reserved_allocation(bytes) }
-            fn allocate(&self, bytes: u64) -> io::Result<()> { self.control.allocate(bytes) }
-            fn allocate_refcount_header(&self) -> io::Result<()> { self.control.allocate_refcount_header() }
-            fn adopt(&self, bytes: u64) -> io::Result<()> { self.control.adopt(bytes) }
-            fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-                self.control.record_completed_adoption(bytes)
-            }
-            fn release(&self, bytes: u64) { self.control.release(bytes); }
-            fn admit_examination(&self, items: u64, copied: u64) -> io::Result<()> {
-                self.control.admit_examination(items, copied)?;
-                if self.control.counts.copied.load(Relaxed).checked_add(copied)
-                    .is_some_and(|total| total <= self.copy_limit) { Ok(()) }
-                else { Err(io::ErrorKind::OutOfMemory.into()) }
-            }
-            fn record_examination(&self, items: u64, copied: u64) -> io::Result<()> {
-                self.control.record_examination(items, copied)
-            }
-            fn examine(&self, items: u64, copied: u64) -> io::Result<()> {
-                self.admit_examination(items, copied)?; self.record_examination(items, copied)
-            }
-            fn admit_bytes(&self, maximum: usize) -> io::Result<()> {
-                self.check()?;
-                if self.read_bytes.load(Relaxed).saturating_add(maximum as u64) <= self.read_limit { Ok(()) }
-                else { Err(io::ErrorKind::FileTooLarge.into()) }
-            }
-            fn admit_write_bytes(&self, maximum: usize) -> io::Result<()> {
-                self.check()?;
-                if self.write_bytes.load(Relaxed).saturating_add(maximum as u64) <= self.write_limit { Ok(()) }
-                else { Err(io::ErrorKind::FileTooLarge.into()) }
-            }
-            fn admit_read(&self, maximum: usize) -> io::Result<()> {
-                self.admit_bytes(maximum)?; self.control.admit_operations(1)?; self.control.record_operations(1)
-            }
-            fn admit_write(&self, maximum: usize) -> io::Result<()> {
-                self.admit_write_bytes(maximum)?; self.control.admit_write_operations(1)?; self.control.record_write_operations(1)
-            }
-            fn record_read(&self, actual: usize) -> io::Result<()> {
-                self.read_bytes.fetch_add(actual as u64, Relaxed); Ok(())
-            }
-            fn record_write(&self, actual: usize) -> io::Result<()> {
-                self.write_bytes.fetch_add(actual as u64, Relaxed); Ok(())
-            }
-            fn admit_operations(&self, count: u64) -> io::Result<()> { self.control.admit_operations(count) }
-            fn record_operations(&self, count: u64) -> io::Result<()> { self.control.record_operations(count) }
-            fn admit_write_operations(&self, count: u64) -> io::Result<()> { self.control.admit_write_operations(count) }
-            fn record_write_operations(&self, count: u64) -> io::Result<()> { self.control.record_write_operations(count) }
-            fn admit_durability(&self) -> io::Result<()> { self.control.admit_durability() }
-        }
-
-        #[test]
-        fn physical_output_and_one_byte_overflow_probe_keep_exact_custody() -> io::Result<()> {
-            let (reader, mut writer) = UnixStream::pair()?;
-            writer.write_all(b"abcd")?;
-            let mut pipe = Some(reader);
-            let mut output = Vec::with_capacity(3);
-            let address = output.as_ptr();
-            let meter = DataMeter::new(4, 0, 0);
-            let mut remaining = 3;
-            assert!(drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))?);
-            assert_eq!(output, b"abc");
-            assert_eq!(remaining, 0);
-            assert_eq!(drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))
-                .expect_err("real overflow byte").kind(), io::ErrorKind::FileTooLarge);
-            assert_eq!(output, b"abc");
-            assert_eq!(output.as_ptr(), address);
-            assert_eq!(meter.read_bytes.load(Relaxed), 4);
-            assert_eq!(meter.held_read.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.reads.load(Relaxed), 4);
-            assert_eq!(meter.control.counts.writes.load(Relaxed), 1);
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.allocations.load(Relaxed), 0);
-            Ok(())
-        }
-
-        #[test]
-        fn denied_capacity_and_probe_leave_unread_native_bytes() -> io::Result<()> {
-            let (reader, mut writer) = UnixStream::pair()?;
-            writer.write_all(b"abcd")?;
-            let mut pipe = Some(reader);
-            let meter = DataMeter::new(3, 0, 0);
-            let mut output = Vec::with_capacity(2);
-            let mut remaining = 3;
-            assert_eq!(drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))
-                .expect_err("no caller-owned capacity").kind(), io::ErrorKind::OutOfMemory);
-            assert_eq!(meter.control.counts.reads.load(Relaxed), 0);
-            output = Vec::with_capacity(3);
-            drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))?;
-            assert_eq!(drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))
-                .expect_err("overflow probe needs its own byte").kind(), io::ErrorKind::FileTooLarge);
-            assert_eq!(meter.control.counts.reads.load(Relaxed), 2);
-            let mut byte = [0];
-            assert_eq!(platform::read_pipe(pipe.as_mut().expect("owned reader"), &mut byte)?, Some(1));
-            assert_eq!(byte, *b"d");
-            assert_eq!(output, b"abc");
-            Ok(())
-        }
-
-        #[test]
-        fn idle_and_eof_refund_bytes_without_copying_or_allocation() -> io::Result<()> {
-            let (reader, writer) = UnixStream::pair()?;
-            let mut pipe = Some(reader);
-            let mut output = Vec::with_capacity(8);
-            let meter = DataMeter::new(8, 0, 0);
-            let mut remaining = 8;
-            assert!(!drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))?);
-            assert_eq!(meter.held_read.load(Relaxed), 0);
-            drop(writer);
-            assert!(drain_pipe(&mut pipe, &mut output, &mut remaining, Some(&meter))?);
-            assert!(pipe.is_none());
-            assert!(output.is_empty());
-            assert_eq!(meter.read_bytes.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.allocations.load(Relaxed), 0);
-            Ok(())
-        }
-
-        #[test]
-        fn exchange_copies_only_actual_serializer_bytes_into_original_capacity() -> io::Result<()> {
-            let meter = DataMeter::new(0, 0, 5);
-            let buffer = Vec::with_capacity(5);
-            let address = buffer.as_ptr();
-            let mut input = PendingStdin::new_with_buffer(
-                CaptureInput::Exchange { initial: b"ab", maximum: 5 }, Some(buffer), Some(&meter),
-            )?;
-            input.observe(b"response", &mut |_| Ok(ProcessInput {
-                bytes: b"cde".to_vec(), complete: false,
-            }), Some(&meter))?;
-            assert_eq!(input.bytes.as_ref(), b"abcde");
-            assert_eq!(input.bytes.as_ptr(), address);
-            input.observe(b"empty", &mut |_| Ok(ProcessInput::default()), Some(&meter))?;
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 5);
-            assert_eq!(input.observe(b"overflow", &mut |_| Ok(ProcessInput {
-                bytes: b"x".to_vec(), complete: false,
-            }), Some(&meter)).expect_err("full exchange buffer").kind(), io::ErrorKind::FileTooLarge);
-            assert_eq!(input.bytes.as_ref(), b"abcde");
-            assert_eq!(meter.control.counts.allocations.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.live.load(Relaxed), 0);
-            Ok(())
-        }
-
-        #[test]
-        fn real_partial_stdin_and_cancel_keep_exact_written_prefix() -> io::Result<()> {
-            let mut command = std::process::Command::new("/bin/sh");
-            command.args(["-c", "sleep 60"]).stdin(std::process::Stdio::piped());
-            let mut tree = ProcessTree::spawn(&mut command)?;
-            let bytes = vec![b'x'; 1024 * 1024];
-            let meter = DataMeter::new(0, bytes.len() as u64, 0);
-            let mut input = PendingStdin::new_with_buffer(
-                CaptureInput::Literal(&bytes), None, Some(&meter),
-            )?;
-            assert!(input.poll(&mut tree, Some(&meter))?);
-            assert!(input.written > 0 && input.written < bytes.len());
-            let prefix = input.written;
-            assert_eq!(meter.write_bytes.load(Relaxed), prefix as u64);
-            assert_eq!(meter.held_write.load(Relaxed), 0);
-            assert!(!input.poll(&mut tree, Some(&meter))?);
-            assert_eq!(input.written, prefix);
-            assert_eq!(meter.control.counts.reads.load(Relaxed), 2);
-            assert_eq!(meter.control.counts.writes.load(Relaxed), 3);
-            meter.control.cancelled.store(true, std::sync::atomic::Ordering::Release);
-            assert_eq!(input.poll(&mut tree, Some(&meter)).expect_err("real caller cancellation").kind(),
-                io::ErrorKind::Interrupted);
-            assert_eq!(meter.write_bytes.load(Relaxed), prefix as u64);
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 0);
-            tree.terminate()?;
-            Ok(())
-        }
-
-        #[test]
-        fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {
-            let mut command = std::process::Command::new("/bin/sh");
-            command.args(["-c", "printf out; printf err >&2; sleep 60"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            let mut tree = ProcessTree::spawn(&mut command)?;
-            let meter = DataMeter::new(32, 0, 0);
-            let failure = tree.wait_with_exchange_observed_with_meter(
-                std::time::Duration::from_secs(5), 16, 1, b"",
-                [Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)],
-                &meter, || Ok(()), |_| {
-                    meter.control.cancelled.store(true, std::sync::atomic::Ordering::Release);
-                    Err(io::ErrorKind::Interrupted.into())
-                },
-            ).expect_err("caller cancels after physical stdout delivery");
-            assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
-            assert_eq!(failure.stdout, b"out");
-            assert!(b"err".starts_with(&failure.stderr));
-            assert_eq!(meter.read_bytes.load(Relaxed), (failure.stdout.len() + failure.stderr.len()) as u64);
-            assert!(!failure.cleanup_completed);
-            assert!(!tree.is_reaped());
-            assert!(tree.child.as_ref().expect("same retained child").stdout.is_some());
-            assert_eq!(meter.control.counts.allocations.load(Relaxed), 0);
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 0);
-            tree.terminate()?;
-            Ok(())
-        }
-
-        #[test]
-        fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<()> {
-            let mut command = std::process::Command::new("/bin/sh");
-            command.args(["-c", "printf out; sleep 60"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            let mut tree = ProcessTree::spawn(&mut command)?;
-            let meter = DataMeter::new(32, 0, 0);
-            let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tree.wait_with_exchange_observed_with_meter(
-                    std::time::Duration::from_secs(5), 16, 1, b"",
-                    [Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)],
-                    &meter, || Ok(()), |_| panic!("real protocol observer panic"),
-                )
-            }));
-            assert!(stopped.is_err());
-            assert_eq!(meter.read_bytes.load(Relaxed), 3);
-            assert_eq!(meter.held_read.load(Relaxed), 0);
-            assert!(!tree.is_reaped());
-            assert!(tree.child.as_ref().expect("original supervisor").stdout.is_some());
-            assert!(!tree.cleanup_on_drop, "Root must retain explicit finite cleanup custody");
-            assert_eq!(meter.control.counts.copied.load(Relaxed), 0);
-            tree.terminate()?;
-            Ok(())
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn reserved_control_probe_refunds_unused_credit_and_drains_after_cancellation() -> std::io::Result<()> {
-        use crate::{NativeOperationKind, NativeOperationReservation, NativeReadMeter as _};
-        let meter = ControlMeter::new(1, 0, 0, 0);
-        {
-            let _unused = NativeOperationReservation::new(&meter, NativeOperationKind::Read, 1)?;
-            assert!(meter.admit_operations(1).is_err());
-            assert_eq!(meter.counts.reads.load(Relaxed), 0);
-        }
-        meter.admit_operations(1)?;
-        let pid = std::process::id() as libc::pid_t;
-        let mut accepted = NativeOperationReservation::new(&meter, NativeOperationKind::Read, 1)?;
-        meter.cancelled.store(true, std::sync::atomic::Ordering::Release);
-        let (alive, recorded) = accepted.attempt(|| {
-            // SAFETY: signal zero only observes the actual current process.
-            unsafe { libc::kill(pid, 0) }
-        });
-        recorded?;
-        assert_eq!(alive, 0);
-        assert_eq!(meter.counts.reads.load(Relaxed), 1);
-        assert_eq!(meter.counts.reserved_reads.load(Relaxed), 0);
-        assert_eq!(meter.counts.writes.load(Relaxed), 0);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn closed_spawn_exact_native_prefix_retains_one_same_engine_leader() -> std::io::Result<()> {
-        use crate::NativeReadMeter as _;
-        let bytes = (4 * std::mem::size_of::<*mut libc::c_char>()) as u64;
-        let mut custody = None;
-        let denied = ControlMeter::new(0, 9, 1, bytes);
-        assert!(ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 7"], &denied, &mut custody).is_err());
-        assert!(custody.is_none(), "denied real spawn cannot publish a PID");
-        assert_eq!(denied.counts.writes.load(Relaxed), 9, "seven setup leaves and two real destroys");
-        assert_eq!(denied.counts.live.load(Relaxed), 0);
-        let exact = ControlMeter::new(1, 10, 1, bytes);
-        ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 7"], &exact, &mut custody)?;
-        assert_eq!(exact.counts.writes.load(Relaxed), 10);
-        assert_eq!(exact.counts.allocations.load(Relaxed), 1);
-        assert_eq!(exact.counts.peak.load(Relaxed), bytes);
-        assert_eq!(exact.counts.live.load(Relaxed), 0);
-        assert_eq!(exact.counts.items.load(Relaxed), 3);
-        assert_eq!(exact.counts.copied.load(Relaxed), bytes - std::mem::size_of::<*mut libc::c_char>() as u64);
-        let mut tree = custody.take().expect("actual owned leader");
-        assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
-        assert_eq!(tree.try_wait_measured(&exact)?.expect("same unreaped leader").code(), Some(7));
-        assert_eq!(exact.counts.reads.load(Relaxed), 1);
-        assert!(!tree.is_reaped());
-        tree.terminate()?;
-        assert!(tree.is_reaped());
-        let cancelled = ControlMeter::new(u64::MAX, u64::MAX, u64::MAX, u64::MAX);
-        cancelled.cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert!(ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"exit 0"], &cancelled, &mut custody).is_err());
-        assert!(custody.is_none());
-        assert_eq!(cancelled.counts.allocations.load(Relaxed), 0);
-        assert!(cancelled.check().is_err());
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation()
     -> std::io::Result<()> {
         use std::sync::Arc;
-        let sizing = Arc::new(ControlMeter::new(0, 0, 1024, 1024 * 1024));
+        let sizing = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
         let frame = ProcessTree::prepare_closed_process_measured(2, sizing.clone())?;
-        let allocations = sizing.counts.allocations.load(Relaxed);
-        let bytes = sizing.counts.live.load(Relaxed);
-        assert!(allocations > 0 && bytes > 0);
+        let bytes = sizing.memory.load(std::sync::atomic::Ordering::Acquire);
+        assert!(bytes > 0);
         drop(frame);
-        assert_eq!(sizing.counts.live.load(Relaxed), 0);
-        let original = Arc::new(ControlMeter::new(1, 10, allocations, bytes));
+        assert_eq!(sizing.memory.load(std::sync::atomic::Ordering::Acquire), 0);
+        let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, 0));
         let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, original.clone())?);
-        assert_eq!(original.counts.allocations.load(Relaxed), allocations);
-        assert_eq!(original.counts.live.load(Relaxed), bytes);
+        assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes);
+        original.deny_allocations.store(true, std::sync::atomic::Ordering::Release);
         let prepared = frame.as_mut().expect("genuine funded birth frame");
         let path = prepared.environment.data.iter_mut()
             .find(|entry| entry.data.starts_with(b"PATH="))
             .ok_or(std::io::ErrorKind::NotFound)?;
         let end = path.data.len() - 1;
         if end <= 5 { return Err(std::io::ErrorKind::InvalidInput.into()); }
-        // Mutate this private fixture's already-owned snapshot, not the host
-        // environment. The real child distinguishes it from ambient spawn.
         path.data[5..end].fill(b'x');
         let mut custody = None;
         ProcessTree::spawn_closed_prepared(
@@ -2282,99 +1532,66 @@ mod tests {
             &mut frame, original.as_ref(), &mut custody,
         )?;
         assert!(frame.is_none());
-        assert_eq!(original.counts.writes.load(Relaxed), 10);
-        assert_eq!(original.counts.allocations.load(Relaxed), allocations,
-            "the real synchronous prepared spawn allocated no argument/environment backing");
         let mut tree = custody.take().expect("same actual leader owns its frame");
         assert!(tree.prepared_spawn.is_some());
-        assert_eq!(original.counts.live.load(Relaxed), bytes);
+        assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes);
         assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
         assert!(!tree.is_reaped());
-        assert_eq!(original.counts.live.load(Relaxed), bytes, "observed exit is not physical reap");
+        assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes, "observed exit is not physical reap");
         tree.terminate()?;
         assert!(tree.is_reaped() && tree.prepared_spawn.is_none());
-        assert_eq!(original.counts.live.load(Relaxed), 0);
+        assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), 0);
         Ok(())
     }
 
-    #[test]
     #[cfg(unix)]
-    fn prepared_closed_spawn_denials_keep_original_frame_and_real_setup_prefix()
-    -> std::io::Result<()> {
-        use std::sync::Arc;
-        let original = Arc::new(ControlMeter::new(0, 9, 1024, 1024 * 1024));
-        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, original.clone())?);
-        let pointer = frame.as_ref().expect("original frame").arguments.data.as_ptr();
-        let bytes = original.counts.live.load(Relaxed);
-        let allocations = original.counts.allocations.load(Relaxed);
+    #[test]
+    fn prepared_closed_spawn_denial_retains_original_frame() -> io::Result<()> {
+        let mut limits = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        limits.cancel_after_operation = true;
+        let meter = std::sync::Arc::new(limits);
+        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, meter.clone())?);
+        let bytes = meter.memory.load(std::sync::atomic::Ordering::Acquire);
         let mut custody = None;
-        assert_eq!(ProcessTree::spawn_closed_prepared(
-            c"/bin/sh", &[c"wrong argument count"], &mut frame, original.as_ref(), &mut custody,
-        ).expect_err("wrong shape").kind(), std::io::ErrorKind::InvalidInput);
-        assert_eq!(original.counts.writes.load(Relaxed), 0);
-        assert!(ProcessTree::spawn_closed_prepared(
-            c"/bin/sh", &[c"-c", c"exit 7"], &mut frame, original.as_ref(), &mut custody,
-        ).is_err());
-        assert!(custody.is_none(), "real quota denies PID publication after native setup");
-        assert_eq!(original.counts.writes.load(Relaxed), 9, "seven actual setup leaves and both destroys");
-        assert_eq!(frame.as_ref().expect("unconsumed frame").arguments.data.as_ptr(), pointer);
-        assert_eq!(original.counts.allocations.load(Relaxed), allocations);
-        assert_eq!(original.counts.live.load(Relaxed), bytes);
-        original.cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert_eq!(ProcessTree::spawn_closed_prepared(
-            c"/bin/sh", &[c"-c", c"exit 7"], &mut frame, original.as_ref(), &mut custody,
-        ).expect_err("ordinary original cancellation was not masked").kind(), std::io::ErrorKind::Interrupted);
-        assert_eq!(original.counts.writes.load(Relaxed), 9);
-        assert_eq!(frame.as_ref().expect("retained cancelled frame").arguments.data.as_ptr(), pointer);
+        assert_eq!(ProcessTree::spawn_closed_prepared(c"/bin/sh", &[c"-c"],
+            &mut frame, meter.as_ref(), &mut custody).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert!(custody.is_none() && frame.is_some());
+        assert!(ProcessTree::spawn_closed_prepared(c"/bin/sh", &[c"-c", c"exit 7"],
+            &mut frame, meter.as_ref(), &mut custody).is_err());
+        assert!(custody.is_none() && frame.is_some());
+        assert_eq!(meter.memory.load(std::sync::atomic::Ordering::Acquire), bytes);
         drop(frame);
-        assert_eq!(original.counts.live.load(Relaxed), 0);
+        assert_eq!(meter.memory.load(std::sync::atomic::Ordering::Acquire), 0);
         Ok(())
     }
 
     #[test]
-    #[cfg(unix)]
-    fn measured_termination_denied_observation_keeps_killed_unreaped_identity() -> std::io::Result<()> {
-        let spawn = ControlMeter::new(u64::MAX, 10, 1, u64::MAX);
-        let mut custody = None;
-        ProcessTree::spawn_closed_measured(c"/bin/sh", &[c"-c", c"sleep 30"], &spawn, &mut custody)?;
-        let mut tree = custody.take().expect("actual child");
-        let cancelled = ControlMeter::new(0, 1, 0, 0);
-        cancelled.cancelled.store(true, std::sync::atomic::Ordering::Release);
-        assert!(tree.terminate_measured(&cancelled).is_err());
-        assert!(tree.try_wait()?.is_none(), "cancelled control leaves the real child alive");
-        assert_eq!(cancelled.counts.writes.load(Relaxed), 0);
-        let prefix = ControlMeter::new(0, 1, 0, 0);
-        assert!(tree.terminate_measured(&prefix).is_err());
-        assert_eq!(prefix.counts.writes.load(Relaxed), 1, "the real group signal was sent");
-        assert_eq!(prefix.counts.reads.load(Relaxed), 0, "denied waitid did not run");
-        assert!(tree.native_child.is_some(), "no premature reap releases the group identity");
-        assert!(!tree.cleanup_on_drop, "failed measured cleanup cannot secretly spend unbounded work");
-        tree.wait(std::time::Duration::from_secs(5))?;
-        let exact = ControlMeter::new(2, 0, 0, 0);
-        tree.terminate_measured(&exact)?;
-        assert_eq!(exact.counts.reads.load(Relaxed), 2, "one observation and one physical reap");
-        assert_eq!(exact.counts.writes.load(Relaxed), 0, "already-delivered signal is not repeated");
+    fn measured_kill_with_denied_observation_keeps_owned_child() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut tree = ProcessTree::spawn(&mut command("child", temporary.path()))?;
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        meter.operation_denial = Some(crate::NativeOperationKind::Read);
+        assert!(tree.terminate_measured(&meter).is_err());
+        assert!(!tree.is_reaped());
+        tree.wait(Duration::from_secs(5))?;
+        tree.terminate()?;
         assert!(tree.is_reaped());
         Ok(())
     }
+
+    #[cfg(windows)]
     #[test]
-    #[cfg(unix)]
-    fn measured_termination_releases_only_actual_retained_standard_pipes() -> std::io::Result<()> {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "sleep 30"]).stdin(Stdio::piped())
-            .stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut tree = ProcessTree::spawn(&mut command)?;
-        let prefix = ControlMeter::new(0, 1, 0, 0);
-        assert!(tree.terminate_measured(&prefix).is_err());
-        assert_eq!(prefix.counts.writes.load(Relaxed), 1, "group signal is the actual prefix");
-        let child = tree.child.as_ref().expect("unreaped leader");
-        assert!(child.stdin.is_some() && child.stdout.is_some() && child.stderr.is_some());
-        tree.wait(std::time::Duration::from_secs(5))?;
-        // Ordinary wait closed stdin while observing the actual leader exit.
-        let exact = ControlMeter::new(2, 2, 0, 0);
-        tree.terminate_measured(&exact)?;
-        assert_eq!(exact.counts.writes.load(Relaxed), 2, "only the two still-owned output pipes close");
-        assert_eq!(exact.counts.reads.load(Relaxed), 2, "one retained-leader observation and one reap");
+    fn denied_admission_after_suspended_spawn_retains_child() -> io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        meter.operation_denial = Some(crate::NativeOperationKind::Read);
+        let mut custody = None;
+        assert!(crate::spawn_process_tree_with_meter_custody(
+            &mut command("exit-code", temporary.path()), &meter, &mut custody).is_err());
+        let mut tree = custody.take().expect("suspended child remains owned");
+        assert!(!tree.is_reaped());
+        assert_eq!(tree.wait(Duration::from_secs(5)).unwrap_err().kind(), io::ErrorKind::TimedOut);
+        tree.terminate()?;
         assert!(tree.is_reaped());
         Ok(())
     }
@@ -2406,9 +1623,7 @@ mod tests {
         command
     }
 
-    /// Waits for a helper's readiness marker. Helper start-up has no useful
-    /// bound under load, so this waits for the marker itself and fails only
-    /// once the helper has `exited` without writing it.
+    /// Waits for a helper's readiness marker.
     pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
         while !root.join(name).exists() {
             assert!(
@@ -2423,8 +1638,7 @@ mod tests {
         tree.try_wait().map_or(true, |status| status.is_some())
     }
 
-    /// Asks any descendant that outlived its tree's cleanup to mark its
-    /// escape, then checks that none did.
+    /// Asks any descendant that outlived its tree's cleanup to mark its escape, then checks that none did.
     pub(super) fn assert_no_escape(root: &std::path::Path) {
         fs::write(root.join("probe"), b"probe").expect("escape probe");
         thread::sleep(Duration::from_millis(500));
@@ -2444,8 +1658,6 @@ mod tests {
         match mode.as_str() {
             "grandchild" => {
                 fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
-                // Live until the probe written after cleanup, so the tree's
-                // lifetime never races the test; bounded so no escapee lingers.
                 let deadline = Instant::now() + Duration::from_secs(60);
                 while !root.join("probe").exists() && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(5));
@@ -2490,8 +1702,6 @@ mod tests {
                 thread::sleep(Duration::from_secs(30));
             }
             "output" => {
-                // The host cleared the environment. Generic containment must
-                // neither restore ambient credentials nor discard explicit input.
                 assert_eq!(
                     std::env::var("EXPLICIT_PROCESS_INPUT").expect("explicit input"),
                     "allowed"
@@ -2510,7 +1720,6 @@ mod tests {
                     .read_to_end(&mut input)
                     .expect("closed stdin");
                 assert!(input.is_empty());
-                // Avoid test-harness stdout in the exact shared-budget fixture.
                 std::process::exit(0);
             }
             "bulk" => {
@@ -2608,7 +1817,7 @@ mod tests {
             ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
         let mut checks = 0;
         let error = tree
-            .wait_with_output_checked(Duration::from_secs(5), 4096, || {
+            .wait_with_output_observed(Duration::from_secs(5), 4096, || {
                 checks += 1;
                 if temporary.path().join("tree-ready").exists() {
                     Err(std::io::Error::new(
@@ -2620,7 +1829,7 @@ mod tests {
                 }
             })
             .expect_err("cancellation must stop capture");
-        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(error.error.kind(), std::io::ErrorKind::Interrupted);
         assert!(checks > 0);
         assert!(tree.child.is_none(), "explicit cleanup reaps the child");
         thread::sleep(Duration::from_secs(1));
@@ -2674,242 +1883,6 @@ mod tests {
             assert!(tree.child.is_none());
             assert_no_escape(temporary.path());
         }
-    }
-
-    /// Native file operations and blocking tasks run on workers, which must
-    /// enter the caller's span so work nested in them keeps it.
-    fn native_operations_in_caller_span(dispatch: &tracing::Dispatch, root: &std::path::Path) {
-        fn block_on<F: std::future::Future>(future: F) -> F::Output {
-            let mut future = std::pin::pin!(future);
-            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-            loop {
-                if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut context) {
-                    return output;
-                }
-                thread::sleep(Duration::from_millis(1));
-            }
-        }
-        let nested = |name: &'static str| {
-            let dispatch = dispatch.clone();
-            move || {
-                tracing::dispatcher::with_default(&dispatch, || {
-                    drop(tracing::trace_span!("nested", name));
-                });
-            }
-        };
-        let file = crate::NativeFile::from_file(
-            std::fs::File::options()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(root.join("native"))
-                .expect("open native file"),
-        )
-        .expect("native file");
-        tracing::info_span!("test.caller").in_scope(|| {
-            block_on(file.write_all_batch_async(vec![crate::OwnedWrite {
-                offset: 0,
-                bytes: bytes::Bytes::from_static(b"traced"),
-            }]))
-            .expect("write");
-            block_on(file.read_batch_async(vec![crate::OwnedRead {
-                offset: 1,
-                length: 5,
-            }]))
-            .expect("read");
-            block_on(file.sync_async(crate::Durability::Full)).expect("sync");
-            let control = nested("control");
-            block_on(file.control_async(move |_| {
-                control();
-                Ok(())
-            }))
-            .expect("control");
-            block_on(crate::run_blocking_io(nested("blocking"))).expect("blocking");
-        });
-    }
-
-    fn assert_native_operation_spans(has: &dyn Fn(&str, &str, &str) -> bool) {
-        for span in [
-            "write_batch",
-            "read_batch",
-            "sync",
-            "control",
-            "blocking_io",
-        ] {
-            let span = format!("acyclic.runtime.{span}");
-            assert!(has(&span, "parent", "test.caller"), "{span} parent");
-            assert!(has(&span, "outcome", "ok"), "{span} outcome");
-        }
-        for (span, field, value) in [
-            ("acyclic.runtime.write_batch", "bytes", "6"),
-            ("acyclic.runtime.read_batch", "bytes", "5"),
-            ("acyclic.runtime.read_batch", "batch_len", "1"),
-            ("nested", "parent", "acyclic.runtime.control"),
-            ("nested", "parent", "acyclic.runtime.blocking_io"),
-        ] {
-            assert!(has(span, field, value), "{span} {field}");
-        }
-    }
-
-    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, &'static str, String)>>>;
-
-    fn capture_process_spans(filtered: bool) -> (tracing::Dispatch, Seen) {
-        use std::sync::Arc;
-        use tracing::field::{Field, Visit};
-        use tracing_subscriber::Layer as _;
-        use tracing_subscriber::layer::{Context, SubscriberExt as _};
-
-        struct Capture(Seen);
-        struct Fields<'a>(
-            &'static str,
-            &'a mut Vec<(&'static str, &'static str, String)>,
-        );
-        impl Visit for Fields<'_> {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                self.1.push((self.0, field.name(), value.to_owned()));
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                self.1.push((self.0, field.name(), format!("{value:?}")));
-            }
-        }
-        impl<S> tracing_subscriber::Layer<S> for Capture
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_new_span(
-                &self,
-                attributes: &tracing::span::Attributes<'_>,
-                id: &tracing::span::Id,
-                context: Context<'_, S>,
-            ) {
-                let name = attributes.metadata().name();
-                let mut seen = self.0.lock().unwrap();
-                if let Some(parent) = context.span(id).and_then(|span| span.parent()) {
-                    seen.push((name, "parent", parent.name().to_owned()));
-                }
-                attributes.record(&mut Fields(name, &mut seen));
-            }
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-                context: Context<'_, S>,
-            ) {
-                let name = context.span(id).unwrap().name();
-                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
-            }
-        }
-
-        let seen = Seen::default();
-        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(
-            Capture(Arc::clone(&seen)).with_filter(tracing_subscriber::filter::filter_fn(
-                move |metadata| !filtered || metadata.name() == "test.process.sentinel",
-            )),
-        ));
-        (dispatch, seen)
-    }
-
-    #[test]
-    fn collection_emits_spans_with_byte_counts_and_no_paths() {
-        // With one live dispatcher, a callsite that a concurrent test reaches
-        // first caches only that thread's (absent) interest; a second one
-        // makes every callsite consult this test's subscriber too.
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-        let (dispatch, seen) = capture_process_spans(false);
-        let _default = tracing::dispatcher::set_default(&dispatch);
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let mut command = command("output", temporary.path());
-        command.env("EXPLICIT_PROCESS_INPUT", "allowed");
-        let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
-        let output = tree
-            .wait_with_output_observed(Duration::from_secs(5), 4096, || Ok(()))
-            .expect("collect output");
-        let failure = tree
-            .wait_with_output_observed(Duration::ZERO, 0, || Ok(()))
-            .expect_err("consumed capture fails before admission");
-        assert_eq!(failure.error.kind(), std::io::ErrorKind::Other);
-        native_operations_in_caller_span(&dispatch, temporary.path());
-        let seen = seen.lock().unwrap();
-        let has = |span: &str, field: &str, value: &str| {
-            seen.iter()
-                .any(|(s, f, v)| *s == span && *f == field && v == value)
-        };
-        let bytes = (output.stdout.len() + output.stderr.len()).to_string();
-        assert!(
-            has("acyclic.runtime.wait_with_output", "bytes", &bytes),
-            "{seen:?}"
-        );
-        assert!(has("acyclic.runtime.wait_with_output", "outcome", "ok"));
-        assert!(has("acyclic.runtime.wait_with_output", "outcome", "err"));
-        assert!(has(
-            "acyclic.runtime.wait_with_output",
-            "error.kind",
-            "other"
-        ));
-        assert!(has("acyclic.runtime.spawn", "outcome", "ok"));
-        assert_native_operation_spans(&has);
-        let program = std::env::current_exe().expect("test executable");
-        let program = program.file_name().and_then(|name| name.to_str());
-        assert!(has(
-            "acyclic.runtime.spawn",
-            "program",
-            program.expect("name")
-        ));
-        let root = temporary.path().to_string_lossy();
-        for (span, field, value) in seen.iter() {
-            assert!(
-                !["path", "token", "content", "body", "authorization"].contains(field),
-                "{span} records {field}"
-            );
-            assert!(
-                !value.contains(&*root) && !value.contains("allowed"),
-                "{value}"
-            );
-        }
-        drop(seen);
-
-        // Filtering the operation spans must not redirect completion or byte
-        // records onto an enabled caller with the same field names.
-        let (filtered_dispatch, filtered) = capture_process_spans(true);
-        tracing::dispatcher::with_default(&filtered_dispatch, || {
-            tracing::info_span!(
-                "test.process.sentinel",
-                program = "sentinel",
-                bytes = "sentinel",
-                outcome = "sentinel",
-                error.kind = "sentinel"
-            )
-            .in_scope(|| {
-                let mut missing =
-                    std::process::Command::new(temporary.path().join("missing-program"));
-                assert!(ProcessTree::spawn(&mut missing).is_err());
-                let mut command = self::command("output", temporary.path());
-                command.env("EXPLICIT_PROCESS_INPUT", "allowed");
-                let mut tree = ProcessTree::spawn(&mut command).expect("filtered spawn");
-                assert!(
-                    tree.wait(Duration::from_secs(5))
-                        .expect("filtered wait")
-                        .success()
-                );
-                let output = tree
-                    .wait_with_output_observed(Duration::from_secs(5), 4096, || Ok(()))
-                    .expect("filtered output");
-                assert!(!output.stdout.is_empty());
-                tree.terminate().expect("filtered repeated cleanup");
-                assert!(tree.terminate_after(Duration::ZERO).is_err());
-            });
-        });
-        let filtered = filtered.lock().unwrap();
-        assert_eq!(
-            filtered.len(),
-            4,
-            "caller fields were overwritten: {filtered:?}"
-        );
-        assert!(
-            filtered.iter().all(|(span, _, value)| {
-                *span == "test.process.sentinel" && value == "sentinel"
-            })
-        );
     }
 
     #[test]
@@ -3231,7 +2204,6 @@ mod tests {
             .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES)
             .expect("collect bulk output");
         assert!(output.status.success());
-        // The test harness prints a short header before the helper runs.
         let header = output.stdout.len() - BULK_BYTES;
         assert!(
             output
@@ -3279,8 +2251,6 @@ mod tests {
                 .expect("wait exit")
                 .success()
         );
-        // A second real waitid observation fails with ECHILD if try_wait or
-        // wait reaped the leader, releasing its PID for reuse before cleanup.
         assert!(
             super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
                 .expect("leader remains waitable")
@@ -3380,7 +2350,6 @@ mod platform {
             )?;
             if actual != 0 { return Ok((Some(actual as usize), recorded.and(written.map(|_| ())))); }
             match written {
-                // Preserve the original logarithmic backpressure probes.
                 Ok(0) if candidate.len() > 1 => {
                     recorded?;
                     candidate = candidate.get(..candidate.len() / 2)
@@ -3442,8 +2411,6 @@ mod platform {
                 ) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
             },
         )?;
-        // A failed synchronous call may still report a transferred prefix.
-        // Publish it and defer its error until capture has retained the bytes.
         let recorded = recorded.and(read);
         Ok((Some(actual as usize), recorded))
     }
@@ -3457,65 +2424,6 @@ mod platform {
         pub(super) cleanup_on_drop: bool,
         snapshot: HANDLE,
         thread: HANDLE,
-    }
-
-    #[test]
-    fn measured_windows_spawn_denial_retains_each_actual_native_prefix() -> io::Result<()> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let temporary = tempfile::tempdir()?;
-        for writes in 0..=4 {
-            let meter = super::tests::ControlMeter::new(0, writes, 0, 0);
-            let mut command = super::tests::command("child", temporary.path());
-            let mut custody = None;
-            assert!(crate::spawn_process_tree_with_meter_custody(&mut command, &meter, &mut custody).is_err());
-            assert_eq!(meter.counts.writes.load(Relaxed), writes);
-            assert_eq!(meter.counts.reads.load(Relaxed), 0, "denied snapshot SDK never ran");
-            assert_eq!(meter.counts.reserved_writes.load(Relaxed), 0);
-            if writes == 0 {
-                assert!(custody.is_none(), "denied CreateJob cannot create native custody");
-            } else {
-                let mut tree = custody.take().expect("original native owner");
-                assert!(!tree.guard.job.is_null());
-                assert!(!tree.guard.cleanup_on_drop);
-                assert!(!tree.cleanup_on_drop);
-                assert_eq!(tree.child.is_some(), writes >= 3, "actual suspended Child, not a guessed spawn");
-                assert_eq!(tree.guard.assigned, writes == 4, "only accepted real assignment enters the Job");
-                assert!(!tree.is_reaped());
-                // Tests explicitly settle the same owner, never Drop fallback.
-                tree.terminate()?;
-                assert!(tree.is_reaped());
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn measured_windows_spawn_counts_observable_sdk_leaves_and_explicit_terminal_control() -> io::Result<()> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let temporary = tempfile::tempdir()?;
-        let meter = super::tests::ControlMeter::new(u64::MAX, u64::MAX, 0, 0);
-        let mut command = super::tests::command("exit-code", temporary.path());
-        let mut custody = None;
-        crate::spawn_process_tree_with_meter_custody(&mut command, &meter, &mut custody)?;
-        let mut tree = custody.take().expect("same original process owner");
-        assert_eq!(meter.counts.writes.load(Relaxed), 7,
-            "CreateJob, limits, opaque spawn, assignment, resume, thread close, snapshot close");
-        assert!(meter.counts.reads.load(Relaxed) >= 3,
-            "actual snapshot, first/next entry visits and thread open");
-        assert_eq!(tree.wait(std::time::Duration::from_secs(5))?.code(), Some(7));
-        let prefix = super::tests::ControlMeter::new(0, 1, 0, 0);
-        assert!(tree.terminate_measured(&prefix).is_err());
-        assert!(tree.child.is_some());
-        assert!(tree.guard.termination_sent, "accepted Job signal retained before denied query");
-        assert_eq!(prefix.counts.writes.load(Relaxed), 1);
-        let terminal = super::tests::ControlMeter::new(2, 4, 0, 0);
-        tree.terminate_measured(&terminal)?;
-        assert!(tree.is_reaped());
-        assert_eq!(terminal.counts.reads.load(Relaxed), 2, "Job emptiness and actual Child::try_wait SDK attempt");
-        assert_eq!(terminal.counts.writes.load(Relaxed), 4, "two pipes, Child handle boundary and Job close");
-        assert_eq!(terminal.counts.reserved_reads.load(Relaxed), 0);
-        assert_eq!(terminal.counts.reserved_writes.load(Relaxed), 0);
-        Ok(())
     }
 
     // SAFETY: these exclusively owned kernel handles have no thread affinity.
@@ -3538,9 +2446,6 @@ mod platform {
         initialized?;
         let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
-        // Command's caller-prepared buffers and private SDK allocation are
-        // opaque here. Count this actual spawn attempt, not hidden syscalls,
-        // heap events, or an invented process/kernel byte acknowledgement.
         super::process_control_attempt(meter, true, || {
             tree.child = Some(command.spawn()?);
             Ok(())
@@ -3560,9 +2465,6 @@ mod platform {
 
     #[cfg(test)]
     fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) -> io::Error {
-        // An assignment failure leaves a suspended child outside the Job.
-        // Attempt both owners' cleanup and bound direct-exit observation; never
-        // hide failed cleanup behind the original admission error.
         let job = guard.terminate();
         let killed = child.kill();
         let cleanup = (|| {
@@ -3617,8 +2519,6 @@ mod platform {
                 self.active = true;
                 Ok(())
             })?;
-            // Measured owners never enable kill-on-close: bounded cleanup is
-            // explicit, and a denied attempt cannot hide a tree kill in Drop.
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
             if meter.is_none() { limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; }
             super::process_control_attempt(meter, true, || {
@@ -3678,7 +2578,6 @@ mod platform {
                     Ok(())
                 })?;
             }
-            // A successful signal is not a completion acknowledgement.
             let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
             loop {
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };

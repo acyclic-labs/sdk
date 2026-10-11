@@ -112,7 +112,7 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
     read_at_validated(file, offset, destination)
 }
 
-#[allow(unsafe_code, reason = "one positional read on a live descriptor and borrowed destination")]
+#[allow(unsafe_code)]
 pub(super) fn read_at_validated(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let length = destination.len().min(MAX_IO_BYTES);
@@ -129,7 +129,7 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
     file.write_all_at(bytes, offset)
 }
 
-#[allow(unsafe_code, reason = "one admitted positional write on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn write_at_measured(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
 ) -> io::Result<usize> {
@@ -149,17 +149,17 @@ pub(super) fn write_at_measured(
     Ok(count)
 }
 
-#[allow(unsafe_code, reason = "one admitted resize on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: ftruncate only acts on the live descriptor.
     if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
     else { Err(io::Error::last_os_error()) }
 }
 
-#[allow(unsafe_code, reason = "one admitted flush on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn sync_once(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: fsync only acts on the live descriptor.

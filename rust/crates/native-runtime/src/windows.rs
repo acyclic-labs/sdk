@@ -34,7 +34,7 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx, ReOpenFile,
-    ReadFile, SetFileAttributesW, WriteFile,
+    ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
 use windows_sys::Win32::System::IO::{
@@ -78,10 +78,6 @@ type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send + 'static>;
 
 thread_local! {
     /// The event this thread waits on for its in-place overlapped requests.
-    /// Its first use creates one OS control handle on the actual calling
-    /// thread. Global service initialization does not prewarm every future
-    /// caller's TLS. This fixed OS resource is neither SDK-owned payload nor
-    /// a namespace/backend read; opaque OS resources/RSS are not byte quotas.
     static IN_PLACE_EVENT: Result<OwnedEvent, i32> = OwnedEvent::create();
 }
 
@@ -105,11 +101,7 @@ impl Drop for OwnedEvent {
     }
 }
 
-/// Issues one positional request on a handle opened with
-/// `FILE_FLAG_OVERLAPPED` and waits for it on the calling thread. The
-/// request's event carries the low-order bit that keeps its completion off
-/// any port the handle is attached to, so it never reaches the driver. An
-/// overlapped handle has no cursor, so none moves. `Ok(0)` is end of file.
+/// Issues one positional request on a handle opened with `FILE_FLAG_OVERLAPPED` and waits for it on the calling thread.
 fn transfer_in_place(
     file: &impl AsRawHandle,
     offset: u64,
@@ -239,9 +231,7 @@ fn transfer_in_place_observed(
     })
 }
 
-/// Issues one device control request on the calling thread and waits for
-/// it, on a synchronous or an overlapped handle alike, exactly as in-place
-/// reads and writes do. Returns the output byte count.
+/// Issues one device control request on the calling thread and waits for it, on a synchronous or an overlapped handle alike, exactly as in-place reads and writes do.
 pub(super) fn control_in_place(
     file: &impl AsRawHandle,
     code: u32,
@@ -301,8 +291,7 @@ fn control_in_place_observed(
     }, meter)
 }
 
-/// Reads each range with one positional request on the calling thread,
-/// exactly as the driver would: a range ending past end of file is short.
+/// Reads each range with one positional request on the calling thread, exactly as the driver would: a range ending past end of file is short.
 pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
     let mut results = Vec::new();
     results.try_reserve_exact(reads.len())?;
@@ -338,8 +327,7 @@ pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Resul
     Ok(results)
 }
 
-/// Writes every byte of each range on the calling thread, continuing
-/// after a short write exactly as the driver does.
+/// Writes every byte of each range on the calling thread, continuing after a short write exactly as the driver does.
 pub(super) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
     writes
         .iter()
@@ -385,9 +373,7 @@ fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
     }
 }
 
-/// Whether `file` was opened with `FILE_FLAG_OVERLAPPED`. Such a handle
-/// has no cursor, so positional requests can be issued on it directly. A
-/// failed query answers `false`, which keeps the reopen path.
+/// Whether `file` was opened with `FILE_FLAG_OVERLAPPED`.
 fn is_overlapped(file: &File) -> bool {
     let mut status = IO_STATUS_BLOCK::default();
     let mut mode = FILE_MODE_INFORMATION::default();
@@ -407,9 +393,7 @@ fn is_overlapped(file: &File) -> bool {
     result >= 0 && mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0
 }
 
-/// Runs `transfer` on `file` itself when it is overlapped, otherwise on a
-/// private overlapped reopen with `access`: either way the caller's cursor
-/// never moves.
+/// Runs `transfer` on `file` itself when it is overlapped, otherwise on a private overlapped reopen with `access`: either way the caller's cursor never moves.
 fn with_overlapped<T>(
     file: &File,
     access: u32,
@@ -419,8 +403,6 @@ fn with_overlapped<T>(
 }
 
 /// Prepares the same positional handle used by the ordinary transfer engine.
-/// A known-overlapped capability needs no mode query or reopen; otherwise each
-/// actual preparation call is admitted before it touches the native handle.
 pub(super) fn with_overlapped_measured<T>(
     file: &File,
     access: u32,
@@ -450,9 +432,7 @@ fn with_overlapped_observed<T>(
     }
 }
 
-/// Reads once on the calling thread through [`with_overlapped`]: the
-/// request needs neither the driver thread nor a completion-port
-/// association.
+/// Reads once on the calling thread through [`with_overlapped`]: the request needs neither the driver thread nor a completion-port association.
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     let length = overlapped_range(offset, destination.len())?;
     if length == 0 {
@@ -479,9 +459,7 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
     Ok(count)
 }
 
-/// Reads a handle already admitted as overlapped, without probing its mode or
-/// reopening it. The existing in-place completion machinery owns the request
-/// until it settles; failed completion reports any transferred prefix.
+/// Reads a handle already admitted as overlapped, without probing its mode or reopening it.
 pub(super) fn read_at_known_overlapped(
     file: &File,
     offset: u64,
@@ -503,7 +481,6 @@ pub(super) fn read_at_known_overlapped(
 }
 
 /// Writes one admitted request through the same in-place OVERLAPPED machinery.
-/// A completion's physically transferred prefix is recorded even on failure.
 pub(super) fn write_at_known_overlapped(
     file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
 ) -> io::Result<usize> {
@@ -520,7 +497,7 @@ pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
         FILE_END_OF_FILE_INFO, FileEndOfFileInfo, SetFileInformationByHandle,
     };
     let size = i64::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let info = FILE_END_OF_FILE_INFO { EndOfFile: size };
     // SAFETY: the held handle and initialized fixed-size buffer live through the syscall.
     if unsafe { SetFileInformationByHandle(
@@ -636,9 +613,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     })
 }
 
-/// Starts `executable __service --signal-ready` detached, with the write end
-/// of a fresh pipe as its standard output and the only handle it inherits,
-/// and returns the read end.
+/// Starts `executable __service --signal-ready` detached, with the write end of a fresh pipe as its standard output and the only handle it inherits, and returns the read end.
 pub(super) fn spawn_service_process(executable: &Path) -> io::Result<File> {
     let executable_argument = executable.as_os_str().encode_wide().collect::<Vec<_>>();
     if executable_argument.contains(&0) {
@@ -777,8 +752,7 @@ impl Drop for HandleListAttribute {
     }
 }
 
-/// Takes the process's standard output handle, leaving no standard output,
-/// which the standard library then treats as a sink.
+/// Takes the process's standard output handle, leaving no standard output, which the standard library then treats as a sink.
 pub(super) fn take_standard_output() -> io::Result<Option<File>> {
     // SAFETY: querying a standard handle has no preconditions.
     let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
@@ -792,23 +766,6 @@ pub(super) fn take_standard_output() -> io::Result<Option<File>> {
     }
     // SAFETY: the handle is live and no longer reachable as standard output.
     Ok(Some(unsafe { File::from_raw_handle(handle) }))
-}
-
-pub(super) fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
-    let mut encoded: Vec<_> = path.as_os_str().encode_wide().collect();
-    if encoded.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "attribute path contains NUL",
-        ));
-    }
-    encoded.push(0);
-    // SAFETY: `encoded` is a live NUL-terminated UTF-16 path for this call.
-    if unsafe { SetFileAttributesW(encoded.as_ptr(), attributes) } == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 enum Job {
@@ -1147,12 +1104,6 @@ impl DriverState {
                 Some(attached) if Arc::ptr_eq(&attached, file) => {}
                 Some(_) => fail_stop("overlapped file identity collision"),
                 None => {
-                    // This mode is available only through the caller's unsafe
-                    // constructor, which proves the original handle was opened
-                    // with FILE_FLAG_OVERLAPPED and has not been attached yet.
-                    // Compio may associate a handle before an attach error is
-                    // returned, so reusing that original handle after failure
-                    // would be indeterminate; fail stop instead.
                     self.proactor
                         .attach(file.as_raw_handle().cast())
                         .unwrap_or_else(|error| {

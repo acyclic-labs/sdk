@@ -16,8 +16,7 @@ macro_rules! span {
 }
 pub(crate) use span;
 
-/// A span for one native file operation, with its size fields left for
-/// [`OperationSpan::sized`].
+/// A span for one native file operation, with its size fields left for [`OperationSpan::sized`].
 macro_rules! file_span {
     ($level:ident, $name:literal) => {
         $crate::obs::span!(
@@ -32,9 +31,7 @@ macro_rules! file_span {
 }
 pub(crate) use file_span;
 
-/// An operation's own span, and the span its worker enters: the operation
-/// span, or the caller's when the operation span is filtered out, so work
-/// nested in the operation keeps its caller as parent either way.
+/// An operation's own span, and the span its worker enters: the operation span, or the caller's when the operation span is filtered out, so work nested in the operation keeps its caller as parent either way.
 #[derive(Clone)]
 pub(crate) struct OperationSpan {
     span: Span,
