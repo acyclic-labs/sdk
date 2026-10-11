@@ -1176,7 +1176,7 @@ fn native_progress_owned_bytes(progress: &StockTurnProgress) -> Result<u64> {
 
 impl StockExecutor {
     pub(crate) async fn execute_progress(&self, input: TurnInput, journal: &dyn ExecutionJournal) -> Result<StockTurnProgress> {
-        let span = obs_span!("acyclic.harness.executor.execute", operation_id = %input.operation_id);
+        let span = obs_span!("acyclic.harness.executor.execute", operation_id = format_args!("{}", input.operation_id));
         traced(span, StockExecution::ordinary(self).execute_progress_engine(&input, journal)).await
     }
 }

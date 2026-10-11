@@ -2189,7 +2189,9 @@ impl PreparedModelRequest {
                 }
             };
             #[cfg(feature = "filesystem")]
-            _bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+            {
+                _bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+            }
             model_verify_descriptor(&reference, &bytes, io)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
@@ -2205,7 +2207,9 @@ impl PreparedModelRequest {
                 _ => segment.canonical_bytes()?,
             };
             #[cfg(feature = "filesystem")]
-            _canonical_hold = io.map(|io| io.guard_owned(canonical.capacity() as u64)).transpose()?;
+            {
+                _canonical_hold = io.map(|io| io.guard_owned(canonical.capacity() as u64)).transpose()?;
+            }
             model_step(io, bytes.len() as u64)?;
             if segment.version != 1
                 || segment.messages.is_empty()
