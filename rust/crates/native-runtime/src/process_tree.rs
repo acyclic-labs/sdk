@@ -306,6 +306,12 @@ impl std::error::Error for ProcessCaptureFailure {
 }
 
 impl ProcessTree {
+    /// Maximum observation time for each physical termination phase.
+    pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Minimum delay between unfinished physical termination observations.
+    pub const TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
         let mut custody = None;
         if let Err(admission) = Self::spawn_controlled(command, None, &mut custody) {
@@ -854,11 +860,11 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
                 while self.capture_try_wait(meter)?.is_none() {
                     if Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
                     process_control_attempt(meter, false, || {
-                        std::thread::sleep(Duration::from_millis(1));
+                        std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                         Ok(())
                     })?;
                 }
@@ -884,13 +890,13 @@ impl ProcessTree {
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
             while self.try_wait_with_meter(meter)?.is_none() {
                 if Instant::now() >= deadline {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
                 process_control_attempt(meter, false, || {
-                    std::thread::sleep(Duration::from_millis(1));
+                    std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
             }
@@ -1555,7 +1561,7 @@ mod platform {
         // never establishes that any member has exited. Denial stays an error
         // if this bounded observation does not establish an empty group or
         // exactly the independently observed exited owned leader.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
         loop {
             if group_snapshot_has_no_live_members(group, meter)? {
                 return Ok(true);
@@ -1564,7 +1570,7 @@ mod platform {
                 return Ok(false);
             }
             super::process_control_attempt(meter, false, || {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                 Ok(())
             })?;
         }
@@ -3672,7 +3678,7 @@ mod platform {
                 })?;
             }
             // A successful signal is not a completion acknowledgement.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
             loop {
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
                 super::process_control_attempt(meter, false, || {
@@ -3687,7 +3693,7 @@ mod platform {
                 if !self.active { return Ok(()); }
                 if std::time::Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
                 super::process_control_attempt(meter, false, || {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
             }
