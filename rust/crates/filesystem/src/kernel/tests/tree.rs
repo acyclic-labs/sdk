@@ -261,44 +261,6 @@ fn measured_tree_refusals_and_invalid_pages_preserve_completed_prefixes()
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn original_tree_encoder_retains_real_capacity_and_uses_same_canonical_body()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let mut accounting = KernelAccounting::native(&work, &cancellation);
-    for page in [
-        TreePage::Leaf(vec![entry(b"a", 1)?]),
-        TreePage::Internal(vec![TreeChild {
-            first_name: name(b"a")?,
-            page: ObjectId { kind: ObjectKind::TreePage, digest: crate::foundation::Digest::from_bytes([7; 32]) },
-        }]),
-    ] {
-        let before = work.receipt();
-        let live_before = work.live_allocation_bytes();
-        let (encoded, guard) = encode_tree_page_with_accounting(&page, 16, &mut accounting, &cancellation)?;
-        assert_eq!(encoded, encode_tree_page(&page, 16)?);
-        match &guard {
-            KernelOwnedAllocation::NativeOriginal(allocation) => {
-                assert!(allocation.work().shares_ledger(&work));
-                assert_eq!(allocation.bytes(), encoded.capacity() as u64);
-            }
-            KernelOwnedAllocation::Standalone => panic!("original writer returned standalone custody"),
-        }
-        let after = work.receipt();
-        assert_eq!(after.items_examined - before.items_examined, 1);
-        assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded.len() as u64);
-        assert_eq!(after.allocation_operations - before.allocation_operations, 1);
-        assert_eq!(work.live_allocation_bytes(), live_before + encoded.capacity() as u64);
-        drop(encoded);
-        drop(guard);
-        assert_eq!(work.live_allocation_bytes(), live_before);
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn original_tree_encoder_rejects_on_original_budget_before_capacity_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();

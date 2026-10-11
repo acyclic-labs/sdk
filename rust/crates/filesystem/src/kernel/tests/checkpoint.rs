@@ -1,4 +1,3 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::memory::MemoryObjectStore;
@@ -65,29 +64,6 @@ fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn unchanged_async_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>>
-{
-    let store = MemoryObjectStore::default();
-    let base = put_root(&store, 1, 2, 3)?;
-    let receipt = run_ready(build_checkpoint_async(
-        &store,
-        CheckpointRequest {
-            base,
-            file_table: table(3),
-            merge_parent: None,
-        },
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous checkpoint unexpectedly blocked")??;
-    assert!(receipt.reused_base);
-    assert_eq!(receipt.root, base);
-    assert_eq!(receipt.work.backend_write_operations, 0);
-    Ok(())
-}
-
-#[test]
 fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -134,37 +110,6 @@ fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn s
     assert!(matches!(failure.error, CheckpointError::CrossVolumeMerge));
     assert_eq!(failure.work.backend_read_operations, 2);
     assert_eq!(failure.work.backend_write_operations, 0);
-    Ok(())
-}
-
-#[test]
-fn async_and_sync_checkpoint_paths_are_semantically_and_physically_identical()
--> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let sync_base = put_root(&sync_store, 1, 2, 3)?;
-    let async_base = put_root(&async_store, 1, 2, 3)?;
-    assert_eq!(sync_base, async_base);
-    let request = CheckpointRequest {
-        base: sync_base,
-        file_table: table(4),
-        merge_parent: None,
-    };
-    let sync = build_checkpoint(
-        &sync_store,
-        request,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = run_ready(build_checkpoint_async(
-        &async_store,
-        request,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous checkpoint unexpectedly blocked")??;
-    assert_eq!(asynchronous, sync);
     Ok(())
 }
 

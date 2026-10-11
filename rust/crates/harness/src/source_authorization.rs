@@ -1,6 +1,4 @@
 //! Operation-bound project reads issued only after trusted graph and snapshot verification.
-//!
-//! Serialized authorization is evidence, not a caller scope or transcript grant.
 
 use crate::conversation::{ContentGrant, VolumeClass, VolumeRef};
 use crate::core::{Authority, AuthorityVerifier, Scope};
@@ -46,18 +44,10 @@ pub struct RootProjectSourceContext<'a> {
     #[cfg(feature = "filesystem")]
     pub cancellation: &'a acyclic_fs::CancellationToken,
     /// True only for an exact authenticated creator-receipt content mapping.
-    /// When false the source MUST be the actual graph root and the provider MUST
-    /// authenticate its protected successful bootstrap allocation record.
     pub created_project_authenticated: bool,
 }
 
 /// Explicit trusted RootService policy and genuine backend snapshot verifier.
-///
-/// Success MUST prove the configured graph policy permits this exact selection,
-/// authenticate its immutable generation and native capture (when present), and
-/// authenticate the root bootstrap allocation if no ordinary creator receipt
-/// exists. Implementations must bound their own work/IO by the supplied limits.
-/// There is intentionally no permissive default implementation.
 pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
     /// Authenticates backend evidence and explicitly approves this project read.
     fn verify<'a>(
@@ -66,16 +56,11 @@ pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
         snapshot: &'a ProjectSourceSnapshot,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>;
 
-    /// Advertises genuine original-ledger project verification, never ordinary
-    /// verification hidden inside a funded frame. Custom ordinary policies remain
-    /// usable without advertising a native selected-source route.
+    /// Advertises genuine original-ledger project verification, never ordinary verification hidden inside a funded frame.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_source(&self) -> bool { false }
 
-    /// Authenticates that same exact selection on the supplied original native
-    /// ledger. Implementations admit their concrete callback future before
-    /// boxing it and use native observed backend operations, not an ordinary
-    /// verifier wrapped in a newly reconstructed allowance.
+    /// Authenticates that same exact selection on the supplied original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,
@@ -121,7 +106,6 @@ pub struct ProjectSourceAuthorization {
     /// Original issuer's opaque descriptor attestation, never a volume-read scope.
     pub policy_scope: Scope,
 }
-
 
 impl ProjectSourceAuthorization {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -217,7 +201,7 @@ impl ProjectSourceAuthorization {
             }
             return Err(Error::Invalid("project source lacks an exact project or finite bounds".into()));
         }
-        crate::contract::validate_trusted_json_byte_bound_with_work(self, self.maximum_bytes, work)
+        crate::contract::validate_trusted_json_byte_bound(self, self.maximum_bytes, work)
     }
 
     pub(crate) fn scope_label(&self) -> Result<String> {
@@ -293,10 +277,7 @@ impl ProjectSourceAuthorization {
     }
 }
 
-/// Kernel-only witness carrying the complete authenticated original issuer,
-/// audience, caller admission/fence, operation, source and pinned selection.
-/// The owning host checks graph and creator evidence before the private sealed
-/// path below verifies the purpose-separated RootMAC and constructs this proof.
+/// Kernel-only witness carrying the complete authenticated original issuer, audience, caller admission/fence, operation, source and pinned selection.
 pub(crate) struct VerifiedProjectSourceRead<'a> {
     authorization: &'a ProjectSourceAuthorization,
 }

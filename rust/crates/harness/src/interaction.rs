@@ -60,7 +60,6 @@ pub struct InteractionTicket {
 }
 
 /// Private lifetime carrier for a request used across the original response IO.
-/// Native ownership is the original source allocation, never a numeric proxy.
 pub(crate) struct ValidatedInteractionRequest {
     request: Interaction,
     // Only the existing legacy observer retains this actual DTO byte delta.
@@ -73,27 +72,20 @@ pub(crate) struct ValidatedInteractionRequest {
 impl ValidatedInteractionRequest {
     pub(crate) fn request(&self) -> &Interaction { &self.request }
 
-    /// For legacy Some only: the caller drops this DTO, then releases this
-    /// original observer-owned delta on every exit. Native/None return zero.
+    /// For legacy Some only: the caller drops this DTO, then releases this original observer-owned delta on every exit.
     pub(crate) fn measured_owned_bytes(&self) -> u64 { self.measured_owned_bytes }
 }
 
 impl InteractionTicket {
     /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work_and_custody(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        crate::core::native_interaction_ticket_clone_with_custody(self, work)
-    }
-
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        crate::core::native_interaction_ticket_clone_with_custody(self, work)
+            .map(|(value, _)| value)
     }
 
-    /// A scoped observer may see the ticket and outcome refs without being
-    /// authorized to answer it or read the referenced private bytes.
+    /// A scoped observer may see the ticket and outcome refs without being authorized to answer it or read the referenced private bytes.
     #[must_use]
     pub fn viewer_grant(&self) -> String {
         format!("interaction:view:{}", self.id)
@@ -122,7 +114,6 @@ impl InteractionTicket {
     }
 
     /// Provider admission validates the staged bytes before publishing their ref.
-    /// Checks staged request JSON, content identity, and approval binding.
     pub fn validate_request_bytes(&self, bytes: &[u8]) -> Result<Interaction> {
         self.validate()?;
         self.request.descriptor().verify(bytes)?;
@@ -141,7 +132,6 @@ impl InteractionTicket {
     }
 
     /// Validates the original typed request without letting its payload escape.
-    /// The original source claim outlives every parsed field, including errors.
     pub(crate) fn validate_request_bytes_with_work(
         &self,
         bytes: &[u8],
@@ -150,10 +140,10 @@ impl InteractionTicket {
         if work.is_none() {
             return self.validate_request_bytes(bytes).map(drop);
         }
-        self.with_validated_request_bytes_with_work(bytes, work, |_, _| Ok(()))
+        self.with_validated_request_bytes(bytes, work, |_, _| Ok(()))
     }
 
-    fn with_validated_request_bytes_with_work<'io, F>(
+    fn with_validated_request_bytes<'io, F>(
         &self,
         bytes: &[u8],
         work: &mut Option<&'io mut dyn crate::store::history::HistoryIo>,
@@ -174,8 +164,7 @@ impl InteractionTicket {
         result.and(released)
     }
 
-    /// Decodes and validates before response IO, retaining actual request fields
-    /// across that await without borrowing the original observer mutably.
+    /// Decodes and validates before response IO, retaining actual request fields across that await without borrowing the original observer mutably.
     pub(crate) fn validate_request_bytes_owned_with_work(
         &self,
         bytes: &[u8],
@@ -191,7 +180,7 @@ impl InteractionTicket {
         }
         self.validate_with_work(work)?;
         self.request.descriptor().verify_with_work(bytes, work)?;
-        let mut decoded = decode_interaction_json_with_work::<Interaction>(
+        let mut decoded = decode_interaction_json::<Interaction>(
             bytes, crate::contract::JsonValueSchema::Interaction,
             std::mem::size_of::<ChoiceOption>() as u64, work,
         )?;
@@ -199,8 +188,6 @@ impl InteractionTicket {
         let release = decoded.custody.retained().checked_sub(owned).ok_or_else(|| interaction_denial(
             decoded.custody.work(), crate::wire::ErrorCode::Invalid,
             "interaction DTO exceeds its original decoder custody"))?;
-        // The original parser/Content/scratch stage has ended. Only real DTO
-        // String/Vec capacities and logical map payloads cross response IO.
         decoded.custody.relinquish(release)?;
         decoded.value.validate_with_work(decoded.custody.work())?;
         self.validate_request_binding(&decoded.value, decoded.custody.work())?;
@@ -221,9 +208,7 @@ impl InteractionTicket {
         })
     }
 
-    /// Validates a funded typed request after its original bytes were verified
-    /// against this ticket's descriptor. Its caller retains DTO custody through
-    /// validation and every subsequent consumer; this method never decodes again.
+    /// Validates a funded typed request after its original bytes were verified against this ticket's descriptor.
     pub(crate) fn validate_decoded_request_with_work(
         &self,
         request: &Interaction,
@@ -282,7 +267,6 @@ impl InteractionTicket {
     }
 
     /// Provider admission verifies a version-pinned answer against the exact request.
-    /// Checks staged answer JSON against the admitted request schema.
     pub fn validate_answer_bytes(
         &self,
         request: &Interaction,
@@ -350,8 +334,7 @@ impl InteractionTicket {
         }
     }
 
-    /// Validates one answer while the single original request decode retains
-    /// its actual fields and source custody through the response/schema engine.
+    /// Validates one answer while the single original request decode retains its actual fields and source custody through the response/schema engine.
     pub(crate) fn validate_answer_bytes_with_work(
         &self,
         request_bytes: &[u8],
@@ -359,13 +342,12 @@ impl InteractionTicket {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.with_validated_request_bytes_with_work(request_bytes, work, |request, work| {
+        self.with_validated_request_bytes(request_bytes, work, |request, work| {
             self.validate_answer_for_request_with_work(request, answer, bytes, work)
         })
     }
 
-    /// Validates a decision artifact with both real decoded payloads alive
-    /// under their original source guards until the exact outcome comparison.
+    /// Validates a decision artifact with both real decoded payloads alive under their original source guards until the exact outcome comparison.
     pub(crate) fn validate_decision_bytes_with_work(
         &self,
         request_bytes: &[u8],
@@ -374,7 +356,7 @@ impl InteractionTicket {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.with_validated_request_bytes_with_work(request_bytes, work, |request, work| {
+        self.with_validated_request_bytes(request_bytes, work, |request, work| {
             self.validate_decision_for_request_with_work(request, outcome, detail, bytes, work)
         })
     }
@@ -388,9 +370,9 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if work.is_none() { return self.validate_answer_bytes(request, answer, bytes); }
-        self.validate_answer_envelope_with_work(answer, work)?;
+        self.validate_answer_envelope(answer, work)?;
         answer.descriptor().verify_with_work(bytes, work)?;
-        consume_interaction_json_with_work::<InteractionResponse, _>(
+        consume_interaction_json::<InteractionResponse, _>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
             |response, work| request.validate_response_with_work(response, work),
@@ -407,25 +389,24 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if work.is_none() { return self.validate_decision_bytes(request, outcome, detail, bytes); }
-        self.validate_decision_envelope_with_work(detail, work)?;
+        self.validate_decision_envelope(detail, work)?;
         detail.descriptor().verify_with_work(bytes, work)?;
-        consume_interaction_json_with_work::<InteractionResponse, _>(
+        consume_interaction_json::<InteractionResponse, _>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
-            |response, work| self.validate_decision_response_with_work(request, outcome, response, work),
+            |response, work| self.validate_decision_response(request, outcome, response, work),
         )
     }
 
-    /// Caller verified both pinned descriptors and retains both decoded guards;
-    /// request admission is already complete, so no parsing/compilation repeats.
-    pub(crate) fn validate_decoded_answer_with_work(
+    /// Caller verified both pinned descriptors and retains both decoded guards; request admission is already complete, so no parsing/compilation repeats.
+    pub(crate) fn validate_decoded_answer(
         &self,
         request: &Interaction,
         answer: &FileRef,
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_answer_envelope_with_work(answer, work)?;
+        self.validate_answer_envelope(answer, work)?;
         request.validate_response_with_work(response, work)
     }
 
@@ -438,11 +419,11 @@ impl InteractionTicket {
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_decision_envelope_with_work(detail, work)?;
-        self.validate_decision_response_with_work(request, outcome, response, work)
+        self.validate_decision_envelope(detail, work)?;
+        self.validate_decision_response(request, outcome, response, work)
     }
 
-    fn validate_answer_envelope_with_work(
+    fn validate_answer_envelope(
         &self,
         answer: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -459,7 +440,7 @@ impl InteractionTicket {
         Ok(())
     }
 
-    fn validate_decision_envelope_with_work(
+    fn validate_decision_envelope(
         &self,
         detail: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -473,7 +454,7 @@ impl InteractionTicket {
         detail.validate_with_work(work)
     }
 
-    fn validate_decision_response_with_work(
+    fn validate_decision_response(
         &self,
         request: &Interaction,
         outcome: &InteractionOutcome,
@@ -579,16 +560,11 @@ impl<'de> Deserialize<'de> for InteractionOutcome {
 
 impl InteractionOutcome {
     /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work_and_custody(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        crate::core::native_interaction_outcome_clone_with_custody(self, work)
-    }
-
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        crate::core::native_interaction_outcome_clone_with_custody(self, work)
+            .map(|(value, _)| value)
     }
 
     /// Unknown outcomes remain open for later reconciliation.
@@ -615,16 +591,11 @@ pub struct InteractionResolution {
 
 impl InteractionResolution {
     /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work_and_custody(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        crate::core::native_interaction_resolution_clone_with_custody(self, work)
-    }
-
     pub(crate) fn clone_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        self.clone_with_work_and_custody(work).map(|(value, _)| value)
+        crate::core::native_interaction_resolution_clone_with_custody(self, work)
+            .map(|(value, _)| value)
     }
 
     /// Checks version, address, and outcome kind against the open ticket.
@@ -668,8 +639,7 @@ impl InteractionResolution {
     }
 }
 
-/// Immutable evidence of one admitted interaction resolution. A replay keeps
-/// the original aggregate revision and never creates a second decision.
+/// Immutable evidence of one admitted interaction resolution.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionReceipt {
@@ -879,8 +849,8 @@ impl Interaction {
                 prompt,
                 response_schema,
             } => {
-                nonempty_with_work(prompt, "question prompt", "question prompt is empty", work)?;
-                validate_schema_with_work(response_schema, work)?;
+                nonempty(prompt, "question prompt is empty", work)?;
+                validate_schema(response_schema, work)?;
             }
             Self::Choice {
                 prompt,
@@ -888,7 +858,7 @@ impl Interaction {
                 min_selections,
                 max_selections,
             } => {
-                nonempty_with_work(prompt, "choice prompt", "choice prompt is empty", work)?;
+                nonempty(prompt, "choice prompt is empty", work)?;
                 if options.is_empty()
                     || min_selections > max_selections
                     || *max_selections as usize > options.len()
@@ -896,8 +866,6 @@ impl Interaction {
                     return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                         "invalid choice selection bounds"));
                 }
-                // Only borrowed logical keys are owned by this original set;
-                // opaque BTree node/allocator overhead is not an SDK receipt.
                 let slots = if work.is_some() {
                     (options.len() as u64).checked_mul(std::mem::size_of::<&str>() as u64)
                         .ok_or_else(|| interaction_denial(work, crate::wire::ErrorCode::Invalid,
@@ -909,9 +877,9 @@ impl Interaction {
                     if let Some(observer) = custody.work().as_deref_mut() {
                         observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                     }
-                    nonempty_with_work(&option.id, "choice option identity",
+                    nonempty(&option.id,
                         "choice option identity is empty", custody.work())?;
-                    nonempty_with_work(&option.label, "choice option label",
+                    nonempty(&option.label,
                         "choice option label is empty", custody.work())?;
                     if !ids.insert(option.id.as_str()) {
                         return Err(interaction_denial(custody.work(), crate::wire::ErrorCode::Invalid,
@@ -920,15 +888,15 @@ impl Interaction {
                 }
             }
             Self::Form { title, schema } => {
-                nonempty_with_work(title, "form title", "form title is empty", work)?;
-                validate_schema_with_work(schema, work)?;
+                nonempty(title, "form title is empty", work)?;
+                validate_schema(schema, work)?;
             }
             Self::Approval {
                 prompt,
                 action_digest,
                 ..
             } => {
-                nonempty_with_work(prompt, "approval prompt", "approval prompt is empty", work)?;
+                nonempty(prompt, "approval prompt is empty", work)?;
                 if action_digest == &[0; 32] {
                     return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                         "approval action digest is empty"));
@@ -983,9 +951,6 @@ impl Interaction {
                 },
                 InteractionResponse::Choice { option_ids },
             ) => {
-                // Original BTreeSet::from_iter collects a Vec, stable-sorts it
-                // with <=len scratch slots, then bulk-builds the set. Two
-                // borrowed-key payloads cover either overlapping live stage.
                 let slots = if work.is_some() {
                     (option_ids.len() as u64).checked_mul(2 * std::mem::size_of::<&str>() as u64)
                         .ok_or_else(|| interaction_denial(work, crate::wire::ErrorCode::Invalid,
@@ -1045,10 +1010,8 @@ pub enum InteractionResponse {
     },
 }
 
-// Only the two audited, closed Interaction/InteractionResponse callers use this
-// seam. The callback borrows actual parsed fields; it cannot return an unfunded
-// DTO. Local drop order and the explicit drop retire the payload before quota.
-fn consume_interaction_json_with_work<'io, T, F>(
+// Only the two audited, closed Interaction/InteractionResponse callers use this seam.
+fn consume_interaction_json<'io, T, F>(
     bytes: &[u8],
     schema: crate::contract::JsonValueSchema,
     typed_slot: u64,
@@ -1059,7 +1022,7 @@ where
     T: serde::de::DeserializeOwned,
     F: FnOnce(&T, &mut Option<&'io mut dyn crate::store::history::HistoryIo>) -> Result<()>,
 {
-    let mut decoded = decode_interaction_json_with_work::<T>(bytes, schema, typed_slot, work)?;
+    let mut decoded = decode_interaction_json::<T>(bytes, schema, typed_slot, work)?;
     let result = consume(&decoded.value, decoded.custody.work());
     drop(decoded);
     result
@@ -1071,7 +1034,7 @@ struct DecodedInteractionJson<'loan, 'io, T> {
     custody: crate::wire_codec::CodecQuota<'loan, 'io>,
 }
 
-fn decode_interaction_json_with_work<'loan, 'io, T: serde::de::DeserializeOwned>(
+fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     schema: crate::contract::JsonValueSchema,
     typed_slot: u64,
@@ -1131,8 +1094,7 @@ fn decode_interaction_json_with_work<'loan, 'io, T: serde::de::DeserializeOwned>
         if let Error::NativeDecode { custody: error_custody, .. } = &mut error
             && error_custody.is_none()
         {
-            // Pure original split: no admission/cancellation can replace the
-            // first Serde cause after its actual diagnostic allocation.
+            // Pure original split: no admission/cancellation can replace the first Serde cause after its actual diagnostic allocation.
             let bytes = custody.retained();
             *error_custody = Some(custody.work().as_deref_mut()
                 .expect("observed interaction").take_native_custody(bytes)
@@ -1146,25 +1108,18 @@ fn decode_interaction_json_with_work<'loan, 'io, T: serde::de::DeserializeOwned>
     Ok(DecodedInteractionJson { value, custody })
 }
 
-fn validate_schema(schema: &Value) -> Result<()> {
-    crate::contract::compile_json_schema(schema, "interaction").map(|_| ())
-}
-
-fn validate_schema_with_work(
+fn validate_schema(
     schema: &Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if work.is_none() { return validate_schema(schema); }
     crate::contract::compile_json_schema_with_work(schema, "interaction", work).map(drop)
 }
 
-fn nonempty_with_work(
+fn nonempty(
     value: &str,
-    name: &str,
     reason: &'static str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if work.is_none() { return nonempty(value, name); }
     if value.trim().is_empty() {
         Err(interaction_denial(work, crate::wire::ErrorCode::Invalid, reason))
     } else {
@@ -1195,10 +1150,6 @@ fn interaction_denial(
 }
 
 fn interaction_decode_diagnostic_bytes(input_bytes: u64) -> Result<u64> {
-    // Serde 229 internally-tagged request/response and ChoiceOption visitors;
-    // UUID 1.27 human-readable visitor and its original parsing error Display.
-    // Common serde/syntax templates and escaped source interpolation are
-    // provided by the canonical diagnostic witness, not another JSON parser.
     const LABELS: &[&str] = &[
         "Interaction", "Question", "Choice", "Form", "Approval", "ChoiceOption", "OperationId",
         "InteractionResponse", "value", "option_ids", "approved", "reason", "a boolean",
@@ -1222,8 +1173,6 @@ fn interaction_decode_diagnostic_bytes(input_bytes: u64) -> Result<u64> {
         "invalid group length in group : expected , found ",
         "non-UTF8 input", "invalid length: found ", "failed to parse a UUID",
     ];
-    // Pinned serde_json::Error::custom normalizes its trailing line/column
-    // suffix, so nested raw parser errors retain only one original position.
     crate::contract::audited_serde_diagnostic_bytes(input_bytes,
         LABELS.iter().map(|label| label.len() as u64 + 4).sum())
 }
@@ -1235,14 +1184,6 @@ fn interaction_decode_owned_bytes(
     value_owned_bytes: u64,
     diagnostic_bytes: u64,
 ) -> Option<u64> {
-    // ONE actual internally-tagged Content layer overlaps the consuming typed
-    // ChoiceOption/response-String/Value collections. Ten slots/item covers
-    // Content and typed minimum-eight/geometric capacities. Value comes ONLY from the
-    // sealed witness issued by the original lexer, including real selected Raw
-    // expansion; no second scanner, parser or independent Value policy exists.
-    // codec_owned_bytes protects exterior Content strings/parser scratch;
-    // value_owned_bytes protects the destination Value/Raw stage. Logical map
-    // payloads exclude opaque allocator/BTree node/RSS overhead.
     let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
         .max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
@@ -1284,14 +1225,6 @@ fn interaction_request_owned_bytes(
             Ok(owned)
         }
         Interaction::Approval { prompt, .. } => Ok(prompt.capacity() as u64),
-    }
-}
-
-fn nonempty(value: &str, name: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        Err(Error::Invalid(format!("{name} is empty")))
-    } else {
-        Ok(())
     }
 }
 
@@ -1408,8 +1341,6 @@ mod tests {
     #[test]
     fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        // Original Value deserialization expands this schema from a string;
-        // exterior lexical items alone cannot fund its actual collection.
         let schema = json!({"const": vec![false; 64]});
         let embedded = serde_json::to_string(&schema)
             .map_err(|error| Error::Invalid(error.to_string()))?;

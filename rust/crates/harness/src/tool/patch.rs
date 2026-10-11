@@ -1,8 +1,4 @@
 //! Exact, bounded V4A update-file transformation over immutable UTF-8.
-//!
-//! This accepts the `diff` fragment of an update operation, not paths or a
-//! multi-file envelope. Publication stays with the caller's original task
-//! context and its existing generation-checked content receipt.
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -135,8 +131,6 @@ fn locate(source: &[&str], cursor: usize, hunk: &Hunk<'_>, work: &mut u64, meter
     };
     let old_length = hunk.lines.iter().filter(|(kind, _)| *kind != b'+').count();
     if old_length == 0 {
-        // An insertion without context has no unique position except an
-        // explicit anchor, EOF, or the only boundary in an empty file.
         return if hunk.at_end {
             Ok(source.len())
         } else if hunk.anchor.is_some() || source.is_empty() {
@@ -189,11 +183,6 @@ fn append(output: &mut String, text: &str, maximum: u64, meter: &mut AlgorithmWo
 }
 
 /// Applies exact V4A context/add/delete hunks and optional `@@ anchor`/EOF.
-///
-/// Ambiguous/missing context and whitespace mismatches fail explicitly. Hunks
-/// consume the original source in order; no fuzzy matching, rebasing or partial
-/// publication occurs. Unchanged bytes retain their line endings. Added lines
-/// use the source's first line-ending style, or LF when it has none.
 pub fn apply_update(source: &str, diff: &str, limits: PatchLimits) -> Result<String> {
     limits.validate()?;
     apply_update_engine(source, diff, limits, &mut AlgorithmWork::ordinary())
@@ -246,8 +235,7 @@ pub(super) fn apply_update_engine(source: &str, diff: &str, limits: PatchLimits,
                     cursor += 1;
                 }
                 b'+' => {
-                    // Inserting after an unterminated context/anchor line
-                    // creates a line boundary, never concatenates two lines.
+                    // Inserting after an unterminated context/anchor line creates a line boundary, never concatenates two lines.
                     if !output.is_empty() && !output.ends_with('\n') {
                         append(&mut output, ending, limits.maximum_bytes, meter)?;
                     }

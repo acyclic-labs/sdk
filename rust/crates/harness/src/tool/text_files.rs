@@ -180,7 +180,6 @@ impl ToolProjection for SearchProjection {
 }
 
 /// Selects an explicit partial-read variant without changing the default reader.
-/// The result-byte ceiling and options are pinned in the definition digest.
 pub fn read_file_range(
     options: ReadOptions,
     maximum_result_bytes: u64,
@@ -286,7 +285,6 @@ struct TextTool {
 
 impl TextTool {
     // This preflight is also used when the executor authorizes durable replay.
-    // It does not read content or manufacture a replacement task authority.
     fn preflight(&self, scope: &RuntimeScope, invocation: &ToolInvocation) -> Result<FileRef> {
         invocation.validate()?;
         crate::contract::validate_json_byte_bound(
