@@ -74,30 +74,53 @@ impl OwnedBytes {
     /// original admission cause until failure destruction, data first.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_vec_with_guard<G: Send + Sync + 'static>(
-        data: Vec<u8>, original_guard: G, meter: Arc<dyn NativeReadMeter>,
+        mut data: Vec<u8>, original_guard: G, meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
+        let mut original_guard = Some(original_guard);
+        Self::from_vec_with_guard_in_place(&mut data, &mut original_guard, meter)
+            .map_err(|error| PreparedOwnedBytesFailure {
+                data: FailureData::Vector(data), error: PreparedOwnedBytesError::Admission(error),
+                shared_guard: None, original_guard,
+            })
+    }
+
+    /// Promotes the same vector without moving it or its guard on rejection.
+    ///
+    /// All fallible checks precede immutable conversion. The concrete control
+    /// Arc remains private and unique until those checks finish, so a denied
+    /// promotion recovers its original guard without allocating or copying.
+    /// Already reached allocation attempts remain charged on the same meter.
+    ///
+    /// # Errors
+    /// Returns the original admission error with the vector and guard unchanged,
+    /// or an allocation-free invalid-input error when no original guard exists.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_vec_with_guard_in_place<G: Send + Sync + 'static>(
+        data: &mut Vec<u8>, original_guard: &mut Option<G>, meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
+        if original_guard.is_none() { return Err(io::ErrorKind::InvalidInput.into()); }
         let end = data.len();
         let capacity = data.capacity();
-        let metadata = match ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>()) {
-            Ok(metadata) => metadata,
-            Err(error) => return Err(PreparedOwnedBytesFailure {
-                data: FailureData::Vector(data), error: PreparedOwnedBytesError::Admission(error),
-                shared_guard: None, original_guard: Some(original_guard),
-            }),
-        };
-        let guard = Arc::new(GuardBundle { _metadata: metadata, _original_guard: original_guard });
-        if capacity != end || end != 0 {
-            if let Err(error) = meter.allocate_refcount_header() {
-                return Err(PreparedOwnedBytesFailure {
-                    data: FailureData::Vector(data), error: PreparedOwnedBytesError::Admission(error),
-                    shared_guard: Some(guard), original_guard: None,
-                });
-            }
+        let metadata = ReadAllocation::new(&meter, std::mem::size_of::<GuardBundle<G>>())?;
+        let guard = Arc::new(GuardBundle {
+            _metadata: metadata, _original_guard: original_guard.take().expect("checked original custody"),
+        });
+        if (capacity != end || end != 0)
+            && let Err(error) = meter.allocate_refcount_header()
+        {
+            let GuardBundle { _metadata: metadata, _original_guard: original } =
+                match Arc::try_unwrap(guard) {
+                    Ok(bundle) => bundle,
+                    Err(_) => unreachable!("promotion control has no published alias"),
+                };
+            // The unique physical Arc was destroyed before metadata retirement.
+            drop(metadata);
+            *original_guard = Some(original);
+            return Err(error);
         }
-        let bytes = Bytes::from(data);
-        // A spare-capacity vector creates Shared in Bytes::from already. An
-        // exact-capacity nonempty vector initially uses promotable Box backing;
-        // its first clone creates Shared now, never during a later native clone.
+        let bytes = Bytes::from(std::mem::take(data));
+        // Force exact-capacity nonempty backing into its already-admitted shared
+        // control now, never during a later clone in the native effect phase.
         if capacity == end && end != 0 { drop(bytes.clone()); }
         Ok(Self { bytes, start: 0, end, retained_capacity: Some(capacity), guard: Some(guard) })
     }
@@ -118,6 +141,24 @@ impl OwnedBytes {
     /// Opaque Bytes backing returns `None`, never a guessed capacity.
     #[must_use]
     pub const fn retained_capacity(&self) -> Option<usize> { self.retained_capacity }
+
+    /// Recovers unique ordinary owned storage without allocating or moving bytes.
+    ///
+    /// Only known vector-compatible backing with its entire visible range is
+    /// eligible. Guarded, opaque, static, shared, and narrowed carriers return
+    /// unchanged, preserving their original allocation custody.
+    pub fn try_into_ordinary_vec(self) -> Result<Vec<u8>, Self> {
+        if self.guard.is_some() || self.retained_capacity.is_none()
+            || self.start != 0 || self.end != self.bytes.len()
+        {
+            return Err(self);
+        }
+        let Self { bytes, start, end, retained_capacity, guard } = self;
+        match bytes.try_into_mut() {
+            Ok(bytes) => Ok(bytes.into()),
+            Err(bytes) => Err(Self { bytes, start, end, retained_capacity, guard }),
+        }
+    }
 
     /// Compares only the SDK metadata payer's original allocation-owner identity.
     /// This pure query performs no admission and grants no namespace permission.
@@ -270,14 +311,14 @@ impl std::fmt::Debug for OwnedBytes {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.as_slice().fmt(formatter) }
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+#[cfg(feature = "serde")]
 impl serde::Serialize for OwnedBytes {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(self.as_slice(), serializer)
     }
 }
 
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for OwnedBytes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         <Vec<u8> as serde::Deserialize<'de>>::deserialize(deserializer).map(Self::from)
@@ -386,6 +427,11 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl<G: Send + Sync + 'static> AsMut<[u8]> for PreparedOwnedBytes<G> {
+    fn as_mut(&mut self) -> &mut [u8] { self.writable() }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl<G: Send + Sync + 'static> std::fmt::Debug for PreparedOwnedBytes<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("PreparedOwnedBytes").field("maximum_len", &self.maximum_len).finish_non_exhaustive()
@@ -462,6 +508,10 @@ mod tests {
         checks: AtomicU64,
         memory: AtomicU64,
         limit: AtomicU64,
+        memory_limit: AtomicU64,
+        write_operations: AtomicU64,
+        write_limit: AtomicU64,
+        pending_allocations: parking_lot::Mutex<(u64, u64)>,
     }
 
     impl Meter {
@@ -470,7 +520,24 @@ mod tests {
                 cancelled: AtomicBool::new(false), attempts: AtomicU64::new(0),
                 checks: AtomicU64::new(0), memory: AtomicU64::new(0),
                 limit: AtomicU64::new(u64::MAX),
+                memory_limit: AtomicU64::new(u64::MAX),
+                write_operations: AtomicU64::new(0),
+                write_limit: AtomicU64::new(u64::MAX),
+                pending_allocations: parking_lot::Mutex::new((0, 0)),
             }
+        }
+
+        fn admit_allocation(&self, pending: (u64, u64), bytes: u64, operation: bool) -> io::Result<()> {
+            let operations = self.attempts.load(AtomicOrdering::Relaxed)
+                .checked_add(pending.0).and_then(|value| value.checked_add(u64::from(operation)));
+            let retained = self.memory.load(AtomicOrdering::Relaxed)
+                .checked_add(pending.1).and_then(|value| value.checked_add(bytes));
+            if operations.is_none_or(|value| value > self.limit.load(AtomicOrdering::Relaxed))
+                || retained.is_none_or(|value| value > self.memory_limit.load(AtomicOrdering::Relaxed))
+            {
+                return Err(io::ErrorKind::OutOfMemory.into());
+            }
+            Ok(())
         }
     }
 
@@ -483,11 +550,36 @@ mod tests {
         }
         fn allocate(&self, bytes: u64) -> io::Result<()> {
             self.check()?;
-            let next = self.attempts.load(AtomicOrdering::Relaxed) + 1;
-            if next > self.limit.load(AtomicOrdering::Relaxed) {
-                return Err(io::ErrorKind::OutOfMemory.into());
+            let pending = self.pending_allocations.lock();
+            self.admit_allocation(*pending, bytes, true)?;
+            self.attempts.fetch_add(1, AtomicOrdering::Relaxed);
+            self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
+            Ok(())
+        }
+        fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
+            self.check()?;
+            let mut pending = self.pending_allocations.lock();
+            self.admit_allocation(*pending, bytes, true)?;
+            pending.0 += 1;
+            pending.1 += bytes;
+            Ok(())
+        }
+        fn cancel_reserved_allocation(&self, bytes: u64) {
+            let mut pending = self.pending_allocations.lock();
+            assert!(pending.0 > 0 && pending.1 >= bytes, "only unconsumed reservation credit is refunded");
+            pending.0 -= 1;
+            pending.1 -= bytes;
+        }
+        fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
+            let mut pending = self.pending_allocations.lock();
+            if pending.0 == 0 || pending.1 < bytes {
+                return Err(io::ErrorKind::InvalidInput.into());
             }
-            self.attempts.store(next, AtomicOrdering::Relaxed);
+            pending.0 -= 1;
+            pending.1 -= bytes;
+            // Accepted credit records the reached allocator boundary without
+            // reading cancellation or quotas again.
+            self.attempts.fetch_add(1, AtomicOrdering::Relaxed);
             self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
             Ok(())
         }
@@ -497,14 +589,19 @@ mod tests {
         fn allocate_refcount_header(&self) -> io::Result<()> { self.allocate(0) }
         fn adopt(&self, bytes: u64) -> io::Result<()> {
             self.check()?;
+            let pending = self.pending_allocations.lock();
+            self.admit_allocation(*pending, bytes, false)?;
             self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
             Ok(())
         }
         fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
+            let pending = self.pending_allocations.lock();
             self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
-            (bytes, self.check())
+            let recorded = self.admit_allocation(*pending, 0, false).and_then(|()| self.check());
+            (bytes, recorded)
         }
         fn release(&self, bytes: u64) {
+            let _pending = self.pending_allocations.lock();
             assert!(self.memory.fetch_sub(bytes, AtomicOrdering::Relaxed) >= bytes);
         }
         fn reserve_operations(&self, _: NativeOperationKind, _: u64) -> io::Result<()> { self.check() }
@@ -524,7 +621,41 @@ mod tests {
         fn record_read(&self, _: usize) -> io::Result<()> { Ok(()) }
         fn admit_write(&self, _: usize) -> io::Result<()> { self.check() }
         fn record_write(&self, _: usize) -> io::Result<()> { Ok(()) }
+        fn admit_write_operations(&self, additional: u64) -> io::Result<()> {
+            let _pending = self.pending_allocations.lock();
+            self.check()?;
+            if self.write_operations.load(AtomicOrdering::Relaxed).checked_add(additional)
+                .is_none_or(|value| value > self.write_limit.load(AtomicOrdering::Relaxed))
+            {
+                return Err(io::ErrorKind::Other.into());
+            }
+            Ok(())
+        }
+        fn record_write_operations(&self, completed: u64) -> io::Result<()> {
+            let _pending = self.pending_allocations.lock();
+            let recorded = self.write_operations.load(AtomicOrdering::Relaxed)
+                .checked_add(completed).ok_or(io::ErrorKind::Other)?;
+            self.write_operations.store(recorded, AtomicOrdering::Relaxed);
+            if recorded > self.write_limit.load(AtomicOrdering::Relaxed) {
+                return Err(io::ErrorKind::Other.into());
+            }
+            self.check()
+        }
         fn admit_durability(&self) -> io::Result<()> { self.check() }
+    }
+
+    #[test]
+    fn carrier_meter_preserves_completed_write_prefix_and_denies_next_attempt() {
+        let meter = Meter::new();
+        meter.write_limit.store(1, AtomicOrdering::Relaxed);
+        meter.admit_write_operations(1).unwrap();
+        assert_eq!(meter.write_operations.load(AtomicOrdering::Relaxed), 0);
+        meter.record_write_operations(1).unwrap();
+        assert!(meter.admit_write_operations(1).is_err());
+        assert_eq!(meter.write_operations.load(AtomicOrdering::Relaxed), 1);
+        meter.cancelled.store(true, AtomicOrdering::Relaxed);
+        assert!(meter.record_write_operations(1).is_err());
+        assert_eq!(meter.write_operations.load(AtomicOrdering::Relaxed), 2);
     }
 
     fn funded_data(meter: &Arc<dyn NativeReadMeter>, maximum: usize) -> (Vec<u8>, ReadAllocation) {
@@ -533,6 +664,79 @@ mod tests {
         guard.reconcile_capacity(data.capacity()).unwrap();
         data.resize(data.capacity(), 0);
         (data, guard)
+    }
+
+    #[test]
+    fn allocation_reservations_withhold_both_limits_without_spending() {
+        let observer = Arc::new(Meter::new());
+        observer.limit.store(2, AtomicOrdering::Relaxed);
+        observer.memory_limit.store(8, AtomicOrdering::Relaxed);
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        let reserved = acyclic_native_runtime::ReadAllocationReservation::new(&meter, 5).unwrap();
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(*observer.pending_allocations.lock(), (1, 5));
+        assert!(acyclic_native_runtime::ReadAllocationReservation::new(&meter, 4).is_err());
+        let guard = ReadAllocation::new(&meter, 3).unwrap();
+        let data = Box::new([0_u8; 3]);
+        std::hint::black_box(&data);
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 3);
+        assert!(ReadAllocation::new(&meter, 1).is_err());
+        assert!(meter.allocate_refcount_header().is_err(), "pending operation credit was bypassed");
+        drop(reserved);
+        assert_eq!(*observer.pending_allocations.lock(), (0, 0));
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 1);
+        let next_guard = ReadAllocation::new(&meter, 5).unwrap();
+        let next = Box::new([0_u8; 5]);
+        std::hint::black_box(&next);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 8);
+        drop(next);
+        drop(next_guard);
+        drop(data);
+        drop(guard);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[test]
+    fn accepted_allocation_credit_records_before_box_despite_late_cancel_and_quota() {
+        let observer = Arc::new(Meter::new());
+        observer.limit.store(1, AtomicOrdering::Relaxed);
+        observer.memory_limit.store(64, AtomicOrdering::Relaxed);
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        let reserved = acyclic_native_runtime::ReadAllocationReservation::new(&meter, 64).unwrap();
+        let checks = observer.checks.load(AtomicOrdering::Relaxed);
+        observer.cancelled.store(true, AtomicOrdering::Relaxed);
+        observer.limit.store(0, AtomicOrdering::Relaxed);
+        observer.memory_limit.store(0, AtomicOrdering::Relaxed);
+        let guard = reserved.allocate().unwrap();
+        let data = Box::new([0_u8; 64]);
+        std::hint::black_box(&data);
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 64);
+        assert_eq!(observer.checks.load(AtomicOrdering::Relaxed), checks);
+        assert_eq!(*observer.pending_allocations.lock(), (0, 0));
+        assert!(acyclic_native_runtime::ReadAllocationReservation::new(&meter, 1).is_err());
+        drop(data);
+        drop(guard);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_keeps_byte_array_wire_without_deserialized_native_custody() {
+        let observer = Arc::new(Meter::new());
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        let (mut data, guard) = funded_data(&meter, 3);
+        data[..3].copy_from_slice(b"abc");
+        let data = OwnedBytes::from_vec_with_guard(data, guard, Arc::clone(&meter)).unwrap().slice(..3);
+        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(encoded, "[97,98,99]");
+        let decoded: OwnedBytes = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.as_slice(), b"abc");
+        assert!(!decoded.matches_meter(&meter));
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
     }
 
     #[test]
@@ -716,6 +920,153 @@ mod tests {
         assert_eq!(OwnedBytes::from(String::from("string")).retained_capacity(), Some(6));
         assert_eq!(OwnedBytes::from(vec![1, 2].into_boxed_slice()).retained_capacity(), Some(2));
         assert_eq!(OwnedBytes::from(Bytes::from_static(b"opaque")).retained_capacity(), None);
+    }
+
+    #[test]
+    fn ordinary_unique_take_recovers_original_pointer_and_capacity() {
+        for (capacity, contents) in [(31, &b"spare"[..]), (5, &b"exact"[..]), (19, &b""[..])] {
+            let mut data = Vec::with_capacity(capacity);
+            data.extend_from_slice(contents);
+            let pointer = data.as_ptr();
+            let capacity = data.capacity();
+            let bytes = OwnedBytes::from(data);
+            let recovered = bytes.try_into_ordinary_vec().unwrap();
+            assert_eq!(recovered.as_ptr(), pointer);
+            assert_eq!(recovered.capacity(), capacity);
+            assert_eq!(recovered, contents);
+        }
+        let data = vec![1, 2, 3].into_boxed_slice();
+        let pointer = data.as_ptr();
+        let recovered = OwnedBytes::from(data).try_into_ordinary_vec().unwrap();
+        assert_eq!(recovered.as_ptr(), pointer);
+        assert_eq!(recovered.capacity(), 3);
+        assert_eq!(recovered, [1, 2, 3]);
+    }
+
+    #[test]
+    fn ordinary_shared_take_preserves_carrier_until_last_alias_retires() {
+        for capacity in [5, 31] {
+            let mut data = Vec::with_capacity(capacity);
+            data.extend_from_slice(b"alias");
+            let pointer = data.as_ptr();
+            let capacity = data.capacity();
+            let bytes = OwnedBytes::from(data);
+            let alias = bytes.clone();
+            let recovered = bytes.try_into_ordinary_vec().unwrap_err();
+            assert_eq!(recovered.as_slice(), b"alias");
+            assert_eq!(recovered.as_slice().as_ptr(), pointer);
+            assert_eq!((recovered.start, recovered.end), (0, 5));
+            assert_eq!(recovered.retained_capacity(), Some(capacity));
+            assert!(recovered.guard.is_none());
+            assert_eq!(alias.as_slice().as_ptr(), pointer);
+            drop(alias);
+            let data = recovered.try_into_ordinary_vec().unwrap();
+            assert_eq!(data.as_ptr(), pointer);
+            assert_eq!(data.capacity(), capacity);
+        }
+    }
+
+    #[test]
+    fn ordinary_take_rejects_unique_narrowed_and_opaque_backing() {
+        let bytes = OwnedBytes::from(vec![1, 2, 3, 4]);
+        let narrowed = bytes.slice(1..3);
+        drop(bytes);
+        let pointer = narrowed.as_slice().as_ptr();
+        let narrowed = narrowed.try_into_ordinary_vec().unwrap_err();
+        assert_eq!(narrowed.as_slice(), [2, 3]);
+        assert_eq!(narrowed.as_slice().as_ptr(), pointer);
+        assert_eq!((narrowed.start, narrowed.end), (1, 3));
+        assert_eq!(narrowed.retained_capacity(), Some(4));
+
+        for bytes in [
+            OwnedBytes::from_static(b"static"),
+            OwnedBytes::from(Bytes::from_owner(vec![1, 2, 3])),
+            OwnedBytes::from(Bytes::from(vec![4, 5, 6])),
+        ] {
+            let pointer = bytes.as_slice().as_ptr();
+            let length = bytes.len();
+            let recovered = bytes.try_into_ordinary_vec().unwrap_err();
+            assert_eq!(recovered.as_slice().as_ptr(), pointer);
+            assert_eq!(recovered.len(), length);
+            assert_eq!(recovered.retained_capacity(), None);
+            assert!(recovered.guard.is_none());
+        }
+    }
+
+    #[test]
+    fn guarded_take_rejects_before_touching_original_custody() {
+        let observer = Arc::new(Meter::new());
+        let meter: Arc<dyn NativeReadMeter> = observer.clone();
+        let (data, guard) = funded_data(&meter, 17);
+        let pointer = data.as_ptr();
+        let capacity = data.capacity();
+        let bytes = OwnedBytes::from_vec_with_guard(data, guard, meter.clone()).unwrap();
+        let guard_pointer = Arc::as_ptr(bytes.guard.as_ref().unwrap());
+        let checks = observer.checks.load(AtomicOrdering::Relaxed);
+        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
+        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        observer.cancelled.store(true, AtomicOrdering::Relaxed);
+        observer.limit.store(attempts, AtomicOrdering::Relaxed);
+        let recovered = bytes.try_into_ordinary_vec().unwrap_err();
+        assert_eq!(recovered.as_slice().as_ptr(), pointer);
+        assert_eq!(recovered.as_slice(), vec![0; capacity]);
+        assert_eq!((recovered.start, recovered.end), (0, capacity));
+        assert_eq!(recovered.retained_capacity(), Some(capacity));
+        assert!(std::ptr::eq(Arc::as_ptr(recovered.guard.as_ref().unwrap()), guard_pointer));
+        assert!(recovered.matches_meter(&meter));
+        assert_eq!(observer.checks.load(AtomicOrdering::Relaxed), checks);
+        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        drop(recovered);
+        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[test]
+    fn in_place_metadata_and_refcount_denials_keep_original_vector_and_guard() {
+        for admitted_metadata_attempts in [0, 1] {
+            let observer = Arc::new(Meter::new());
+            let meter: Arc<dyn NativeReadMeter> = observer.clone();
+            let memory_at_drop = Arc::new(AtomicU64::new(u64::MAX));
+            let (mut data, allocation) = funded_data(&meter, 23);
+            data[..4].copy_from_slice(b"keep");
+            data.truncate(4);
+            let pointer = data.as_ptr();
+            let capacity = data.capacity();
+            let mut guard = Some(OriginalGuard {
+                _allocation: allocation, meter: observer.clone(), memory_at_drop: memory_at_drop.clone(),
+            });
+            let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
+            let retained = observer.memory.load(AtomicOrdering::Relaxed);
+            observer.limit.store(attempts + admitted_metadata_attempts, AtomicOrdering::Relaxed);
+            let error = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut guard, meter.clone())
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+            assert_eq!(data.as_ptr(), pointer);
+            assert_eq!(data.capacity(), capacity);
+            assert_eq!(data, b"keep");
+            let original = guard.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&original.meter, &observer));
+            assert!(Arc::ptr_eq(&original.memory_at_drop, &memory_at_drop));
+            assert!(Arc::ptr_eq(original._allocation.meter(), &meter));
+            assert_eq!(original._allocation.bytes(), capacity as u64);
+            assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), u64::MAX);
+            assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts + admitted_metadata_attempts);
+            assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+
+            observer.limit.store(u64::MAX, AtomicOrdering::Relaxed);
+            let bytes = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut guard, meter.clone())
+                .unwrap();
+            assert!(data.is_empty());
+            assert!(guard.is_none());
+            assert_eq!(bytes.as_slice().as_ptr(), pointer);
+            assert_eq!(bytes.as_slice(), b"keep");
+            assert_eq!(bytes.retained_capacity(), Some(capacity));
+            assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed),
+                attempts + admitted_metadata_attempts + 2);
+            drop(bytes);
+            assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), retained);
+            assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        }
     }
 
     #[test]
