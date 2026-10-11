@@ -2,6 +2,8 @@
 //!
 //! This module owns no object namespace or mutable state. Reads pin one
 //! immutable generation and writes use the ordinary workspace transaction.
+//! Read results preserve the engine's canonical byte carrier and original
+//! allocation custody; consumers borrow bytes without exposing raw owners.
 
 use crate::kernel::{FileKind, FilePayload, LogicalName, NameEncoding, NamespacePath};
 use crate::model::{CheckoutMode, GenerationSelector};
@@ -10,6 +12,7 @@ use crate::{
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
 use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use thiserror::Error;
@@ -266,7 +269,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// # Errors
     ///
     /// Returns key, kind, size, authentication, or storage failures.
-    pub async fn get_object(&self, key: &str, maximum_bytes: u64) -> Result<Bytes, S3Error> {
+    pub async fn get_object(&self, key: &str, maximum_bytes: u64) -> Result<OwnedBytes, S3Error> {
         validate_key(key)?;
         self.workspace
             .read(&absolute_key(key), maximum_bytes)
@@ -279,7 +282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// # Errors
     ///
     /// Returns key, range, kind, authentication, or storage failures.
-    pub async fn get_object_range(&self, key: &str, range: ByteRange) -> Result<Bytes, S3Error> {
+    pub async fn get_object_range(&self, key: &str, range: ByteRange) -> Result<OwnedBytes, S3Error> {
         let generation = self.workspace.head().await?;
         self.get_object_range_in(generation, key, range).await
     }
@@ -294,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         generation: &crate::Generation<A, O>,
         key: &str,
         range: ByteRange,
-    ) -> Result<Bytes, S3Error> {
+    ) -> Result<OwnedBytes, S3Error> {
         if generation.workspace_id() != self.workspace.id() {
             return Err(S3Error::ForeignGeneration);
         }
@@ -307,7 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         generation: crate::Generation<A, O>,
         key: &str,
         range: ByteRange,
-    ) -> Result<Bytes, S3Error> {
+    ) -> Result<OwnedBytes, S3Error> {
         let mut checkout = self
             .workspace
             .engine_checkout(
@@ -1155,13 +1158,13 @@ mod tests {
                     length: 3
                 }
             )
-            .await?,
+            .await?.as_slice(),
             b"cde".as_slice()
         );
         s3.copy_object("src/a.bin", "copy/a.bin", IdempotencyKey::new())
             .await?;
         assert_eq!(
-            workspace.read("/copy/a.bin", 16).await?,
+            workspace.read("/copy/a.bin", 16).await?.as_slice(),
             b"abcdef".as_slice()
         );
 
@@ -1669,7 +1672,7 @@ mod tests {
             TransactionCommit::AlreadyCommitted(_)
         ));
         assert_eq!(
-            workspace.read("/large/value.bin", 64).await?,
+            workspace.read("/large/value.bin", 64).await?.as_slice(),
             b"first-second".as_slice()
         );
 
