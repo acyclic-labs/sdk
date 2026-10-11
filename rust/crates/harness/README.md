@@ -82,6 +82,14 @@ Versioned extension events stage JSON in an owner-controlled content provider an
 
 Effects likewise pin request, successful result, and JSON Schema bytes by `FileRef`. Planning validates the staged schema before admission; resolution re-reads that exact schema and result under the owning provider grant before publication. Stream events retain only refs, operation identities, and digests.
 
+Native effect catalogs retain their SDK-owned provider identities on the original
+work ledger. Use `EffectRegistry::new_with_native_work`, native registration and
+resolver installation, then consume the owner's funded authority tuple in
+`ConversationEffectHost::new_with_native_work` and `into_arc_with_native_work`.
+Ordinary registry clones are unqualified; native clones copy identity metadata
+while sharing existing provider and immutable schema backing. The guards outlive
+their payloads; BTree allocator internals and Arc headers are not measured.
+
 Interactions have one ref-only aggregate history for open requests and versioned outcomes. Prompt/schema and answer JSON are staged as private files and validated by the content provider before admission. Presentation through `InteractionRouter` is separate from the owner-mediated `InteractionResolver`; `HarnessBuilder::interaction_resolver` binds the latter. `AgentHarness::inspect_interaction`, `resolve_answer`, and `resolve_approval` use an authenticated responder scope, exact version, and stable operation identity, returning a typed `ResolutionReceipt` including whether the operation replayed. The Filesystem/Stream adapter validates the signed responder grant before staging bytes, checks the response against the admitted request, and reconstructs the original aggregate CAS revision on a lost-ack retry. The Stream never contains prompt or answer bodies. The execution journal can retain its own effect/wait boundary without copying those bodies.
 
 Scoped tool installation asks a `ToolApprovalVerifier` to read a resolved journal approval for the exact installation operation and tool-definition digest. A caller-constructed approval object is not accepted.

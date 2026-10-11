@@ -321,9 +321,24 @@ impl EffectRegistry {
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
+        use crate::store::history::HistoryIo as _;
         let mut cloned = Self::new_with_native_work(work)?;
-        for provider in self.providers.values() {
-            cloned.register_with_native_work(Arc::clone(provider), work)?;
+        for (source, provider) in &self.providers {
+            let mut io = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
+            io.admit_owned(slot)?;
+            io.retain_owned(slot)?;
+            let mut id = String::new();
+            io.reserve_text(&mut id, source.len())?;
+            io.admit_copy(source.len() as u64)?;
+            id.push_str(source);
+            io.copy_bytes(source.len() as u64)?;
+            let mut custody = io.into_custody();
+            cloned.native_metadata.as_mut().expect("native catalog constructor")
+                .absorb(&mut custody)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            cloned.providers.insert(id, Arc::clone(provider));
         }
         cloned.result_resolver = self.result_resolver.clone();
         Ok(cloned)

@@ -333,6 +333,8 @@ pub struct ConversationEffectHost<P> {
     providers: EffectRegistry,
     effect_history_limits: HistoryReadLimits,
     terminal_effect_limit: usize,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider> ConversationEffectHost<P> {
@@ -367,6 +369,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             schemas,
             content,
             providers,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata: None,
             effect_history_limits: default_projection_read_limits(),
             terminal_effect_limit: DEFAULT_TERMINAL_EFFECTS,
         })
@@ -393,6 +397,118 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         }
         self.terminal_effect_limit = maximum;
         Ok(self)
+    }
+
+    /// Consumes the owner's already-funded authority, issuer and signed scope.
+    /// The provider catalog and content facade remain the original SDK objects.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[allow(clippy::too_many_arguments, reason = "same owned conversation binding plus its original custody")]
+    pub fn new_with_native_work(
+        stream: StreamClient<P>,
+        authority: Authority,
+        issuer: AuthorityIssuer,
+        scope: Scope,
+        schemas: SchemaRegistry,
+        content: Arc<dyn ContentResidencyVerifier>,
+        providers: EffectRegistry,
+        authority_custody: acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        // Construct first: every failure drops the owned metadata before its guard.
+        let mut host = Self {
+            stream, authority, issuer, scope, schemas, content, providers,
+            effect_history_limits: default_projection_read_limits(),
+            terminal_effect_limit: DEFAULT_TERMINAL_EFFECTS,
+            native_metadata: Some(authority_custody),
+        };
+        host.require_native_metadata(work)?;
+        host.providers.require_native_metadata(work)?;
+        let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        host.native_metadata.as_mut().expect("validated native host")
+            .absorb(&mut slot)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        host.validate_native_binding(work)?;
+        Ok(host)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn require_native_metadata(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        if self.native_metadata.as_ref().is_some_and(|guard| guard.work().shares_ledger(work)) {
+            Ok(())
+        } else {
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "effect host does not retain the original native metadata",
+            })
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_native_binding(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        io.check_cancellation()?;
+        if self.authority.kind != crate::core::AggregateKind::Conversation {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "effect host requires a conversation aggregate",
+            });
+        }
+        let verifier = self.issuer.verifier_with_work(&mut Some(&mut io))?;
+        verifier.verify_audience_with_native_work(&self.authority, work)?;
+        verifier.verify_with_native_work(&self.scope, work)?;
+        if !self.scope.capabilities().contains(capability::EFFECT_RUN) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "effect host scope lacks effect:run",
+            });
+        }
+        Ok(())
+    }
+
+    /// Clones the original metadata through its SDK source producers.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let authority = io.clone_authority(&self.authority)?;
+        let mut issuer = self.issuer.clone_with_native_work(work)?;
+        let scope = self.scope.clone_with_work(&mut Some(&mut io))?;
+        let schemas = self.schemas.clone_with_work(&mut Some(&mut io))?;
+        let providers = self.providers.clone_with_native_work(work)?;
+        let mut host = Self::new_with_native_work(
+            self.stream.clone(), authority, issuer.0, scope, schemas,
+            Arc::clone(&self.content), providers, io.into_custody(), work,
+        )?;
+        host.effect_history_limits = self.effect_history_limits;
+        host.terminal_effect_limit = self.terminal_effect_limit;
+        host.native_metadata.as_mut().expect("native host constructor")
+            .absorb(&mut issuer.1)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(host)
+    }
+
+    /// Funds the SDK-owned Arc body before its one allocation attempt.
+    /// The allocator header and shared provider backing are not claimed.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn into_arc_with_native_work(
+        mut self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Arc<Self>> {
+        use crate::store::history::HistoryIo as _;
+        self.require_native_metadata(work)?;
+        let mut io = crate::store::history::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let bytes = std::mem::size_of::<Self>() as u64;
+        io.admit_allocation(bytes)?;
+        io.retain_owned(bytes)?;
+        let mut custody = io.into_custody();
+        self.native_metadata.as_mut().expect("validated native host")
+            .absorb(&mut custody)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        Ok(Arc::new(self))
     }
 
     async fn aggregate(&self) -> Result<ObservedEffectAggregate<P>> {
@@ -740,5 +856,104 @@ impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
             )
             .await
         })
+    }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_metadata_controls {
+    use super::*;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    use acyclic_stream::MemoryStream;
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            bytes_copied: 1_048_576, bytes_encoded: 1_048_576,
+            bytes_hashed: 1_048_576, items_examined: 1024,
+            allocation_operations: 1024, peak_allocation_bytes: 1_048_576,
+            ..WorkBudget::default()
+        }
+    }
+
+    fn ordinary_host() -> Result<ConversationEffectHost<MemoryStream>> {
+        let authority = Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: "native-effect-metadata-control".into(),
+        };
+        let issuer = AuthorityIssuer::new("original-effect-issuer", [41; 32], authority.clone());
+        let scope = issuer.root_for_agent(
+            crate::AgentId::from_bytes([42; 16]), "original-effect-scope",
+            crate::Capabilities::new([capability::EFFECT_RUN]),
+        );
+        let files = Arc::new(crate::filesystem::FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
+        )?);
+        let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
+            files, issuer.verifier(), scope.clone(),
+        ));
+        ConversationEffectHost::new(
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+        )
+    }
+
+    #[test]
+    fn native_host_metadata_survives_shared_clone_until_physical_drop() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("finite original metadata ledger");
+        let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
+        let ordinary = ordinary_host()?;
+        let host = ordinary.clone_with_native_work(&work)?;
+        assert_eq!(host.authority, ordinary.authority);
+        assert_eq!(host.scope, ordinary.scope);
+        assert!(host.providers.require_native_metadata(&work).is_ok());
+        assert!(host.providers.clone().require_native_metadata(&work).is_err());
+        let shared = host.into_arc_with_native_work(&work)?;
+        let alias = Arc::clone(&shared);
+        assert!(work.remaining().expect("retained host").peak_allocation_bytes < baseline);
+        drop(shared);
+        assert!(work.remaining().expect("retained alias").peak_allocation_bytes < baseline);
+        drop(alias);
+        assert_eq!(work.remaining().expect("dropped payload").peak_allocation_bytes, baseline);
+        assert_eq!(work.receipt().backend_read_operations, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_catalog_denies_metadata_before_allocation() {
+        let cancellation = CancellationToken::new();
+        let mut denied = budget();
+        denied.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes()
+            + std::mem::size_of::<EffectRegistry>() as u64 - 1;
+        let work = NativeMaterializationWork::new(denied, &cancellation)
+            .expect("only meter backing is admitted");
+        let before = work.receipt().allocation_operations;
+        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert_eq!(work.receipt().allocation_operations, before);
+
+        let work = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original cancellable ledger");
+        cancellation.cancel();
+        let before = work.receipt().allocation_operations;
+        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert_eq!(work.receipt().allocation_operations, before);
+    }
+
+    #[test]
+    fn native_host_refuses_a_foreign_arc_ledger_before_allocation() -> Result<()> {
+        let cancellation = CancellationToken::new();
+        let original = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("original ledger");
+        let foreign = NativeMaterializationWork::new(budget(), &cancellation)
+            .expect("different original ledger");
+        let baseline = original.remaining().expect("original allowance").peak_allocation_bytes;
+        let host = ordinary_host()?.clone_with_native_work(&original)?;
+        let before = foreign.receipt().allocation_operations;
+        assert!(matches!(host.into_arc_with_native_work(&foreign), Err(Error::NativeBoundary { .. })));
+        assert_eq!(foreign.receipt().allocation_operations, before);
+        assert_eq!(original.remaining().expect("rejected host dropped").peak_allocation_bytes, baseline);
+        Ok(())
     }
 }
