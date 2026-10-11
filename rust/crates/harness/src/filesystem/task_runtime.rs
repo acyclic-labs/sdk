@@ -318,7 +318,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn validate_scope_with_native_work(&self, scope: &RuntimeScope, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)) {
+        if !self.native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized, reason: "mailbox metadata differs from original work",
             });
@@ -399,7 +399,7 @@ impl InteractionRouter for TaskJournalInteractions {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_interactions(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)) {
+        if self.native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
             Ok(())
         } else {
             Err(Error::NativeBoundary {
@@ -421,7 +421,7 @@ impl InteractionRouter for TaskJournalInteractions {
         }
         let paid = PaidRequest { value: interaction, custody: request_custody };
         self.supports_native_interactions(work)?;
-        if !paid.custody.work().shares_ledger(work) {
+        if !paid.custody.matches_work(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "interaction request differs from original work",
