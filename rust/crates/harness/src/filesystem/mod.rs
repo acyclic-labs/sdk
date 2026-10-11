@@ -1817,14 +1817,14 @@ where
         Box::pin(async move {
             self.read_manifest_measured(manifest, acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new()).await
-                .map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .map(|receipt| receipt.value.0).map_err(|failure| failure.error)
         })
     }
 
     fn read_manifest_measured<'a>(
         &'a self, manifest: &'a FileRef, budget: acyclic_fs::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<u8>>, Error>> {
+    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<(acyclic_stream::OwnedBytes, u64)>, Error>> {
         Box::pin(async move {
             let io = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
                 PreparationIo::for_unmeasured(cancellation)
@@ -1833,17 +1833,16 @@ where
             }.map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
                 if manifest.volume().provider() != &self.host.provider {
-                    return Err(Error::Unauthorized("fork manifest belongs to another provider".into()));
+                    return Err(fork_preparer_io::unauthorized(Some(&io),
+                        "fork manifest belongs to another provider"));
                 }
-                let bytes = self.host.read_pinned_io(manifest, self.maximum_inherited_bytes, Some(&io)).await?;
-                io.claim(bytes.len() as u64)?;
-                io.allocation_attempt(bytes.len() as u64)?;
-                let copied = acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() };
-                io.preflight(copied)?;
-                io.charge(copied)?;
-                let output = bytes.to_vec();
-                io.release(bytes.len() as u64)?;
-                Ok(output)
+                let bytes = self.host.read_pinned_io(manifest,
+                    self.maximum_inherited_bytes, Some(&io)).await?;
+                let external_bytes = bytes.retained_capacity().ok_or_else(|| {
+                    fork_preparer_io::unsupported(Some(&io),
+                        "manifest producer does not expose its admitted owned capacity")
+                })?;
+                Ok((bytes, external_bytes as u64))
             }.await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
@@ -1865,23 +1864,10 @@ where
         cancellation: &'a acyclic_fs::CancellationToken,
     ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
         Box::pin(async move {
-            let io = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
-                PreparationIo::for_unmeasured(cancellation)
-            } else {
-                PreparationIo::from_budget(budget, cancellation)
-            }.map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                if file.volume().provider() != &self.host.provider {
-                    return Err(Error::Unauthorized("fork file belongs to another provider".into()));
-                }
-                let bytes = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
-                io.release(bytes.len() as u64)?;
-                Ok(())
-            }.await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
+            let receipt = self.read_manifest_measured(file, budget, cancellation).await?;
+            let (bytes, _) = receipt.value;
+            drop(bytes);
+            Ok(acyclic_fs::OperationReceipt { value: (), work: receipt.work })
         })
     }
 

@@ -56,6 +56,14 @@ single-file key domain, and keep returned metadata custody through last use.
 Their original path policy rejects traversal and reserved public retry paths
 before hashing, copying or backend calls, with a fixed native diagnostic.
 
+Manifest loading and exact-file verification share the same generation-pinned
+reader, descriptor verification and retention pin. The measured manifest
+receipt returns its producer-owned `OwnedBytes` without a temporary byte copy.
+Its ordinary external retention scalar is the producer's observed capacity,
+already admitted by that reader; native bytes retain their intrinsic original
+guard instead. A provider without that capacity witness cannot report a guessed
+length or zero as owned capacity.
+
 The upload codec preserves the existing struct-ordered metadata bytes and
 sorted-key canonical receipt bytes. Its allowance covers logical owned
 strings, keys, container slots, encoded buffers and decoder scratch before
