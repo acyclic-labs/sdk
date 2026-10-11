@@ -2271,12 +2271,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<TaskAdmissionRecord>() as u64)?;
         let admission = self.admission_with_work(
             OperationId::from_bytes(task.into_bytes()), &mut Some(&mut io),
         ).await?;
-        let custody = io.into_custody();
+        let owned = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+            .checked_add(admission.logical_owned_bytes()?)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "task admission custody overflows" })?;
+        let custody = io.take_native_custody(owned)?;
         Ok((admission, custody))
     }
 
@@ -5868,7 +5870,8 @@ pub(crate) mod tests {
         let (admission, admission_guard) = fixture.host
             .observe_admission_with_native_work(fixture.root, &work).await?;
         assert_eq!(admission.operation_id.into_bytes(), fixture.root.into_bytes());
-        assert!(admission_guard.bytes() >= std::mem::size_of::<TaskAdmissionRecord>() as u64);
+        assert_eq!(admission_guard.bytes(), std::mem::size_of::<TaskAdmissionRecord>() as u64
+            + admission.logical_owned_bytes()?);
         drop(admission);
         drop(admission_guard);
         // A lost response must recover this original reservation, not claim a
